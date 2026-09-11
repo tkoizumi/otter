@@ -1,0 +1,25 @@
+# Build output
+bin/
+dist/
+
+# Local runtime data (SQLite database, extracted SDK, logs)
+tmp/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Tool caches
+.cache/
+.gocache/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

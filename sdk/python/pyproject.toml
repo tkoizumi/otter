@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otter-sdk"
+version = "0.1.0"
+description = "Thin, standard-library-only Python SDK for the Otter integration runtime."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Otter" }]
+keywords = ["otter", "integrations", "automation", "runtime"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# The SDK intentionally has no third-party runtime dependencies.
+dependencies = []
+
+[project.urls]
+Documentation = "https://github.com/otter/otter/tree/main/sdk/python"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["otter", "otter.*"]
+
+[tool.setuptools]
+include-package-data = false

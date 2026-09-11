@@ -1,0 +1,368 @@
+// Package executor runs an integration as a separate child process.
+//
+// Arbitrary Python never runs inside the daemon: each run gets its own
+// process so a crash, a memory leak or a timeout can be contained and
+// reported. The executor captures stdout/stderr line by line, records the
+// exit code, enforces the manifest timeout and supports cancellation.
+package executor
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/otter-runtime/otter/internal/config"
+	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/otter-runtime/otter/internal/runs"
+)
+
+// defaultTerminateGrace is how long a process gets to exit after SIGTERM
+// before it is killed outright.
+const defaultTerminateGrace = 5 * time.Second
+
+// maxLogLine bounds a single captured line so a runaway process cannot write
+// unbounded rows into SQLite.
+const maxLogLine = 64 * 1024
+
+// LogSink receives captured output.
+type LogSink interface {
+	Line(stream string, at time.Time, message string)
+}
+
+// LogSinkFunc adapts a function to LogSink.
+type LogSinkFunc func(stream string, at time.Time, message string)
+
+// Line implements LogSink.
+func (f LogSinkFunc) Line(stream string, at time.Time, message string) { f(stream, at, message) }
+
+// Request describes one execution.
+type Request struct {
+	Manifest       *config.Manifest
+	RunID          string
+	TriggerType    string
+	APIURL         string
+	StateToken     string
+	ExtraEnv       map[string]string
+	Timeout        time.Duration
+	TerminateGrace time.Duration
+}
+
+// Result is the outcome of an execution.
+type Result struct {
+	StartedAt  time.Time
+	FinishedAt time.Time
+
+	// ExitCode is the process exit status, or nil when the process was
+	// terminated by a signal.
+	ExitCode *int
+
+	// Signal names the signal that killed the process, when applicable.
+	Signal string
+
+	TimedOut  bool
+	Cancelled bool
+
+	// StartError is set when the process could not be launched at all. These
+	// are configuration failures and are never retried.
+	StartError error
+
+	// WaitError is the raw error from cmd.Wait, kept for diagnostics.
+	WaitError error
+}
+
+// Succeeded reports whether the process ran and exited zero.
+func (r *Result) Succeeded() bool {
+	return r.StartError == nil && !r.TimedOut && !r.Cancelled &&
+		r.ExitCode != nil && *r.ExitCode == 0
+}
+
+// Executor launches integration processes.
+type Executor struct {
+	logger *logging.Logger
+
+	// SDKPath is prepended to the child PYTHONPATH so that `import otter`
+	// works without any installation step.
+	SDKPath string
+}
+
+// New creates an executor.
+func New(logger *logging.Logger, sdkPath string) *Executor {
+	return &Executor{logger: logger, SDKPath: sdkPath}
+}
+
+// Run executes the integration and blocks until it finishes, times out or is
+// cancelled. It always returns a Result; failures are described by the
+// Result rather than by an error return.
+func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result {
+	res := &Result{}
+	if req == nil || req.Manifest == nil {
+		res.StartError = errors.New("executor: request has no manifest")
+		return res
+	}
+	m := req.Manifest
+
+	env, err := e.buildEnv(req)
+	if err != nil {
+		res.StartError = err
+		return res
+	}
+
+	cmd := exec.Command(m.Python.Executable, m.Entrypoint)
+	cmd.Dir = m.Dir
+	cmd.Env = env
+	setProcessGroup(cmd)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		res.StartError = fmt.Errorf("executor: open stdout pipe: %w", err)
+		return res
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		res.StartError = fmt.Errorf("executor: open stderr pipe: %w", err)
+		return res
+	}
+
+	if err := cmd.Start(); err != nil {
+		res.StartError = fmt.Errorf("executor: start %s %s: %w", m.Python.Executable, m.Entrypoint, err)
+		return res
+	}
+	res.StartedAt = time.Now().UTC()
+
+	grace := req.TerminateGrace
+	if grace <= 0 {
+		grace = defaultTerminateGrace
+	}
+	// If the process exits but a descendant keeps the pipes open, Wait would
+	// block forever without this.
+	cmd.WaitDelay = grace + 5*time.Second
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go streamLines(stdoutPipe, runs.StreamStdout, sink, &wg)
+	go streamLines(stderrPipe, runs.StreamStderr, sink, &wg)
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	var (
+		werr      error
+		timedOut  bool
+		cancelled bool
+	)
+
+	var timeoutCh <-chan time.Time
+	if req.Timeout > 0 {
+		timer := time.NewTimer(req.Timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	select {
+	case werr = <-done:
+	case <-timeoutCh:
+		timedOut = true
+		e.logger.Warn("run_timeout",
+			"integration", m.Name, "run_id", req.RunID, "timeout", req.Timeout.String())
+		werr = e.terminate(cmd, done, grace)
+	case <-ctx.Done():
+		cancelled = true
+		e.logger.Info("run_cancelled",
+			"integration", m.Name, "run_id", req.RunID)
+		werr = e.terminate(cmd, done, grace)
+	}
+
+	// Give the readers a moment to drain the pipes so no output is lost.
+	streamsDone := make(chan struct{})
+	go func() { wg.Wait(); close(streamsDone) }()
+	select {
+	case <-streamsDone:
+	case <-time.After(5 * time.Second):
+		e.logger.Warn("run_log_drain_timeout", "integration", m.Name, "run_id", req.RunID)
+	}
+
+	res.FinishedAt = time.Now().UTC()
+	res.TimedOut = timedOut
+	res.Cancelled = cancelled
+	res.WaitError = werr
+	res.ExitCode, res.Signal = processExit(werr)
+
+	return res
+}
+
+// terminate sends SIGTERM to the process group, waits for the grace period and
+// escalates to SIGKILL. It returns the result of cmd.Wait.
+func (e *Executor) terminate(cmd *exec.Cmd, done <-chan error, grace time.Duration) error {
+	if err := terminateGroup(cmd); err != nil {
+		// The process is already gone; fall through and collect it.
+		e.logger.Debug("run_terminate_noop", "error", err.Error())
+	}
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(grace):
+	}
+
+	e.logger.Warn("run_kill", "pid", cmd.Process.Pid, "grace", grace.String())
+	if err := killGroup(cmd); err != nil {
+		e.logger.Debug("run_kill_noop", "error", err.Error())
+	}
+	return <-done
+}
+
+// buildEnv assembles the child environment.
+//
+// Inherited OTTER_* variables are removed first: the daemon's own API token
+// (OTTER_API_TOKEN) must never leak into integration code. The child receives
+// only the scoped, per-run values set below.
+func (e *Executor) buildEnv(req *Request) ([]string, error) {
+	m := req.Manifest
+
+	inherited := make([]string, 0, len(os.Environ())+16)
+	pythonPath := ""
+	for _, kv := range os.Environ() {
+		key, value, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "OTTER_") {
+			continue
+		}
+		if key == "PYTHONPATH" {
+			pythonPath = value
+			continue
+		}
+		inherited = append(inherited, kv)
+	}
+
+	if e.SDKPath != "" {
+		if pythonPath != "" {
+			pythonPath = e.SDKPath + string(os.PathListSeparator) + pythonPath
+		} else {
+			pythonPath = e.SDKPath
+		}
+	}
+	if pythonPath != "" {
+		inherited = append(inherited, "PYTHONPATH="+pythonPath)
+	}
+
+	inherited = append(inherited,
+		"OTTER_INTEGRATION_ID="+m.Name,
+		"OTTER_RUN_ID="+req.RunID,
+		"OTTER_API_URL="+req.APIURL,
+		"OTTER_TRIGGER_TYPE="+req.TriggerType,
+		"OTTER_INTEGRATION_DIR="+m.Dir,
+		// Unbuffered output means log lines arrive as they are written
+		// instead of being held in Python's stdout buffer until exit.
+		"PYTHONUNBUFFERED=1",
+		// Keep integration directories free of __pycache__, which matters
+		// when they are mounted read-only.
+		"PYTHONDONTWRITEBYTECODE=1",
+	)
+	if req.StateToken != "" {
+		inherited = append(inherited, "OTTER_STATE_TOKEN="+req.StateToken)
+	}
+
+	// Manifest env may reference either the daemon environment or a resolved
+	// secret, so expansion sees both.
+	lookup := func(key string) string {
+		if req.ExtraEnv != nil {
+			if v, ok := req.ExtraEnv[key]; ok {
+				return v
+			}
+		}
+		return os.Getenv(key)
+	}
+	for _, key := range sortedKeys(m.Env) {
+		inherited = append(inherited, key+"="+expand(m.Env[key], lookup))
+	}
+
+	for _, key := range sortedKeys(req.ExtraEnv) {
+		inherited = append(inherited, key+"="+req.ExtraEnv[key])
+	}
+
+	return inherited, nil
+}
+
+// expand resolves ${VAR} and $VAR references using lookup.
+func expand(value string, lookup func(string) string) string {
+	if !strings.Contains(value, "$") {
+		return value
+	}
+	return os.Expand(value, lookup)
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Insertion sort keeps this dependency-free and the maps are tiny.
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
+}
+
+// streamLines forwards a pipe to the sink one line at a time, bounding memory
+// even if a process emits a line far larger than the buffer.
+func streamLines(r io.Reader, stream string, sink LogSink, wg *sync.WaitGroup) {
+	defer wg.Done()
+	if sink == nil {
+		_, _ = io.Copy(io.Discard, r)
+		return
+	}
+
+	reader := bufio.NewReaderSize(r, 32*1024)
+	var (
+		buf       []byte
+		truncated bool
+	)
+
+	flush := func() {
+		if len(buf) == 0 && !truncated {
+			return
+		}
+		message := strings.TrimRight(string(buf), "\r\n")
+		if truncated {
+			message += " …(truncated)"
+		}
+		if strings.TrimSpace(message) != "" {
+			sink.Line(stream, time.Now().UTC(), message)
+		}
+		buf = buf[:0]
+		truncated = false
+	}
+
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 && !truncated {
+			if len(buf)+len(chunk) > maxLogLine {
+				remaining := maxLogLine - len(buf)
+				if remaining > 0 {
+					buf = append(buf, chunk[:remaining]...)
+				}
+				truncated = true
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+
+		switch {
+		case err == nil:
+			flush()
+		case errors.Is(err, bufio.ErrBufferFull):
+			// Keep consuming; the line simply continues.
+		default:
+			flush()
+			return
+		}
+	}
+}

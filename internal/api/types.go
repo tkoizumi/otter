@@ -1,0 +1,170 @@
+package api
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/otter-runtime/otter/internal/runs"
+)
+
+// Trigger types accepted by SubmitRun.
+const (
+	TriggerManual  = runs.TriggerManual
+	TriggerCron    = runs.TriggerCron
+	TriggerWebhook = runs.TriggerWebhook
+)
+
+// TriggerPayload is what caused a run. The body and headers are recorded on
+// the run so integration code can read ctx.trigger.body / .headers.
+type TriggerPayload struct {
+	Type    string              `json:"type"`
+	Body    json.RawMessage     `json:"body,omitempty"`
+	Headers map[string][]string `json:"headers,omitempty"`
+
+	// ScheduledAt is set for cron runs.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+
+	// WebhookToken is the token presented by the caller, used only for
+	// authentication and never recorded on the run.
+	WebhookToken string `json:"-"`
+}
+
+// IntegrationView is the API representation of an integration manifest.
+type IntegrationView struct {
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Description      string            `json:"description,omitempty"`
+	Path             string            `json:"path"`
+	Entrypoint       string            `json:"entrypoint"`
+	PythonExecutable string            `json:"python_executable"`
+	TimeoutSeconds   int               `json:"timeout_seconds"`
+	Concurrency      int               `json:"concurrency"`
+	Retry            RetryView         `json:"retry"`
+	Env              map[string]string `json:"env,omitempty"`
+	Secrets          []string          `json:"secrets,omitempty"`
+	Triggers         TriggerView       `json:"triggers"`
+	Valid            bool              `json:"valid"`
+	Error            string            `json:"error,omitempty"`
+	NextRunAt        *time.Time        `json:"next_run_at,omitempty"`
+}
+
+// RetryView describes an integration's retry policy.
+type RetryView struct {
+	Attempts     int    `json:"attempts"`
+	MaxAttempts  int    `json:"max_attempts"`
+	Backoff      string `json:"backoff"`
+	InitialDelay string `json:"initial_delay"`
+	MaxDelay     string `json:"max_delay"`
+}
+
+// TriggerView describes how an integration can be started.
+type TriggerView struct {
+	Cron           string `json:"cron,omitempty"`
+	WebhookEnabled bool   `json:"webhook_enabled"`
+	WebhookURL     string `json:"webhook_url,omitempty"`
+
+	// WebhookToken is only populated on the single-integration endpoint, so
+	// that listing integrations never spills credentials.
+	WebhookToken string `json:"webhook_token,omitempty"`
+}
+
+// RunView augments a run with the state of its whole retry chain.
+type RunView struct {
+	*runs.Run
+
+	RootRunID    string      `json:"root_run_id"`
+	LatestStatus runs.Status `json:"latest_status"`
+	Attempts     []*runs.Run `json:"attempts"`
+}
+
+// HealthResponse is returned by GET /health.
+//
+// Integrations, QueueDepth and Runs are present only for an authenticated
+// caller: an unauthenticated liveness probe receives status, version and
+// uptime alone.
+type HealthResponse struct {
+	Status        string         `json:"status"`
+	Version       string         `json:"version"`
+	UptimeSeconds float64        `json:"uptime_seconds"`
+	Integrations  *HealthCounts  `json:"integrations,omitempty"`
+	QueueDepth    *int           `json:"queue_depth,omitempty"`
+	Runs          map[string]int `json:"runs,omitempty"`
+}
+
+// HealthCounts summarises discovered integrations.
+type HealthCounts struct {
+	Total   int `json:"total"`
+	Valid   int `json:"valid"`
+	Invalid int `json:"invalid"`
+}
+
+// RunToken is the scope granted to a per-run token handed to a child process.
+// It is deliberately narrow: it can read its own run, read and write state
+// for its own integration and append its own logs, nothing more.
+type RunToken struct {
+	RunID         string `json:"run_id"`
+	IntegrationID string `json:"integration_id"`
+}
+
+// StateResponse is returned by the whole-state endpoint.
+type StateResponse struct {
+	State map[string]json.RawMessage `json:"state"`
+}
+
+// SetStateResponse is returned by PUT state.
+type SetStateResponse struct {
+	IntegrationID string          `json:"integration_id"`
+	Key           string          `json:"key"`
+	Value         json.RawMessage `json:"value"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+// DeleteStateResponse is returned by DELETE state.
+type DeleteStateResponse struct {
+	IntegrationID string `json:"integration_id"`
+	Key           string `json:"key"`
+	Deleted       bool   `json:"deleted"`
+}
+
+// SubmitRunResponse is returned when a run is accepted.
+type SubmitRunResponse struct {
+	RunID   string `json:"run_id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// CancelRunResponse is returned when a cancellation is accepted.
+type CancelRunResponse struct {
+	RunID   string `json:"run_id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// AppendLogRequest is the body of POST /v1/runs/{id}/logs.
+type AppendLogRequest struct {
+	Stream  string         `json:"stream"`
+	Message string         `json:"message"`
+	Fields  map[string]any `json:"fields,omitempty"`
+}
+
+// ErrorResponse is the body of every error the API returns.
+type ErrorResponse struct {
+	Error ErrorBody `json:"error"`
+}
+
+// ErrorBody describes a failure.
+type ErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// Error codes used by the API.
+const (
+	CodeNotFound     = "not_found"
+	CodeInvalid      = "invalid_request"
+	CodeConflict     = "conflict"
+	CodeUnauthorized = "unauthorized"
+	CodeForbidden    = "forbidden"
+	CodeInternal     = "internal_error"
+	CodeUnavailable  = "unavailable"
+)
