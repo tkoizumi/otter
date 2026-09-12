@@ -70,6 +70,29 @@ type Manifest struct {
 // PythonConfig describes how to launch the integration process.
 type PythonConfig struct {
 	Executable string `yaml:"executable"`
+
+	// Path lists directories prepended to the child's PYTHONPATH, so
+	// integrations can share client code instead of copying it. Entries are
+	// resolved relative to the integration directory, and ".." is allowed
+	// because shared code normally lives outside it.
+	Path []string `yaml:"path"`
+}
+
+// PythonPaths resolves python.path entries to absolute directories.
+func (m *Manifest) PythonPaths() []string {
+	out := make([]string, 0, len(m.Python.Path))
+	for _, entry := range m.Python.Path {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if filepath.IsAbs(entry) {
+			out = append(out, filepath.Clean(entry))
+			continue
+		}
+		out = append(out, filepath.Join(m.Dir, filepath.FromSlash(entry)))
+	}
+	return out
 }
 
 // TriggerConfig describes what starts a run. Triggers are optional: manual
@@ -391,6 +414,28 @@ func (m *Manifest) Validate() error {
 	for _, k := range envKeys {
 		if !envNameRegexp.MatchString(k) {
 			add("env key %q is not a valid environment variable name", k)
+		}
+	}
+
+	for i, entry := range m.Python.Path {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			add("python.path[%d] is empty", i)
+			continue
+		}
+		if m.Dir == "" {
+			continue
+		}
+		resolved := trimmed
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(m.Dir, filepath.FromSlash(trimmed))
+		}
+		info, err := os.Stat(resolved)
+		switch {
+		case err != nil:
+			add("python.path[%d] %q does not exist (%s)", i, trimmed, resolved)
+		case !info.IsDir():
+			add("python.path[%d] %q is not a directory", i, trimmed)
 		}
 	}
 

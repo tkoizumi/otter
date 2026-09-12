@@ -75,6 +75,7 @@ secrets:
 | `description` | string | no | `""` | Free-form human description, returned by the API and shown by `otter inspect`. |
 | `entrypoint` | string | **yes** | — | Path to the Python file to run, relative to the integration directory. Must stay inside the directory and must exist. |
 | `python.executable` | string | no | `python3` | Interpreter used to launch the entrypoint. Resolved on `PATH` or given as an absolute path. |
+| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`, for shared client code. Relative entries resolve against the integration directory (`..` is allowed, since shared code normally lives outside it); absolute entries are used as-is. Every entry must exist and be a directory — `otter validate` checks. |
 | `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`). Omit for no schedule. |
 | `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-integration token. |
 | `timeout` | integer \| string | no | `300` | Maximum wall-clock time for one attempt. An integer means seconds; a string is a Go duration (`30s`, `5m`, `1h30m`). |
@@ -402,6 +403,10 @@ entrypoint: main.py
 
 python:
   executable: /opt/otter/venv/bin/python3
+  # Shared client code, so several integrations can import one Shopify or
+  # ERP client instead of each carrying its own copy.
+  path:
+    - ../../lib/python
 
 trigger:
   cron: "*/5 * * * *"
@@ -414,6 +419,11 @@ secrets:
   - SHOPIFY_TOKEN
   - ERP_TOKEN
 ```
+
+The resulting `PYTHONPATH` is ordered deliberately: the runtime SDK first (so
+`import otter` always resolves to the daemon's own copy), then `python.path`
+entries, then whatever the daemon inherited. An operator-supplied `PYTHONPATH`
+is therefore preserved rather than replaced.
 
 ### High-throughput webhook with retries
 

@@ -537,11 +537,21 @@ otter/
 │   └── state/          durable per-integration key/value state
 ├── migrations/         embedded SQL schema
 ├── sdk/python/otter/   the Python SDK (embedded into the daemon binary)
+├── lib/python/         shared vendor clients, e.g. otter_connectors
+│   └── otter_connectors/  Shopify + Salesforce clients, watermark, config
+├── integrations/
+│   └── shopify-to-salesforce/  a real integration, vendor-specific code only
 ├── examples/
 │   ├── counter/        cron + state + logs
 │   └── customer-sync/  resumable sync against a local mock API
 └── docs/
 ```
+
+The runtime carries no vendor code. Anything specific to Shopify, Salesforce or
+another product lives in an integration or in `lib/python`, and an integration
+declares the shared code it needs with `python.path` — so the daemon stays small
+and the clients stay yours to read, fork and version independently. See
+[lib/python/README.md](lib/python/README.md).
 
 The runtime is a single process with a durable SQLite queue underneath it. Read
 [docs/architecture.md](docs/architecture.md) for the subsystem diagram, the
@@ -561,10 +571,11 @@ make cross     # cross-compile for Linux and macOS
 
 The integration tests start a real daemon, run real Python processes and
 verify run status, logs, state, retries, timeouts, concurrency, crash recovery
-and shutdown. The SDK has its own suite:
+and shutdown. The two Python packages have their own suites:
 
 ```bash
-python3 -m unittest discover -s sdk/python/tests
+python3 -m unittest discover -s sdk/python/tests        # the runtime SDK
+PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
 ```
 
 ---

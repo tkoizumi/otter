@@ -521,6 +521,64 @@ class RunDecoratorTests(SDKTestCase):
         self.assertIn("DONE", result.stdout)
         self.assertEqual(result.stdout.count("EXEC"), 1)
 
+    def test_helpers_defined_below_main_are_available(self):
+        # Regression: executing at decoration time made any name defined
+        # further down the file unavailable, which is a very natural way to
+        # write an integration.
+        result = self._subprocess(
+            "from otter import run\n"
+            "@run\n"
+            "def main(ctx):\n"
+            "    print('HELPER-SAYS', helper())\n"
+            "def helper():\n"
+            "    return 'ok'\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("HELPER-SAYS ok", result.stdout)
+
+    def test_runs_only_after_the_module_body_finishes(self):
+        result = self._subprocess(
+            "from otter import run\n"
+            "@run\n"
+            "def main(ctx):\n"
+            "    print('INTEGRATION')\n"
+            "print('MODULE-BODY')\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MODULE-BODY", result.stdout)
+        self.assertIn("INTEGRATION", result.stdout)
+        self.assertLess(
+            result.stdout.index("MODULE-BODY"),
+            result.stdout.index("INTEGRATION"),
+            "the decorated function must run after the module body completes",
+        )
+
+    def test_second_decorated_function_is_ignored_with_a_warning(self):
+        result = self._subprocess(
+            "from otter import run\n"
+            "@run\n"
+            "def first(ctx):\n"
+            "    print('FIRST')\n"
+            "@run\n"
+            "def second(ctx):\n"
+            "    print('SECOND')\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FIRST", result.stdout)
+        self.assertNotIn("SECOND", result.stdout)
+        self.assertIn("ignoring @run on second", result.stderr)
+
+    def test_systemexit_from_main_controls_the_status(self):
+        result = self._subprocess(
+            "from otter import run\n"
+            "@run\n"
+            "def main(ctx):\n"
+            "    print('BEFORE-EXIT')\n"
+            "    raise SystemExit(3)\n"
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("BEFORE-EXIT", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

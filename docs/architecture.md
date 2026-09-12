@@ -5,6 +5,8 @@ scheduled, observable, retrying set of integrations. This document explains how
 the pieces fit together. It should take about ten minutes to read.
 
 - [In one paragraph](#in-one-paragraph)
+- [How Python actually runs](#how-python-actually-runs)
+- [Persistence in one picture](#persistence-in-one-picture)
 - [The developer experience](#the-developer-experience)
 - [Daemon overview](#daemon-overview)
 - [Subsystems](#subsystems)
@@ -27,6 +29,107 @@ Everything durable — integration state, run history, captured logs, the pendin
 run queue, webhook tokens — lives in one SQLite database. There is no Postgres,
 no Redis, no Kafka, no message broker, no external scheduler and no UI. One
 process, one database file, one binary.
+
+## How Python actually runs
+
+**There is no VM, no container and no sandbox, and Otter never interprets
+Python.** `otterd` is a Go program with no Python linkage at all: no `libpython`,
+no cgo (`CGO_ENABLED=0`), no CPython compiled into the binary. It does not parse,
+compile or execute a single line of Python. What it does is `execve` the same
+interpreter you would have started by hand:
+
+```go
+exec.Command("python3", "main.py")   // literally this argv
+  Dir           = the integration directory
+  Env           = the daemon's environment, minus every OTTER_* variable,
+                  plus the per-run values and the manifest's env and secrets
+  Stdout/Stderr = pipes the daemon reads line by line
+  Stdin         = /dev/null
+  SysProcAttr   = Setpgid, so signals reach any grandchildren
+```
+
+So **one run is one fresh operating-system process**, and CPython does the
+parsing and execution exactly as it would in a shell. Nothing is carried between
+attempts except what is in SQLite.
+
+```
+   otterd  (one Go process)                  child  (real python3)
+   ┌────────────────────────┐                ┌────────────────────────┐
+   │ scheduler              │   execve()     │ 1 interpreter starts   │
+   │ run queue              │ ─────────────▶ │ 2 imports `otter` from │
+   │ workers                │  argv + env    │   PYTHONPATH           │
+   │ retries                │                │ 3 runs your main(ctx)  │
+   │ state · logs           │                │                        │
+   │ SQLite (WAL)           │                │                        │
+   │  HTTP API :7337        │ ◀───────────── │                        │
+   │                        │  stdout/stderr │                        │
+   │                        │  + exit status │                        │
+   │                        │ ◀───────────── │ ctx.state / ctx.log    │
+   │                        │  loopback HTTP │ (the SDK is a client)  │
+   └────────────────────────┘                └────────────────────────┘
+              ▲
+              │  cron ticks · `otter run` · POST /v1/hooks/... · POST .../runs
+```
+
+| Question | Answer |
+| --- | --- |
+| Is there a language VM? | No. CPython is the interpreter, started as a normal process. |
+| Is there an embedded interpreter? | No. The daemon has no Python dependency and no cgo. |
+| Is there a sandbox? | No. The child runs as the daemon's OS user with its full permissions — see [security.md](security.md). |
+| Container per run? | No. `execve`. No container runtime, no image pull, no warm pool. |
+| Which Python? | Whatever `python.executable` resolves to (default `python3`), on `PATH` or absolute — point it at a virtualenv. |
+| Do runs share memory? | No. Separate processes; the only channels are the environment, the pipes and loopback HTTP. |
+| Can an integration read stdin? | No, it is `/dev/null`. An integration cannot prompt. |
+| What does a run cost to start? | One interpreter start per attempt: a trivial run is ~75–150 ms end to end (measured for the bundled `counter`), plus your own imports. |
+| What breaks if it crashes? | Only the run. A segfault, an OOM kill or `os._exit()` in the child cannot take the daemon down. |
+
+**Why the child makes HTTP calls back to the daemon.** Because it is a process
+rather than a function call, it cannot reach the daemon's memory. So `ctx.state`
+and `ctx.log` are HTTP requests to `OTTER_API_URL`, authenticated with a
+short-lived bearer token (`OTTER_STATE_TOKEN`) scoped to that one run and
+integration. That is also why the *daemon* is the authority on state rather than
+the SDK: the daemon is the only thing holding the database. The practical
+consequences are that state is durable even if the child is killed mid-write,
+and that the child needs no database driver at all.
+
+For the exact environment the child receives, and how timeouts and cancellation
+signal it, see [Execution, timeouts and cancellation](#execution-timeouts-and-cancellation).
+
+## Persistence in one picture
+
+Everything durable is **one SQLite file** in WAL mode at `<data dir>/otter.db`.
+The child process never opens it — all reads and writes go through the daemon,
+which is the single writer. That is why there is no lock contention to tune and
+nothing to run alongside it.
+
+```
+   child process                daemon                     otter.db  (WAL)
+   ─────────────                ──────                     ──────────────────
+   ctx.state.set ─── HTTP ────▶ state manager ───────────▶ integration_state
+   ctx.log.info  ─── HTTP ────▶ log manager ─────────────▶ run_logs
+   stdout/stderr ─── pipes ───▶ log manager ─────────────▶ run_logs
+   exit code ─────── exec ────▶ retry manager ───────────▶ runs + run_queue
+   cron / CLI / webhook ──────▶ trigger manager ─────────▶ runs + run_queue
+   `otter state set` ── HTTP ─▶ API ─────────────────────▶ integration_state
+```
+
+What survives what:
+
+| Event | Integration state | Run history & logs | Pending queue |
+| --- | --- | --- | --- |
+| Daemon restart (SIGTERM) | intact | intact | intact |
+| Daemon killed (SIGKILL) | intact | intact; the in-flight run is marked failed at next start and retried | intact |
+| Machine reboot | intact | intact | intact |
+| Power loss mid-write | consistent; the last few commits may be lost | same | same |
+
+That last row is the documented trade-off of WAL with `synchronous=NORMAL`: the
+database is never *corrupted*, but the most recent commit is not guaranteed to
+have reached disk. It is a safe trade here because every write in a sync is
+idempotent — at worst a run re-processes the page it was in the middle of, which
+an upsert by external ID makes harmless. Nothing outside the data directory
+holds any state, which is why a backup is just a file copy.
+
+Schema details, the run lifecycle and the queue claim algorithm follow below.
 
 ## The developer experience
 

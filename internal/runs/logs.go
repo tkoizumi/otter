@@ -3,6 +3,7 @@ package runs
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -103,6 +104,22 @@ func (s *LogStore) List(ctx context.Context, runID string, afterID int64, limit 
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// Last returns the most recent message for a run on one stream. Otter uses it
+// to report an integration's own final log line when a run finishes.
+func (s *LogStore) Last(ctx context.Context, runID, stream string) (string, bool, error) {
+	var message string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT message FROM run_logs WHERE run_id = ? AND stream = ? ORDER BY id DESC LIMIT 1`,
+		runID, stream).Scan(&message)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("runs: last log line for %s: %w", runID, err)
+	}
+	return message, true, nil
 }
 
 // DeleteForRun removes all logs for a run.

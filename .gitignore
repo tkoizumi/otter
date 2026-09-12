@@ -19,6 +19,12 @@ venv/
 .cache/
 .gocache/
 
+# Secrets: real credentials live in the daemon's environment, never here.
+# .env.example is committed; .env and per-integration env files are not.
+.env
+*.env
+!*.env.example
+
 # Editors / OS
 .DS_Store
 .idea/

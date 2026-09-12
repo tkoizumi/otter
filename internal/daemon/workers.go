@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,12 +167,30 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	sink.Flush()
 
 	status, message, retryable := classifyOutcome(result, ctl.getReason(), m)
+	message = withFailureHint(message, status, sink.FailureHint())
 	d.finishRun(run, m, runs.Finish{
 		Status:     status,
 		ExitCode:   result.ExitCode,
 		Error:      message,
 		FinishedAt: result.FinishedAt,
 	}, retryable)
+}
+
+// withFailureHint folds the integration's own error into the message Otter
+// records, so `otter run-status`, the daemon log and the run log all name the
+// real cause instead of only the exit code.
+func withFailureHint(message string, status runs.Status, hint string) string {
+	if status == runs.StatusSucceeded || hint == "" {
+		return message
+	}
+	switch {
+	case message == "":
+		return hint
+	case strings.Contains(message, hint):
+		return message
+	default:
+		return message + ": " + hint
+	}
 }
 
 // classifyOutcome maps an execution result onto a run status, an error
@@ -226,6 +245,11 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	run.Status = f.Status
 	run.FinishedAt = &f.FinishedAt
 
+	// The integration's own final log line. Read before this attempt's
+	// terminal lifecycle line is written, so it is the integration's summary
+	// (pages/fetched/written) rather than Otter's own narration.
+	detail := d.detailLine(ctx, run.ID)
+
 	fields := []any{
 		"integration", run.IntegrationID,
 		"run_id", run.ID,
@@ -238,6 +262,12 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	}
 	if f.ExitCode != nil {
 		fields = append(fields, "exit_code", *f.ExitCode)
+	}
+	if detail != "" {
+		// The integration's own last log line: for a successful sync that is
+		// its summary (pages/fetched/written), which is exactly what you need
+		// to tell "nothing changed" apart from "nothing was written".
+		fields = append(fields, "detail", detail)
 	}
 
 	if f.Status == runs.StatusSucceeded {
@@ -266,6 +296,21 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	if err := d.scheduleRetry(ctx, run, m); err != nil {
 		d.log.Error("run_retry_failed", err, "run_id", run.ID)
 	}
+}
+
+// detailLine returns the integration's last own log line for an attempt, read
+// straight from the log store so it covers both stdout and ctx.log output.
+func (d *Daemon) detailLine(ctx context.Context, runID string) string {
+	line, ok, err := d.logs.Last(ctx, runID, runs.StreamOtter)
+	if err != nil || !ok {
+		return ""
+	}
+	line = strings.TrimSpace(line)
+	const limit = 300
+	if len(line) > limit {
+		line = line[:limit] + "…"
+	}
+	return line
 }
 
 // scheduleRetry creates the next attempt as a new run record linked to the
@@ -332,14 +377,21 @@ func (d *Daemon) appendOtterLog(runID, message string) {
 
 // runLogSink batches captured lines so a chatty integration does not cause one
 // SQLite transaction per line.
+//
+// It also remembers the last thing the integration wrote to stderr, plus the
+// SDK's own failure line, so a failed run can be reported with the integration's
+// actual error instead of only "process exited with code 1". Without that,
+// diagnosing a failure means digging the reason out of run_logs by hand.
 type runLogSink struct {
 	logs   *runs.LogStore
 	logger *logging.Logger
 	runID  string
 
-	mu        sync.Mutex
-	buf       []runs.LogEntry
-	lastFlush time.Time
+	mu            sync.Mutex
+	buf           []runs.LogEntry
+	lastFlush     time.Time
+	lastStderr    string
+	lastSdkFailed string
 }
 
 // Line implements executor.LogSink.
@@ -352,6 +404,14 @@ func (s *runLogSink) Line(stream string, at time.Time, message string) {
 		Message:   message,
 	})
 
+	if stream == runs.StreamStderr && strings.TrimSpace(message) != "" {
+		// The last stderr line of a Python traceback is the exception itself.
+		s.lastStderr = strings.TrimSpace(message)
+	}
+	if stream == runs.StreamOtter && strings.Contains(message, "integration failed:") {
+		s.lastSdkFailed = strings.TrimSpace(message)
+	}
+
 	var batch []runs.LogEntry
 	if len(s.buf) >= 50 || time.Since(s.lastFlush) >= 250*time.Millisecond {
 		batch = s.buf
@@ -363,6 +423,27 @@ func (s *runLogSink) Line(stream string, at time.Time, message string) {
 	if len(batch) > 0 {
 		s.write(batch)
 	}
+}
+
+// FailureHint returns the integration's own error, if it produced one.
+func (s *runLogSink) FailureHint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hint := s.lastStderr
+	if hint == "" {
+		hint = strings.TrimPrefix(s.lastSdkFailed, "integration failed: ")
+	}
+	hint = strings.TrimSpace(hint)
+	if index := strings.Index(hint, " {"); index > 0 && strings.HasSuffix(hint, "}") {
+		// Trim the SDK's structured-log JSON tail from its failure line.
+		hint = hint[:index]
+	}
+	const limit = 300
+	if len(hint) > limit {
+		hint = hint[:limit] + "…"
+	}
+	return hint
 }
 
 // Flush writes any buffered lines. It must be called before the run finishes.

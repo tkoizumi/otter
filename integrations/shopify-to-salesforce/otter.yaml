@@ -1,0 +1,71 @@
+version: 1
+
+name: shopify-to-salesforce
+description: Upsert Shopify customers into Salesforce every five minutes.
+
+entrypoint: main.py
+
+# The Shopify and Salesforce clients live outside this integration, in
+# lib/python, so a second integration can import them instead of copying them.
+# Declaring the directory here puts it on the child's PYTHONPATH, with no
+# install step; `otter validate` checks that it exists.
+python:
+  executable: python3
+  path:
+    - ../../lib/python
+
+trigger:
+  cron: "*/5 * * * *"
+
+# A 5 minute interval with a 300s ceiling means a single run can never
+# overrun its own schedule; RUN_BUDGET_SECONDS makes it stop early with a
+# resumable checkpoint instead of being killed mid-page.
+timeout: 300
+
+# One at a time. Overlapping runs would fight over the same cursor.
+concurrency: 1
+
+# Deliberately short: a retry must land inside the next cron tick, otherwise
+# failures pile runs up in the queue. Because the sync is watermark-based and
+# idempotent, any redundant queued run is a fast no-op.
+retry:
+  attempts: 3
+  backoff: exponential
+  initial_delay: 30s
+  max_delay: 2m
+
+# Non-secret, deployment-specific settings only.
+#
+# IMPORTANT: `otter inspect` and GET /v1/integrations print these values, so
+# never put a token or password here -- use the secrets list below.
+env:
+  # Your *.myshopify.com domain (Shopify Admin API host).
+  SHOPIFY_STORE: robin-dev-3.myshopify.com
+  # Pin an Admin API version your store supports and bump it deliberately.
+  SHOPIFY_API_VERSION: "2026-07"
+
+  # Your org's My Domain URL. Also the OAuth token endpoint.
+  SALESFORCE_INSTANCE_URL: https://drive-energy-1561.my.salesforce.com
+  SALESFORCE_API_VERSION: "62.0"
+  SALESFORCE_AUTH: client_credentials
+
+  # Where customers land, and the unique External ID field used to upsert.
+  SALESFORCE_OBJECT: Contact
+  SALESFORCE_EXTERNAL_ID_FIELD: Shopify_Customer_Id__c
+
+  # Where the very first run starts scanning from.
+  BACKFILL_FROM: "2026-01-01T00:00:00Z"
+
+# Required. Otter reads these from the *daemon's* environment and refuses to
+# start Python if any of them is missing, so a typo fails fast rather than
+# half way through a sync.
+#
+# Shopify uses the client credentials grant: the app exchanges its own client
+# ID and secret for a 24 hour access token, which this integration renews on
+# every run. There is no long-lived Shopify token to paste anywhere, and
+# nothing appears in the Shopify admin.
+secrets:
+  - SHOPIFY_CLIENT_ID
+  - SHOPIFY_CLIENT_SECRET
+  - SALESFORCE_CLIENT_ID
+  - SALESFORCE_CLIENT_SECRET

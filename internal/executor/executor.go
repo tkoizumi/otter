@@ -240,15 +240,19 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 		inherited = append(inherited, kv)
 	}
 
+	// PYTHONPATH order matters: the runtime SDK first so `import otter` always
+	// resolves to the daemon's own version, then any shared code the manifest
+	// declares, then whatever the operator already had.
+	searchPath := make([]string, 0, len(m.Python.Path)+2)
 	if e.SDKPath != "" {
-		if pythonPath != "" {
-			pythonPath = e.SDKPath + string(os.PathListSeparator) + pythonPath
-		} else {
-			pythonPath = e.SDKPath
-		}
+		searchPath = append(searchPath, e.SDKPath)
 	}
+	searchPath = append(searchPath, m.PythonPaths()...)
 	if pythonPath != "" {
-		inherited = append(inherited, "PYTHONPATH="+pythonPath)
+		searchPath = append(searchPath, pythonPath)
+	}
+	if len(searchPath) > 0 {
+		inherited = append(inherited, "PYTHONPATH="+strings.Join(searchPath, string(os.PathListSeparator)))
 	}
 
 	inherited = append(inherited,

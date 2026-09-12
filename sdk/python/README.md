@@ -51,11 +51,15 @@ def main(ctx):
     ctx.state.set("count", count)
 ```
 
-`@run` executes the decorated function **immediately, at decoration time**, when
-`OTTER_RUN_ID` is present. Under the daemon, `python3 main.py` therefore *is*
-the run; no `if __name__ == "__main__":` block is needed. When `OTTER_RUN_ID` is
-absent (plain import, unit tests), the decorator is a no-op and returns the
-function unchanged.
+`@run` executes the decorated function once the module has **finished loading**,
+when `OTTER_RUN_ID` is present. Under the daemon, `python3 main.py` therefore
+*is* the run; no `if __name__ == "__main__":` block is needed. When
+`OTTER_RUN_ID` is absent (plain import, unit tests), the decorator is a no-op
+and returns the function unchanged.
+
+Running after the module body completes (rather than at decoration time) means
+helpers, constants and classes may be defined anywhere in the file, including
+below `main`, exactly as in an ordinary Python program.
 
 Zero-argument functions are supported too. The context is passed only when the
 function accepts a positional parameter:

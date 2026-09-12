@@ -55,6 +55,7 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 		view.Description = m.Description
 		view.Entrypoint = m.Entrypoint
 		view.PythonExecutable = m.Python.Executable
+		view.PythonPath = m.Python.Path
 		view.TimeoutSeconds = m.Timeout.Seconds()
 		view.Concurrency = m.Concurrency
 		view.Env = m.Env
