@@ -11,8 +11,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otter-runtime/otter/internal/api"
+	"github.com/otter-runtime/otter/internal/pyenv"
+	"github.com/otter-runtime/otter/internal/release"
 	"github.com/otter-runtime/otter/internal/runs"
 	"github.com/otter-runtime/otter/internal/state"
+	"github.com/otter-runtime/otter/sdk"
 )
 
 // Integration views -----------------------------------------------------------
@@ -55,6 +58,7 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 		view.Description = m.Description
 		view.Entrypoint = m.Entrypoint
 		view.PythonExecutable = m.Python.Executable
+		view.PythonMode = m.Python.Mode
 		view.PythonPath = m.Python.Path
 		view.TimeoutSeconds = m.Timeout.Seconds()
 		view.Concurrency = m.Concurrency
@@ -119,14 +123,62 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 	}
 
 	now := time.Now().UTC()
+	pythonMode := entry.Manifest.Python.Mode
+	if pythonMode == "" {
+		pythonMode = "external"
+	}
+	// A managed run binds to an environment now, at submission, so that a
+	// later dependency change cannot silently move a queued run onto a
+	// different interpreter. The daemon resolves the current identity here --
+	// the one place on the run path where uv may be consulted -- and records
+	// it, so execution never needs to resolve anything again.
+	// A managed integration runs from an immutable release. Binding happens
+	// here, at submission, so that activating a newer release cannot move a
+	// queued or retried attempt onto different source code.
+	var releaseDigest, releaseSourceDir string
+	sourceDir := entry.Manifest.Dir
+	if pythonMode == "managed" {
+		released, digest, ok, err := release.ActiveSourceDir(d.cfg.DataDir, integrationID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("managed integration %s has no active release; run otter release %s before submitting runs",
+				integrationID, integrationID)
+		}
+		releaseDigest, sourceDir = digest, released
+		releaseSourceDir = released
+	}
+
+	pythonVersion, environmentDigest, pythonPolicy := "", "", ""
+	if pythonMode == "managed" {
+		manager := pyenv.Manager{DataDir: d.cfg.DataDir}
+		// Resolved against the snapshot, not the live tree: the snapshot is
+		// what executes, so it is what the environment must match.
+		spec, err := manager.ResolveCurrent(context.Background(), sourceDir, integrationID)
+		if err != nil {
+			return "", fmt.Errorf("resolve managed Python for %s: %w", integrationID, err)
+		}
+		if _, err := manager.GetReady(spec); err != nil {
+			return "", err
+		}
+		pythonVersion, environmentDigest, pythonPolicy = spec.Python, spec.Digest, spec.Policy
+	}
 	run := &runs.Run{
-		ID:            uuid.NewString(),
-		IntegrationID: integrationID,
-		TriggerType:   triggerType,
-		Status:        runs.StatusQueued,
-		Attempt:       1,
-		CreatedAt:     now,
-		Metadata:      metadata,
+		ID:                uuid.NewString(),
+		IntegrationID:     integrationID,
+		TriggerType:       triggerType,
+		Status:            runs.StatusQueued,
+		Attempt:           1,
+		CreatedAt:         now,
+		Metadata:          metadata,
+		PythonMode:        pythonMode,
+		PythonVersion:     pythonVersion,
+		EnvironmentDigest: environmentDigest,
+		PythonPolicy:      pythonPolicy,
+		ReleaseDigest:     releaseDigest,
+		ReleaseSourceDir:  releaseSourceDir,
+		SDKVersion:        sdk.Version,
 	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {

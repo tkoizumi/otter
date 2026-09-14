@@ -43,8 +43,9 @@ const (
 )
 
 var (
-	namePattern   = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
-	envNameRegexp = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	namePattern      = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
+	envNameRegexp    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	pythonPinPattern = regexp.MustCompile(`^3\.[0-9]+\.[0-9]+$`)
 )
 
 // Manifest is a parsed otter.yaml.
@@ -69,6 +70,8 @@ type Manifest struct {
 
 // PythonConfig describes how to launch the integration process.
 type PythonConfig struct {
+	// Mode is "external" (the legacy default) or "managed".
+	Mode       string `yaml:"mode"`
 	Executable string `yaml:"executable"`
 
 	// Path lists directories prepended to the child's PYTHONPATH, so
@@ -252,7 +255,10 @@ func LoadAndValidate(path string) (*Manifest, error) {
 // omitted field from an explicit zero. Manifests loaded from disk go through
 // applyDefaultsFor instead, which respects field presence.
 func (m *Manifest) ApplyDefaults() {
-	if strings.TrimSpace(m.Python.Executable) == "" {
+	if strings.TrimSpace(m.Python.Mode) == "" {
+		m.Python.Mode = "external"
+	}
+	if m.Python.Mode != "managed" && strings.TrimSpace(m.Python.Executable) == "" {
 		m.Python.Executable = DefaultPythonExecutable
 	}
 	if m.Timeout <= 0 {
@@ -281,7 +287,10 @@ func (m *Manifest) ApplyDefaults() {
 // Validate can reject them.
 func (m *Manifest) applyDefaultsFor(raw rawManifest) {
 	// Free-form fields have no meaningful "explicitly empty" state.
-	if strings.TrimSpace(m.Python.Executable) == "" {
+	if strings.TrimSpace(m.Python.Mode) == "" {
+		m.Python.Mode = "external"
+	}
+	if m.Python.Mode != "managed" && strings.TrimSpace(m.Python.Executable) == "" {
 		m.Python.Executable = DefaultPythonExecutable
 	}
 	if strings.TrimSpace(m.Retry.Backoff) == "" {
@@ -336,6 +345,27 @@ func (m *Manifest) Validate() error {
 
 	if m.Version != SupportedVersion {
 		add("version must be %d, got %v", SupportedVersion, m.Version)
+	}
+	if m.Python.Mode != "" && m.Python.Mode != "external" && m.Python.Mode != "managed" {
+		add("python.mode must be external or managed, got %q", m.Python.Mode)
+	}
+	if m.Python.Mode == "managed" {
+		if strings.TrimSpace(m.Python.Executable) != "" {
+			add("python.executable cannot be set with python.mode: managed")
+		}
+		for _, name := range []string{".python-version", "pyproject.toml", "uv.lock"} {
+			if _, err := os.Stat(filepath.Join(m.Dir, name)); err != nil {
+				add("python.mode: managed requires %s", name)
+			}
+		}
+		if body, err := os.ReadFile(filepath.Join(m.Dir, ".python-version")); err == nil && !pythonPinPattern.MatchString(strings.TrimSpace(string(body))) {
+			add(".python-version must pin an exact CPython patch version, such as 3.13.5")
+		}
+		// python.path is allowed in managed mode. The declared directories are
+		// captured into the release at the same relative depth, so the paths
+		// keep resolving after activation. Integration-local directories are
+		// captured with the integration itself; anything outside it is staged
+		// as a shared tree.
 	}
 
 	if strings.TrimSpace(m.Name) == "" {

@@ -1,6 +1,6 @@
 """The ``@run`` decorator.
 
-``@run`` is what turns ``python3 main.py`` into an actual integration run::
+``@run`` marks a function for the Otter launcher to invoke::
 
     from otter import run
 
@@ -37,7 +37,6 @@ Behaviour:
   than being run ambiguously.
 """
 
-import atexit
 import inspect
 import os
 import sys
@@ -75,8 +74,12 @@ def run(fn: F) -> F:
         _warn_duplicate(fn)
         return fn
 
-    atexit.register(_run_pending)
     return fn
+
+
+def execute_pending() -> None:
+    """Invoke the decorated function after the module loaded successfully."""
+    _run_pending()
 
 
 def _claim(run_id: str, fn: Any) -> bool:
@@ -132,7 +135,7 @@ def _warn_duplicate(fn: Any) -> None:
 
 
 def _run_pending() -> None:
-    """atexit handler: run the queued function and set the process status."""
+    """Run the queued function and set the process status."""
     fn = _take_pending()
     if fn is None:
         return

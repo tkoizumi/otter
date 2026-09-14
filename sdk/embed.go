@@ -20,6 +20,9 @@ import (
 // extracted into.
 const DirName = "sdk"
 
+// Version matches the bundled Python SDK's __version__.
+const Version = "0.1.0"
+
 // FS holds the Python SDK sources under the python/ prefix.
 //
 // The `all:` prefix is required: a bare directory pattern silently skips files

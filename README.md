@@ -365,7 +365,16 @@ otter state set <integration> <key> <json>
 otter state delete <integration> <key>
 otter validate <otter.yaml|directory>   # validate without a running daemon
 otter serve                             # run the daemon (same as otterd)
+otter deploy --host <user@host>         # install or update a runtime over SSH
+otter deploy --status                   # what this checkout last deployed
+otter prepare [<integration>]           # prepare opt-in managed Python environments
+otter release <integration>             # stage, prepare and activate a release
+otter release --list <integration>      # staged releases, newest first
 ```
+
+`python.mode: managed` opts an integration into a prepared interpreter and
+locked dependencies, so it does not depend on the host's Python. See
+[docs/managed-python.md](docs/managed-python.md).
 
 Global flags: `--api <url>`, `--token <token>`, `--json`, `--version`.
 `otter integrations`, `otter run` and `otter state get` print machine-friendly
@@ -469,6 +478,31 @@ bodies, error codes and a curl walkthrough.
 
 ## Deployment
 
+`otter deploy` installs and updates a running Otter runtime on a host you
+already have, over SSH. No cloud API, no Docker registry, no infrastructure
+tooling — if you can `ssh` to it, you can deploy to it.
+
+```bash
+otter deploy --host root@203.0.113.10     # install or update
+otter deploy --status                     # what this checkout last deployed
+otter deploy --host droplet --destroy     # stop and remove it
+```
+
+It detects the remote architecture, cross-compiles both binaries for it, syncs
+the integration tree, writes the systemd unit and the secrets files (over SSH
+stdin, never argv), restarts the service and waits for its health endpoint. Run
+it twice and the second run is a no-op; your data directory is never touched, so
+run history and sync watermarks survive every deploy. The API binds loopback, so
+you reach it through a tunnel rather than an open port:
+
+```bash
+make deploy-tunnel HOST=droplet
+otter runs --limit 10
+```
+
+[docs/deploy.md](docs/deploy.md) covers secrets, tokens, configuration,
+upgrades, backups and removal.
+
 The native binary is the primary deployment mechanism; Docker is optional
 convenience packaging.
 
@@ -477,7 +511,7 @@ make cross      # linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 in ./bin
 make docker     # python:3.13-slim image with both binaries
 ```
 
-A minimal systemd unit:
+By hand, the runtime is one systemd unit:
 
 ```ini
 [Unit]
@@ -486,7 +520,7 @@ After=network.target
 
 [Service]
 User=otter
-EnvironmentFile=/etc/otter/otter.env
+EnvironmentFile=/etc/otter/shopify-to-salesforce.env
 ExecStart=/usr/local/bin/otterd --integrations /opt/otter/integrations --data /var/lib/otter
 Restart=always
 RestartSec=2
@@ -527,6 +561,7 @@ otter/
 │   ├── config/         manifest parsing, validation, discovery
 │   ├── daemon/         orchestration: workers, queue, retries, recovery
 │   ├── database/       SQLite connection and migrations
+│   ├── deploy/         `otter deploy`: SSH converge, systemd unit, secrets
 │   ├── executor/       child process execution, timeout, cancellation
 │   ├── logging/        structured daemon logs
 │   ├── queue/          durable run queue and atomic claiming
@@ -587,6 +622,8 @@ PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
 | [docs/architecture.md](docs/architecture.md) | Subsystems, schema, run lifecycle, design rationale. |
 | [docs/manifest-reference.md](docs/manifest-reference.md) | Every `otter.yaml` field with defaults and validation rules. |
 | [docs/api-reference.md](docs/api-reference.md) | Every endpoint, credential type and error code. |
+| [docs/deploy.md](docs/deploy.md) | `otter deploy`: remote install over SSH, secrets, tunnels, upgrades, removal. |
+| [docs/managed-python.md](docs/managed-python.md) | Opt-in managed Python: pinned interpreter, locked dependencies, identity, preparation. |
 | [docs/operations.md](docs/operations.md) | Deployment, systemd, backups, retention, upgrades, troubleshooting. |
 | [docs/security.md](docs/security.md) | Trust model, tokens, secrets, hardening checklist. |
 | [docs/examples.md](docs/examples.md) | Worked examples, including webhook and scheduled patterns. |

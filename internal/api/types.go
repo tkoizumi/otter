@@ -37,6 +37,7 @@ type IntegrationView struct {
 	Path             string            `json:"path"`
 	Entrypoint       string            `json:"entrypoint"`
 	PythonExecutable string            `json:"python_executable"`
+	PythonMode       string            `json:"python_mode,omitempty"`
 	PythonPath       []string          `json:"python_path,omitempty"`
 	TimeoutSeconds   int               `json:"timeout_seconds"`
 	Concurrency      int               `json:"concurrency"`

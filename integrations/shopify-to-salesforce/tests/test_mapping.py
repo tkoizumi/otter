@@ -16,9 +16,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 INTEGRATION_DIR = os.path.dirname(HERE)
 REPO_ROOT = os.path.dirname(os.path.dirname(INTEGRATION_DIR))
 
-for path in (os.path.join(REPO_ROOT, "lib", "python"),
-             os.path.join(REPO_ROOT, "sdk", "python"),
-             INTEGRATION_DIR):
+for path in (
+    os.path.join(REPO_ROOT, "lib", "python"),
+    os.path.join(REPO_ROOT, "sdk", "python"),
+    INTEGRATION_DIR,
+):
     if path not in sys.path:
         sys.path.insert(0, path)
 
@@ -78,9 +80,24 @@ class ContactMappingTests(unittest.TestCase):
         record = record_for(customer(id="gid://shopify/Customer/98765"))
         self.assertEqual(record["Shopify_Customer_Id__c"], "98765")
 
+    def test_carries_the_gid_alongside_the_numeric_external_id(self):
+        """The GID is kept verbatim; only the upsert key is numeric."""
+        record = record_for(customer(id="gid://shopify/Customer/98765"))
+        self.assertEqual(record["Shopify_Customer_Id__c"], "98765")
+        self.assertEqual(
+            record["Shopify_Customer_gid__c"], "gid://shopify/Customer/98765"
+        )
+
+    def test_the_gid_field_is_omitted_when_shopify_sends_no_id(self):
+        # build_record drops empty values, so the field must not arrive as "".
+        record = record_for(customer(id=None))
+        self.assertNotIn("Shopify_Customer_gid__c", record)
+
     def test_the_external_id_field_is_configurable(self):
         field_mapping = mapping.contact_mapping("Legacy_Customer_Id__c")
-        record = build_record(field_mapping, customer(), limits=mapping.MAX_FIELD_LENGTH)
+        record = build_record(
+            field_mapping, customer(), limits=mapping.MAX_FIELD_LENGTH
+        )
         self.assertIn("Legacy_Customer_Id__c", record)
         self.assertNotIn("Shopify_Customer_Id__c", record)
 
@@ -115,14 +132,17 @@ class PicklistTests(unittest.TestCase):
         self.assertEqual(record["MailingState"], "IL")
 
     def test_sends_the_full_name_when_that_is_what_the_org_accepts(self):
-        record = record_for(customer(),
-                            valid_country={"united states"}, valid_state={"illinois"})
+        record = record_for(
+            customer(), valid_country={"united states"}, valid_state={"illinois"}
+        )
         self.assertEqual(record["MailingCountry"], "United States")
         self.assertEqual(record["MailingState"], "Illinois")
 
     def test_omits_a_value_the_org_does_not_accept(self):
         # Better to drop the country than to lose the customer to a 400.
-        record = record_for(customer(), valid_country={"canada"}, valid_state={"ontario"})
+        record = record_for(
+            customer(), valid_country={"canada"}, valid_state={"ontario"}
+        )
         self.assertNotIn("MailingCountry", record)
         self.assertNotIn("MailingState", record)
 
@@ -135,8 +155,13 @@ class PicklistTests(unittest.TestCase):
 class OptionalAndEmptyFieldTests(unittest.TestCase):
     def test_addresses_can_be_skipped_entirely(self):
         record = record_for(customer(), sync_address=False)
-        for field in ("MailingStreet", "MailingCity", "MailingState",
-                      "MailingPostalCode", "MailingCountry"):
+        for field in (
+            "MailingStreet",
+            "MailingCity",
+            "MailingState",
+            "MailingPostalCode",
+            "MailingCountry",
+        ):
             self.assertNotIn(field, record)
 
     def test_a_customer_without_an_address_omits_the_address_fields(self):
@@ -156,7 +181,9 @@ class OptionalAndEmptyFieldTests(unittest.TestCase):
 
     def test_over_long_values_are_truncated(self):
         record = record_for(customer(firstName="A" * 100))
-        self.assertEqual(len(record["FirstName"]), mapping.MAX_FIELD_LENGTH["FirstName"])
+        self.assertEqual(
+            len(record["FirstName"]), mapping.MAX_FIELD_LENGTH["FirstName"]
+        )
 
     def test_every_mapped_field_has_a_declared_limit(self):
         # A field without a limit is silently at the mercy of the target.
@@ -171,11 +198,22 @@ class MappingShapeTests(unittest.TestCase):
 
     def test_the_mapped_targets_are_exactly_what_we_expect(self):
         mapped = set(mapping.contact_mapping(EXTERNAL_ID_FIELD, sync_address=True))
-        self.assertEqual(mapped, {
-            "Shopify_Customer_Id__c", "LastName", "FirstName", "Email", "Phone",
-            "MailingStreet", "MailingCity", "MailingState", "MailingPostalCode",
-            "MailingCountry",
-        })
+        self.assertEqual(
+            mapped,
+            {
+                "Shopify_Customer_Id__c",
+                "Shopify_Customer_gid__c",
+                "LastName",
+                "FirstName",
+                "Email",
+                "Phone",
+                "MailingStreet",
+                "MailingCity",
+                "MailingState",
+                "MailingPostalCode",
+                "MailingCountry",
+            },
+        )
 
 
 if __name__ == "__main__":

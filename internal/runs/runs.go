@@ -72,18 +72,32 @@ const (
 
 // Run is one execution attempt of an integration.
 type Run struct {
-	ID            string          `json:"id"`
-	IntegrationID string          `json:"integration_id"`
-	TriggerType   string          `json:"trigger_type"`
-	Status        Status          `json:"status"`
-	Attempt       int             `json:"attempt"`
-	ParentRunID   *string         `json:"parent_run_id"`
-	CreatedAt     time.Time       `json:"created_at"`
-	StartedAt     *time.Time      `json:"started_at"`
-	FinishedAt    *time.Time      `json:"finished_at"`
-	ExitCode      *int            `json:"exit_code"`
-	Error         *string         `json:"error"`
-	Metadata      json.RawMessage `json:"metadata"`
+	ID                string          `json:"id"`
+	IntegrationID     string          `json:"integration_id"`
+	TriggerType       string          `json:"trigger_type"`
+	Status            Status          `json:"status"`
+	Attempt           int             `json:"attempt"`
+	ParentRunID       *string         `json:"parent_run_id"`
+	CreatedAt         time.Time       `json:"created_at"`
+	StartedAt         *time.Time      `json:"started_at"`
+	FinishedAt        *time.Time      `json:"finished_at"`
+	ExitCode          *int            `json:"exit_code"`
+	Error             *string         `json:"error"`
+	Metadata          json.RawMessage `json:"metadata"`
+	PythonMode        string          `json:"python_mode,omitempty"`
+	PythonVersion     string          `json:"python_version,omitempty"`
+	EnvironmentDigest string          `json:"environment_digest,omitempty"`
+	// PythonPolicy is the preparation-policy fingerprint folded into
+	// EnvironmentDigest. It is what lets a retry resolve the same environment
+	// its parent selected without re-deriving the policy.
+	PythonPolicy string `json:"-"`
+	// ReleaseDigest identifies the immutable source snapshot this attempt
+	// executes, and ReleaseSourceDir is the directory that snapshot lives in.
+	// Both are recorded at submission so a retry keeps running its parent's
+	// snapshot after a newer release has been activated.
+	ReleaseDigest    string `json:"release_digest,omitempty"`
+	ReleaseSourceDir string `json:"-"`
+	SDKVersion       string `json:"sdk_version,omitempty"`
 }
 
 // Duration returns how long the run has been running, or ran for.
@@ -107,7 +121,9 @@ func (r *Run) ErrorString() string {
 }
 
 const runColumns = `id, integration_id, trigger_type, status, attempt, parent_run_id,
-	created_at, started_at, finished_at, exit_code, error, metadata`
+	created_at, started_at, finished_at, exit_code, error, metadata,
+	python_mode, python_version, environment_digest, python_policy,
+	release_digest, release_source_dir, sdk_version`
 
 // Store provides access to run records.
 type Store struct {
@@ -138,7 +154,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		metadata = ""
 	}
 
-	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	args := []any{
 		r.ID, r.IntegrationID, r.TriggerType, string(r.Status), r.Attempt,
 		database.NullableString(deref(r.ParentRunID)),
@@ -147,7 +163,8 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		database.FormatNullable(r.FinishedAt),
 		database.NullableInt(r.ExitCode),
 		database.NullableString(deref(r.Error)),
-		metadata,
+		metadata, r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy,
+		r.ReleaseDigest, r.ReleaseSourceDir, r.SDKVersion,
 	}
 
 	var err error
@@ -376,24 +393,36 @@ func (s *Store) Chain(ctx context.Context, id string) (*Run, []*Run, error) {
 
 func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
 	var (
-		r        Run
-		status   string
-		parent   sql.NullString
-		created  database.NullableTime
-		started  database.NullableTime
-		finished database.NullableTime
-		exitCode sql.NullInt64
-		errMsg   sql.NullString
-		meta     sql.NullString
+		r                 Run
+		status            string
+		parent            sql.NullString
+		created           database.NullableTime
+		started           database.NullableTime
+		finished          database.NullableTime
+		exitCode          sql.NullInt64
+		errMsg            sql.NullString
+		meta              sql.NullString
+		pythonMode        string
+		pythonVersion     string
+		environmentDigest string
+		pythonPolicy      string
+		releaseDigest     string
+		releaseSourceDir  string
+		sdkVersion        string
 	)
 	if err := sc.Scan(
 		&r.ID, &r.IntegrationID, &r.TriggerType, &status, &r.Attempt,
 		&parent, &created, &started, &finished, &exitCode, &errMsg, &meta,
+		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
+		&releaseDigest, &releaseSourceDir, &sdkVersion,
 	); err != nil {
 		return nil, err
 	}
 
 	r.Status = Status(status)
+	r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy, r.SDKVersion =
+		pythonMode, pythonVersion, environmentDigest, pythonPolicy, sdkVersion
+	r.ReleaseDigest, r.ReleaseSourceDir = releaseDigest, releaseSourceDir
 	if parent.Valid {
 		v := parent.String
 		r.ParentRunID = &v

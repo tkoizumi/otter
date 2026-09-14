@@ -256,6 +256,86 @@ Use the same systemd setup as a VM, but tune for the hardware:
 - Nothing else writes into the data directory. No log files, no PID files, no
   sockets.
 
+## The API token on the host
+
+`otter deploy` writes the API token into `/etc/otter/<integration>.env`, and
+systemd loads it for the daemon. An operator's shell is a different process, so
+on the host every command would otherwise start with a 401.
+
+The CLI therefore reads the token from that file itself, but **only when the API
+is on loopback**. On the host:
+
+```sh
+otter status          # just works
+otter integrations --schedule
+OTTER_API_TOKEN=xyz otter status   # an explicit value always wins
+```
+
+The loopback restriction matters: a tunnel forwards a *remote* daemon to
+`127.0.0.1` on a machine that may have its own `/etc/otter`, and quietly
+presenting the wrong token would be harder to diagnose than a 401.
+
+Reading the file is not a privilege escalation -- it is mode 0600, so only the
+daemon's owner can read it either way.
+
+## Is it running on a schedule?
+
+A scheduled integration fires without anyone watching, so the question "is this
+actually running?" comes up immediately after the first start. Three places
+answer it.
+
+**The schedule view** lists every cron integration with its next run time and
+what happened last time:
+
+```sh
+make sync-schedule
+# or: otter integrations --schedule
+```
+
+```
+INTEGRATION          CRON             NEXT RUN              IN         LAST RUN
+--------------------------------------------------------------------------------------------
+shopify-to-salesforce */5 * * * *     2026-09-13 17:05:00   2m14s      succeeded at 17:00:04
+```
+
+An integration that has never run reports `no runs yet`, which distinguishes
+"not yet due" from "silently not firing".
+
+**The daemon log** records every tick as it happens. `make sync-up` runs the
+daemon in the foreground, so cron lines appear in that terminal:
+
+```
+INFO cron_fired integration=shopify-to-salesforce cron=*/5 * * * *
+```
+
+To keep that output, start the daemon with a log file instead of `make sync-up`:
+
+```sh
+set -a; . integrations/shopify-to-salesforce/.env; set +a
+./bin/otterd --integrations ./integrations --data ./tmp --log-format pretty \
+  2>&1 | tee /tmp/otter.log
+```
+
+then `tail -f /tmp/otter.log` from another terminal.
+
+**The run history** is the ground truth:
+
+```sh
+otter runs --integration shopify-to-salesforce --limit 10
+```
+
+## Managed Python
+
+Integrations that set `python.mode: managed` run on an interpreter and
+dependency set that Otter prepared, not on the host's Python, and execute an
+immutable release snapshot rather than their source tree. Both steps are
+separate from execution (`otter release`, or automatically during
+`otter deploy`), never part of a run. See [managed-python.md](managed-python.md).
+
+Releases accumulate under `<data dir>/.releases`. Nothing removes them unless
+you pass `otter release --keep N`, so check `otter release --list <integration>`
+if the data directory grows.
+
 ## Backups
 
 Stop the writer, or checkpoint first. The simplest correct backup is a

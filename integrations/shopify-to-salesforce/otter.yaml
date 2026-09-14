@@ -5,12 +5,25 @@ description: Upsert Shopify customers into Salesforce every five minutes.
 
 entrypoint: main.py
 
-# The Shopify and Salesforce clients live outside this integration, in
-# lib/python, so a second integration can import them instead of copying them.
-# Declaring the directory here puts it on the child's PYTHONPATH, with no
-# install step; `otter validate` checks that it exists.
+# Managed Python: Otter prepares a pinned interpreter and the locked
+# dependencies before activation, so the host needs no Python of its own and a
+# run cannot drift when the host is upgraded.
+#
+# The three files this mode requires sit next to this manifest:
+#   .python-version   the exact CPython patch version to prepare
+#   pyproject.toml    project metadata and dependencies (none today)
+#   uv.lock           the locked resolution of the above
+#
+# `python.executable` is deliberately absent: managed mode rejects it, because
+# the interpreter is prepared rather than named.
 python:
-  executable: python3
+  mode: managed
+
+  # The Shopify and Salesforce clients live outside this integration, in
+  # lib/python, so a second integration can import them instead of copying
+  # them. In managed mode this directory is captured into the release at the
+  # same relative depth, which means a run imports the shared code that was
+  # snapshotted with its release rather than whatever is on disk now.
   path:
     - ../../lib/python
 

@@ -12,7 +12,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -85,6 +89,12 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	case "serve":
 		// `otter serve` is the same daemon as `otterd`, in one process.
 		return RunDaemon(ctx, a.Version, commandArgs, a.Stdout, a.Stderr)
+	case "deploy":
+		return a.cmdDeploy(ctx, g, commandArgs)
+	case "release":
+		return a.cmdRelease(ctx, commandArgs)
+	case "prepare":
+		return a.cmdPrepare(ctx, commandArgs)
 	default:
 		fmt.Fprintf(a.Stderr, "otter: unknown command %q\n\n", command)
 		a.printUsage(a.Stderr)
@@ -142,7 +152,88 @@ func (g globals) client() *api.Client {
 	if token == "" {
 		token = os.Getenv("OTTER_API_TOKEN")
 	}
+	if token == "" {
+		token = localHostToken(base)
+	}
 	return api.NewClient(base, token)
+}
+
+// EnvDir is where `otter deploy` writes one environment file per integration,
+// mode 0600. The API token lives in one of them.
+const EnvDir = "/etc/otter"
+
+// envDirForTest lets a test point the lookup at a temporary directory. It is
+// the deploy location in every real build.
+var envDirForTest = EnvDir
+
+// localHostToken reads the API token from the daemon's own environment file.
+//
+// On the host that runs otterd, the token is already on disk -- systemd reads
+// it out of /etc/otter/<integration>.env for the daemon. An operator's shell is
+// a different process and inherits none of it, so every command on the host
+// otherwise starts with a 401 and a copy-and-paste. Reading it here removes
+// that without weakening anything: the file is 0600 and only root can read it.
+//
+// It only applies to a loopback API. A tunnel forwards a remote daemon to
+// 127.0.0.1 on a machine that may have its own /etc/otter, and silently
+// presenting the wrong token would be more confusing than a clear 401.
+func localHostToken(base string) string {
+	if !isLoopbackBase(base) {
+		return ""
+	}
+	matches, err := filepath.Glob(filepath.Join(envDirForTest, "*.env"))
+	if err != nil {
+		return ""
+	}
+	sort.Strings(matches)
+	for _, path := range matches {
+		if token := readEnvValue(path, "OTTER_API_TOKEN"); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+// isLoopbackBase reports whether a base URL points at this machine, including
+// the empty value that means "use the default".
+func isLoopbackBase(base string) bool {
+	if strings.TrimSpace(base) == "" {
+		return true
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// readEnvValue returns one KEY=value from a systemd environment file. Values
+// are taken verbatim: these files are written by `otter deploy` and never
+// contain shell syntax.
+func readEnvValue(path, key string) string {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	}
+	return ""
 }
 
 // Commands -------------------------------------------------------------------
@@ -197,6 +288,7 @@ func (a *App) cmdIntegrations(ctx context.Context, g globals, args []string) int
 	fs := flag.NewFlagSet("integrations", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	all := fs.Bool("all", false, "include invalid integrations")
+	schedule := fs.Bool("schedule", false, "show each integration's cron, next run and last outcome")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -208,6 +300,10 @@ func (a *App) cmdIntegrations(ctx context.Context, g globals, args []string) int
 
 	if g.jsonOut {
 		return a.printJSON(list)
+	}
+
+	if *schedule {
+		return a.printSchedule(ctx, g, list, *all)
 	}
 
 	printed := 0
@@ -228,6 +324,63 @@ func (a *App) cmdIntegrations(ctx context.Context, g globals, args []string) int
 
 	if printed == 0 {
 		fmt.Fprintln(a.Stderr, "otter: no integrations found (use --all to include invalid ones)")
+	}
+	return 0
+}
+
+// printSchedule answers the question "is this actually running on a schedule?":
+// what each integration's cron is, when it next fires, and what happened last
+// time it did.
+//
+// A cron integration that has never run is the common case after a first
+// start, so "no runs yet" is reported rather than an empty column.
+func (a *App) printSchedule(ctx context.Context, g globals, list []api.IntegrationView, includeInvalid bool) int {
+	client := g.client()
+	now := time.Now().UTC()
+
+	fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n",
+		"INTEGRATION", "CRON", "NEXT RUN", "IN", "LAST RUN")
+	fmt.Fprintln(a.Stdout, strings.Repeat("-", 92))
+
+	shown := 0
+	for _, it := range list {
+		if !it.Valid {
+			if !includeInvalid {
+				continue
+			}
+			fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n",
+				it.ID, "-", "-", "-", "(invalid: "+oneLine(it.Error)+")")
+			shown++
+			continue
+		}
+
+		cron := it.Triggers.Cron
+		if cron == "" {
+			continue // not scheduled; this view is about schedules
+		}
+		shown++
+
+		next, in := "-", "-"
+		if it.NextRunAt != nil {
+			next = it.NextRunAt.Local().Format("2006-01-02 15:04:05")
+			in = it.NextRunAt.Sub(now).Round(time.Second).String()
+		}
+
+		last := "no runs yet"
+		// A small limit keeps this a status view rather than a history dump.
+		if recent, err := client.ListRuns(ctx, api.RunsQuery{IntegrationID: it.ID, Limit: 1}); err == nil && len(recent) > 0 {
+			r := recent[0]
+			last = fmt.Sprintf("%s at %s", r.Status, r.CreatedAt.Local().Format("15:04:05"))
+			if r.Error != nil && *r.Error != "" && r.Status != runs.StatusSucceeded {
+				last += " (" + oneLine(*r.Error) + ")"
+			}
+		}
+		fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n", it.ID, cron, next, in, last)
+	}
+
+	if shown == 0 {
+		fmt.Fprintln(a.Stderr, "otter: no integrations with a cron trigger")
+		return 0
 	}
 	return 0
 }
@@ -260,7 +413,11 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	}
 	fmt.Fprintf(a.Stdout, "path:          %s\n", it.Path)
 	fmt.Fprintf(a.Stdout, "entrypoint:    %s\n", it.Entrypoint)
-	fmt.Fprintf(a.Stdout, "python:        %s\n", it.PythonExecutable)
+	if it.PythonMode == "managed" {
+		fmt.Fprintf(a.Stdout, "python:        managed (prepared environment)\n")
+	} else {
+		fmt.Fprintf(a.Stdout, "python:        %s\n", it.PythonExecutable)
+	}
 	fmt.Fprintf(a.Stdout, "timeout:       %ds\n", it.TimeoutSeconds)
 	fmt.Fprintf(a.Stdout, "concurrency:   %d\n", it.Concurrency)
 	fmt.Fprintf(a.Stdout, "retry:         attempts=%d (%d total) backoff=%s initial_delay=%s max_delay=%s\n",
@@ -409,6 +566,21 @@ func (a *App) cmdRunStatus(ctx context.Context, g globals, args []string) int {
 	fmt.Fprintf(a.Stdout, "trigger:       %s\n", r.TriggerType)
 	fmt.Fprintf(a.Stdout, "status:        %s\n", r.Status)
 	fmt.Fprintf(a.Stdout, "attempt:       %d\n", r.Attempt)
+	if r.PythonMode != "" {
+		fmt.Fprintf(a.Stdout, "python mode:   %s\n", r.PythonMode)
+	}
+	if r.PythonVersion != "" {
+		fmt.Fprintf(a.Stdout, "python:        %s\n", r.PythonVersion)
+	}
+	if r.EnvironmentDigest != "" {
+		fmt.Fprintf(a.Stdout, "environment:   %s\n", r.EnvironmentDigest)
+	}
+	if r.ReleaseDigest != "" {
+		fmt.Fprintf(a.Stdout, "release:       %s\n", r.ReleaseDigest)
+	}
+	if r.SDKVersion != "" {
+		fmt.Fprintf(a.Stdout, "sdk:           %s\n", r.SDKVersion)
+	}
 	if r.ParentRunID != nil {
 		fmt.Fprintf(a.Stdout, "retry of:      %s\n", *r.ParentRunID)
 	}
@@ -665,6 +837,7 @@ func (a *App) fail(err error) int {
 	if errors.As(err, &apiErr) {
 		if apiErr.IsUnauthorized() {
 			fmt.Fprintln(a.Stderr, "hint: set OTTER_API_TOKEN or pass --token")
+			fmt.Fprintln(a.Stderr, "hint: on the Otter host, the token is in "+EnvDir+"/*.env")
 		}
 		return 1
 	}
@@ -683,6 +856,7 @@ Usage:
 Runtime:
   status                          show daemon health and run counts
   integrations [--all]            list integration names
+  integrations --schedule         cron, next run and last outcome per integration
   inspect <integration>           show one integration in detail
   run <integration> [--body J]    queue a manual run and print its run id
   serve [flags]                   run the daemon (same as the otterd binary)
@@ -700,6 +874,17 @@ State:
 Manifests:
   validate <otter.yaml|directory> validate without a running daemon
 
+Python:
+  prepare [--integrations DIR] [--data DIR] [integration]
+                                  prepare opt-in managed Python environments
+  release <integration>           stage, prepare and activate an immutable release
+  release --list <integration>    list staged releases
+
+Deployment:
+  deploy --host <user@host>       install or update a remote runtime over SSH
+  deploy --status                 show the last deploy from this checkout
+  deploy --host <host> --destroy  stop and remove it
+
 Global flags:
   --api <url>    daemon URL (default %s, or OTTER_API_URL)
   --token <tok>  API token (or OTTER_API_TOKEN)
@@ -708,9 +893,12 @@ Global flags:
 
 Examples:
   otter integrations
+  otter integrations --schedule
   otter run counter
   otter logs $(otter run counter) --follow
   otter state get counter count
+  otter prepare shopify-to-salesforce
+  otter deploy --host droplet
 `, api.DefaultBaseURL)
 }
 

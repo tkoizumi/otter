@@ -80,6 +80,40 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestManagedPythonRequiresExplicitModeAndInputs(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, "main.py"))
+	for name, value := range map[string]string{
+		".python-version": "3.13.5\n",
+		"pyproject.toml":  "[project]\nname='fixture'\nversion='0.1.0'\n",
+		"uv.lock":         "version = 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := writeManifest(t, dir, "version: 1\nname: fixture\nentrypoint: main.py\npython:\n  mode: managed\n")
+	m, err := LoadAndValidate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Python.Executable != "" {
+		t.Fatalf("managed executable = %q", m.Python.Executable)
+	}
+	path = writeManifest(t, dir, "version: 1\nname: fixture\nentrypoint: main.py\npython:\n  mode: managed\n  executable: python3\n")
+	if _, err := LoadAndValidate(path); err == nil || !strings.Contains(err.Error(), "cannot be set") {
+		t.Fatalf("conflicting executable: %v", err)
+	}
+	path = writeManifest(t, dir, "version: 1\nname: fixture\nentrypoint: main.py\n")
+	m, err = LoadAndValidate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Python.Mode != "external" || m.Python.Executable != "python3" {
+		t.Fatalf("legacy mode changed: %+v", m.Python)
+	}
+}
+
 // assertAcceptedFormsMentioned checks the documented hint is present in an
 // invalid-duration error.
 func assertAcceptedFormsMentioned(t *testing.T, err error) {

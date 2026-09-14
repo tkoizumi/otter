@@ -30,13 +30,14 @@ export CGO_ENABLED = 0
 .DEFAULT_GOAL := help
 
 .PHONY: help build test test-go test-python lint run example cross docker clean fmt tidy clean-pycache
-.PHONY: sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart
+.PHONY: sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart sync-release sync-schedule
+.PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 
 ## help: list the available targets (default goal)
 help:
 	@echo "Otter build targets (VERSION=$(VERSION))"
 	@echo ""
-	@grep -hE '^## ' $(MAKEFILE_LIST) | sed -e 's/^## //' | awk -F': ' '{ printf "  %-14s %s\n", $$1, $$2 }'
+	@grep -hE '^## ' $(MAKEFILE_LIST) | sed -e 's/^## //' | awk -F': ' '{ printf "  %-18s %s\n", $$1, $$2 }'
 	@echo ""
 	@echo "Integration operations take INTEGRATION=$(INTEGRATION) (any directory"
 	@echo "under $(INTEGRATIONS)) and use $(ENV_FILE) for its secrets."
@@ -183,6 +184,12 @@ define print_status
 	$(OTTER) --api $(API) runs --integration $(INTEGRATION) --limit 5
 endef
 
+## sync-release: stage, prepare and activate the integration's managed release
+sync-release:
+	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
+	@$(OTTER) release --integrations $(INTEGRATIONS) --data $(DATA) --shared ../../lib $(INTEGRATION)
+	@$(OTTER) release --list --data $(DATA) $(INTEGRATION)
+
 ## sync-up: start the daemon with the integration's .env (Ctrl-C stops)
 sync-up:
 	@test -x $(OTTERD) || { echo "missing $(OTTERD) -- run 'make build' first"; exit 1; }
@@ -194,6 +201,11 @@ sync-up:
 sync-run:
 	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
 	@$(run_and_report)
+
+## sync-schedule: is it running on a schedule? cron, next run, last outcome
+sync-schedule:
+	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
+	@$(OTTER) --api $(API) integrations --schedule
 
 ## sync-status: watermark, dead letters and recent runs
 sync-status:
@@ -213,6 +225,7 @@ sync-retry:
 
 ## sync-logs: logs for the latest run, or RUN=<id> for a specific one
 sync-logs:
+	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
 	@id="$(RUN)"; \
 	if [ -z "$$id" ]; then \
 		id=$$($(OTTER) --api $(API) runs --integration $(INTEGRATION) --limit 1 --json | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])'); \
@@ -230,3 +243,68 @@ sync-stop:
 sync-restart: sync-stop
 	@sleep 1
 	@$(MAKE) --no-print-directory sync-up
+
+# ---------------------------------------------------------------------------
+# Deployment
+#
+# `otter deploy` converges a remote Linux host onto a running Otter runtime
+# over SSH. There is no cloud API here: the host is your choice, and anything
+# you can ssh to will do. See docs/deploy.md.
+#
+#   make deploy HOST=root@203.0.113.10
+#   make deploy HOST=droplet IDENTITY=~/.ssh/otter
+#
+# HOST may also be an alias from ~/.ssh/config, which is the easiest way to
+# keep host names, users and keys out of shell history.
+# ---------------------------------------------------------------------------
+
+HOST     ?=
+IDENTITY ?=
+
+# The tunnel's local port. 7337 is the daemon's own default, so the deployed
+# API looks exactly like a local one to every other `otter` command.
+TUNNEL_PORT ?= 7337
+OTTER_API   ?= http://127.0.0.1:$(TUNNEL_PORT)
+
+## deploy: converge HOST onto the current checkout (HOST=user@host)
+deploy:
+	@test -n "$(HOST)" || { echo "set HOST, e.g. make deploy HOST=root@203.0.113.10"; exit 1; }
+	@$(MAKE) --no-print-directory build
+	@$(OTTER) deploy --host $(HOST) $(if $(IDENTITY),--identity $(IDENTITY))
+
+## deploy-plan: show what `make deploy` would change, without touching HOST
+deploy-plan:
+	@test -n "$(HOST)" || { echo "set HOST, e.g. make deploy-plan HOST=droplet"; exit 1; }
+	@$(OTTER) deploy --host $(HOST) $(if $(IDENTITY),--identity $(IDENTITY)) --dry-run
+
+## deploy-status: what this checkout last deployed, and how to reach it
+deploy-status:
+	@$(OTTER) deploy --status
+
+## deploy-tunnel: forward the remote API to localhost (Ctrl-C stops)
+deploy-tunnel:
+	@test -n "$(HOST)" || { echo "set HOST, e.g. make deploy-tunnel HOST=droplet"; exit 1; }
+	@echo "tunnel: $(OTTER_API) -> $(HOST) -- Ctrl-C to stop"
+	@ssh -N -L $(TUNNEL_PORT):127.0.0.1:$(TUNNEL_PORT) $(HOST)
+
+## deploy-remote-runs: open a short-lived tunnel and list the remote runs
+deploy-remote-runs:
+	@test -n "$(HOST)" || { echo "set HOST, e.g. make deploy-remote-runs HOST=droplet"; exit 1; }
+	@token="$$(python3 -c 'import json,sys;print(json.load(open("$(ROOT)/.otter/state.secret.json")).get("api_token",""))' 2>/dev/null)"; \
+	test -n "$$token" || { echo "no token in .otter/state.secret.json -- deploy first"; exit 1; }; \
+	ssh -f -N -L $(TUNNEL_PORT):127.0.0.1:$(TUNNEL_PORT) $(HOST); \
+	pid="$$(pgrep -f "ssh -f -N -L $(TUNNEL_PORT):127.0.0.1:$(TUNNEL_PORT)" || true)"; \
+	trap 'test -n "$$pid" && kill $$pid 2>/dev/null || true' EXIT; \
+	sleep 1; \
+	$(OTTER) --api $(OTTER_API) --token "$$token" runs --limit 10
+
+## deploy-destroy: stop and remove the deployment, keeping the remote data
+deploy-destroy:
+	@test -n "$(HOST)" || { echo "set HOST, e.g. make deploy-destroy HOST=droplet"; exit 1; }
+	@$(OTTER) deploy --host $(HOST) $(if $(IDENTITY),--identity $(IDENTITY)) --destroy --keep-data
+
+## deploy-purge: destroy the deployment AND delete the remote data directory
+deploy-purge:
+	@test -n "$(HOST)" || { echo "set HOST, e.g. make deploy-purge HOST=droplet"; exit 1; }
+	@echo "this deletes every sync watermark and all run history on $(HOST)"
+	@$(OTTER) deploy --host $(HOST) $(if $(IDENTITY),--identity $(IDENTITY)) --destroy --yes

@@ -1,0 +1,713 @@
+package deploy
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"hash"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Result is what a successful deploy reports back to the CLI.
+type Result struct {
+	Host         string
+	Platform     string
+	Version      string
+	Revision     string
+	FirstDeploy  bool
+	APIToken     string
+	RevealToken  bool
+	Warnings     []string
+	Integrations []string
+	RemoteDir    string
+	APIURL       string
+	ServiceUnit  string
+	DryRun       bool
+	Elapsed      time.Duration
+}
+
+// Deployer converges one host. Its collaborators are injected so the whole
+// sequence can be tested without a server, a compiler or a network.
+type Deployer struct {
+	Config  Config
+	Store   StateStore
+	Builder Builder
+	Runner  Runner
+
+	// Stdout carries the machine-readable result. Progress goes to Stderr so
+	// that the result can be piped somewhere without being polluted.
+	Stdout io.Writer
+	Stderr io.Writer
+
+	// UV overrides the uv executable used on the host during preparation. The
+	// default is the vendored copy under the install root.
+	UV string
+	// NoUV skips vendoring uv, for hosts that already provide it.
+	NoUV bool
+	// UVVersion overrides the pinned uv release to vendor.
+	UVVersionOverride string
+}
+
+// Run performs the converge.
+//
+// Steps are deliberately ordered so that anything destructive happens only
+// after everything reversible has succeeded:
+//
+//	detect platform -> build -> stage -> push sources -> write secrets ->
+//	install unit -> restart -> verify health
+//
+// The remote data directory is never read, written or deleted at any point.
+func (d *Deployer) Run(ctx context.Context) (*Result, error) {
+	started := time.Now()
+
+	cfg := d.Config
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	// The platform is the one thing a local guess must never decide: building
+	// for the wrong architecture yields a binary that fails on the host with a
+	// bare "exec format error".
+	if cfg.Target.Platform == "" {
+		detected, err := d.detectPlatform(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Target.Platform = detected
+	} else {
+		d.step("platform", "%s (pinned by --platform or state)", cfg.Target.Platform)
+	}
+
+	// From here on the deployer's own config is the single source of truth:
+	// resolveToken mutates the target, and both the result and the state file
+	// are read back from it rather than from this local copy.
+	d.Config = cfg
+
+	if cfg.Target.Platform != defaultPlatform() {
+		d.step("platform", "building for %s; this machine is %s",
+			cfg.Target.Platform, defaultPlatform())
+	}
+
+	// A dry run reports the plan before touching the token: generating,
+	// rotating or adopting one is a change, and a plan must be free of side
+	// effects even in what it prints.
+	if cfg.DryRun {
+		return d.plan(cfg.MissingSecrets(cfg.RequiredSecrets()), started), nil
+	}
+
+	// Reuse the token from the previous deploy, then the remote file, and only
+	// then invent one. Regenerating a token on every deploy would break any
+	// client the operator already has, which is a hostile default.
+	_, hadPrevious, err := d.Store.Load()
+	if err != nil {
+		return nil, err
+	}
+	reveal, err := d.resolveToken(ctx, hadPrevious)
+	if err != nil {
+		return nil, err
+	}
+	// resolveToken may have generated, rotated or adopted a token; pick up the
+	// result so the rest of the run reports what was actually installed.
+	cfg = d.Config
+
+	// --- local build -------------------------------------------------------
+	outDir, err := d.Builder.TempDir()
+	if err != nil {
+		return nil, err
+	}
+
+	d.step("build", "cross-compiling otterd and otter for %s", cfg.Target.Platform)
+	if err := d.Builder.Build(ctx, cfg, outDir); err != nil {
+		return nil, err
+	}
+	if err := d.Builder.Stage(cfg, outDir); err != nil {
+		return nil, err
+	}
+
+	// A managed integration needs uv on the host for preparation, and a fresh
+	// host has none. Vendoring it keeps the promise that a host needs nothing
+	// installed in advance.
+	managed := d.managedIntegrations(cfg)
+	if len(managed) > 0 && !d.NoUV {
+		d.step("build", "vendoring uv %s for %s", d.uvVersion(), cfg.Target.Platform)
+		if err := d.Builder.VendorUV(ctx, cfg, outDir); err != nil {
+			return nil, err
+		}
+	}
+
+	revision, err := d.Builder.Revision(outDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// --- push --------------------------------------------------------------
+	d.step("sync", "pushing %d integration(s) and the shared library", len(cfg.Integrations))
+	if err := d.pushSources(ctx, outDir); err != nil {
+		return nil, err
+	}
+	d.step("sync", "pushing the binaries")
+	if err := d.pushBinaries(ctx, outDir); err != nil {
+		return nil, err
+	}
+	if len(managed) > 0 && !d.NoUV {
+		d.step("sync", "pushing uv")
+		if err := d.pushTools(ctx, outDir); err != nil {
+			return nil, err
+		}
+	}
+
+	// --- prepare the host --------------------------------------------------
+	// Creates the service account and the directory layout. Every later step
+	// assumes both exist, so this runs before secrets, release and activation.
+	d.step("prepare", "creating the service account and layout")
+	if err := d.Runner.RunScript(ctx, PrepareScript(cfg.Target)); err != nil {
+		return nil, d.hint(err)
+	}
+
+	// --- secrets -----------------------------------------------------------
+	envRevision, err := d.writeEnvFiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// --- release managed Python integrations -------------------------------
+	// Runs before the restart so a failure leaves the previously deployed
+	// runtime serving. Each integration is staged, prepared and then activated
+	// in that order, so a candidate that fails preparation never becomes
+	// active and never disturbs what is currently running.
+	if len(managed) > 0 {
+		d.step("release", "releasing %d managed integration(s)", len(managed))
+		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, managed, d.uvPath(cfg))); err != nil {
+			return nil, fmt.Errorf("release managed Python on %s: %w", cfg.Target, err)
+		}
+	} else {
+		d.step("release", "no managed integrations; nothing to release")
+	}
+
+	// --- activate ----------------------------------------------------------
+	d.step("install", "writing %s and restarting %s", cfg.Target.UnitPath(), cfg.Target.ServiceUnit())
+	if err := d.Runner.RunScript(ctx, ActivateScript(cfg.Target, cfg.Integrations)); err != nil {
+		return nil, d.hint(err)
+	}
+	if err := d.Runner.RunScript(ctx, ServiceStatusScript(cfg.Target)); err != nil {
+		return nil, d.hint(err)
+	}
+
+	d.step("verify", "waiting for the health endpoint")
+	if err := d.waitForHealth(ctx); err != nil {
+		return nil, err
+	}
+
+	// --- remember ----------------------------------------------------------
+	st := State{
+		Host:            cfg.Target.Host,
+		Target:          cfg.Target,
+		Version:         cfg.Version,
+		Revision:        revision,
+		SecretsRevision: envRevision,
+		DeployedAt:      time.Now().UTC(),
+	}
+	if err := d.Store.Save(st, cfg.Target.APIToken); err != nil {
+		return nil, err
+	}
+
+	d.step("done", "%s deployed to %s in %s", cfg.Version, cfg.Target, time.Since(started).Round(time.Second))
+	return &Result{
+		Host:         cfg.Target.Host,
+		Platform:     cfg.Target.Platform,
+		Version:      cfg.Version,
+		Revision:     revision,
+		FirstDeploy:  !hadPrevious,
+		APIToken:     cfg.Target.APIToken,
+		RevealToken:  reveal,
+		Integrations: cfg.Integrations,
+		RemoteDir:    cfg.Target.RemoteDir,
+		APIURL:       cfg.Target.APIURL(),
+		ServiceUnit:  cfg.Target.ServiceUnit(),
+		Elapsed:      time.Since(started),
+	}, nil
+}
+
+// detectPlatform opens the SSH connection and asks the host what it is. This
+// doubles as the reachability check, so a bad host or a missing sudo rule is
+// reported before anything is built.
+func (d *Deployer) detectPlatform(ctx context.Context) (string, error) {
+	if opener, ok := d.Runner.(interface{ Open(context.Context) error }); ok {
+		d.step("connect", "checking ssh access to %s", d.Config.Target)
+		if err := opener.Open(ctx); err != nil {
+			return "", connectError(d.Config.Target, err)
+		}
+	}
+	platformer, ok := d.Runner.(interface {
+		Platform(context.Context) (string, error)
+	})
+	if !ok {
+		return d.Config.Target.Platform, nil
+	}
+	platform, err := platformer.Platform(ctx)
+	if err != nil {
+		return "", err
+	}
+	d.step("connect", "%s is %s", d.Config.Target, platform)
+	return platform, nil
+}
+
+// connectError adds the "check your ssh" hint only when ssh is actually the
+// problem. A host that answers ssh but lacks rsync produces a clear message of
+// its own, and appending an ssh hint to it sends the operator down the wrong
+// path.
+func connectError(target Target, err error) error {
+	if !isAuthOrTransportFailure(err) {
+		return fmt.Errorf("connect to %s: %w", target, err)
+	}
+	return fmt.Errorf("connect to %s: %w\nhint: otter deploy needs non-interactive ssh "+
+		"(a key, or an ssh-agent). Test it with: ssh %s true", target, err, target)
+}
+
+// isAuthOrTransportFailure recognises the ssh failures that a key or an agent
+// would fix.
+func isAuthOrTransportFailure(err error) bool {
+	msg := err.Error()
+	for _, marker := range []string{
+		"Permission denied",
+		"Connection refused",
+		"Connection timed out",
+		"Host key verification failed",
+		"no such identity",
+		"Operation timed out",
+		"Could not resolve hostname",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveToken decides which API token the deployed daemon will require. It
+// reports whether the CLI should print the token: a token the operator has not
+// seen before is useless to them unless it is shown.
+func (d *Deployer) resolveToken(ctx context.Context, hadPrevious bool) (reveal bool, err error) {
+	cfg := &d.Config
+	target := &cfg.Target
+
+	if target.RotateAPIToken && target.APIToken != "" {
+		return false, errors.New("--rotate-token and --api-token are mutually exclusive")
+	}
+
+	// 1. The token from this checkout's last deploy. It is already in the
+	//    operator's .otter/ directory, so there is nothing new to show them.
+	stored, err := d.Store.LoadToken()
+	if err != nil {
+		return false, err
+	}
+	if stored != "" && !target.RotateAPIToken {
+		target.APIToken = stored
+		d.step("token", "reusing the stored API token")
+		return false, nil
+	}
+
+	// 2. An explicit flag. Run has already installed this token at least once,
+	//    so the operator has seen it, but printing it is harmless and helps
+	//    when the value came from a config file or the environment.
+	if target.APIToken != "" {
+		d.step("token", "using the token from --api-token")
+		return true, nil
+	}
+	if target.RotateAPIToken {
+		token, err := newToken()
+		if err != nil {
+			return false, err
+		}
+		target.APIToken = token
+		d.step("token", "rotated: a fresh token was generated")
+		return true, nil
+	}
+
+	// 3. Whatever the host already has, so redeploying from a second machine
+	//    (or after deleting .otter/) does not lock the operator out.
+	remote, err := d.readRemoteToken(ctx)
+	if err != nil {
+		return false, err
+	}
+	if remote != "" {
+		target.APIToken = remote
+		d.step("token", "reusing the token already installed on the host")
+		return !hadPrevious, nil
+	}
+
+	// 4. Nothing anywhere: make one.
+	token, err := newToken()
+	if err != nil {
+		return false, err
+	}
+	target.APIToken = token
+	d.step("token", "generated a new API token")
+	return true, nil
+}
+
+// readRemoteToken reads OTTER_API_TOKEN out of the installed env files. A
+// failure is not fatal: a host that has never been deployed simply has none.
+func (d *Deployer) readRemoteToken(ctx context.Context) (string, error) {
+	command := "grep -h '^OTTER_API_TOKEN=' " + ShellQuote(d.Config.Target.EnvDir()) +
+		"/*.env 2>/dev/null | head -n1 | cut -d= -f2- || true"
+	out, err := d.Runner.Output(ctx, command)
+	if err != nil {
+		if d.Config.Verbose {
+			d.step("token", "could not read a remote token (%v); will create one", err)
+		}
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// pushSources mirrors the runtime tree onto the host.
+//
+// The excludes are what make a converging push safe. `bin` and `tools` hold
+// artifacts pushed separately, and the rest are runtime state that lives under
+// the install root: the data directory (SQLite, prepared environments,
+// releases) and the deploy bookkeeping. Without them --delete would try to
+// remove live data, and rsync would fail on the first non-empty directory it
+// could not unlink.
+func (d *Deployer) pushSources(ctx context.Context, outDir string) error {
+	excludes := []string{"bin", "tools", ".deploy", ".otter", "data"}
+	// Derived state is wherever the target says it is; the default data
+	// directory is not always the one in use.
+	if derived := strings.TrimPrefix(d.Config.Target.DataDir, d.Config.Target.RemoteDir+"/"); derived != d.Config.Target.DataDir && derived != "" {
+		excludes = append(excludes, derived)
+	}
+
+	args := make([]string, 0, len(excludes)*2+4)
+	for _, name := range excludes {
+		args = append(args, "--exclude", name)
+	}
+	// A limited deploy carries one integration. --delete would then remove
+	// every other integration directory from the host, taking deployed code
+	// with it, so the rest of the integrations tree is protected from deletion
+	// while still being skipped for transfer.
+	if d.Config.Limited {
+		args = append(args, "--filter", "protect /integrations/***")
+	}
+	return d.Runner.Push(ctx, outDir, d.Config.Target.RemoteDir, args...)
+}
+
+// pushBinaries sends the two executables separately from the source tree, so
+// the sources can converge with --delete without ever removing bin/. rsync
+// writes each file to a temporary name and renames it into place, so a running
+// daemon's executable is never truncated underneath it.
+func (d *Deployer) pushBinaries(ctx context.Context, outDir string) error {
+	return d.Runner.Push(ctx, filepath.Join(outDir, "bin"),
+		d.Config.Target.RemoteDir+"/bin")
+}
+
+// pushTools sends the vendored toolchain. It goes separately from the sources
+// because the source push excludes it, and separately from the binaries because
+// it only exists for deployments that prepare environments.
+func (d *Deployer) pushTools(ctx context.Context, outDir string) error {
+	return d.Runner.Push(ctx, filepath.Join(outDir, "tools"),
+		d.Config.Target.RemoteDir+"/tools")
+}
+
+// writeEnvFiles writes one environment file per integration over SSH stdin and
+// returns a hash of their contents.
+//
+// Secrets never appear in a command line, not even a quoted one: argv is
+// visible to every process on the host for the lifetime of the call.
+func (d *Deployer) writeEnvFiles(ctx context.Context) (string, error) {
+	cfg := d.Config
+	h := newHasher()
+
+	for _, name := range cfg.Integrations {
+		secrets := map[string]string{}
+		if path := cfg.EnvFiles[name]; path != "" {
+			loaded, err := LoadSecrets(path)
+			if err != nil {
+				return "", fmt.Errorf("read secrets for %s: %w", name, err)
+			}
+			secrets = loaded
+		}
+
+		content := EnvFile(name, cfg.Target.APIToken, secrets)
+		h.add(name, content)
+
+		if len(secrets) == 0 {
+			d.step("secrets", "%s: no secrets file, deploying anyway (the daemon will "+
+				"refuse to run it until its secrets are present)", name)
+		} else {
+			d.step("secrets", "%s: %d variable(s) from %s", name, len(secrets), cfg.EnvFiles[name])
+		}
+
+		path := cfg.Target.EnvFilePath(name)
+		// The directory is created here rather than only by the install script:
+		// secrets are written before the unit is installed, so nothing else has
+		// made the directory yet, and a deploy must not depend on the ordering
+		// of two otherwise independent steps.
+		script := `set -e
+umask 077
+install -d -m 0700 ` + ShellQuote(cfg.Target.EnvDir()) + `
+cat > ` + ShellQuote(path) + ` <<'OTTER_ENV_EOF'
+` + content + `OTTER_ENV_EOF
+chmod 0600 ` + ShellQuote(path) + `
+`
+		if err := d.Runner.RunScript(ctx, script); err != nil {
+			return "", fmt.Errorf("write %s: %w", path, err)
+		}
+	}
+	return h.sum(), nil
+}
+
+// waitForHealth polls the daemon's health endpoint on the host itself, so the
+// API stays bound to loopback and still gets verified.
+func (d *Deployer) waitForHealth(ctx context.Context) error {
+	auth := ""
+	if d.Config.Target.APIToken != "" {
+		auth = " -H " + ShellQuote("Authorization: Bearer "+d.Config.Target.APIToken)
+	}
+	command := "curl -fsS --max-time 5" + auth + " " +
+		ShellQuote(d.Config.Target.APIURL()+"/health")
+
+	deadline := time.Now().Add(d.healthTimeout())
+	var lastErr error
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		out, err := d.Runner.Output(ctx, command)
+		if err == nil {
+			d.step("verify", "healthy: %s", oneLine(out))
+			return nil
+		}
+		lastErr = err
+
+		if attempt == 1 && strings.Contains(err.Error(), "401") {
+			// A wrong token would otherwise look like a slow start for the
+			// whole timeout.
+			return fmt.Errorf("the deployed daemon rejected the API token: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			// The enclosing timeout expired mid-wait, so ctx.Err() on its own
+			// would be a useless "context deadline exceeded".
+			return d.healthFailure(lastErr, ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return d.healthFailure(lastErr, nil)
+}
+
+// healthTimeout bounds the wait for the daemon to answer after a restart.
+func (d *Deployer) healthTimeout() time.Duration {
+	const defaultWait = 30 * time.Second
+	if d.Config.Timeout > 0 && d.Config.Timeout < defaultWait {
+		return d.Config.Timeout
+	}
+	return defaultWait
+}
+
+// healthFailure builds the error for a daemon that never answered, asking the
+// host why rather than leaving the operator to guess.
+func (d *Deployer) healthFailure(lastErr, ctxErr error) error {
+	target := d.Config.Target
+
+	diagnosis := ""
+	out, err := d.Runner.Output(context.Background(), ServiceStatusScript(target)+
+		"\nsystemctl show -p ExecMainStatus --value "+ShellQuote(target.ServiceUnit())+"\n")
+	if err == nil {
+		diagnosis = strings.TrimSpace(out)
+	}
+
+	cause := "no response"
+	if lastErr != nil {
+		cause = lastErr.Error()
+	} else if ctxErr != nil {
+		cause = ctxErr.Error()
+	}
+
+	return fmt.Errorf("the daemon did not answer %s within %s: %s\n%s\n"+
+		"hint: inspect it with: ssh %s 'journalctl -u %s -n 50'",
+		target.APIURL(), d.healthTimeout(), cause, indent(diagnosis), target, target.ServiceUnit())
+}
+
+// plan renders the dry run: everything that would be sent, and nothing that
+// touches the host beyond the platform handshake.
+func (d *Deployer) plan(missing []string, started time.Time) *Result {
+	cfg := d.Config
+	d.step("plan", "dry run: no files will be written and the service will not be touched")
+	d.step("plan", "host:      %s", cfg.Target)
+	d.step("plan", "platform:  %s", cfg.Target.Platform)
+	d.step("plan", "version:   %s", cfg.Version)
+	d.step("plan", "install:   %s (unit %s)", cfg.Target.RemoteDir, cfg.Target.ServiceUnit())
+	d.step("plan", "data:      %s (never written by a deploy)", cfg.Target.DataDir)
+	d.step("plan", "api:       %s (loopback; reach it with ssh -L)", cfg.Target.APIURL())
+	for _, name := range cfg.Integrations {
+		if path := cfg.EnvFiles[name]; path != "" {
+			d.step("plan", "secrets:   %s <- %s", name, path)
+		} else {
+			d.step("plan", "secrets:   %s <- none", name)
+		}
+	}
+	if managed := d.managedIntegrations(cfg); len(managed) > 0 {
+		d.step("plan", "release:   would stage, prepare and activate %s", strings.Join(managed, ", "))
+	} else {
+		d.step("plan", "release:   external Python only; nothing to release")
+	}
+	for _, m := range missing {
+		d.step("plan", "warning:   secret %s", m)
+	}
+
+	return &Result{
+		Host:         cfg.Target.Host,
+		Platform:     cfg.Target.Platform,
+		Version:      cfg.Version,
+		Warnings:     missing,
+		Integrations: cfg.Integrations,
+		RemoteDir:    cfg.Target.RemoteDir,
+		APIURL:       cfg.Target.APIURL(),
+		ServiceUnit:  cfg.Target.ServiceUnit(),
+		DryRun:       true,
+		Elapsed:      time.Since(started),
+	}
+}
+
+// managedIntegrations lists the integrations being deployed that opted into a
+// managed Python environment. The local manifests are the source of truth;
+// they are the same files that were just pushed.
+func (d *Deployer) managedIntegrations(cfg Config) []string {
+	var managed []string
+	for _, name := range cfg.Integrations {
+		if d.managesPython(cfg, name) {
+			managed = append(managed, name)
+		}
+	}
+	return managed
+}
+
+// managesPython reports whether one integration uses managed Python.
+func (d *Deployer) managesPython(cfg Config, name string) bool {
+	path := filepath.Join(cfg.IntegrationsPath, name, "otter.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Python struct {
+			Mode string `yaml:"mode"`
+		} `yaml:"python"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Python.Mode == "managed"
+}
+
+// uvPath returns the uv executable to use on the host. An explicit flag wins;
+// otherwise the vendored copy under the install root, which is where a deploy
+// puts it.
+func (d *Deployer) uvPath(Config) string {
+	if d.UV != "" {
+		return d.UV
+	}
+	return filepath.Join(d.Config.Target.RemoteDir, "tools", "uv", "uv")
+}
+
+// uvVersion is the uv release a deploy vendors.
+func (d *Deployer) uvVersion() string {
+	if d.UVVersionOverride != "" {
+		return d.UVVersionOverride
+	}
+	return PinnedUVVersion
+}
+
+// Destroy removes the deployment. The data directory is kept unless the caller
+// explicitly opts in to deleting it: it holds every integration's watermark,
+// and losing it means rescanning the source system from scratch.
+func (d *Deployer) Destroy(ctx context.Context, keepData bool) error {
+	cfg := d.Config
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	if cfg.DryRun {
+		d.step("plan", "dry run: would remove %s, %s and %s (data %s)",
+			cfg.Target.ServiceUnit(), cfg.Target.RemoteDir, cfg.Target.EnvDir(),
+			map[bool]string{true: "kept", false: "DELETED"}[keepData])
+		return nil
+	}
+
+	if cfg.Target.Platform == "" {
+		platform, err := d.detectPlatform(ctx)
+		if err != nil {
+			return err
+		}
+		cfg.Target.Platform = platform
+		d.Config = cfg
+	}
+
+	d.step("destroy", "stopping and removing %s", cfg.Target.ServiceUnit())
+	if err := d.Runner.RunScript(ctx, DestroyScript(cfg.Target, keepData)); err != nil {
+		return d.hint(err)
+	}
+	if keepData {
+		d.step("destroy", "kept %s: run history and sync watermarks are intact", cfg.Target.DataDir)
+	} else {
+		d.step("destroy", "deleted %s: the next deploy starts from an empty database", cfg.Target.DataDir)
+	}
+	if err := d.Store.Remove(); err != nil {
+		return err
+	}
+	d.step("destroy", "removed local deploy state")
+	return nil
+}
+
+// hint adds the most likely explanation to an opaque ssh failure.
+func (d *Deployer) hint(err error) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "sudo"):
+		return fmt.Errorf("%w\nhint: systemd needs root; deploy as root or grant NOPASSWD sudo", err)
+	case strings.Contains(msg, "unit not found"), strings.Contains(msg, "Failed to restart"):
+		return fmt.Errorf("%w\nhint: is this a systemd host? otter deploy assumes Linux with systemd", err)
+	}
+	return err
+}
+
+// step writes one progress line. Progress always goes to stderr so that stdout
+// stays a clean result stream.
+func (d *Deployer) step(label, format string, args ...any) {
+	if d.Stderr == nil {
+		return
+	}
+	fmt.Fprintf(d.Stderr, "%-9s %s\n", label+":", fmt.Sprintf(format, args...))
+}
+
+// newToken returns a 256-bit random bearer token.
+func newToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate API token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// secretsHasher accumulates a short, stable digest of the rendered environment
+// files, so that rotating a credential is visible in the state file.
+type secretsHasher struct{ h hash.Hash }
+
+func newHasher() *secretsHasher { return &secretsHasher{h: sha256.New()} }
+
+func (s *secretsHasher) add(name, content string) {
+	fmt.Fprintf(s.h, "%s\x00%s\x00", name, content)
+}
+
+func (s *secretsHasher) sum() string {
+	return hex.EncodeToString(s.h.Sum(nil))[:16]
+}

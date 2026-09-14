@@ -1,0 +1,22 @@
+# Managed-mode project metadata.
+#
+# `otter prepare` installs this project's dependencies into a prepared
+# environment using `uv sync --locked`, so `uv.lock` must be committed and kept
+# in step with this file. Otter never updates the lock implicitly: a stale lock
+# is an error, not something to resolve behind your back.
+#
+# There are no dependencies today. This integration and the shared
+# `lib/python/otter_connectors` package it imports are stdlib-only: the HTTP
+# clients use urllib, and the `certifi` fallback in otter_connectors.http only
+# applies to interpreters with no system CA store, which the prepared Linux
+# interpreter has. Adding a dependency means adding it here and re-running
+# `uv lock`.
+
+[project]
+name = "shopify-to-salesforce"
+version = "0.1.0"
+description = "Upsert Shopify customers into Salesforce."
+# The prepared interpreter is pinned exactly in .python-version; this is the
+# range the code is written against.
+requires-python = ">=3.10"
+dependencies = []

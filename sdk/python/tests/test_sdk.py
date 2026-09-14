@@ -13,6 +13,7 @@ integration script.
 import io
 import json
 import os
+import tempfile
 import socket
 import subprocess
 import sys
@@ -457,14 +458,18 @@ class RunDecoratorTests(SDKTestCase):
             "PATH": os.environ.get("PATH", ""),
         }
         env.update(env_overrides)
-        return subprocess.run(
-            [sys.executable, "-c", source],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            timeout=60,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            script = os.path.join(directory, "main.py")
+            with open(script, "w", encoding="utf-8") as output:
+                output.write(source)
+            return subprocess.run(
+                [sys.executable, "-m", "otter._launcher", script],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=60,
+            )
 
     def test_executes_one_argument_function_and_exits_zero(self):
         result = self._subprocess(
@@ -578,6 +583,30 @@ class RunDecoratorTests(SDKTestCase):
         )
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("BEFORE-EXIT", result.stdout)
+
+    def test_module_failure_does_not_invoke_entrypoint(self):
+        result = self._subprocess(
+            "from otter import run\n"
+            "@run\n"
+            "def main(ctx):\n"
+            "    print('SHOULD-NOT-RUN')\n"
+            "raise RuntimeError('module failed')\n"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("SHOULD-NOT-RUN", result.stdout)
+        self.assertIn("module failed", result.stderr)
+
+    def test_thread_pool_can_initialize_in_entrypoint(self):
+        result = self._subprocess(
+            "from otter import run\n"
+            "@run\n"
+            "def main(ctx):\n"
+            "    from concurrent.futures import ThreadPoolExecutor\n"
+            "    with ThreadPoolExecutor(1) as pool:\n"
+            "        print(pool.submit(lambda: 42).result())\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("42", result.stdout)
 
 
 if __name__ == "__main__":

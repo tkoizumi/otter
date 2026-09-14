@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,8 @@ func (f LogSinkFunc) Line(stream string, at time.Time, message string) { f(strea
 // Request describes one execution.
 type Request struct {
 	Manifest       *config.Manifest
+	Executable     string
+	Managed        bool
 	RunID          string
 	TriggerType    string
 	APIURL         string
@@ -114,7 +117,15 @@ func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result 
 		return res
 	}
 
-	cmd := exec.Command(m.Python.Executable, m.Entrypoint)
+	interpreter := m.Python.Executable
+	if req.Executable != "" {
+		interpreter = req.Executable
+	}
+	argv := []string{m.Entrypoint}
+	if _, err := os.Stat(filepath.Join(e.SDKPath, "otter", "_launcher.py")); err == nil {
+		argv = []string{"-m", "otter._launcher", m.Entrypoint}
+	}
+	cmd := exec.Command(interpreter, argv...)
 	cmd.Dir = m.Dir
 	cmd.Env = env
 	setProcessGroup(cmd)
@@ -131,7 +142,7 @@ func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result 
 	}
 
 	if err := cmd.Start(); err != nil {
-		res.StartError = fmt.Errorf("executor: start %s %s: %w", m.Python.Executable, m.Entrypoint, err)
+		res.StartError = startError(interpreter, m, err)
 		return res
 	}
 	res.StartedAt = time.Now().UTC()
@@ -218,6 +229,22 @@ func (e *Executor) terminate(cmd *exec.Cmd, done <-chan error, grace time.Durati
 	return <-done
 }
 
+// startError explains a failure to launch, adding the likely cause when the
+// interpreter is simply not there.
+//
+// The runtime never requires Python on the host for a managed integration, so
+// "python3: executable file not found" is the expected first failure on a fresh
+// server -- and the fix is to opt into managed mode, not to install Python.
+func startError(interpreter string, m *config.Manifest, err error) error {
+	if !errors.Is(err, exec.ErrNotFound) && !strings.Contains(err.Error(), "executable file not found") {
+		return fmt.Errorf("executor: start %s %s: %w", interpreter, m.Entrypoint, err)
+	}
+	return fmt.Errorf("executor: start %s %s: %w\n"+
+		"hint: %s is not available on this host. Set `python.mode: managed` in otter.yaml to "+
+		"run on an interpreter Otter prepares, or install %s",
+		interpreter, m.Entrypoint, err, interpreter, interpreter)
+}
+
 // buildEnv assembles the child environment.
 //
 // Inherited OTTER_* variables are removed first: the daemon's own API token
@@ -233,11 +260,28 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 		if strings.HasPrefix(key, "OTTER_") {
 			continue
 		}
+		if req.Managed && (key == "NO_PROXY" || key == "no_proxy") {
+			continue
+		}
+		if req.Managed && !managedHostVariable(key) {
+			continue
+		}
 		if key == "PYTHONPATH" {
-			pythonPath = value
+			if !req.Managed {
+				pythonPath = value
+			}
+			continue
+		}
+		if req.Managed && (key == "PYTHONHOME" || key == "PYTHONUSERBASE" || key == "VIRTUAL_ENV") {
 			continue
 		}
 		inherited = append(inherited, kv)
+	}
+	if req.Managed {
+		// Tools launched by the integration should discover the matching venv.
+		inherited = append(inherited, "PATH="+filepath.Dir(req.Executable)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		noProxy := strings.Trim(strings.Join([]string{os.Getenv("NO_PROXY"), os.Getenv("no_proxy"), "127.0.0.1", "localhost", "::1"}, ","), ",")
+		inherited = append(inherited, "NO_PROXY="+noProxy, "no_proxy="+noProxy)
 	}
 
 	// PYTHONPATH order matters: the runtime SDK first so `import otter` always
@@ -268,6 +312,9 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 		// when they are mounted read-only.
 		"PYTHONDONTWRITEBYTECODE=1",
 	)
+	if req.Managed {
+		inherited = append(inherited, "PYTHONNOUSERSITE=1")
+	}
 	if req.StateToken != "" {
 		inherited = append(inherited, "OTTER_STATE_TOKEN="+req.StateToken)
 	}
@@ -291,6 +338,36 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 	}
 
 	return inherited, nil
+}
+
+func managedHostVariable(key string) bool {
+	switch key {
+	case "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TMP", "TEMP",
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE":
+		return true
+
+	// Operational knobs an integration reads from its own environment.
+	//
+	// The managed environment is deliberately narrow: the daemon's world does
+	// not become the child's, which is what keeps credentials from leaking
+	// sideways. But the same narrowness silently swallowed the tunables an
+	// operator sets per deployment -- a dry run quietly performed real writes,
+	// because DRY_RUN never reached the integration.
+	//
+	// These are listed explicitly rather than by prefix so the set stays
+	// auditable. `env:` in the manifest is still the first choice; this only
+	// makes an operator's environment able to reach an integration that reads
+	// a documented knob.
+	case "DRY_RUN", "PAGE_SIZE", "MAX_PAGES_PER_RUN", "RUN_BUDGET_SECONDS",
+		"OVERLAP_SECONDS", "SALESFORCE_BATCH_SIZE", "SYNC_ADDRESS",
+		"SHOPIFY_SORT_KEY":
+		return true
+
+	default:
+		return false
+	}
 }
 
 // expand resolves ${VAR} and $VAR references using lookup.

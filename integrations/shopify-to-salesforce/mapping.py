@@ -24,6 +24,9 @@ __all__ = ["MAX_FIELD_LENGTH", "contact_mapping"]
 #: Salesforce truncates silently rather than complaining, so do it here.
 #: Every mapped target should appear, so a long value cannot cost the record.
 MAX_FIELD_LENGTH = {
+    # 200 is the field's declared length in the org; Salesforce truncates
+    # silently, so declaring more than it holds would defeat this table.
+    "Shopify_Customer_gid__c": 200,
     "FirstName": 40,
     "LastName": 80,
     "Email": 80,
@@ -33,12 +36,18 @@ MAX_FIELD_LENGTH = {
     "MailingState": 80,
     "MailingPostalCode": 20,
     "MailingCountry": 80,
+    "Shopify_Customer_Id__c": 100,
+    "Shopify_Customer_gid__c": 200,
 }
 
 
 def contact_external_id(customer):
     """The upsert key: Shopify's numeric customer id."""
     return numeric_id(customer.get("id"))
+
+
+def get_shopify_gid(customer):
+    return customer.get("id")
 
 
 def contact_names(customer):
@@ -72,6 +81,7 @@ def address_picklist(field, alternative, allowed):
     neither is accepted the field is omitted rather than sent invalid -- losing
     the country is better than losing the customer.
     """
+
     def extract(customer):
         address = customer.get("defaultAddress") or {}
         return pick_allowed(address.get(field), address.get(alternative), allowed)
@@ -79,8 +89,9 @@ def address_picklist(field, alternative, allowed):
     return extract
 
 
-def contact_mapping(external_id_field, sync_address=True,
-                    valid_country=None, valid_state=None):
+def contact_mapping(
+    external_id_field, sync_address=True, valid_country=None, valid_state=None
+):
     """How a Shopify customer maps onto a Salesforce Contact, as data.
 
     ``valid_country`` and ``valid_state`` are the org's own picklist values, as
@@ -89,17 +100,26 @@ def contact_mapping(external_id_field, sync_address=True,
     """
     mapping = {
         external_id_field: contact_external_id,
+        "Shopify_Customer_gid__c": get_shopify_gid,
         "LastName": contact_last_name,
         "FirstName": contact_first_name,
         "Email": "email",
         "Phone": "phone",
     }
     if sync_address:
-        mapping.update({
-            "MailingStreet": joined("defaultAddress.address1", "defaultAddress.address2"),
-            "MailingCity": "defaultAddress.city",
-            "MailingState": address_picklist("provinceCode", "province", valid_state),
-            "MailingPostalCode": "defaultAddress.zip",
-            "MailingCountry": address_picklist("countryCodeV2", "country", valid_country),
-        })
+        mapping.update(
+            {
+                "MailingStreet": joined(
+                    "defaultAddress.address1", "defaultAddress.address2"
+                ),
+                "MailingCity": "defaultAddress.city",
+                "MailingState": address_picklist(
+                    "provinceCode", "province", valid_state
+                ),
+                "MailingPostalCode": "defaultAddress.zip",
+                "MailingCountry": address_picklist(
+                    "countryCodeV2", "country", valid_country
+                ),
+            }
+        )
     return mapping

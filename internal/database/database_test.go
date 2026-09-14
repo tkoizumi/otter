@@ -374,22 +374,24 @@ func TestMigrateSkipsAlreadyAppliedMigration(t *testing.T) {
 	}
 	first := all[0]
 
-	// Simulate a database that already records the first migration as applied
-	// without its schema having been (re)created in this process.
+	// A previously applied migration must have installed its schema: newer
+	// migrations may ALTER its tables. Apply only the first migration here.
 	if _, err := db.ExecContext(ctx, createMigrationsTable); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
 	}
-	if _, err := db.ExecContext(ctx,
-		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
-		first.version, first.name, FormatTime(time.Now())); err != nil {
-		t.Fatalf("record migration: %v", err)
+	firstBody, err := fs.ReadFile(migrations.FS, first.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMigration(ctx, db, first.version, first.name, string(firstBody)); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate with an already-applied migration: %v", err)
 	}
-	if tableExists(t, db, "runs") {
-		t.Fatalf("migration %s was re-run even though schema_migrations lists it", first.name)
+	if !tableExists(t, db, "runs") {
+		t.Fatalf("migration %s schema disappeared", first.name)
 	}
 
 	// Forgetting the record makes the migration run for real; the resulting

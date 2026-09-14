@@ -74,8 +74,9 @@ secrets:
 | `name` | string | **yes** | — | Integration id, used in the API, the CLI, state keys and run records. Must match `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$` and be unique across the integrations root. |
 | `description` | string | no | `""` | Free-form human description, returned by the API and shown by `otter inspect`. |
 | `entrypoint` | string | **yes** | — | Path to the Python file to run, relative to the integration directory. Must stay inside the directory and must exist. |
-| `python.executable` | string | no | `python3` | Interpreter used to launch the entrypoint. Resolved on `PATH` or given as an absolute path. |
-| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`, for shared client code. Relative entries resolve against the integration directory (`..` is allowed, since shared code normally lives outside it); absolute entries are used as-is. Every entry must exist and be a directory — `otter validate` checks. |
+| `python.mode` | string | no | `external` | `external` preserves host Python behavior. `managed` requires `.python-version`, `pyproject.toml`, and `uv.lock`; prepare it before running. |
+| `python.executable` | string | no | `python3` in external mode | Interpreter used to launch the entrypoint. Resolved on `PATH` or given as an absolute path. Cannot be set in managed mode. |
+| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. In managed mode the declared directories are captured into the release at the same relative depth, so the same relative paths keep working. |
 | `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`). Omit for no schedule. |
 | `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-integration token. |
 | `timeout` | integer \| string | no | `300` | Maximum wall-clock time for one attempt. An integer means seconds; a string is a Go duration (`30s`, `5m`, `1h30m`). |
@@ -305,9 +306,13 @@ the child process's environment just before execution.
 - The child process runs with the integration directory as its working
   directory, so relative paths inside `main.py` resolve naturally next to the
   manifest.
-- `requirements.txt` is not installed by Otter. Provision dependencies in the
-  interpreter's environment (a virtualenv referenced by `python.executable`, or
-  the container image).
+- In external mode, Otter does not install `requirements.txt`; provision the
+  interpreter yourself. In managed mode, pin an exact CPython patch version in
+  `.python-version`, declare dependencies in `pyproject.toml`, commit `uv.lock`,
+  and run `otter prepare --integrations <root> --data <data-dir>` before starting
+  the daemon. Preparation requires `uv` on the target host; pass `--uv <path>`
+  to select it. Managed runs use only a prepared environment and never fall back
+  to host Python.
 
 ## Validation and invalid integrations
 

@@ -8,6 +8,10 @@ tmp/
 *.db-wal
 *.db-shm
 
+# Deploy state: which host this checkout last deployed to, and its API token.
+# Never commit either file.
+.otter/
+
 # Python
 __pycache__/
 *.py[cod]

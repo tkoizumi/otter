@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/otter-runtime/otter/internal/config"
 	"github.com/otter-runtime/otter/internal/executor"
 	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/otter-runtime/otter/internal/pyenv"
 	"github.com/otter-runtime/otter/internal/queue"
 	"github.com/otter-runtime/otter/internal/retry"
 	"github.com/otter-runtime/otter/internal/runs"
@@ -91,6 +94,50 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	}
 	m := entry.Manifest
 
+	// A bound run executes its recorded snapshot, not the live source tree.
+	//
+	// The manifest is re-read from the snapshot rather than re-pointed at it:
+	// relative declarations in it -- python.path above all -- are resolved
+	// against the integration directory, and the snapshot mirrors the checkout
+	// layout precisely so those declarations keep resolving inside the release.
+	// Reusing the live manifest would import the live shared code instead of
+	// the code the release captured.
+	if run.ReleaseSourceDir != "" {
+		manifestPath := filepath.Join(run.ReleaseSourceDir, config.ManifestFileName)
+		if _, err := os.Stat(manifestPath); err != nil {
+			d.finishRun(run, m, runs.Finish{
+				Status: runs.StatusFailed,
+				Error: fmt.Sprintf("release %s is no longer available at %s; it may have been removed by release retention",
+					shortDigest(run.ReleaseDigest), run.ReleaseSourceDir),
+			}, false)
+			return
+		}
+		bound, err := config.LoadAndValidate(manifestPath)
+		if err != nil {
+			d.finishRun(run, m, runs.Finish{
+				Status: runs.StatusFailed,
+				Error:  fmt.Sprintf("release %s is invalid: %v", shortDigest(run.ReleaseDigest), err),
+			}, false)
+			return
+		}
+		m = bound
+	}
+
+	interpreter := ""
+	if m.Python.Mode == "managed" {
+		manager := pyenv.Manager{DataDir: d.cfg.DataDir}
+		// Rebuild the identity this run recorded. The policy is deliberately
+		// not re-derived: a retry must resolve the environment its parent
+		// selected, even if the toolchain that prepared it has changed since.
+		spec := pyenv.RecordedIdentity(run.IntegrationID, run.PythonVersion, run.EnvironmentDigest, run.PythonPolicy)
+		ready, err := manager.GetReady(spec)
+		if err != nil {
+			d.finishRun(run, m, runs.Finish{Status: runs.StatusFailed, Error: err.Error()}, false)
+			return
+		}
+		interpreter = ready.Interpreter
+	}
+
 	startedAt := time.Now().UTC()
 	claimed, err := d.runs.MarkRunning(context.Background(), run.ID, startedAt)
 	if err != nil {
@@ -156,6 +203,8 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	sink := newRunLogSink(d.logs, run.ID, d.log)
 	result := d.exec.Run(runCtx, &executor.Request{
 		Manifest:       m,
+		Executable:     interpreter,
+		Managed:        m.Python.Mode == "managed",
 		RunID:          run.ID,
 		TriggerType:    run.TriggerType,
 		APIURL:         d.cfg.ChildAPIURL(),
@@ -174,6 +223,18 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		Error:      message,
 		FinishedAt: result.FinishedAt,
 	}, retryable)
+}
+
+// shortDigest abbreviates a digest for an error message, tolerating an empty
+// or already-short value.
+func shortDigest(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	if digest == "" {
+		return "unknown"
+	}
+	return digest
 }
 
 // withFailureHint folds the integration's own error into the message Otter
@@ -321,14 +382,21 @@ func (d *Daemon) scheduleRetry(ctx context.Context, previous *runs.Run, m *confi
 	parentID := previous.ID
 
 	next := &runs.Run{
-		ID:            uuid.NewString(),
-		IntegrationID: previous.IntegrationID,
-		TriggerType:   previous.TriggerType,
-		Status:        runs.StatusRetrying,
-		Attempt:       previous.Attempt + 1,
-		ParentRunID:   &parentID,
-		CreatedAt:     now,
-		Metadata:      previous.Metadata,
+		ID:                uuid.NewString(),
+		IntegrationID:     previous.IntegrationID,
+		TriggerType:       previous.TriggerType,
+		Status:            runs.StatusRetrying,
+		Attempt:           previous.Attempt + 1,
+		ParentRunID:       &parentID,
+		CreatedAt:         now,
+		Metadata:          previous.Metadata,
+		PythonMode:        previous.PythonMode,
+		PythonVersion:     previous.PythonVersion,
+		EnvironmentDigest: previous.EnvironmentDigest,
+		PythonPolicy:      previous.PythonPolicy,
+		ReleaseDigest:     previous.ReleaseDigest,
+		ReleaseSourceDir:  previous.ReleaseSourceDir,
+		SDKVersion:        previous.SDKVersion,
 	}
 	availableAt := now.Add(delay)
 

@@ -82,6 +82,7 @@ func (c *runControl) getReason() cancelReason {
 // Daemon is the Otter runtime.
 type Daemon struct {
 	cfg     config.DaemonConfig
+	owner   *dataLock
 	log     *logging.Logger
 	version string
 
@@ -134,6 +135,16 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if provider == nil {
 		provider = secrets.NewEnvProvider()
 	}
+	owner, err := acquireDataLock(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	keepOwner := false
+	defer func() {
+		if !keepOwner {
+			_ = owner.Close()
+		}
+	}()
 
 	db, err := database.Open(ctx, cfg.DataDir)
 	if err != nil {
@@ -146,6 +157,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 
 	d := &Daemon{
 		cfg:       cfg,
+		owner:     owner,
 		log:       opts.Logger,
 		version:   opts.Version,
 		db:        db,
@@ -191,6 +203,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		APIToken: cfg.APIToken,
 	}, d, opts.Logger)
 
+	keepOwner = true
 	return d, nil
 }
 
@@ -349,10 +362,6 @@ func (d *Daemon) shutdown(ctx context.Context) error {
 		"queued", depth,
 		"grace", d.cfg.ShutdownGrace.String())
 
-	if d.apiCancel != nil {
-		d.apiCancel()
-	}
-
 	stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	if err := d.sched.Stop(stopCtx); err != nil {
 		d.log.Warn("scheduler_stop_slow", "error", err.Error())
@@ -373,6 +382,11 @@ func (d *Daemon) shutdown(ctx context.Context) error {
 	// Terminate the stragglers; their runs are failed and retried.
 	d.cancelAllRuns(reasonShutdown)
 	d.waitForWorkers(30 * time.Second)
+	// Children may still be checkpointing during the grace period. Keep the
+	// state/log API reachable until every worker has finished its child.
+	if d.apiCancel != nil {
+		d.apiCancel()
+	}
 
 	if d.baseCancel != nil {
 		d.baseCancel()
@@ -382,6 +396,9 @@ func (d *Daemon) shutdown(ctx context.Context) error {
 	if cerr := d.db.Close(); cerr != nil {
 		err = cerr
 		d.log.Error("database_close_failed", cerr)
+	}
+	if d.owner != nil {
+		_ = d.owner.Close()
 	}
 
 	d.log.Info("shutdown_complete")
