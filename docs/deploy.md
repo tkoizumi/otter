@@ -118,6 +118,83 @@ database on every deploy would be pointless and risky.
 If any step fails, the ones after it do not run, and no state file is written:
 a failed deploy never claims success.
 
+## Daemon-wide settings
+
+Settings that belong to the daemon rather than to one integration — a failure
+notification endpoint, the log level — live in `otter.daemon.env` at the
+repository root:
+
+```sh
+# otter.daemon.env   (gitignored: a notification URL carries its own token)
+OTTER_NOTIFY_URL=https://hooks.slack.com/services/T.../B.../xxxx
+OTTER_NOTIFY_ON=failed,timed_out
+```
+
+The same file configures both places, so local and deployed behaviour cannot
+drift:
+
+| | How it is read |
+|---|---|
+| `make sync-up` | sourced before the daemon starts |
+| `otter deploy` | uploaded to `/etc/otter/daemon.env`, loaded by the unit |
+
+```
+EnvironmentFile=-/etc/otter/daemon.env                        ← optional
+EnvironmentFile=/etc/otter/shopify-to-salesforce.env          ← per-integration secrets
+```
+
+The leading dash on the daemon file is deliberate: a checkout without one
+deploys and starts normally.
+
+### Notification formats
+
+Chat services reject a body that is not shaped for them, so the format is
+explicit. Otter's own JSON is the default and carries every field:
+
+| `OTTER_NOTIFY_FORMAT` | Body | Works with |
+|---|---|---|
+| `json` (default) | every field, machine-readable | your own endpoint, healthchecks.io, an n8n/Zapier bridge |
+| `slack` | `{"text": "..."}` | a Slack incoming webhook |
+| `discord` | `{"content": "..."}` | a Discord webhook |
+| `teams` | MessageCard | a Teams incoming webhook |
+
+A Slack message looks like this:
+
+```
+:red_circle: *shopify-to-salesforce* failed (attempt 3)
+sync finished {"failed":12,"written":88}
+> process exited with code 1: RuntimeError: destination rejected the batch
+_run 42e84cd5-bd9 · 1.84s · release 3c850cfa6c9c_
+```
+
+The second line is the integration's own final log line, which is usually the
+actionable part: *12 failed, 88 written* rather than just "exit code 1".
+
+**A Teams caveat.** Microsoft has been moving new webhook URLs to Power Automate
+Workflows, whose body is an Adaptive Card wrapper rather than a MessageCard.
+`teams` emits the MessageCard, which is what an "Incoming Webhook" connector
+expects. If you created your webhook through Workflows, use `json` and a bridge
+instead -- Otter does not guess at the newer shape.
+
+**Why formats are in the runtime and not a template.** A named format is
+testable against the contract the service publishes: the tests assert Slack's
+body has `text`, Discord's has `content`, and Teams' is a `MessageCard`. A
+template supplied in `.env` could not be checked at all, and an alerting path
+that fails silently fails exactly when it is needed.
+
+### Why not otter.yaml
+
+`otter.yaml` is committed, and `otter inspect` prints its `env:` block. A
+notification URL embeds a credential in its path, so it cannot live there. It is
+also per-integration, while notification is a property of the daemon.
+
+### Why not the integration's .env
+
+That file is scoped to one integration and documented as its secrets. A daemon
+setting placed there applies only while that integration is being deployed, and
+it reads as though it were a credential. `SSL_CERT_FILE` ended up in one by
+accident, which is exactly this failure mode.
+
 ## Secrets
 
 Each integration's secrets live in `<integration>/.env` locally and become

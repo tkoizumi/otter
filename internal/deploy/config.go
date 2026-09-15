@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,6 +44,10 @@ type Config struct {
 	// the push must protect the ones it does not carry.
 	Limited bool
 
+	// DaemonEnv is the resolved daemon-wide environment file, empty when the
+	// checkout does not have one.
+	DaemonEnv string
+
 	// DryRun prints the plan and performs no remote change.
 	DryRun bool
 	// Verbose streams every remote command.
@@ -57,6 +62,9 @@ type Flags struct {
 	Target Target
 
 	EnvFile string
+	// DaemonEnv overrides the daemon environment file. Empty uses
+	// <repo>/otter.daemon.env.
+	DaemonEnv string
 	// Integration limits the deploy to one integration. Empty deploys all of
 	// them, which is the historical behavior.
 	Integration string
@@ -74,6 +82,27 @@ type Flags struct {
 
 // ConfigFileName is the committed, secret-free deploy configuration.
 const ConfigFileName = "otter.deploy.yaml"
+
+// DaemonEnvFileName is the daemon-wide environment file at the repository
+// root. It is not committed, because a notification URL or an API token is a
+// credential, and it is not per-integration, because a setting such as the
+// notification endpoint belongs to the daemon rather than to one integration.
+//
+// The name is deliberately visible rather than dotted. It is the primary
+// configuration surface an operator has to create and edit, so hiding it
+// behind a dot -- in every `ls`, every file explorer, and every "show hidden
+// files" toggle that defaults to off -- makes the feature harder to find than
+// the token inside it is worth. The file is still gitignored, which is what
+// actually keeps the credential out of git; the dot added nothing to that.
+//
+// Locally `make sync-up` sources it. At deploy it becomes
+// /etc/otter/daemon.env, which the unit loads alongside each integration's
+// secrets file, so one file has one meaning in both places.
+const DaemonEnvFileName = "otter.daemon.env"
+
+// DaemonEnvIntegrationName is reserved: an integration of this name would
+// write to the same remote path as the daemon-wide environment file.
+const DaemonEnvIntegrationName = "daemon"
 
 // deployFile is the on-disk shape of otter.deploy.yaml.
 type deployFile struct {
@@ -104,6 +133,7 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&f.Target.RotateAPIToken, "rotate-token", false, "generate and install a fresh API token")
 	fs.StringVar(&f.Target.APIToken, "api-token", "", "use this API token instead of the stored or remote one")
 	fs.StringVar(&f.EnvFile, "env-file", "", "secrets file applied to every integration")
+	fs.StringVar(&f.DaemonEnv, "daemon-env", "", "daemon-wide environment file (default "+DaemonEnvFileName+")")
 	fs.StringVar(&f.Integration, "integration", "", "deploy only this integration, leaving the others untouched")
 	fs.StringVar(&f.ConfigFor, "config", "", "deploy config file (default "+ConfigFileName+")")
 	fs.StringVar(&f.UV, "uv", "", "uv executable on the host for Python preparation (default the vendored copy)")
@@ -187,15 +217,16 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	// 2. The previous deploy, so a bare `otter deploy` after the first one goes
 	//    to the same host with the same layout.
 	//
-	//    The recorded *platform* is only inherited for the same host. It is the
-	//    one field that must never travel between hosts: it was detected over
-	//    SSH, and reusing it for a different machine silently builds for the
-	//    wrong architecture, which surfaces as an unhelpful "exit status 255"
-	//    when a binary the host cannot execute is run.
+	//    Only the *layout* travels when a different host is named. How to reach
+	//    a machine -- login user, port, key, detected architecture -- belongs to
+	//    that machine, and reusing it elsewhere fails in confusing ways: a key
+	//    path that no longer exists, a port that belongs to another service, a
+	//    binary built for the wrong architecture. Each of those was hit while
+	//    testing against more than one host from a single checkout.
 	if previous.Host != "" {
 		carried := previous.Target
 		if !sameHost(previous, cfg.Target, f) {
-			carried.Platform = ""
+			carried = layoutOnly(carried)
 		}
 		cfg.Target = mergeTarget(cfg.Target, carried)
 	}
@@ -204,8 +235,28 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	cfg.Target = mergeTarget(cfg.Target, f.Target)
 	cfg.Target.ApplyDefaults()
 
+	// 4. The daemon-wide environment file. It is optional: a deployment that
+	//    configures nothing beyond per-integration secrets does not need one.
+	daemonEnv := f.DaemonEnv
+	if daemonEnv == "" {
+		daemonEnv = filepath.Join(repoRoot, DaemonEnvFileName)
+	}
+	daemonEnv = resolveRelative(repoRoot, daemonEnv)
+	if _, err := os.Stat(daemonEnv); err == nil {
+		cfg.DaemonEnv = daemonEnv
+	}
+
 	if err := cfg.resolveIntegrations(f); err != nil {
 		return cfg, err
+	}
+
+	// The reservation applies to every integration being deployed, not only a
+	// filtered one.
+	for _, name := range cfg.Integrations {
+		if name == DaemonEnvIntegrationName {
+			return cfg, fmt.Errorf("integration name %q is reserved for the daemon-wide environment file; rename the integration",
+				DaemonEnvIntegrationName)
+		}
 	}
 	return cfg, nil
 }
@@ -244,6 +295,21 @@ func resolveRelative(root, path string) string {
 		return path
 	}
 	return root + "/" + strings.TrimPrefix(path, "./")
+}
+
+// layoutOnly strips the fields that describe how to reach a specific machine,
+// keeping only the ones that describe how Otter is installed on it.
+//
+// Where the runtime lives is a deployment decision and travels; how to log in
+// is a property of the host and does not.
+func layoutOnly(t Target) Target {
+	return Target{
+		RemoteDir:   t.RemoteDir,
+		ServiceName: t.ServiceName,
+		RunAsUser:   t.RunAsUser,
+		DataDir:     t.DataDir,
+		Listen:      t.Listen,
+	}
 }
 
 // sameHost reports whether the previous deploy and the requested target are the

@@ -365,3 +365,145 @@ func TestExplicitPlatformWins(t *testing.T) {
 		t.Errorf("platform = %q, want the explicit linux/arm64", cfg.Target.Platform)
 	}
 }
+
+// The daemon-wide environment file is optional and lives at the repository
+// root. Its absence must not break a deployment.
+func TestDaemonEnvResolution(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo, "integrations", "one")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Absent: no daemon environment, and that is not an error.
+	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DaemonEnv != "" {
+		t.Errorf("DaemonEnv = %q, want empty when the file is absent", cfg.DaemonEnv)
+	}
+
+	// Present at the default location.
+	path := filepath.Join(repo, DaemonEnvFileName)
+	if err := os.WriteFile(path, []byte("OTTER_NOTIFY_URL=https://example.test/hook\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DaemonEnv != path {
+		t.Errorf("DaemonEnv = %q, want %q", cfg.DaemonEnv, path)
+	}
+
+	// An explicit path wins, and a relative one resolves against the checkout.
+	other := filepath.Join(repo, "daemon-production.env")
+	if err := os.WriteFile(other, []byte("OTTER_NOTIFY_ON=failed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(repo, &Flags{DaemonEnv: "daemon-production.env", set: map[string]bool{}}, State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DaemonEnv != other {
+		t.Errorf("DaemonEnv = %q, want the explicit %q", cfg.DaemonEnv, other)
+	}
+}
+
+// An integration named "daemon" would write to the same remote path as the
+// daemon-wide environment file, so the name is reserved.
+func TestDaemonIntegrationNameIsReserved(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "daemon"} {
+		dir := filepath.Join(repo, "integrations", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{}); err == nil {
+		t.Error("an integration named 'daemon' was accepted")
+	} else if !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("error does not explain the reservation: %v", err)
+	}
+
+	// Every other name is fine.
+	if err := os.RemoveAll(filepath.Join(repo, "integrations", "daemon")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{}); err != nil {
+		t.Errorf("a checkout without a 'daemon' integration should load: %v", err)
+	}
+}
+
+// Everything about *reaching* a host belongs to that host. Carrying a port, a
+// key path or a detected architecture to a different machine produced a
+// missing-file error, a connection to the wrong service, and a binary built for
+// the wrong architecture -- all from one polluted state file.
+func TestOnlyLayoutTravelsToADifferentHost(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo, "integrations", "one")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	previous := State{
+		Host: "127.0.0.1",
+		Target: Target{
+			Host:         "127.0.0.1",
+			User:         "root",
+			Port:         2225,
+			IdentityFile: "container-key",
+			Platform:     "linux/arm64",
+			RemoteDir:    "/opt/otter",
+			ServiceName:  "otterd",
+			RunAsUser:    "otter",
+			DataDir:      "/opt/otter/data",
+			Listen:       "127.0.0.1:7337",
+		},
+	}
+
+	flags := &Flags{Target: Target{Host: "159.203.184.97"}, set: map[string]bool{}}
+	cfg, err := LoadConfig(repo, flags, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Connectivity must not travel.
+	if cfg.Target.Port != DefaultSSHPort {
+		t.Errorf("Port = %d, want the default %d, not the previous host's", cfg.Target.Port, DefaultSSHPort)
+	}
+	if cfg.Target.IdentityFile != "" {
+		t.Errorf("IdentityFile = %q, want empty; that key belongs to another host", cfg.Target.IdentityFile)
+	}
+	if cfg.Target.Platform != "" {
+		t.Errorf("Platform = %q, want empty so it is detected again", cfg.Target.Platform)
+	}
+
+	// Layout should travel, so a redeploy lands in the same place.
+	if cfg.Target.RemoteDir != "/opt/otter" {
+		t.Errorf("RemoteDir = %q, want the recorded layout", cfg.Target.RemoteDir)
+	}
+	if cfg.Target.DataDir != "/opt/otter/data" {
+		t.Errorf("DataDir = %q, want the recorded layout", cfg.Target.DataDir)
+	}
+}

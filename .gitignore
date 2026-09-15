@@ -23,6 +23,12 @@ venv/
 .cache/
 .gocache/
 
+# Daemon-wide settings: not secret in themselves, but they routinely hold a
+# credential (a notification webhook URL carries its own token). Ignored by the
+# *.env rule above; named without a leading dot so it stays visible, because it
+# is configuration an operator has to find and edit.
+otter.daemon.env
+
 # Secrets: real credentials live in the daemon's environment, never here.
 # .env.example is committed; .env and per-integration env files are not.
 .env

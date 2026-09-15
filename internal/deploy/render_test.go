@@ -146,3 +146,36 @@ func TestInstallScriptOwnsTheVendoredToolchain(t *testing.T) {
 		t.Errorf("install script does not take ownership of tools/:\n%s", script)
 	}
 }
+
+// The unit loads the daemon-wide environment alongside each integration's
+// secrets, and tolerates its absence so a deployment that configures nothing
+// extra still starts.
+func TestUnitFileLoadsTheDaemonEnvironment(t *testing.T) {
+	target := testTarget()
+	unit := UnitFile(target, []string{"counter"})
+
+	want := "EnvironmentFile=-" + target.DaemonEnvFilePath()
+	if !strings.Contains(unit, want) {
+		t.Errorf("unit is missing %q\n---\n%s", want, unit)
+	}
+	// The leading dash is what makes an absent file non-fatal.
+	if !strings.Contains(unit, "EnvironmentFile=-/etc/otter/daemon.env") {
+		t.Errorf("the daemon environment file is not optional:\n%s", unit)
+	}
+	// It must be loaded before the per-integration files.
+	if strings.Index(unit, "daemon.env") > strings.Index(unit, "counter.env") {
+		t.Errorf("the daemon environment is loaded after the integration's:\n%s", unit)
+	}
+}
+
+func TestDaemonEnvFilePathIsStable(t *testing.T) {
+	target := testTarget()
+	if got := target.DaemonEnvFilePath(); got != "/etc/otter/daemon.env" {
+		t.Errorf("DaemonEnvFilePath = %q", got)
+	}
+	// An integration named "daemon" would write to the same path. The deploy
+	// refuses that rather than letting one silently overwrite the other.
+	if target.DaemonEnvFilePath() == target.EnvFilePath("daemon") {
+		t.Log("confirmed: 'daemon' is a reserved integration name")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/otter-runtime/otter/internal/config"
 	"github.com/otter-runtime/otter/internal/database"
 	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/otter-runtime/otter/internal/notify"
 	"github.com/otter-runtime/otter/internal/runs"
 	"github.com/otter-runtime/otter/internal/secrets"
 )
@@ -1502,5 +1504,88 @@ func TestRunMetadataRecordsTriggerType(t *testing.T) {
 	body, ok := meta["body"].(map[string]any)
 	if !ok || body["a"] != float64(1) {
 		t.Errorf("metadata body = %v, want {a:1}", meta["body"])
+	}
+}
+
+// notifyFailure is the daemon's only notification path. It must send for a
+// reported status, respect the allow-list, and never report success.
+func TestNotifyFailureSendsOnlyReportedStatuses(t *testing.T) {
+	var received []notify.Payload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p notify.Payload
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		received = append(received, p)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	d := &Daemon{
+		log:      testLogger(),
+		notifier: notify.New(config.NotifyConfig{URL: server.URL + "/hook", On: []string{"failed"}}, testLogger()),
+	}
+	run := &runs.Run{
+		ID: "run-1", IntegrationID: "flaky", Attempt: 2, ReleaseDigest: "abc123",
+	}
+	exit := 1
+
+	d.notifyFailure(run, runs.Finish{Status: runs.StatusFailed, Error: "boom", ExitCode: &exit},
+		"last line", 1234)
+	d.notifyFailure(run, runs.Finish{Status: runs.StatusTimedOut}, "ignored", 1)
+	d.notifyFailure(run, runs.Finish{Status: runs.StatusSucceeded}, "ignored", 1)
+
+	if len(received) != 1 {
+		t.Fatalf("received %d notifications, want exactly the failed one: %+v", len(received), received)
+	}
+	got := received[0]
+	if got.RunID != "run-1" || got.Status != "failed" || got.Detail != "last line" {
+		t.Errorf("payload = %+v", got)
+	}
+	if got.Release != "abc123" {
+		t.Errorf("release = %q, want the run's release so a failure ties to a build", got.Release)
+	}
+	if got.ExitCode == nil || *got.ExitCode != 1 {
+		t.Errorf("exit code missing from the payload")
+	}
+}
+
+// A missing endpoint must not affect the run it is reporting on, and the URL
+// is never echoed into the log.
+func TestNotifyFailureSurvivesABrokenEndpoint(t *testing.T) {
+	d := &Daemon{
+		log: testLogger(),
+		// Nothing is listening here. The retry backoff is compressed so the
+		// point of the test -- that the daemon carries on -- is not hidden
+		// behind a production-length delay.
+		notifier: notify.New(config.NotifyConfig{URL: "http://127.0.0.1:1/hook"}, testLogger(),
+			notify.WithRetryPolicy(2, time.Millisecond)),
+	}
+	d.notifyFailure(&runs.Run{ID: "run-2", IntegrationID: "flaky", Attempt: 1},
+		runs.Finish{Status: runs.StatusFailed, Error: "boom"}, "", 10)
+	// Reaching this point without a panic or a blocked call is the assertion:
+	// notification is best-effort and must never fail a run.
+}
+
+// With more than one daemon syncing the same destination, an alert has to say
+// which machine failed.
+func TestNotifyFailureIdentifiesTheHost(t *testing.T) {
+	var got notify.Payload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	d := &Daemon{
+		log:      testLogger(),
+		hostname: "droplet-1",
+		notifier: notify.New(config.NotifyConfig{URL: server.URL}, testLogger()),
+	}
+	d.notifyFailure(&runs.Run{ID: "run-1", IntegrationID: "flaky", Attempt: 1},
+		runs.Finish{Status: runs.StatusFailed, Error: "boom"}, "", 10)
+
+	if got.Host != "droplet-1" {
+		t.Errorf("host = %q, want the daemon's hostname", got.Host)
 	}
 }

@@ -8,12 +8,25 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/otter-runtime/otter/internal/config"
 	"github.com/otter-runtime/otter/internal/daemon"
 	"github.com/otter-runtime/otter/internal/logging"
 )
+
+// flagWasSet reports whether a flag appeared on the command line, so a value
+// derived from another source is only overwritten when the operator asked.
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
 
 // RunDaemon implements both `otterd` and `otter serve`. It parses the daemon
 // flags, installs signal handling and runs the daemon until it shuts down.
@@ -30,6 +43,7 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 	fs.SetOutput(stderr)
 	cfg.RegisterFlags(fs)
 	showVersion := fs.Bool("version", false, "print the version and exit")
+	notifyOn := fs.String("notify-on", strings.Join(cfg.Notify.On, ","), "comma-separated terminal statuses that notify (default: every failure)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: otterd [flags]\n\n")
 		fmt.Fprintf(stderr, "Runs the Otter daemon: it discovers integrations, registers their\n")
@@ -57,6 +71,13 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 		fs.Usage()
 		return 2
 	}
+
+	// --notify-on is registered as a string so it can be given as a
+	// comma-separated list; fold it into the configuration before validating.
+	if flagWasSet(fs, "notify-on") {
+		cfg.Notify.On = config.SplitList(*notifyOn)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(stderr, "otterd: %v\n", err)
 		return 2

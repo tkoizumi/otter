@@ -150,6 +150,11 @@ tidy:
 INTEGRATION  ?= shopify-to-salesforce
 INTEGRATIONS ?= ./integrations
 ENV_FILE     ?= $(INTEGRATIONS)/$(INTEGRATION)/.env
+
+# Daemon-wide settings (notification URL, log level, retention). Not committed,
+# not per-integration: it configures the daemon, so it applies locally and on
+# the host identically.
+DAEMON_ENV   ?= ./otter.daemon.env
 OTTER        ?= $(BIN)/otter
 OTTERD       ?= $(BIN)/otterd
 API          ?= http://127.0.0.1:7337
@@ -190,12 +195,17 @@ sync-release:
 	@$(OTTER) release --integrations $(INTEGRATIONS) --data $(DATA) --shared ../../lib $(INTEGRATION)
 	@$(OTTER) release --list --data $(DATA) $(INTEGRATION)
 
-## sync-up: start the daemon with the integration's .env (Ctrl-C stops)
+## sync-up: start the daemon with its environment (Ctrl-C stops)
 sync-up:
 	@test -x $(OTTERD) || { echo "missing $(OTTERD) -- run 'make build' first"; exit 1; }
 	@test -f $(ENV_FILE) || { echo "missing $(ENV_FILE)"; echo "  cp $(INTEGRATIONS)/$(INTEGRATION)/.env.example $(ENV_FILE)"; exit 1; }
+	@if [ -f "$(DAEMON_ENV)" ]; then echo "daemon env: $(DAEMON_ENV)"; else echo "daemon env: none ($(DAEMON_ENV) not present)"; fi
 	@echo "otterd on $(INTEGRATIONS), data in $(DATA), API on $(API) -- Ctrl-C to stop"
-	@set -a; . $(ENV_FILE); set +a; exec $(OTTERD) --integrations $(INTEGRATIONS) --data $(DATA) --listen $${OTTER_LISTEN:-127.0.0.1:$(API_PORT)} --log-format pretty
+	@set -a; \
+	  test -f "$(DAEMON_ENV)" && . $(DAEMON_ENV); \
+	  . $(ENV_FILE); \
+	  set +a; \
+	  exec $(OTTERD) --integrations $(INTEGRATIONS) --data $(DATA) --listen $${OTTER_LISTEN:-127.0.0.1:$(API_PORT)} --log-format pretty
 
 ## sync-run: trigger the integration now, wait, and show what it did
 sync-run:

@@ -16,6 +16,7 @@ import (
 	"github.com/otter-runtime/otter/internal/config"
 	"github.com/otter-runtime/otter/internal/executor"
 	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/otter-runtime/otter/internal/notify"
 	"github.com/otter-runtime/otter/internal/pyenv"
 	"github.com/otter-runtime/otter/internal/queue"
 	"github.com/otter-runtime/otter/internal/retry"
@@ -311,12 +312,13 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	// (pages/fetched/written) rather than Otter's own narration.
 	detail := d.detailLine(ctx, run.ID)
 
+	durationMS := run.Duration().Milliseconds()
 	fields := []any{
 		"integration", run.IntegrationID,
 		"run_id", run.ID,
 		"attempt", run.Attempt,
 		"status", string(f.Status),
-		"duration_ms", run.Duration().Milliseconds(),
+		"duration_ms", durationMS,
 	}
 	if f.Error != "" {
 		fields = append(fields, "error", f.Error)
@@ -346,16 +348,65 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	}
 	d.appendOtterLog(run.ID, summary)
 
-	if !retryable || m == nil {
+	// Decide whether this attempt is the end of the road before notifying.
+	//
+	// An intermediate failure is not worth an alert: the retry policy exists
+	// precisely because some failures recover, and an integration that retries
+	// three times would otherwise send three alerts. Alert fatigue is how a
+	// working notification becomes an ignored one, so the signal reported is
+	// "this run has given up", not "an attempt failed".
+	willRetry := retryable && m != nil && retry.ShouldRetry(m.MaxAttempts(), run.Attempt)
+	if !willRetry {
+		if retryable && m != nil {
+			d.log.Info("run_retries_exhausted",
+				"integration", run.IntegrationID, "run_id", run.ID, "attempts", run.Attempt)
+		}
+		d.notifyFailure(run, f, detail, durationMS)
 		return
 	}
-	if !retry.ShouldRetry(m.MaxAttempts(), run.Attempt) {
-		d.log.Info("run_retries_exhausted",
-			"integration", run.IntegrationID, "run_id", run.ID, "attempts", run.Attempt)
-		return
-	}
+
 	if err := d.scheduleRetry(ctx, run, m); err != nil {
 		d.log.Error("run_retry_failed", err, "run_id", run.ID)
+		// The retry could not be scheduled, so this run is the last one after
+		// all. Report it rather than losing the failure entirely.
+		d.notifyFailure(run, f, detail, durationMS)
+	}
+}
+
+// notifyFailure reports a terminal failure to the configured endpoint.
+//
+// It is best-effort by design: the run is already recorded, and a notification
+// that cannot be delivered must never change what the run did. The failure is
+// logged and dropped.
+//
+// Only scheduler-driven failures are reported here. An operator cancelling a
+// run is not a failure: they already know.
+func (d *Daemon) notifyFailure(run *runs.Run, f runs.Finish, detail string, durationMS int64) {
+	if !d.notifier.Wants(string(f.Status)) {
+		return
+	}
+
+	payload := notify.Payload{
+		Integration: run.IntegrationID,
+		RunID:       run.ID,
+		Status:      string(f.Status),
+		Attempt:     run.Attempt,
+		Error:       f.Error,
+		Detail:      detail,
+		DurationMS:  durationMS,
+		ExitCode:    f.ExitCode,
+		Release:     run.ReleaseDigest,
+		Host:        d.hostname,
+	}
+
+	// Bounded so a slow endpoint cannot hold the worker. The notifier already
+	// retries with its own timeout; this is the outer bound.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := d.notifier.Send(ctx, payload); err != nil {
+		// A missing alert is worth knowing about, but it is not a run failure.
+		d.log.Warn("notification_failed", "run_id", run.ID, "error", err.Error())
 	}
 }
 

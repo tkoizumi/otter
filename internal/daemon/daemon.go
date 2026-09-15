@@ -10,7 +10,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/otter-runtime/otter/internal/database"
 	"github.com/otter-runtime/otter/internal/executor"
 	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/otter-runtime/otter/internal/notify"
 	"github.com/otter-runtime/otter/internal/queue"
 	"github.com/otter-runtime/otter/internal/runs"
 	"github.com/otter-runtime/otter/internal/scheduler"
@@ -92,9 +95,10 @@ type Daemon struct {
 	queue *queue.Queue
 	state *state.Store
 
-	sched   *scheduler.Scheduler
-	exec    *executor.Executor
-	secrets secrets.Provider
+	sched    *scheduler.Scheduler
+	exec     *executor.Executor
+	secrets  secrets.Provider
+	notifier *notify.Notifier
 
 	reg *registry
 	cap *capacity
@@ -118,6 +122,11 @@ type Daemon struct {
 	startedAt    time.Time
 	shutdownOnce sync.Once
 	shutdownErr  error
+
+	// hostname identifies this machine in failure notifications. With more
+	// than one daemon syncing the same destination -- a laptop and a server,
+	// say -- an alert without it does not say which one is broken.
+	hostname string
 }
 
 // Compile-time proof that the daemon satisfies the API's backend contract.
@@ -183,6 +192,18 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	d.exec = executor.New(opts.Logger, sdkPath)
 	d.log.Info("sdk_ready", "path", sdkPath)
+
+	if host, err := os.Hostname(); err == nil {
+		d.hostname = host
+	}
+	d.notifier = notify.New(cfg.Notify, opts.Logger)
+	if d.notifier.Enabled() {
+		// The URL is redacted: providers such as Slack embed a secret in the
+		// path, and this line goes to the daemon log.
+		d.log.Info("failure_notification_enabled",
+			"endpoint", d.notifier.RedactedURL(),
+			"on", strings.Join(cfg.Notify.On, ","))
+	}
 
 	if err := d.discover(ctx); err != nil {
 		_ = db.Close()

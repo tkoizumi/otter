@@ -41,6 +41,11 @@ func UnitFile(t Target, integrations []string) string {
 	// One literal EnvironmentFile per integration. systemd does not expand
 	// globs here, and whether a name is a valid environment variable is a
 	// question the daemon answers, not this generator.
+	//
+	// The daemon-wide file is listed first and is optional: systemd tolerates
+	// a missing EnvironmentFile with a leading dash, which keeps a deployment
+	// that configures nothing beyond secrets working with no extra file.
+	fmt.Fprintf(&b, "EnvironmentFile=-%s\n", t.DaemonEnvFilePath())
 	for _, name := range integrations {
 		fmt.Fprintf(&b, "EnvironmentFile=%s\n", t.EnvFilePath(name))
 	}

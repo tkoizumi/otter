@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -41,6 +42,115 @@ type DaemonConfig struct {
 
 	// Version is the build version, reported by /health and the CLI.
 	Version string
+
+	// Notify is where a failed run is reported. Empty disables notification
+	// entirely, which is the default: no configuration means no outbound
+	// traffic of any kind.
+	Notify NotifyConfig
+}
+
+// NotifyConfig describes an outbound failure notification.
+//
+// Only failures are reported. Alerting on success doubles the message volume
+// and trains the reader to ignore it, which is worse than not alerting.
+type NotifyConfig struct {
+	// URL is the endpoint a failure is POSTed to. It is redacted everywhere
+	// the daemon reports its configuration, because providers such as Slack
+	// embed a secret in the path.
+	URL string
+
+	// On lists the terminal statuses that notify. Empty means every
+	// non-succeeded terminal status.
+	On []string
+
+	// Format is the request body shape. The default is Otter's own JSON, which
+	// any endpoint can parse; the chat services each require their own shape
+	// and reject anything else.
+	Format string
+
+	// Timeout bounds one delivery attempt. Zero means the default.
+	Timeout time.Duration
+}
+
+// Notification body formats.
+const (
+	// FormatJSON is Otter's own payload: every field, machine-readable. It is
+	// what an endpoint of your own, healthchecks.io or a bridge expects.
+	FormatJSON = "json"
+	// FormatSlack is a Slack incoming webhook: {"text": "..."}. Slack rejects
+	// a body without "text" with 400 invalid_payload.
+	FormatSlack = "slack"
+	// FormatDiscord is a Discord webhook: {"content": "..."}.
+	FormatDiscord = "discord"
+	// FormatTeams is a Microsoft Teams incoming webhook MessageCard.
+	FormatTeams = "teams"
+)
+
+// NotifyFormats lists the accepted format names.
+func NotifyFormats() []string {
+	return []string{FormatJSON, FormatSlack, FormatDiscord, FormatTeams}
+}
+
+// FormatOrJSON returns the configured format, defaulting to JSON.
+func (n NotifyConfig) FormatOrJSON() string {
+	if strings.TrimSpace(n.Format) == "" {
+		return FormatJSON
+	}
+	return strings.ToLower(strings.TrimSpace(n.Format))
+}
+
+// ValidateFormat checks the configured format name.
+func (n NotifyConfig) ValidateFormat() error {
+	switch n.FormatOrJSON() {
+	case FormatJSON, FormatSlack, FormatDiscord, FormatTeams:
+		return nil
+	default:
+		return fmt.Errorf("--notify-format accepts %s, got %q",
+			strings.Join(NotifyFormats(), ", "), n.Format)
+	}
+}
+
+// IsChatFormat reports whether the body is shaped for a chat service, in which
+// case the endpoint is expected to be that service's webhook rather than a
+// generic JSON consumer.
+func (n NotifyConfig) IsChatFormat() bool {
+	switch n.FormatOrJSON() {
+	case FormatSlack, FormatDiscord, FormatTeams:
+		return true
+	default:
+		return false
+	}
+}
+
+// Enabled reports whether notifications are configured at all.
+func (n NotifyConfig) Enabled() bool { return strings.TrimSpace(n.URL) != "" }
+
+// Matches reports whether a terminal status should be reported.
+//
+// Succeeded is never reported: the caller passes only failures, and an
+// allow-list that mentioned it would still be ignored.
+func (n NotifyConfig) Matches(status string) bool {
+	if !n.Enabled() || status == "succeeded" {
+		return false
+	}
+	if len(n.On) == 0 {
+		return true
+	}
+	for _, want := range n.On {
+		if strings.EqualFold(strings.TrimSpace(want), status) {
+			return true
+		}
+	}
+	return false
+}
+
+// RedactedURL is the URL with any embedded secret removed, for logging and
+// diagnostics.
+func (n NotifyConfig) RedactedURL() string {
+	if !n.Enabled() {
+		return ""
+	}
+	return redactURL(n.URL)
 }
 
 // DefaultDaemonConfig returns the documented defaults.
@@ -107,7 +217,37 @@ func (c *DaemonConfig) ApplyEnv() error {
 	if v, ok := os.LookupEnv("OTTER_SDK_PATH"); ok && v != "" {
 		c.SDKPath = v
 	}
+	if v, ok := os.LookupEnv("OTTER_NOTIFY_URL"); ok && v != "" {
+		c.Notify.URL = v
+	}
+	if v, ok := os.LookupEnv("OTTER_NOTIFY_ON"); ok && strings.TrimSpace(v) != "" {
+		c.Notify.On = SplitList(v)
+	}
+	if v, ok := os.LookupEnv("OTTER_NOTIFY_FORMAT"); ok && strings.TrimSpace(v) != "" {
+		c.Notify.Format = strings.ToLower(strings.TrimSpace(v))
+	}
 	return nil
+}
+
+// SplitList parses a comma-separated setting, dropping empty entries.
+func SplitList(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// redactURL removes the path and query from a URL, keeping the scheme and host
+// so the setting is still identifiable in a log line.
+func redactURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "(configured)"
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/..."
 }
 
 // RegisterFlags binds daemon flags, seeding each default from the current
@@ -122,6 +262,9 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.LogLevel, "log-level", c.LogLevel, "daemon log level: debug, info, warn or error")
 	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running integrations may finish after SIGTERM before being terminated")
 	fs.StringVar(&c.SDKPath, "sdk-path", c.SDKPath, "directory prepended to the child PYTHONPATH (defaults to the embedded SDK extracted into the data directory)")
+	fs.StringVar(&c.Notify.URL, "notify-url", c.Notify.URL, "POST failed runs to this URL (empty disables notification)")
+	fs.StringVar(&c.Notify.Format, "notify-format", c.Notify.Format,
+		"notification body format: "+strings.Join(NotifyFormats(), ", "))
 }
 
 // Validate checks the configuration before the daemon starts.
@@ -140,6 +283,23 @@ func (c *DaemonConfig) Validate() error {
 	}
 	if c.ShutdownGrace < 0 {
 		return fmt.Errorf("--shutdown-grace must not be negative")
+	}
+
+	if c.Notify.Enabled() {
+		parsed, err := url.Parse(c.Notify.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("--notify-url must be an http(s) URL, got %q", redactURL(c.Notify.URL))
+		}
+		for _, status := range c.Notify.On {
+			switch status {
+			case "failed", "timed_out", "cancelled":
+			default:
+				return fmt.Errorf("--notify-on accepts failed, timed_out or cancelled, got %q", status)
+			}
+		}
+		if err := c.Notify.ValidateFormat(); err != nil {
+			return err
+		}
 	}
 
 	switch c.LogFormat {

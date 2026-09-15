@@ -113,6 +113,15 @@ func (t Target) EnvFilePath(integration string) string {
 	return filepath.Join(t.EnvDir(), integration+".env")
 }
 
+// DaemonEnvFilePath is the daemon-wide environment file. It is separate from
+// the per-integration files because its settings belong to the daemon:
+// notification endpoints, log level, retention. Putting them in an
+// integration's secrets file made them look like that integration's
+// credentials and gave them the wrong lifetime.
+func (t Target) DaemonEnvFilePath() string {
+	return filepath.Join(t.EnvDir(), "daemon.env")
+}
+
 // DefaultTarget returns the target used when nothing else specifies one.
 func DefaultTarget() Target {
 	return Target{
