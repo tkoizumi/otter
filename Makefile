@@ -30,7 +30,7 @@ export CGO_ENABLED = 0
 .DEFAULT_GOAL := help
 
 .PHONY: help build test test-go test-python lint run example cross docker clean fmt tidy clean-pycache
-.PHONY: sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart sync-release sync-schedule
+.PHONY: sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart sync-release sync-schedule sync-schema
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 
 ## help: list the available targets (default goal)
@@ -163,8 +163,15 @@ SHARED_ENV   ?= ./otter.env
 DAEMON_ENV   ?= ./otter.daemon.env
 OTTER        ?= $(BIN)/otter
 OTTERD       ?= $(BIN)/otterd
+PYTHON       ?= python3
 API          ?= http://127.0.0.1:7337
 API_PORT     ?= 7337
+
+# Objects to pull for `sync-schema`, space-separated. Empty means "whatever the
+# manifest says", which is the common case; set it to pull several, or to
+# retarget, without editing anything:
+#   make sync-schema INTEGRATION=x OBJECT="Contact Shopify_Order__c"
+OBJECT       ?=
 
 # Where `sync-retry` rewinds the watermark to. Defaults to the example
 # manifest's BACKFILL_FROM; raise it if your data starts later.
@@ -200,6 +207,12 @@ sync-release:
 	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
 	@$(OTTER) release --integrations $(INTEGRATIONS) --data $(DATA) --shared ../../lib $(INTEGRATION)
 	@$(OTTER) release --list --data $(DATA) $(INTEGRATION)
+
+## sync-schema: pull the integration's Salesforce schema (OBJECT= to override)
+sync-schema:
+	@$(PYTHON) lib/python/otter_schema/pull.py \
+	  --integration $(INTEGRATIONS)/$(INTEGRATION) \
+	  $(foreach obj,$(OBJECT),--object $(obj))
 
 ## sync-up: start the daemon with its environment (Ctrl-C stops)
 sync-up:

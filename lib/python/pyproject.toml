@@ -13,4 +13,4 @@ dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["otter_connectors*"]
+include = ["otter_connectors*", "otter_schema*"]

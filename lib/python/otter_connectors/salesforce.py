@@ -185,6 +185,21 @@ class SalesforceClient:
 
         raise SalesforceError("Salesforce request failed after %d attempts" % self.max_attempts)
 
+    def describe(self, sobject):
+        """The org's own description of an object: every field, its type,
+        length and flags.
+
+        Raises rather than returning a default, unlike :meth:`picklist_values`:
+        a caller asking what an object looks like needs to know when the answer
+        is "I could not find out".
+        """
+        _, described = self._request(
+            "GET", "/services/data/v%s/sobjects/%s/describe" % (self.api_version, sobject))
+        if not isinstance(described, dict) or "fields" not in described:
+            raise SalesforceError(
+                "Salesforce returned no describe for %s: %r" % (sobject, str(described)[:200]))
+        return described
+
     def picklist_values(self, sobject, field):
         """The org's valid integration values for a picklist field, lowercased.
 
@@ -198,9 +213,7 @@ class SalesforceClient:
 
         values = None
         try:
-            _, described = self._request(
-                "GET", "/services/data/v%s/sobjects/%s/describe" % (self.api_version, sobject))
-            for entry in (described or {}).get("fields") or []:
+            for entry in self.describe(sobject).get("fields") or []:
                 if entry.get("name") != field:
                     continue
                 entries = entry.get("picklistValues") or []

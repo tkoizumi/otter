@@ -59,6 +59,10 @@ Alternatively, install it (`pip install ./lib/python`) or add the directory to
 | `timeutil` | `utcnow`, `to_iso`, `parse_iso`. |
 | `errors` | `ConnectorError`, `ConfigError`. |
 
+`otter_schema` sits alongside it: schema references, so a mapping names fields
+that were pulled from the system rather than typed from memory. See
+[otter_schema/README.md](otter_schema/README.md).
+
 ## Two things these clients handle that are easy to miss
 
 **TLS on a developer Mac.** The python.org macOS installers ship no CA store, so

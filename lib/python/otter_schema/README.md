@@ -1,0 +1,107 @@
+# otter_schema
+
+Schema references for integration mappings.
+
+An integration's mapping names fields on two systems. Written as bare strings,
+those names are unchecked: `"ProductName"` is legal Python, passes every test,
+and is rejected by Salesforce one record at a time inside a run that still
+reports `succeeded`. Nothing tells you.
+
+This package replaces the strings with references into a schema pulled from the
+system itself. A wrong name then fails at **import**, before a run exists.
+
+```python
+from schema.salesforce import Product2
+from schema.shopify import ProductVariant
+
+mapping = {
+    Product2.Name:                  ProductVariant.title,
+    Product2.ProductCode:           ProductVariant.sku,
+    Product2.Shopify_Variant_Id__c: ProductVariant.id,
+}
+
+MAX_FIELD_LENGTH = limits(mapping)      # lengths from the org, not a hand-copied table
+```
+
+## A reference *is* a string
+
+`Field` subclasses `str`. That is the whole design, and it means
+`otter_connectors.records` needs no change at all: the mapping grammar already
+accepts a string as a key, as a source path, and as the first half of a
+`(path, transform)` pair. So a schema reference drops into an existing
+integration with no re-release of the mapping engine that every other
+integration shares.
+
+The metadata is what a mapping would otherwise restate by hand:
+
+| Attribute | Replaces |
+| --- | --- |
+| `length` | a hand-maintained `MAX_FIELD_LENGTH` table |
+| `external_id`, `unique` | "is my upsert key actually an upsert key?" |
+| `required` | "will the org reject an empty value?" |
+| `read_only` | "can I write this at all?" |
+| `picklist` | "will the org accept this value?" |
+| `reference_to` | which object a lookup points at |
+
+## Pulling a schema
+
+From the repository root:
+
+```sh
+make sync-schema INTEGRATION=shopify-product-to-salesforce-product
+```
+
+That is the whole command. Everything else is discovered: the object name,
+instance URL and API version come from the integration's `otter.yaml`, and the
+credentials from `otter.env` at the checkout root. Precedence is flag, then an
+explicit environment variable, then the env file, then the manifest -- so a
+one-off retarget needs no edit:
+
+```sh
+SALESFORCE_OBJECT=Contact make sync-schema INTEGRATION=shopify-to-salesforce
+```
+
+Equivalent without make -- no `PYTHONPATH`, no sourcing:
+
+```sh
+python3 lib/python/otter_schema/pull.py \
+    --integration integrations/shopify-product-to-salesforce-product
+```
+
+Output lands in `<integration>/schema/salesforce/` and is meant to be
+**committed**: it is part of the artifact, and a developer should be able to read
+and autocomplete it without network access.
+
+| Flag | Meaning |
+| --- | --- |
+| `--integration DIR` | the integration directory (default: the current one) |
+| `--object NAME` | sObject API name; repeatable. Default: `SALESFORCE_OBJECT` |
+| `--env-file PATH` | shared credentials (default: `<checkout>/otter.env`) |
+| `--out DIR` | output directory. Default: `<integration>/schema/salesforce` |
+| `--instance-url URL` | default: the manifest, else `$SALESFORCE_INSTANCE_URL` |
+| `--api-version V` | default: the manifest, else `$SALESFORCE_API_VERSION`, else `62.0` |
+| `--picklists` | embed each picklist's active values (off by default: a country picklist is hundreds of lines) |
+| `--dry-run` | print the module, write nothing |
+
+Pulling one object never drops another: the package index is rebuilt by scanning
+the directory.
+
+## The caveat that matters
+
+**A stored schema is a second source of truth, and a stale one is worse than
+none** — it validates against an org that no longer exists, and does so
+confidently.
+
+The mitigation is not built yet: a `--check` that re-describes and diffs, to run
+in CI or before a deploy. Until then, treat `schema/` as a snapshot with a
+`Fetched:` timestamp on it and re-pull when you touch an integration. The
+snapshot is still strictly better than hand-typed names, which are stale the
+moment someone edits the org and wrong from the start when a name is a typo.
+
+## What is not here yet
+
+* Shopify introspection. The same idea applies, and the Shopify side has full
+  schema introspection available even without data scopes — but it is a typed
+  graph rather than a flat field list, so it needs a different shape.
+* Deriving the GraphQL query from the mapping's source paths, which is what
+  would remove the `source.py` ↔ `mapping.py` drift for good.
