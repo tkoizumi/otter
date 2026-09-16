@@ -167,6 +167,9 @@ PYTHON       ?= python3
 API          ?= http://127.0.0.1:7337
 API_PORT     ?= 7337
 
+# Which system to pull a schema from. Each writes to schema/<SYSTEM>/.
+SYSTEM       ?= salesforce
+
 # Objects to pull for `sync-schema`, space-separated. Empty means "whatever the
 # manifest says", which is the common case; set it to pull several, or to
 # retarget, without editing anything:
@@ -208,10 +211,11 @@ sync-release:
 	@$(OTTER) release --integrations $(INTEGRATIONS) --data $(DATA) --shared ../../lib $(INTEGRATION)
 	@$(OTTER) release --list --data $(DATA) $(INTEGRATION)
 
-## sync-schema: pull the integration's Salesforce schema (OBJECT= to override)
+## sync-schema: pull the integration's schema (SYSTEM=, OBJECT= to override)
 sync-schema:
 	@$(PYTHON) lib/python/otter_schema/pull.py \
 	  --integration $(INTEGRATIONS)/$(INTEGRATION) \
+	  --system $(SYSTEM) \
 	  $(foreach obj,$(OBJECT),--object $(obj))
 
 ## sync-up: start the daemon with its environment (Ctrl-C stops)

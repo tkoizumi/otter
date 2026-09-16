@@ -12,7 +12,7 @@ from otter_connectors.records import build_record  # noqa: E402
 from otter_schema import Field, limits  # noqa: E402
 from otter_schema.generate import attribute_name, render_init, render_module  # noqa: E402
 from otter_schema.pull import (  # noqa: E402
-    find_repo_root, object_names, read_env_file, read_manifest_env,
+    find_repo_root, main, object_names, read_env_file, read_manifest_env,
 )
 
 DESCRIBE = {
@@ -37,7 +37,8 @@ DESCRIBE = {
 
 
 def render(**overrides):
-    kwargs = dict(instance_url="https://example.my.salesforce.com",
+    kwargs = dict(system="salesforce", integration="integrations/demo",
+                  source_url="https://example.my.salesforce.com",
                   api_version="62.0", fetched_at="2026-09-16T00:00:00Z")
     kwargs.update(overrides)
     return render_module("Product2", DESCRIBE, **kwargs)
@@ -170,7 +171,8 @@ class GeneratorOutput(unittest.TestCase):
         self.assertIn("Shopify_Variant_Id__c = Field(", source)
 
     def test_an_empty_object_still_produces_a_class(self):
-        source = render_module("Empty", {"fields": []}, instance_url="u",
+        source = render_module("Empty", {"fields": []}, system="salesforce",
+                               integration="i", source_url="u",
                                api_version="62.0", fetched_at="t")
         self.assertIn("class Empty:", source)
         self.assertIn("pass", source)
@@ -191,7 +193,8 @@ class AttributeNames(unittest.TestCase):
 
     def test_a_sanitised_name_still_carries_the_real_api_name(self):
         describe = {"fields": [{"name": "class", "type": "string", "createable": True}]}
-        source = render_module("Weird", describe, instance_url="u",
+        source = render_module("Weird", describe, system="salesforce",
+                               integration="i", source_url="u",
                                api_version="62.0", fetched_at="t")
         self.assertIn('class_ = Field("class",', source)
 
@@ -251,6 +254,37 @@ class ManifestEnv(unittest.TestCase):
         """)
         with self.assertRaises(ValueError):
             read_manifest_env(path)
+
+
+class GeneratedHeader(unittest.TestCase):
+    """A generated file has to say where it came from and how to remake it."""
+
+    def test_it_names_the_system_it_was_pulled_from(self):
+        source = render()
+        self.assertIn("System:       salesforce", source)
+        self.assertIn("Source:       https://example.my.salesforce.com", source)
+        self.assertIn("Fetched:      2026-09-16T00:00:00Z", source)
+
+    def test_the_regenerate_hint_can_be_pasted(self):
+        source = render()
+        self.assertIn("make sync-schema INTEGRATION=integrations/demo "
+                      "SYSTEM=salesforce OBJECT=Product2", source)
+
+    def test_without_an_integration_the_hint_still_names_the_object(self):
+        source = render(integration="")
+        self.assertIn("make sync-schema SYSTEM=salesforce OBJECT=Product2", source)
+
+
+class UnknownSystem(unittest.TestCase):
+    """A second system is coming. Until then, asking for one must be a clear
+    error rather than a confusing failure further down."""
+
+    def test_it_is_rejected_before_anything_network_facing(self):
+        import tempfile
+        with self.assertRaises(SystemExit) as caught:
+            main(["--system", "shopify", "--integration", tempfile.mkdtemp()])
+        self.assertIn("shopify", str(caught.exception))
+        self.assertIn("salesforce", str(caught.exception))
 
 
 class ObjectNames(unittest.TestCase):

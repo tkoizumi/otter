@@ -59,7 +59,13 @@ one-off retarget needs no edit:
 
 ```sh
 SALESFORCE_OBJECT=Contact make sync-schema INTEGRATION=shopify-to-salesforce
+make sync-schema INTEGRATION=x SYSTEM=salesforce OBJECT="Contact Shopify_Order__c"
 ```
+
+`SYSTEM` selects which system to pull from and writes to `schema/<SYSTEM>/`.
+Only `salesforce` is implemented so far; asking for another is a clear error
+rather than a confusing failure later. `OBJECT` takes several, space- or
+comma-separated.
 
 Equivalent without make -- no `PYTHONPATH`, no sourcing:
 
@@ -75,6 +81,7 @@ and autocomplete it without network access.
 | Flag | Meaning |
 | --- | --- |
 | `--integration DIR` | the integration directory (default: the current one) |
+| `--system NAME` | which system to pull from (default: `salesforce`); output goes to `schema/<NAME>/` |
 | `--object NAME` | sObject API name; repeatable. Default: `SALESFORCE_OBJECT` |
 | `--env-file PATH` | shared credentials (default: `<checkout>/otter.env`) |
 | `--out DIR` | output directory. Default: `<integration>/schema/salesforce` |

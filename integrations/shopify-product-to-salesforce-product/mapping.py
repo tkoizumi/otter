@@ -15,8 +15,6 @@ mechanics -- stripping, dropping empties, truncating, joining, matching picklist
 -- live in ``otter_connectors``.
 """
 
-from otter_connectors.records import joined, text
-from otter_connectors.salesforce import pick_allowed
 from otter_connectors.shopify import numeric_id
 
 __all__ = ["MAX_FIELD_LENGTH", "variant_mapping"]

@@ -36,10 +36,16 @@ from otter_connectors.salesforce import DEFAULT_API_VERSION, SalesforceClient  #
 from otter_schema.generate import module_name, render_init, render_module  # noqa: E402
 
 __all__ = ["find_repo_root", "main", "object_names", "read_env_file",
-           "read_manifest_env"]
+           "read_manifest_env", "relative_integration"]
 
 #: Where the shared credentials file lives inside a checkout.
 SHARED_ENV_FILE = "otter.env"
+
+#: Systems a schema can be pulled from. Each names its own output directory,
+#: ``schema/<system>/``. Only one implementation exists so far; the tuple is the
+#: place a second one announces itself.
+SYSTEMS = ("salesforce",)
+DEFAULT_SYSTEM = "salesforce"
 
 
 def find_repo_root(start):
@@ -150,6 +156,9 @@ def parse_args(argv):
     parser.add_argument("--object", action="append", default=[],
                         help="sObject API name; repeatable and/or comma-separated "
                              "(default: the manifest's SALESFORCE_OBJECT)")
+    parser.add_argument("--system", default=DEFAULT_SYSTEM,
+                        help="system to pull from: " + ", ".join(SYSTEMS)
+                             + " (default " + DEFAULT_SYSTEM + ")")
     parser.add_argument("--env-file", default="",
                         help="shared credentials file (default: <checkout>/" + SHARED_ENV_FILE + ")")
     parser.add_argument("--out", default="",
@@ -164,6 +173,19 @@ def parse_args(argv):
     parser.add_argument("--dry-run", action="store_true",
                         help="print the module and write nothing")
     return parser.parse_args(argv)
+
+
+def relative_integration(integration, repo):
+    """The integration directory relative to the checkout, for the generated
+    header's regenerate hint. Falls back to the absolute path when it is not
+    inside the checkout, which keeps the hint honest rather than pretty."""
+    try:
+        relative = os.path.relpath(integration, repo)
+    except ValueError:
+        return integration
+    if relative.startswith(".."):
+        return integration
+    return relative
 
 
 def object_names(values):
@@ -184,6 +206,9 @@ def object_names(values):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.system not in SYSTEMS:
+        raise SystemExit("otter: unknown schema system %r; known systems: %s"
+                         % (args.system, ", ".join(SYSTEMS)))
     integration = os.path.abspath(args.integration)
 
     repo = find_repo_root(integration) or os.getcwd()
@@ -205,7 +230,7 @@ def main(argv=None):
             "otter: no instance URL. Add SALESFORCE_INSTANCE_URL to the manifest's "
             "env: block, or to %s, or pass --instance-url." % env_file)
     api_version = args.api_version or setting("SALESFORCE_API_VERSION", DEFAULT_API_VERSION)
-    out_dir = args.out or os.path.join(integration, "schema", "salesforce")
+    out_dir = args.out or os.path.join(integration, "schema", args.system)
 
     client = SalesforceClient(
         instance_url=instance_url,
@@ -226,7 +251,9 @@ def main(argv=None):
         fields += len(describe.get("fields") or [])
         source = render_module(
             object_name, describe,
-            instance_url=client.instance_url,
+            system=args.system,
+            integration=relative_integration(integration, repo),
+            source_url=client.instance_url,
             api_version=api_version,
             fetched_at=fetched_at,
             include_picklists=args.picklists,
