@@ -507,3 +507,105 @@ func TestOnlyLayoutTravelsToADifferentHost(t *testing.T) {
 		t.Errorf("DataDir = %q, want the recorded layout", cfg.Target.DataDir)
 	}
 }
+
+// The shared credentials file is optional, lives at the repository root, and is
+// the only environment file a deploy reads. Per-integration .env files are
+// deliberately ignored: the daemon's environment is a single process
+// environment, so they isolated nothing while turning one rotated credential
+// into an N-file edit.
+func TestSharedEnvResolution(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo, "integrations", "one")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A per-integration .env exists, and must not be picked up.
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SHOPIFY_CLIENT_ID=per-integration\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Absent: no shared file, and that is not an error.
+	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SharedEnv != "" {
+		t.Errorf("SharedEnv = %q, want empty; a per-integration .env must not be used", cfg.SharedEnv)
+	}
+
+	// Present at the default location.
+	path := filepath.Join(repo, SharedEnvFileName)
+	if err := os.WriteFile(path, []byte("SHOPIFY_CLIENT_ID=shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SharedEnv != path {
+		t.Errorf("SharedEnv = %q, want %q", cfg.SharedEnv, path)
+	}
+
+	// --env-file wins, and a relative path resolves against the checkout.
+	other := filepath.Join(repo, "prod.env")
+	if err := os.WriteFile(other, []byte("SHOPIFY_CLIENT_ID=prod\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig(repo, &Flags{EnvFile: "prod.env", set: map[string]bool{}}, State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SharedEnv != other {
+		t.Errorf("SharedEnv = %q, want the explicit %q", cfg.SharedEnv, other)
+	}
+}
+
+// A missing credential is reported once, naming every integration that needs
+// it: the file is shared, so the same absence cannot be fixed per integration.
+func TestMissingSecretsNamesEveryIntegration(t *testing.T) {
+	shared := filepath.Join(t.TempDir(), SharedEnvFileName)
+	if err := os.WriteFile(shared, []byte("SHOPIFY_CLIENT_ID=abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{SharedEnv: shared, Integrations: []string{"alpha", "beta"}}
+	missing := cfg.MissingSecrets(map[string][]string{
+		"alpha": {"SHOPIFY_CLIENT_ID", "SALESFORCE_CLIENT_SECRET"},
+		"beta":  {"SALESFORCE_CLIENT_SECRET"},
+	})
+
+	if len(missing) != 1 {
+		t.Fatalf("missing = %v, want one entry for the one absent key", missing)
+	}
+	if !strings.Contains(missing[0], "SALESFORCE_CLIENT_SECRET") {
+		t.Errorf("entry does not name the absent key: %q", missing[0])
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if !strings.Contains(missing[0], name) {
+			t.Errorf("entry does not name %s: %q", name, missing[0])
+		}
+	}
+	if strings.Contains(missing[0], "SHOPIFY_CLIENT_ID") {
+		t.Errorf("a key present in the shared file was reported missing: %q", missing[0])
+	}
+}
+
+// With no shared file, the report points at the file that is missing rather
+// than at a per-integration path that no longer exists.
+func TestMissingSecretsPointsAtTheSharedFile(t *testing.T) {
+	cfg := Config{Integrations: []string{"alpha"}}
+	missing := cfg.MissingSecrets(map[string][]string{"alpha": {"SHOPIFY_CLIENT_ID"}})
+
+	if len(missing) != 1 {
+		t.Fatalf("missing = %v, want one entry", missing)
+	}
+	if !strings.Contains(missing[0], SharedEnvFileName) {
+		t.Errorf("entry does not name %s: %q", SharedEnvFileName, missing[0])
+	}
+}

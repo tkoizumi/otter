@@ -98,8 +98,8 @@ In order:
    deleted integration or mapping file actually disappears; the binary tree is
    pushed separately so the running daemon's executable is never the target of
    a partial write.
-5. **Write secrets** — one `/etc/otter/<integration>.env` per integration,
-   mode `0600`. The contents travel over SSH **stdin**, never in a command
+5. **Write credentials** — `/etc/otter/shared.env`, mode `0600`, shared by
+   every integration. The contents travel over SSH **stdin**, never in a command
    line: `argv` is visible to every process on the host for the lifetime of the
    call.
 6. **Install and restart** the systemd unit, then poll the health endpoint on
@@ -139,12 +139,13 @@ drift:
 | `otter deploy` | uploaded to `/etc/otter/daemon.env`, loaded by the unit |
 
 ```
-EnvironmentFile=-/etc/otter/daemon.env                        ← optional
-EnvironmentFile=/etc/otter/shopify-to-salesforce.env          ← per-integration secrets
+EnvironmentFile=-/etc/otter/daemon.env    ← optional; daemon settings
+EnvironmentFile=-/etc/otter/shared.env    ← optional; shared credentials
 ```
 
-The leading dash on the daemon file is deliberate: a checkout without one
-deploys and starts normally.
+The leading dash on both is deliberate: a checkout without either deploys and
+starts normally. Order matters — systemd applies a later `EnvironmentFile` over
+an earlier one, so daemon settings load first and credentials second.
 
 ### Notification formats
 
@@ -188,38 +189,67 @@ that fails silently fails exactly when it is needed.
 notification URL embeds a credential in its path, so it cannot live there. It is
 also per-integration, while notification is a property of the daemon.
 
-### Why not the integration's .env
+### Why not the shared credentials file
 
-That file is scoped to one integration and documented as its secrets. A daemon
-setting placed there applies only while that integration is being deployed, and
-it reads as though it were a credential. `SSL_CERT_FILE` ended up in one by
-accident, which is exactly this failure mode.
+That file is documented as credentials, so a daemon setting placed there reads
+as though it were a secret. `SSL_CERT_FILE` ended up in a per-integration
+credentials file by accident, which is exactly this failure mode.
 
 ## Secrets
 
-Each integration's secrets live in `<integration>/.env` locally and become
-`/etc/otter/<integration>.env` on the host, owned by root with mode `0600`,
-loaded by systemd's `EnvironmentFile=`.
+Credentials live in `otter.env` at the repository root, shared by every
+integration. At deploy it becomes `/etc/otter/shared.env`, owned by root with
+mode `0600`, loaded by systemd's `EnvironmentFile=`.
 
 ```sh
-cp integrations/shopify-to-salesforce/.env.example integrations/shopify-to-salesforce/.env
-$EDITOR integrations/shopify-to-salesforce/.env
+cp integrations/shopify-to-salesforce/.env.example otter.env
+$EDITOR otter.env
 otter deploy --host droplet
 ```
+
+**One file, not one per integration.** The daemon's environment is a single
+process environment — every `EnvironmentFile=` is merged into it — and an
+integration receives only the keys its own manifest declares. So a
+per-integration file isolated nothing: it just turned one rotated credential
+into an N-file edit and let those copies drift apart.
+
+What remains per-integration is the *declaration*: `secrets:` in `otter.yaml`
+lists what that integration needs, which is what lets the daemon refuse to start
+it when a credential is absent. Storage is shared; requirements are not.
 
 The file format is the boring subset systemd itself supports — `KEY=value`,
 one per line, optional quotes, `#` comments. Anything more exotic is rejected
 rather than guessed at, because a misread credential is worse than a loud
-failure. To use one secrets file for every integration:
+failure. To point at a different shared file:
 
 ```sh
 otter deploy --host droplet --env-file ~/.otter/shopify-prod.env
 ```
 
 `otter deploy` warns about any variable listed in a manifest's `secrets:` that
-it could not find, but it still deploys: the daemon reports missing secrets far
-more clearly than the deploy command can, and refusing to deploy would make it
-impossible to ship a fix for exactly that problem.
+it could not find, naming every integration that needs it, but it still deploys:
+the daemon reports missing secrets far more clearly than the deploy command can,
+and refusing to deploy would make it impossible to ship a fix for exactly that
+problem.
+
+### An integration that needs a different value
+
+Two integrations talking to two stores share key *names*
+(`SHOPIFY_CLIENT_ID`) but not values. Give each credential a distinct name in
+`otter.env` and bind it in the manifest, which expands `${VAR}` from the shared
+file:
+
+```yaml
+# integrations/shopify-orders-to-salesforce/otter.yaml
+env:
+  SHOPIFY_CLIENT_ID: ${ORDERS_STORE_CLIENT_ID}
+  SHOPIFY_CLIENT_SECRET: ${ORDERS_STORE_CLIENT_SECRET}
+```
+
+The difference is then part of the artifact — committed, visible in
+`otter inspect`, and carried in the release — rather than a file whose contents
+you have to go and find. `otter inspect` shows the template, not the expanded
+value, so the credential itself stays out of the output.
 
 ## The API token
 
@@ -291,7 +321,7 @@ previous successful deploy, then the command line.
 | `--service-user` | service account | `otter` |
 | `--listen` | remote API address | `127.0.0.1:7337` |
 | `--platform` | `GOOS/GOARCH`, skips detection | detected over SSH |
-| `--env-file` | one secrets file for all integrations | each `<integration>/.env` |
+| `--env-file` | shared credentials file | `otter.env` |
 | `--api-token`, `--rotate-token` | token handling | stored token |
 | `--dry-run` | print the plan, change nothing | off |
 | `--verbose` | stream every remote command | off |

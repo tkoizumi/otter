@@ -179,7 +179,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	if err := d.writeDaemonEnv(ctx); err != nil {
 		return nil, err
 	}
-	envRevision, err := d.writeEnvFiles(ctx)
+	envRevision, err := d.writeSharedEnv(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 
 	// --- activate ----------------------------------------------------------
 	d.step("install", "writing %s and restarting %s", cfg.Target.UnitPath(), cfg.Target.ServiceUnit())
-	if err := d.Runner.RunScript(ctx, ActivateScript(cfg.Target, cfg.Integrations)); err != nil {
+	if err := d.Runner.RunScript(ctx, ActivateScript(cfg.Target)); err != nil {
 		return nil, d.hint(err)
 	}
 	if err := d.Runner.RunScript(ctx, ServiceStatusScript(cfg.Target)); err != nil {
@@ -473,50 +473,61 @@ chmod 0600 ` + ShellQuote(path) + `
 	return nil
 }
 
-// writeEnvFiles writes one environment file per integration over SSH stdin and
-// returns a hash of their contents.
+// writeSharedEnv writes the credentials file every integration draws from, over
+// SSH stdin, and returns a hash of its contents.
+//
+// One file, not one per integration. The daemon merges every EnvironmentFile=
+// into a single process environment and each integration receives only the keys
+// its manifest declares, so per-integration files never isolated anything --
+// they just made rotating one credential an N-file edit.
 //
 // Secrets never appear in a command line, not even a quoted one: argv is
 // visible to every process on the host for the lifetime of the call.
-func (d *Deployer) writeEnvFiles(ctx context.Context) (string, error) {
+func (d *Deployer) writeSharedEnv(ctx context.Context) (string, error) {
 	cfg := d.Config
 	h := newHasher()
 
-	for _, name := range cfg.Integrations {
-		secrets := map[string]string{}
-		if path := cfg.EnvFiles[name]; path != "" {
-			loaded, err := LoadSecrets(path)
-			if err != nil {
-				return "", fmt.Errorf("read secrets for %s: %w", name, err)
-			}
-			secrets = loaded
+	secrets := map[string]string{}
+	if cfg.SharedEnv != "" {
+		loaded, err := LoadSecrets(cfg.SharedEnv)
+		if err != nil {
+			return "", fmt.Errorf("read shared environment %s: %w", cfg.SharedEnv, err)
 		}
+		secrets = loaded
+	}
 
-		content := EnvFile(name, cfg.Target.APIToken, secrets)
-		h.add(name, content)
+	// The API token lives here too, and it is worth writing even with no
+	// secrets: the CLI on the host reads it from this directory to reach a
+	// loopback API without an operator exporting it by hand.
+	if len(secrets) == 0 && cfg.Target.APIToken == "" {
+		d.step("secrets", "nothing shared to configure; no %s written", SharedEnvFileName)
+		return h.sum(), nil
+	}
 
-		if len(secrets) == 0 {
-			d.step("secrets", "%s: no secrets file, deploying anyway (the daemon will "+
-				"refuse to run it until its secrets are present)", name)
-		} else {
-			d.step("secrets", "%s: %d variable(s) from %s", name, len(secrets), cfg.EnvFiles[name])
-		}
+	content := SharedEnvFile(cfg.Target.APIToken, secrets)
+	h.add("shared", content)
 
-		path := cfg.Target.EnvFilePath(name)
-		// The directory is created here rather than only by the install script:
-		// secrets are written before the unit is installed, so nothing else has
-		// made the directory yet, and a deploy must not depend on the ordering
-		// of two otherwise independent steps.
-		script := `set -e
+	if len(secrets) == 0 {
+		d.step("secrets", "no %s, deploying anyway (the daemon will refuse to run "+
+			"an integration whose declared secrets are absent)", SharedEnvFileName)
+	} else {
+		d.step("secrets", "%d variable(s) from %s", len(secrets), cfg.SharedEnv)
+	}
+
+	path := cfg.Target.SharedEnvFilePath()
+	// The directory is created here rather than only by the install script:
+	// secrets are written before the unit is installed, so nothing else has
+	// made the directory yet, and a deploy must not depend on the ordering
+	// of two otherwise independent steps.
+	script := `set -e
 umask 077
 install -d -m 0700 ` + ShellQuote(cfg.Target.EnvDir()) + `
 cat > ` + ShellQuote(path) + ` <<'OTTER_ENV_EOF'
 ` + content + `OTTER_ENV_EOF
 chmod 0600 ` + ShellQuote(path) + `
 `
-		if err := d.Runner.RunScript(ctx, script); err != nil {
-			return "", fmt.Errorf("write %s: %w", path, err)
-		}
+	if err := d.Runner.RunScript(ctx, script); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
 	}
 	return h.sum(), nil
 }
@@ -601,17 +612,16 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 	d.step("plan", "install:   %s (unit %s)", cfg.Target.RemoteDir, cfg.Target.ServiceUnit())
 	d.step("plan", "data:      %s (never written by a deploy)", cfg.Target.DataDir)
 	d.step("plan", "api:       %s (loopback; reach it with ssh -L)", cfg.Target.APIURL())
-	for _, name := range cfg.Integrations {
-		if path := cfg.EnvFiles[name]; path != "" {
-			d.step("plan", "secrets:   %s <- %s", name, path)
-		} else {
-			d.step("plan", "secrets:   %s <- none", name)
-		}
-	}
 	if cfg.DaemonEnv != "" {
 		d.step("plan", "daemon:    %s -> %s", cfg.DaemonEnv, cfg.Target.DaemonEnvFilePath())
 	} else {
 		d.step("plan", "daemon:    no %s; nothing daemon-wide to configure", DaemonEnvFileName)
+	}
+	if cfg.SharedEnv != "" {
+		d.step("plan", "secrets:   %s -> %s (shared by every integration)",
+			cfg.SharedEnv, cfg.Target.SharedEnvFilePath())
+	} else {
+		d.step("plan", "secrets:   no %s; integrations rely on their manifest env", SharedEnvFileName)
 	}
 	if managed := d.managedIntegrations(cfg); len(managed) > 0 {
 		d.step("plan", "release:   would stage, prepare and activate %s", strings.Join(managed, ", "))

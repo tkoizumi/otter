@@ -258,9 +258,9 @@ Use the same systemd setup as a VM, but tune for the hardware:
 
 ## The API token on the host
 
-`otter deploy` writes the API token into `/etc/otter/<integration>.env`, and
-systemd loads it for the daemon. An operator's shell is a different process, so
-on the host every command would otherwise start with a 401.
+`otter deploy` writes the API token into `/etc/otter/shared.env`, and systemd
+loads it for the daemon. An operator's shell is a different process, so on the
+host every command would otherwise start with a 401.
 
 The CLI therefore reads the token from that file itself, but **only when the API
 is on loopback**. On the host:
@@ -311,7 +311,7 @@ INFO cron_fired integration=shopify-to-salesforce cron=*/5 * * * *
 To keep that output, start the daemon with a log file instead of `make sync-up`:
 
 ```sh
-set -a; . integrations/shopify-to-salesforce/.env; set +a
+set -a; . ./otter.env; set +a
 ./bin/otterd --integrations ./integrations --data ./tmp --log-format pretty \
   2>&1 | tee /tmp/otter.log
 ```

@@ -27,10 +27,11 @@ type Config struct {
 	// Integrations is the ordered list of integration names to ship.
 	Integrations []string
 
-	// EnvFiles maps an integration name to the local file holding its secrets.
-	// An integration without an entry is deployed without secrets and warned
-	// about.
-	EnvFiles map[string]string
+	// SharedEnv is the resolved environment file holding credentials that every
+	// integration may use. Empty means the checkout has none; the deploy
+	// proceeds anyway, because the daemon reports a missing secret far more
+	// clearly than this command can.
+	SharedEnv string
 
 	// Version is the build version, reported by the deployed daemon.
 	Version string
@@ -100,6 +101,20 @@ const ConfigFileName = "otter.deploy.yaml"
 // secrets file, so one file has one meaning in both places.
 const DaemonEnvFileName = "otter.daemon.env"
 
+// SharedEnvFileName is the credentials file at the repository root, shared by
+// every integration.
+//
+// It is deliberately not per-integration. The daemon's environment is a single
+// process environment -- every EnvironmentFile= is merged into it -- and an
+// integration receives only the keys its own manifest declares. So a
+// per-integration file isolated nothing; it just turned one rotated credential
+// into an N-file edit and let those copies drift apart.
+//
+// Named without a leading dot for the same reason as otter.daemon.env: it is
+// configuration an operator has to find and edit. The *.env gitignore rule is
+// what actually keeps it out of git.
+const SharedEnvFileName = "otter.env"
+
 // DaemonEnvIntegrationName is reserved: an integration of this name would
 // write to the same remote path as the daemon-wide environment file.
 const DaemonEnvIntegrationName = "daemon"
@@ -132,7 +147,7 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.Target.Platform, "platform", "", "remote GOOS/GOARCH; detected over SSH when empty")
 	fs.BoolVar(&f.Target.RotateAPIToken, "rotate-token", false, "generate and install a fresh API token")
 	fs.StringVar(&f.Target.APIToken, "api-token", "", "use this API token instead of the stored or remote one")
-	fs.StringVar(&f.EnvFile, "env-file", "", "secrets file applied to every integration")
+	fs.StringVar(&f.EnvFile, "env-file", "", "shared credentials file for every integration (default "+SharedEnvFileName+")")
 	fs.StringVar(&f.DaemonEnv, "daemon-env", "", "daemon-wide environment file (default "+DaemonEnvFileName+")")
 	fs.StringVar(&f.Integration, "integration", "", "deploy only this integration, leaving the others untouched")
 	fs.StringVar(&f.ConfigFor, "config", "", "deploy config file (default "+ConfigFileName+")")
@@ -190,7 +205,6 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	cfg := Config{
 		RepoRoot:         repoRoot,
 		IntegrationsPath: repoRoot + "/" + LocalIntegrationsDir,
-		EnvFiles:         map[string]string{},
 		DryRun:           f.DryRun,
 		Verbose:          f.Verbose,
 		Timeout:          f.Timeout,
@@ -244,6 +258,18 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	daemonEnv = resolveRelative(repoRoot, daemonEnv)
 	if _, err := os.Stat(daemonEnv); err == nil {
 		cfg.DaemonEnv = daemonEnv
+	}
+
+	// 5. The shared credentials file, which every integration draws from. Also
+	//    optional: an integration whose secrets all come from its own manifest
+	//    needs none, and a deployment with no credentials at all is legal.
+	sharedEnv := f.EnvFile
+	if sharedEnv == "" {
+		sharedEnv = filepath.Join(repoRoot, SharedEnvFileName)
+	}
+	sharedEnv = resolveRelative(repoRoot, sharedEnv)
+	if _, err := os.Stat(sharedEnv); err == nil {
+		cfg.SharedEnv = sharedEnv
 	}
 
 	if err := cfg.resolveIntegrations(f); err != nil {
@@ -395,19 +421,6 @@ func (c *Config) resolveIntegrations(f *Flags) error {
 		c.Limited = true
 	}
 	c.Integrations = names
-
-	for _, name := range names {
-		path := f.EnvFile
-		if path == "" {
-			candidate := c.IntegrationsPath + "/" + name + "/.env"
-			if _, err := os.Stat(candidate); err == nil {
-				path = candidate
-			}
-		}
-		if path != "" {
-			c.EnvFiles[name] = path
-		}
-	}
 	return nil
 }
 
@@ -429,26 +442,49 @@ func (c *Config) Validate() error {
 }
 
 // MissingSecrets lists the secret variables a deployment needs but could not
-// find, either in an integration's env file or in the local environment.
+// find, either in the shared credentials file or in the local environment.
+//
+// A missing key is reported once, naming every integration that needs it: the
+// file is shared, so the same absence cannot be fixed per integration.
 func (c *Config) MissingSecrets(required map[string][]string) []string {
-	var missing []string
+	neededBy := map[string][]string{}
+	var order []string
+
 	for _, name := range c.Integrations {
 		for _, key := range required[name] {
 			if _, ok := os.LookupEnv(key); ok {
 				continue
 			}
-			path := c.EnvFiles[name]
-			if path == "" {
-				missing = append(missing, fmt.Sprintf("%s (no %s found)", key, c.IntegrationsPath+"/"+name+"/.env"))
-				continue
+			if _, seen := neededBy[key]; !seen {
+				order = append(order, key)
 			}
-			secrets, err := LoadSecrets(path)
-			if err != nil {
-				missing = append(missing, fmt.Sprintf("%s (%v)", key, err))
-				continue
-			}
-			if _, ok := secrets[key]; !ok {
-				missing = append(missing, fmt.Sprintf("%s (absent from %s)", key, path))
+			neededBy[key] = append(neededBy[key], name)
+		}
+	}
+	if len(order) == 0 {
+		return nil
+	}
+
+	// One file, so read it once rather than once per key.
+	shared := map[string]string{}
+	var sharedErr error
+	if c.SharedEnv != "" {
+		shared, sharedErr = LoadSecrets(c.SharedEnv)
+	}
+
+	var missing []string
+	for _, key := range order {
+		who := strings.Join(neededBy[key], ", ")
+		switch {
+		case c.SharedEnv == "":
+			missing = append(missing, fmt.Sprintf("%s (needed by %s; no %s found)",
+				key, who, SharedEnvFileName))
+		case sharedErr != nil:
+			missing = append(missing, fmt.Sprintf("%s (needed by %s; %v)", key, who, sharedErr))
+		default:
+			if _, ok := shared[key]; !ok {
+				missing = append(missing, fmt.Sprintf("%s (needed by %s; absent from %s)",
+					key, who, c.SharedEnv))
 			}
 		}
 	}

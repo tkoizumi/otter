@@ -40,7 +40,8 @@ help:
 	@grep -hE '^## ' $(MAKEFILE_LIST) | sed -e 's/^## //' | awk -F': ' '{ printf "  %-18s %s\n", $$1, $$2 }'
 	@echo ""
 	@echo "Integration operations take INTEGRATION=$(INTEGRATION) (any directory"
-	@echo "under $(INTEGRATIONS)) and use $(ENV_FILE) for its secrets."
+	@echo "under $(INTEGRATIONS)). Credentials are shared by every integration and"
+	@echo "read from $(SHARED_ENV)."
 	@echo ""
 
 ## build: build ./bin/otterd and ./bin/otter with VERSION injected
@@ -143,13 +144,18 @@ tidy:
 # Defaults target the shipped Shopify -> Salesforce sync.
 #
 # These talk to a *running* daemon over its HTTP API, so they need no secrets
-# themselves; only `sync-up` loads the .env, because the daemon is what reads
-# the secrets.
+# themselves; only `sync-up` loads the environment files, because the daemon is
+# what reads the secrets.
 # ---------------------------------------------------------------------------
 
 INTEGRATION  ?= shopify-to-salesforce
 INTEGRATIONS ?= ./integrations
-ENV_FILE     ?= $(INTEGRATIONS)/$(INTEGRATION)/.env
+
+# Credentials, shared by every integration. One file rather than one per
+# integration: the daemon's environment is a single process environment, and an
+# integration only receives the keys its own manifest declares, so per-
+# integration files isolated nothing while making one rotation an N-file edit.
+SHARED_ENV   ?= ./otter.env
 
 # Daemon-wide settings (notification URL, log level, retention). Not committed,
 # not per-integration: it configures the daemon, so it applies locally and on
@@ -198,12 +204,13 @@ sync-release:
 ## sync-up: start the daemon with its environment (Ctrl-C stops)
 sync-up:
 	@test -x $(OTTERD) || { echo "missing $(OTTERD) -- run 'make build' first"; exit 1; }
-	@test -f $(ENV_FILE) || { echo "missing $(ENV_FILE)"; echo "  cp $(INTEGRATIONS)/$(INTEGRATION)/.env.example $(ENV_FILE)"; exit 1; }
+	@test -f $(SHARED_ENV) || { echo "missing $(SHARED_ENV)"; echo "  cp $(INTEGRATIONS)/$(INTEGRATION)/.env.example $(SHARED_ENV)"; exit 1; }
 	@if [ -f "$(DAEMON_ENV)" ]; then echo "daemon env: $(DAEMON_ENV)"; else echo "daemon env: none ($(DAEMON_ENV) not present)"; fi
+	@echo "shared env: $(SHARED_ENV)"
 	@echo "otterd on $(INTEGRATIONS), data in $(DATA), API on $(API) -- Ctrl-C to stop"
 	@set -a; \
 	  test -f "$(DAEMON_ENV)" && . $(DAEMON_ENV); \
-	  . $(ENV_FILE); \
+	  . $(SHARED_ENV); \
 	  set +a; \
 	  exec $(OTTERD) --integrations $(INTEGRATIONS) --data $(DATA) --listen $${OTTER_LISTEN:-127.0.0.1:$(API_PORT)} --log-format pretty
 

@@ -107,17 +107,29 @@ func (t Target) CLIPath() string    { return filepath.Join(t.RemoteDir, "bin", "
 // library with a relative path such as ../../lib/python.
 func (t Target) IntegrationsDir() string { return t.RemoteDir + "/integrations" }
 
-// EnvFilePath is the EnvironmentFile for one integration. Secrets never take
-// part in a command line: this file is written over SSH stdin.
-func (t Target) EnvFilePath(integration string) string {
-	return filepath.Join(t.EnvDir(), integration+".env")
+// SharedEnvFilePath is the environment file holding credentials that every
+// integration may use.
+//
+// One file, not one per integration. The daemon's environment is a single
+// process environment: every EnvironmentFile= is merged into it, and an
+// integration receives only the keys its manifest declares. So per-integration
+// files never isolated anything -- they only multiplied the number of places a
+// rotated credential had to be changed, and let those copies drift apart.
+// Secrets never take part in a command line: this file is written over SSH
+// stdin.
+func (t Target) SharedEnvFilePath() string {
+	return filepath.Join(t.EnvDir(), "shared.env")
 }
 
 // DaemonEnvFilePath is the daemon-wide environment file. It is separate from
-// the per-integration files because its settings belong to the daemon:
+// the shared credentials because its settings belong to the daemon:
 // notification endpoints, log level, retention. Putting them in an
 // integration's secrets file made them look like that integration's
 // credentials and gave them the wrong lifetime.
+//
+// The two are told apart by the OTTER_ prefix, which the executor strips from
+// the child environment: OTTER_* configures the daemon, everything else is
+// available to integrations.
 func (t Target) DaemonEnvFilePath() string {
 	return filepath.Join(t.EnvDir(), "daemon.env")
 }

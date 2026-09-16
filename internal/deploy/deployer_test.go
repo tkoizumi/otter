@@ -196,8 +196,8 @@ func newTestDeployer(t *testing.T, runner *fakeRunner, builder *fakeBuilder) (*D
 		t.Fatal(err)
 	}
 
-	secretsPath := filepath.Join(repo, "integration.env")
-	if err := os.WriteFile(secretsPath, []byte("SHOPIFY_CLIENT_ID=abc\nSHOPIFY_CLIENT_SECRET=def\n"), 0o600); err != nil {
+	sharedPath := filepath.Join(repo, SharedEnvFileName)
+	if err := os.WriteFile(sharedPath, []byte("SHOPIFY_CLIENT_ID=abc\nSHOPIFY_CLIENT_SECRET=def\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +205,7 @@ func newTestDeployer(t *testing.T, runner *fakeRunner, builder *fakeBuilder) (*D
 		RepoRoot:         repo,
 		IntegrationsPath: filepath.Join(repo, LocalIntegrationsDir),
 		Integrations:     []string{"counter"},
-		EnvFiles:         map[string]string{"counter": secretsPath},
+		SharedEnv:        sharedPath,
 		Version:          "v0.1.0-test",
 		Timeout:          30_000_000_000,
 		Target: Target{
