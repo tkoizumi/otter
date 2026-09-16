@@ -1,9 +1,9 @@
-"""How a Shopify product maps onto a Salesforce Contact.
+"""How a Shopify product variant maps onto a Salesforce Product2.
 
 **This is the file to edit when the field mapping changes.** Add an entry to
-``contact_mapping()``, and a length to ``MAX_FIELD_LENGTH`` if the target field
-has one; add the matching field to the query in ``source.py`` if Shopify is not
-already returning it.
+``variant_mapping()``; add the matching field to the query in ``source.py`` if
+Shopify is not already returning it. Target lengths come from the schema
+references themselves, so there is no truncation table to keep in step.
 
 It is deliberately pure: no environment reads, no I/O, and nothing imported from
 ``main`` or ``source``. That keeps it unit-testable on a dict fixture and means
@@ -17,17 +17,13 @@ mechanics -- stripping, dropping empties, truncating, joining, matching picklist
 
 from otter_connectors.shopify import numeric_id
 
-__all__ = ["MAX_FIELD_LENGTH", "variant_mapping"]
+from schema.salesforce import Product2
 
-#: Salesforce truncates silently rather than complaining, so do it here.
-#: Every mapped target should appear, so a long value cannot cost the record.
-MAX_FIELD_LENGTH = {
-    # 200 is the field's declared length in the org; Salesforce truncates
-    # silently, so declaring more than it holds would defeat this table.
-    "Shopify_Product_Id__c": 200,
-    "Shopify_Variant_Id__c": 200,
-    "Name": 200,
-}
+__all__ = ["variant_mapping"]
+
+# Salesforce truncates silently rather than complaining, so build_record does it
+# here from each target's declared length -- see Product2.Name.length. There is
+# deliberately no MAX_FIELD_LENGTH table: it would only restate the schema.
 
 
 def get_product_id(variant):
@@ -44,8 +40,8 @@ def get_variant_title(variant):
 
 def variant_mapping():
     mapping = {
-        "Shopify_Product_Id__c": get_product_id,
-        "Shopify_Variant_Id__c": get_variant_id,
-        "Name": get_variant_title,
+        Product2.Shopify_Product_Id__c: get_product_id,
+        Product2.Shopify_Variant_Id__c: get_variant_id,
+        Product2.Name: get_variant_title,
     }
     return mapping

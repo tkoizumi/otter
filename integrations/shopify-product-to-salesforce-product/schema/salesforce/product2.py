@@ -4,7 +4,7 @@ System:       salesforce
 Object:       Product2
 Source:       https://drive-energy-1561.my.salesforce.com
 API version:  62.0
-Fetched:      2026-09-16T20:44:24Z
+Fetched:      2026-09-16T20:49:28Z
 
 Regenerate with::
 
@@ -25,57 +25,113 @@ class Product2:
     """Fields on Product2."""
 
     CreatedById = Field(
-        "CreatedById", object_name="Product2", type="reference", length=18, read_only=True,
+        "CreatedById",
+        object_name="Product2",
+        type="reference",
+        length=18,
+        read_only=True,
         reference_to=("User"),
     )
-    CreatedDate = Field("CreatedDate", object_name="Product2", type="datetime", read_only=True)
-    Description = Field("Description", object_name="Product2", type="textarea", length=4000)
+    CreatedDate = Field(
+        "CreatedDate", object_name="Product2", type="datetime", read_only=True
+    )
+    Description = Field(
+        "Description", object_name="Product2", type="textarea", length=4000
+    )
     DisplayUrl = Field("DisplayUrl", object_name="Product2", type="url", length=1000)
     ExternalDataSourceId = Field(
-        "ExternalDataSourceId", object_name="Product2", type="reference", length=18,
+        "ExternalDataSourceId",
+        object_name="Product2",
+        type="reference",
+        length=18,
         reference_to=("ExternalDataSource"),
     )
     ExternalId = Field("ExternalId", object_name="Product2", type="string", length=255)
     Family = Field("Family", object_name="Product2", type="picklist", length=255)
     Id = Field("Id", object_name="Product2", type="id", length=18, read_only=True)
     IsActive = Field("IsActive", object_name="Product2", type="boolean")
-    IsArchived = Field("IsArchived", object_name="Product2", type="boolean", read_only=True)
-    IsDeleted = Field("IsDeleted", object_name="Product2", type="boolean", read_only=True)
+    IsArchived = Field(
+        "IsArchived", object_name="Product2", type="boolean", read_only=True
+    )
+    IsDeleted = Field(
+        "IsDeleted", object_name="Product2", type="boolean", read_only=True
+    )
     LastModifiedById = Field(
-        "LastModifiedById", object_name="Product2", type="reference", length=18, read_only=True,
+        "LastModifiedById",
+        object_name="Product2",
+        type="reference",
+        length=18,
+        read_only=True,
         reference_to=("User"),
     )
     LastModifiedDate = Field(
-        "LastModifiedDate", object_name="Product2", type="datetime", read_only=True,
+        "LastModifiedDate",
+        object_name="Product2",
+        type="datetime",
+        read_only=True,
     )
     LastReferencedDate = Field(
-        "LastReferencedDate", object_name="Product2", type="datetime", read_only=True,
+        "LastReferencedDate",
+        object_name="Product2",
+        type="datetime",
+        read_only=True,
     )
     LastViewedDate = Field(
-        "LastViewedDate", object_name="Product2", type="datetime", read_only=True,
+        "LastViewedDate",
+        object_name="Product2",
+        type="datetime",
+        read_only=True,
     )
-    Name = Field("Name", object_name="Product2", type="string", length=255, required=True)
+    Name = Field(
+        "Name", object_name="Product2", type="string", length=255, required=True
+    )
     ProductClass = Field(
-        "ProductClass", object_name="Product2", type="picklist", length=40, read_only=True,
+        "ProductClass",
+        object_name="Product2",
+        type="picklist",
+        length=40,
+        read_only=True,
     )
-    ProductCode = Field("ProductCode", object_name="Product2", type="string", length=255)
-    ProductPurpose = Field("ProductPurpose", object_name="Product2", type="picklist", length=40)
+    ProductCode = Field(
+        "ProductCode", object_name="Product2", type="string", length=255
+    )
+    ProductPurpose = Field(
+        "ProductPurpose", object_name="Product2", type="picklist", length=40
+    )
     QuantityUnitOfMeasure = Field(
-        "QuantityUnitOfMeasure", object_name="Product2", type="picklist", length=255,
+        "QuantityUnitOfMeasure",
+        object_name="Product2",
+        type="picklist",
+        length=255,
     )
     Shopify_Product_Id__c = Field(
-        "Shopify_Product_Id__c", object_name="Product2", type="string", length=200,
+        "Shopify_Product_Id__c",
+        object_name="Product2",
+        type="string",
+        length=200,
     )
     Shopify_Variant_Id__c = Field(
-        "Shopify_Variant_Id__c", object_name="Product2", type="string", length=200,
-        external_id=True, unique=True,
+        "Shopify_Variant_Id__c",
+        object_name="Product2",
+        type="string",
+        length=200,
+        external_id=True,
+        unique=True,
     )
-    StockKeepingUnit = Field("StockKeepingUnit", object_name="Product2", type="string", length=180)
+    StockKeepingUnit = Field(
+        "StockKeepingUnit", object_name="Product2", type="string", length=180
+    )
     SystemModstamp = Field(
-        "SystemModstamp", object_name="Product2", type="datetime", read_only=True,
+        "SystemModstamp",
+        object_name="Product2",
+        type="datetime",
+        read_only=True,
     )
     TaxPolicyId = Field(
-        "TaxPolicyId", object_name="Product2", type="reference", length=18,
+        "TaxPolicyId",
+        object_name="Product2",
+        type="reference",
+        length=18,
         reference_to=("TaxPolicy"),
     )
     Type = Field("Type", object_name="Product2", type="picklist", length=40)

@@ -18,13 +18,14 @@ string as a mapping key, as a source path, and as the first half of a
 no change to the mapping engine at all -- and therefore no re-release of every
 integration that shares it.
 
-The metadata is what a mapping would otherwise restate by hand: ``length``
-replaces a hand-copied truncation table, ``external_id``/``unique`` let an
-integration assert its own upsert key before the first record, and ``picklist``
-turns "will the org accept this value?" into a build-time question.
+The metadata is what a mapping would otherwise restate by hand. ``length`` is
+read by ``otter_connectors.records.build_record`` directly off the mapping's
+keys, so there is no truncation table to keep in step; ``external_id`` and
+``unique`` let an integration assert its own upsert key before the first record;
+``picklist`` turns "will the org accept this value?" into a build-time question.
 """
 
-__all__ = ["Field", "SchemaError", "limits"]
+__all__ = ["Field", "SchemaError"]
 
 
 class SchemaError(Exception):
@@ -68,18 +69,3 @@ class Field(str):
     def __repr__(self):
         return "Field(%s.%s)" % (self.object_name, str(self))
 
-
-def limits(mapping):
-    """Per-field lengths for ``records.truncate``, read off the schema.
-
-    Replaces the hand-maintained ``MAX_FIELD_LENGTH`` table: an integration can
-    derive it from the same references it already wrote::
-
-        MAX_FIELD_LENGTH = limits(mapping)
-    """
-    out = {}
-    for key in mapping:
-        length = getattr(key, "length", None)
-        if length:
-            out[key] = length
-    return out

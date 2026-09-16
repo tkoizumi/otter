@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from otter_connectors.records import (  # noqa: E402
     build_record,
+    effective_limits,
     joined,
     omit_empty,
     resolve,
@@ -16,6 +17,20 @@ from otter_connectors.records import (  # noqa: E402
     truncate,
     validate_mapping,
 )
+
+
+class Sized(str):
+    """Stands in for a schema reference: a string that knows its length.
+
+    Deliberately *not* an ``otter_schema.Field``. The convention has to work for
+    any str-like key, which is what keeps ``records`` from depending on the
+    schema package.
+    """
+
+    def __new__(cls, name, length=None):
+        self = super().__new__(cls, name)
+        self.length = length
+        return self
 
 
 class ResolveTests(unittest.TestCase):
@@ -136,6 +151,41 @@ class BuildRecordTests(unittest.TestCase):
         mapping = {"City": ("address.city", lambda value: value + " Illinois")}
         record = build_record(mapping, self.SOURCE, limits={"City": 7})
         self.assertEqual(record, {"City": "Springf"})
+
+    def test_a_target_key_can_carry_its_own_length(self):
+        """No table, no `limits` argument: the mapping key knows."""
+        mapping = {Sized("City", 7): ("address.city", lambda v: v + " Illinois")}
+        self.assertEqual(build_record(mapping, self.SOURCE), {"City": "Springf"})
+
+    def test_an_explicit_limit_beats_the_key(self):
+        mapping = {Sized("City", 7): "address.city"}
+        record = build_record(mapping, self.SOURCE, limits={Sized("City", 7): 3})
+        self.assertEqual(record, {"City": "Spr"})
+
+    def test_a_none_limit_opts_the_field_out(self):
+        mapping = {Sized("City", 7): "address.city"}
+        record = build_record(mapping, self.SOURCE, limits={Sized("City", 7): None})
+        self.assertEqual(record, {"City": "Springfield"})
+
+    def test_a_key_without_a_length_is_never_truncated(self):
+        mapping = {Sized("City"): "address.city"}
+        self.assertEqual(build_record(mapping, self.SOURCE), {"City": "Springfield"})
+
+    def test_a_plain_string_mapping_is_untouched(self):
+        """The hand-written case: no lengths anywhere, so nothing truncates."""
+        record = build_record({"City": "address.city"}, self.SOURCE)
+        self.assertEqual(record, {"City": "Springfield"})
+
+    def test_non_string_values_are_never_truncated(self):
+        mapping = {Sized("Count", 1): lambda _src: 12345}
+        self.assertEqual(build_record(mapping, self.SOURCE), {"Count": 12345})
+
+    def test_effective_limits_is_empty_for_a_plain_mapping(self):
+        self.assertEqual(effective_limits({"City": "address.city"}), {})
+        self.assertEqual(effective_limits({"City": "address.city"}, None), {})
+
+    def test_effective_limits_keeps_an_explicit_table(self):
+        self.assertEqual(effective_limits({"City": "a"}, {"City": 4}), {"City": 4})
 
     def test_a_transform_runs_only_when_the_path_resolves(self):
         calls = []

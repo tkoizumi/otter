@@ -9,10 +9,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from otter_connectors.records import build_record  # noqa: E402
-from otter_schema import Field, limits  # noqa: E402
+from otter_schema import Field  # noqa: E402
 from otter_schema.generate import attribute_name, render_init, render_module  # noqa: E402
 from otter_schema.pull import (  # noqa: E402
     find_repo_root, main, object_names, read_env_file, read_manifest_env,
+    resolve_integration,
 )
 
 DESCRIBE = {
@@ -91,19 +92,46 @@ class FieldIsAString(unittest.TestCase):
         self.assertEqual(record["ProductCode"], "ABC-1")
         self.assertEqual(sorted(record), ["Name", "ProductCode"])
 
-    def test_truncation_limits_come_from_the_schema(self):
+    def test_truncation_limits_come_from_the_schema_with_no_table(self):
+        """The point of the whole thing: no MAX_FIELD_LENGTH to keep in step."""
         name = Field("Name", object_name="Product2", type="string", length=5)
         mapping = {name: "title"}
 
-        record = build_record(mapping, {"title": "abcdefghij"}, limits=limits(mapping))
+        record = build_record(mapping, {"title": "abcdefghij"})
 
         self.assertEqual(record["Name"], "abcde")
 
-    def test_limits_ignores_fields_without_a_length(self):
-        named = Field("Name", object_name="Product2", type="string", length=80)
+    def test_a_field_without_a_length_is_left_alone(self):
         plain = Field("Id", object_name="Product2", type="id")
+        record = build_record({plain: "title"}, {"title": "x" * 300})
 
-        self.assertEqual(limits({named: "a", plain: "b"}), {"Name": 80})
+        self.assertEqual(len(record["Id"]), 300)
+
+    def test_an_explicit_limit_overrides_the_schema(self):
+        name = Field("Name", object_name="Product2", type="string", length=255)
+        record = build_record({name: "title"}, {"title": "abcdefghij"}, limits={name: 4})
+
+        self.assertEqual(record["Name"], "abcd")
+
+    def test_a_none_limit_opts_a_field_out(self):
+        name = Field("Name", object_name="Product2", type="string", length=5)
+        record = build_record({name: "title"}, {"title": "abcdefghij"}, limits={name: None})
+
+        self.assertEqual(record["Name"], "abcdefghij")
+
+    def test_a_mapping_spanning_two_objects_is_rejected(self):
+        from otter_connectors.records import validate_mapping
+        with self.assertRaises(TypeError) as caught:
+            validate_mapping({
+                Field("Name", object_name="Product2", type="string"): "title",
+                Field("Email", object_name="Contact", type="email"): "email",
+            })
+        self.assertIn("Product2", str(caught.exception))
+        self.assertIn("Contact", str(caught.exception))
+
+    def test_a_hand_written_mapping_is_not_object_checked(self):
+        from otter_connectors.records import validate_mapping
+        validate_mapping({"Name": "title", "Email": "email"})
 
 
 class GeneratorOutput(unittest.TestCase):
@@ -273,6 +301,40 @@ class GeneratedHeader(unittest.TestCase):
     def test_without_an_integration_the_hint_still_names_the_object(self):
         source = render(integration="")
         self.assertIn("make sync-schema SYSTEM=salesforce OBJECT=Product2", source)
+
+
+class ResolveIntegration(unittest.TestCase):
+    """`--integration` means a directory, but the Makefile prefixes the
+    integrations dir and people type the bare name. Getting this wrong used to
+    surface as "no instance URL", which names the wrong problem."""
+
+    def setUp(self):
+        import tempfile
+        self.repo = tempfile.mkdtemp()
+        self.dir = os.path.join(self.repo, "integrations", "demo")
+        os.makedirs(self.dir)
+        with open(os.path.join(self.dir, "otter.yaml"), "w") as handle:
+            handle.write("env:\n  SALESFORCE_INSTANCE_URL: https://example.test\n")
+
+    def test_a_directory_with_a_manifest_is_used_as_given(self):
+        self.assertEqual(resolve_integration(self.dir, self.repo, self.dir), self.dir)
+
+    def test_a_bare_name_resolves_under_the_integrations_directory(self):
+        self.assertEqual(resolve_integration(os.path.join(self.repo, "demo"),
+                                             self.repo, "demo"), self.dir)
+
+    def test_a_doubled_path_says_what_went_wrong(self):
+        doubled = os.path.join(self.repo, "integrations", "integrations", "demo")
+        with self.assertRaises(SystemExit) as caught:
+            resolve_integration(doubled, self.repo, doubled)
+        message = str(caught.exception)
+        self.assertIn("no otter.yaml", message)
+        self.assertIn("INTEGRATION=demo", message)
+
+    def test_a_missing_integration_is_an_error_not_a_default(self):
+        missing = os.path.join(self.repo, "nope")
+        with self.assertRaises(SystemExit):
+            resolve_integration(missing, self.repo, "nope")
 
 
 class UnknownSystem(unittest.TestCase):

@@ -22,7 +22,7 @@ from otter_connectors.salesforce import SalesforceClient
 from otter_connectors.shopify import ShopifyClient, ShopifyError
 from otter_connectors.timeutil import parse_iso, to_iso, utcnow
 
-from mapping import MAX_FIELD_LENGTH, variant_mapping
+from mapping import variant_mapping
 from source import fetch_page
 
 #: How many rejected records to keep for inspection.
@@ -144,7 +144,7 @@ def main(ctx):
                 mapping = variant_mapping()
 
                 variant["product_id"] = product.get("id")
-                variant_record = build_record(mapping, variant, limits=MAX_FIELD_LENGTH)
+                variant_record = build_record(mapping, variant)
                 records.append(variant_record)
 
         ctx.log.info(

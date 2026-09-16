@@ -24,11 +24,23 @@ would need a new operator in a declarative language, which is how mapping files
 turn into programming languages. Here, anything that does not fit is just
 Python -- testable, debuggable and importable.
 
+One convention reaches beyond that grammar: **a target key exposing ``length``
+truncates to it**, so a mapping built from schema references carries its own
+field lengths and needs no separate table::
+
+    mapping = {Product2.Name: "title", Product2.ProductCode: "sku"}
+    record = build_record(mapping, variant)      # lengths come from the keys
+
+A mapping of plain strings is unaffected -- a string has no ``length``, so
+nothing is truncated unless ``limits`` is passed, exactly as before. That is
+what keeps this module usable by an integration that hand-codes its field names.
+
 Nothing in this module knows about Shopify, Salesforce or any other product.
 """
 
 __all__ = [
     "build_record",
+    "effective_limits",
     "joined",
     "omit_empty",
     "resolve",
@@ -106,12 +118,39 @@ def truncate(record, limits):
     return out
 
 
+def effective_limits(mapping, limits=None):
+    """The truncation limits to apply: an explicit table, then each target
+    key's own declared length.
+
+    A schema reference carries the length its target system declared for it, so
+    a mapping built from references needs no separate table. A mapping of plain
+    strings is untouched -- a string has no ``length``, so the result is empty
+    and nothing is truncated, exactly as before.
+
+    An explicit entry in ``limits`` always wins, including ``None``, which opts
+    a field out of truncation.
+    """
+    out = dict(limits) if limits else {}
+    for key in mapping:
+        if key in out:
+            continue
+        length = getattr(key, "length", None)
+        if length:
+            out[key] = length
+    return out
+
+
 def validate_mapping(mapping):
     """Check a mapping's shape, raising ``TypeError`` on the first bad entry.
 
     Called before any records are processed so a typo fails immediately with a
     named field, rather than on some later page -- or never, if that page turns
     out to be empty.
+
+    Where the mapping's targets know which object they belong to -- schema
+    references do -- it also rejects a mapping that spans more than one. An
+    upsert writes to a single object, so mixing them is always a mistake, and
+    one that would otherwise fail per record.
     """
     for target, spec in mapping.items():
         if callable(spec):
@@ -128,6 +167,14 @@ def validate_mapping(mapping):
         raise TypeError(
             "mapping for %r must be a source path, a (path, transform) pair or a "
             "callable, got %r" % (target, spec))
+
+    # Only meaningful for targets that name their object; a hand-written
+    # mapping has none, so the set is empty and this does nothing.
+    objects = {getattr(key, "object_name", None) for key in mapping}
+    objects.discard(None)
+    if len(objects) > 1:
+        raise TypeError(
+            "a mapping must target one object, got %s" % ", ".join(sorted(objects)))
     return mapping
 
 
@@ -137,7 +184,14 @@ def build_record(mapping, source, limits=None):
     Each value is a source path (``"a.b.c"``), a ``(path, transform)`` pair, or
     a callable taking the whole source. A transform runs only when its path
     resolved to something, so it can assume a real value. String results are
-    stripped, empty fields are omitted, and ``limits`` truncates by length.
+    stripped, empty fields are omitted, and the result is truncated to the
+    target's field lengths.
+
+    Lengths come from ``limits`` when given, and otherwise from the mapping's
+    own keys, so a schema-referenced mapping needs no table::
+
+        build_record(mapping, variant)                 # lengths from the keys
+        build_record(mapping, variant, limits=table)   # explicit table wins
     """
     record = {}
     for target, spec in mapping.items():
@@ -164,6 +218,7 @@ def build_record(mapping, source, limits=None):
             continue
         record[target] = value
 
-    if limits:
-        record = truncate(record, limits)
+    effective = effective_limits(mapping, limits)
+    if effective:
+        record = truncate(record, effective)
     return record

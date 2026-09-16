@@ -188,6 +188,34 @@ def relative_integration(integration, repo):
     return relative
 
 
+def resolve_integration(integration, repo, given):
+    """Find the integration directory, or explain why it cannot be found.
+
+    ``--integration`` means a directory, but people reasonably type the bare
+    name as well, so that resolves under ``<checkout>/integrations/``. What it
+    must not do is proceed with a directory that has no manifest: the default
+    object name and the instance URL both come from there, so the run would
+    fail later with a symptom ("no instance URL") that names the wrong problem.
+
+    The doubled path -- ``INTEGRATION=integrations/foo`` when the Makefile
+    already prefixes ``./integrations/`` -- lands here too, and the hint is
+    what makes that obvious.
+    """
+    if os.path.isfile(os.path.join(integration, "otter.yaml")):
+        return integration
+
+    by_name = os.path.join(repo, "integrations", given)
+    if os.path.isfile(os.path.join(by_name, "otter.yaml")):
+        return by_name
+
+    name = os.path.basename(os.path.normpath(integration))
+    raise SystemExit(
+        "otter: no otter.yaml in %s\n"
+        "       INTEGRATION is a name under the integrations directory, not a path.\n"
+        "       Try:  make sync-schema INTEGRATION=%s"
+        % (integration, name))
+
+
 def object_names(values):
     """Expand ``--object`` values into a unique, ordered list.
 
@@ -210,8 +238,9 @@ def main(argv=None):
         raise SystemExit("otter: unknown schema system %r; known systems: %s"
                          % (args.system, ", ".join(SYSTEMS)))
     integration = os.path.abspath(args.integration)
-
     repo = find_repo_root(integration) or os.getcwd()
+    integration = resolve_integration(integration, repo, args.integration)
+
     env_file = args.env_file or os.path.join(repo, SHARED_ENV_FILE)
     file_env = read_env_file(env_file)
     manifest = read_manifest_env(os.path.join(integration, "otter.yaml"))

@@ -12,16 +12,19 @@ system itself. A wrong name then fails at **import**, before a run exists.
 
 ```python
 from schema.salesforce import Product2
-from schema.shopify import ProductVariant
 
 mapping = {
-    Product2.Name:                  ProductVariant.title,
-    Product2.ProductCode:           ProductVariant.sku,
-    Product2.Shopify_Variant_Id__c: ProductVariant.id,
+    Product2.Name:                  "title",
+    Product2.ProductCode:           "sku",
+    Product2.Shopify_Variant_Id__c: "id",
 }
 
-MAX_FIELD_LENGTH = limits(mapping)      # lengths from the org, not a hand-copied table
+record = build_record(mapping, variant)   # lengths come from the keys
 ```
+
+There is no truncation table to keep in step. ``build_record`` reads each
+target's declared length off the mapping key itself, so ``Product2.Name``
+truncates to the org's 255 without anyone restating it.
 
 ## A reference *is* a string
 
@@ -36,7 +39,7 @@ The metadata is what a mapping would otherwise restate by hand:
 
 | Attribute | Replaces |
 | --- | --- |
-| `length` | a hand-maintained `MAX_FIELD_LENGTH` table |
+| `length` | a hand-maintained `MAX_FIELD_LENGTH` table; read directly by `build_record` |
 | `external_id`, `unique` | "is my upsert key actually an upsert key?" |
 | `required` | "will the org reject an empty value?" |
 | `read_only` | "can I write this at all?" |
@@ -80,7 +83,7 @@ and autocomplete it without network access.
 
 | Flag | Meaning |
 | --- | --- |
-| `--integration DIR` | the integration directory (default: the current one) |
+| `--integration DIR` | the integration directory, or a bare name that resolves under `<checkout>/integrations/` (default: the current one) |
 | `--system NAME` | which system to pull from (default: `salesforce`); output goes to `schema/<NAME>/` |
 | `--object NAME` | sObject API name; repeatable. Default: `SALESFORCE_OBJECT` |
 | `--env-file PATH` | shared credentials (default: `<checkout>/otter.env`) |
