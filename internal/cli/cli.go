@@ -630,6 +630,7 @@ func (a *App) cmdLogs(ctx context.Context, g globals, args []string) int {
 	fs.SetOutput(a.Stderr)
 	follow := fs.Bool("follow", false, "keep polling for new output")
 	poll := fs.Duration("poll", 500*time.Millisecond, "poll interval used with --follow")
+	pretty := fs.Bool("pretty", false, "human-readable output even when piped (overrides --json)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -639,6 +640,17 @@ func (a *App) cmdLogs(ctx context.Context, g globals, args []string) int {
 	}
 	runID := fs.Arg(0)
 	client := g.client()
+
+	// Machine-readable when asked for, or whenever stdout is not a terminal.
+	//
+	// This is the difference between `otter logs <id> | jq` working and the
+	// operator having to redirect to a file and strip the human prefix before
+	// jq can parse a line at all. A pipe gets JSONL; a terminal keeps the
+	// readable form. No flag, no temp file.
+	//
+	// --pretty is the escape hatch for the one case auto-detection gets wrong:
+	// `otter logs <id> | less` is a pipe, but the reader wants prose.
+	structured := !*pretty && (g.jsonOut || !isTerminal(a.Stdout))
 
 	var afterID int64
 	emptyPolls := 0
@@ -651,16 +663,40 @@ func (a *App) cmdLogs(ctx context.Context, g globals, args []string) int {
 
 		for _, entry := range entries {
 			afterID = entry.ID
+
+			if structured {
+				// Every stream goes to stdout here. A caller asking for a
+				// machine-readable stream means to pipe it, and splitting it
+				// across two file descriptors would silently drop half the
+				// output. Which stream a line came from is a field instead.
+				text, fields := splitStructured(entry.Message)
+				record := logRecord{
+					RunID:     entry.RunID,
+					Timestamp: entry.Timestamp,
+					Stream:    entry.Stream,
+					Text:      text,
+					Fields:    fields,
+				}
+				encoded, err := json.Marshal(record)
+				if err != nil {
+					fmt.Fprintf(a.Stderr, "otter: encode log line: %v\n", err)
+					return 1
+				}
+				fmt.Fprintln(a.Stdout, string(encoded))
+				continue
+			}
+
+			rendered := renderLogLine(entry.Message)
 			switch entry.Stream {
 			case runs.StreamStderr:
 				// Integration stderr stays on the CLI's stderr, mirroring the
 				// process it came from.
-				fmt.Fprintln(a.Stderr, entry.Message)
+				fmt.Fprintln(a.Stderr, rendered)
 			default:
 				// stdout and otter (the SDK's ctx.log plus runtime lifecycle
 				// events) both go to stdout so `otter logs <id>` shows the
 				// complete output stream.
-				fmt.Fprintln(a.Stdout, entry.Message)
+				fmt.Fprintln(a.Stdout, rendered)
 			}
 		}
 
@@ -864,7 +900,7 @@ Runtime:
 Runs:
   runs [--integration I] [--status S] [--limit N]
   run-status <run-id>             show a run and its retry attempts
-  logs <run-id> [--follow]        print captured output
+  logs <run-id> [--follow]        print captured output (JSONL when piped; --pretty to force prose)
 
 State:
   state get <integration> <key>

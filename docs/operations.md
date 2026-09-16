@@ -391,6 +391,45 @@ Suggested cron:
 15 3 * * * root sqlite3 /var/lib/otter/otter.db ".backup '/var/backups/otter/otter-$(date +\%F).db'" && find /var/backups/otter -name 'otter-*.db' -mtime +30 -delete
 ```
 
+## Reading a run's logs
+
+`otter logs <run-id>` changes shape depending on where its output goes, so the
+common cases need no flag and no temp file:
+
+```sh
+otter logs 42e84cd5-bd9                 # a terminal: readable prose
+otter logs 42e84cd5-bd9 | jq            # a pipe: JSONL, one object per line
+otter logs 42e84cd5-bd9 | jq -r .text   # just the human text
+otter logs --pretty 42e84cd5-bd9 | less # a pipe, but you want to read it
+```
+
+Each JSONL record is:
+
+```json
+{"run_id":"42e84cd5-bd9","timestamp":"2026-09-15T04:01:33Z","stream":"otter",
+ "text":"sync finished","fields":{"fetched":17,"written":17,"failed":0}}
+```
+
+`text` is the human prefix and `fields` is the structured payload the
+integration logged, kept separate so a field named `run_id` or `level` inside
+your own payload cannot collide with the envelope. Every line parses on its own
+— a multi-line traceback is escaped into a single record — so `jq` works
+directly with no prefix-stripping and nothing is lost to terminal wrapping.
+
+Two consequences worth knowing:
+
+- **All streams go to stdout in the JSON form**, including captured integration
+  stderr. Splitting them across two file descriptors would silently drop half
+  the output from a pipe; which stream a line came from is the `stream` field
+  instead. The human form keeps them separated, so a 2>/dev/null still hides
+  integration stderr.
+- **Values are bounded in the human form.** A large nested record is truncated
+  with `…` rather than wrapping the line across the terminal several times. The
+  JSON form always has the complete value.
+
+To pick a run to look at, `otter runs --limit 5` lists recent ones, and
+`otter runs --limit 1 --json | jq -r '.[0].id'` gives the newest run id.
+
 ## Log rotation and run-log retention
 
 There are two separate log streams, with different lifecycles.
