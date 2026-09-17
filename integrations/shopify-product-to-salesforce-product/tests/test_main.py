@@ -33,7 +33,7 @@ for path in (
 
 import main as integration  # noqa: E402
 import product_sync  # noqa: E402
-from reporting import MAX_DLQ_ENTRIES  # noqa: E402
+from run_state import MAX_DLQ_ENTRIES  # noqa: E402
 from otter_connectors.shopify import ShopifyError  # noqa: E402
 
 #: A final page: no more products after it.
@@ -191,6 +191,26 @@ class DryRun(unittest.TestCase):
         self.assertEqual(last["written"], 2)
         self.assertTrue(last["complete"])
         self.assertTrue(last["dry_run"])
+
+    def test_a_multi_page_dry_run_persists_no_resume_cursor(self):
+        """A rehearsal must leave no position behind.
+
+        If it does, the next real run resumes past records this one never wrote
+        and then commits beyond them, so they never sync. A one-page dry run
+        never reaches a checkpoint, which is why this went unnoticed: both
+        ``save_cursor`` calls used to run without checking ``dry_run``.
+
+        ``Window.test_a_partial_window_keeps_its_cursor_and_the_old_watermark``
+        is the non-dry counterpart, and is what stops this assertion from being
+        vacuous -- the same page path does persist a cursor when it is a real
+        run.
+        """
+        ctx = Harness(
+            ([product(9, [555])], {"hasNextPage": True, "endCursor": "c1"}),
+            ([product(9, [556])], END),
+        ).run()
+        self.assertIsNone(ctx.state.get("in_progress_cursor"))
+        self.assertIsNone(ctx.state.get("sync_cursor"))
 
 
 class Window(unittest.TestCase):

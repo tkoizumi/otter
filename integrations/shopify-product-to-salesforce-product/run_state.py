@@ -1,4 +1,11 @@
-"""Persist run summaries and rejected products, and report their outcomes."""
+"""What a run records about itself: durable state, and the logs describing it.
+
+"State" is in the name because this module *persists* as well as logs.
+``report_run`` writes ``last_run`` and ``record_rejections`` writes
+``failed_products`` and ``failed_total``; both are read back by
+``otter state get`` and by ``make sync-status``, so they are part of the
+integration's contract rather than just output.
+"""
 
 from otter_connectors.timeutil import to_iso, utcnow
 
@@ -24,13 +31,19 @@ def report_start(log, cfg, window_start, *, resumed, had_watermark):
 
 
 def report_window_progress(log, window_start, result, *, dry_run):
-    """Report a dry run or the position retained for an incomplete window."""
-    if result.complete:
-        if dry_run:
+    """Report where the window ended up, and whether anything was persisted."""
+    if dry_run:
+        log.info("dry run: watermark not advanced", window_start=to_iso(window_start))
+        if not result.complete:
+            # Otherwise a rehearsal that stopped early reads like a complete one.
             log.info(
-                "dry run: watermark not advanced", window_start=to_iso(window_start)
+                "dry run: window not fully drained; nothing persists",
+                cursor=result.cursor,
+                pages=result.pages,
             )
-    else:
+        return
+
+    if not result.complete:
         log.info(
             "window partially drained; next run continues",
             cursor=result.cursor,

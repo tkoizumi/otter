@@ -5,18 +5,43 @@ from datetime import datetime
 
 from otter_connectors.checkpoint import Watermark
 
-from reporting import report_window_progress
+from run_state import report_window_progress
 
 
 @dataclass(frozen=True)
 class SyncWindow:
-    """The checkpoint and starting position for this run's window."""
+    """The checkpoint, starting position and mode for this run's window.
+
+    Every durable write a window makes goes through this object, so "a dry run
+    persists nothing" is stated once rather than at each call site. It used to
+    be three call sites with one of them guarded, and the unguarded pair let a
+    multi-page rehearsal leave a resume cursor behind.
+    """
 
     watermark: Watermark
     start: datetime
     cursor: str | None
     resumed: bool
     had_watermark: bool
+    dry_run: bool
+
+    def checkpoint(self, cursor):
+        """Persist the in-window position after a page.
+
+        A dry run keeps nothing: the cursor would make the next real run resume
+        past records this run never wrote, and then commit beyond them.
+        """
+        if not self.dry_run and cursor:
+            self.watermark.save_cursor(cursor)
+
+    def close(self, started, *, complete, cursor=None):
+        """Advance the committed watermark, or keep the position for next run."""
+        if self.dry_run:
+            return
+        if complete:
+            self.watermark.commit(started)
+        else:
+            self.watermark.save_cursor(cursor)
 
 
 def begin_window(state, cfg, started) -> SyncWindow:
@@ -29,15 +54,10 @@ def begin_window(state, cfg, started) -> SyncWindow:
     )
     had_watermark = watermark.committed() is not None
     start, cursor, resumed = watermark.begin(started)
-    return SyncWindow(watermark, start, cursor, resumed, had_watermark)
+    return SyncWindow(watermark, start, cursor, resumed, had_watermark, cfg.dry_run)
 
 
-def finalize_window(log, window, result, started, *, dry_run):
-    """Commit a completed window or retain its position for the next run."""
-    if result.complete:
-        if not dry_run:
-            window.watermark.commit(started)
-    else:
-        window.watermark.save_cursor(result.cursor)
-
-    report_window_progress(log, window.start, result, dry_run=dry_run)
+def finalize_window(log, window, result, started):
+    """Close the window and report where it ended up."""
+    window.close(started, complete=result.complete, cursor=result.cursor)
+    report_window_progress(log, window.start, result, dry_run=window.dry_run)

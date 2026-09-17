@@ -9,6 +9,24 @@ from otter_connectors.shopify import ShopifyError
 from source import fetch_page, variants_with_product
 
 
+class DryRunSink:
+    """Stands in for ``SalesforceClient``: reports what would be written.
+
+    Taking the same ``upsert`` signature as the real client is what lets a dry
+    run be a client rather than a flag threaded through the loop. There is no
+    ``None`` for a later edit to trip over, and no branch in the page loop.
+    """
+
+    def __init__(self, log):
+        self.log = log
+
+    def upsert(self, sobject, external_id_field, records):
+        for record in records[:3]:
+            self.log.info("dry run: would upsert", record=record)
+        self.log.info("dry run: page skipped", records=len(records))
+        return len(records), []
+
+
 @dataclass
 class DrainResult:
     pages: int
@@ -19,17 +37,21 @@ class DrainResult:
     complete: bool
 
 
-def query_products_and_upsert_to_sf(
-    log, cfg, shopify, salesforce, mapping, watermark, *, window_start, cursor, deadline
-) -> DrainResult:
-    """Process pages and checkpoint progress until drained or out of budget."""
+def drain(log, cfg, shopify, salesforce, mapping, window, *, deadline,
+          now=time.monotonic):
+    """Process pages and checkpoint progress until drained or out of budget.
+
+    ``now`` is injectable so the budget path is testable without sleeping.
+    """
+    window_start = window.start
+    cursor = window.cursor
     fetched = written = 0
     failures = []
     pages = 0
     complete = False
 
     while pages < cfg.max_pages:
-        if time.monotonic() > deadline:
+        if now() > deadline:
             log.warning(
                 "run budget reached; will continue on the next tick",
                 pages=pages,
@@ -71,8 +93,8 @@ def query_products_and_upsert_to_sf(
         )
         fetched += len(records)
 
-        page_written, page_failures = _write_records(
-            log, cfg, salesforce, records, page=pages
+        page_written, page_failures = salesforce.upsert(
+            cfg.salesforce_object, cfg.external_id_field, records
         )
         failures.extend(page_failures)
         written += page_written
@@ -88,7 +110,9 @@ def query_products_and_upsert_to_sf(
 
         cursor = next_cursor
         # Checkpoint after writing: a crash after this resumes at the next page.
-        watermark.save_cursor(cursor)
+        # Whether that is durable is the window's decision, since a dry run
+        # persists nothing.
+        window.checkpoint(cursor)
         log.info("page synced", page=pages, records=len(records), written=page_written)
 
     return DrainResult(
@@ -108,14 +132,3 @@ def _build_records(shopify, mapping, products):
         for product in products
         for variant in variants_with_product(shopify, product)
     ]
-
-
-def _write_records(log, cfg, salesforce, records, *, page):
-    """Upsert a page, or report what a dry run would write."""
-    if cfg.dry_run:
-        for record in records[:3]:
-            log.info("dry run: would upsert", record=record)
-        log.info("dry run: page skipped", page=page, records=len(records))
-        return len(records), []
-
-    return salesforce.upsert(cfg.salesforce_object, cfg.external_id_field, records)
