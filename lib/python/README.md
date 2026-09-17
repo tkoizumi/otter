@@ -5,9 +5,11 @@ client and a Salesforce REST client, plus the small pieces any incremental sync
 needs.
 
 ```python
-from otter_connectors.salesforce import SalesforceClient
-from otter_connectors.shopify import ShopifyClient
 from otter_connectors.checkpoint import Watermark
+from otter_connectors.clients import salesforce_client, shopify_client
+
+shopify = shopify_client("your-store.myshopify.com")                 # SHOPIFY_*
+salesforce = salesforce_client("https://your-org.my.salesforce.com")  # SALESFORCE_*
 ```
 
 ## Why this is not in the Otter SDK
@@ -52,6 +54,7 @@ Alternatively, install it (`pip install ./lib/python`) or add the directory to
 | --- | --- |
 | `shopify` | `ShopifyClient` — client credentials grant (24 hour tokens, renewed per run), GraphQL execution with throttle-aware backoff, Relay cursor paging. `numeric_id` for turning a GID into the trailing id. `ShopifyError`. |
 | `salesforce` | `SalesforceClient` — OAuth (client credentials or password), batched upsert by External ID with a per-record fallback, picklist-aware value matching, non-fatal address rejection. `SalesforceError`, `SalesforceRecordError`, `pick_allowed`. |
+| `clients` | `shopify_client` / `salesforce_client` — build the two clients above from the standard `SHOPIFY_*` and `SALESFORCE_*` settings. The store and the instance URL are required arguments, because each client is bound to exactly one target. |
 | `records` | `build_record` and friends — the mechanics of turning a source document into an API payload (dotted paths, strip, drop empties, truncate, join), so an integration's field mapping can be **data** with callables as the escape hatch. |
 | `checkpoint` | `Watermark` — a resumable "what have I already processed?" position in Otter state: the committed watermark only advances once a window drains, and an interrupted window resumes from its page cursor. |
 | `config` | `env`, `env_int`, `env_bool`, `require_env` readers. |

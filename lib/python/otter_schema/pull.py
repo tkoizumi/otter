@@ -31,8 +31,8 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from otter_connectors.salesforce import DEFAULT_API_VERSION, SalesforceClient  # noqa: E402
-from otter_connectors.shopify import ShopifyClient  # noqa: E402
+from otter_connectors.clients import salesforce_client, shopify_client  # noqa: E402
+from otter_connectors.salesforce import DEFAULT_API_VERSION  # noqa: E402
 
 from otter_schema import shopify  # noqa: E402
 from otter_schema.generate import module_name, render_init, render_module  # noqa: E402
@@ -290,15 +290,7 @@ def pull_salesforce(args, setting, objects, out_dir, link):
             "manifest's env: block, or to otter.env, or pass --instance-url.")
     api_version = args.api_version or setting("SALESFORCE_API_VERSION", DEFAULT_API_VERSION)
 
-    client = SalesforceClient(
-        instance_url=instance_url,
-        api_version=api_version,
-        auth=setting("SALESFORCE_AUTH", "client_credentials"),
-        client_id=setting("SALESFORCE_CLIENT_ID"),
-        client_secret=setting("SALESFORCE_CLIENT_SECRET"),
-        username=setting("SALESFORCE_USERNAME"),
-        password=setting("SALESFORCE_PASSWORD"),
-    )
+    client = salesforce_client(instance_url, get=setting, api_version=api_version)
 
     fetched_at = _now()
     fields = 0
@@ -334,13 +326,7 @@ def pull_shopify(args, setting, objects, out_dir, link):
             "or to otter.env as SHOPIFY_STORE=your-store.myshopify.com.")
     api_version = setting("SHOPIFY_API_VERSION", "2026-07")
 
-    client = ShopifyClient(
-        store=store,
-        api_version=api_version,
-        token=setting("SHOPIFY_ACCESS_TOKEN"),
-        client_id=setting("SHOPIFY_CLIENT_ID"),
-        client_secret=setting("SHOPIFY_CLIENT_SECRET"),
-    )
+    client = shopify_client(store, get=setting, api_version=api_version)
 
     fetched_at = _now()
     total = 0

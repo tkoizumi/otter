@@ -20,6 +20,11 @@ The cost is a nested connection. ``variants`` inside a product is capped by
 Shopify, so ``pageInfo`` is selected and ``all_variants`` fetches the remainder
 through ``product-variants.graphql``. Silently syncing the first page of a
 large product is the failure mode that arrangement exists to prevent.
+
+**The mapping is written against a variant, though.** ``variants_with_product``
+is what reconciles the two: it hands each variant its parent under ``product``,
+so ``ProductVariant.product.id`` names the product the variant was fetched
+beneath, and ``mapping.py`` stays the only place a field is named.
 """
 
 from pathlib import Path
@@ -37,6 +42,7 @@ __all__ = [
     "fetch_page",
     "fetch_variants",
     "updated_since",
+    "variants_with_product",
 ]
 
 #: Query documents, resolved next to this module so the integration works
@@ -124,3 +130,18 @@ def all_variants(shopify, product, page_size=MAX_VARIANTS_PER_PAGE):
         cursor = page_info.get("endCursor")
 
     return variants
+
+
+def variants_with_product(shopify, product):
+    """Every variant of ``product``, each carrying its parent under ``product``.
+
+    The parent is the product's own top-level fields with ``variants`` removed.
+    That connection is what this function is walking, so keeping it would make
+    the document self-referential -- product, then variants, then a variant,
+    then the product again -- which a variant serialized to a log line cannot
+    survive. Nothing reads it there.
+    """
+    parent = {key: value for key, value in product.items() if key != "variants"}
+    for variant in all_variants(shopify, product):
+        variant["product"] = parent
+        yield variant

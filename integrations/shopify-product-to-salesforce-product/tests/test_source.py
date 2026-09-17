@@ -87,9 +87,9 @@ def paths_under_products(document):
     """Every source path the document offers a variant, in the mapping's terms.
 
     The document roots at ``products`` but the mapping is written against a
-    variant, and ``main`` hands each variant its parent under ``product``. So a
-    variant's paths are its own selected fields, plus ``product.<field>`` for
-    each field selected on the product it sits beneath.
+    variant, and ``source.variants_with_product`` hands each variant its parent
+    under ``product``. So a variant's paths are its own selected fields, plus
+    ``product.<field>`` for each field selected on the product it sits beneath.
     """
     product_nodes = field(field(document, "products"), "nodes")
     variant_nodes = field(field(product_nodes, "variants"), "nodes")
@@ -288,6 +288,59 @@ class VariantOverflow(unittest.TestCase):
             source.all_variants(shopify, product(["a"], True, "a"))
 
 
+class VariantsWithProduct(unittest.TestCase):
+    """The parent a variant is mapped against is attached here, not in ``main``.
+
+    This used to be three lines inline in the page loop, which left the
+    product-rooted query's contract -- see the module docstring -- described in
+    one file and asserted by hand in another. It is source-shaping, so it lives
+    with the rest of the paging code and is tested against the real thing.
+    """
+
+    def test_each_variant_carries_its_parent(self):
+        found = list(source.variants_with_product(
+            FakeShopify(), product(["a", "b"], title="The Hidden Snowboard")))
+        self.assertEqual(
+            [node["product"]["title"] for node in found],
+            ["The Hidden Snowboard", "The Hidden Snowboard"])
+
+    def test_the_parent_keeps_the_products_other_fields(self):
+        found = list(source.variants_with_product(
+            FakeShopify(), product(["a"], title="Board", hasOnlyDefaultVariant=False)))
+        self.assertEqual(found[0]["product"]["hasOnlyDefaultVariant"], False)
+
+    def test_the_parent_does_not_carry_the_variants_connection(self):
+        """Keeping it would make the document self-referential: the parent
+        would hold the variants, each of which holds the parent again."""
+        found = list(source.variants_with_product(FakeShopify(), product(["a"])))
+        self.assertNotIn("variants", found[0]["product"])
+
+    def test_every_variant_shares_the_one_parent(self):
+        found = list(source.variants_with_product(FakeShopify(), product(["a", "b"])))
+        self.assertIs(found[0]["product"], found[1]["product"])
+
+    def test_a_truncated_nested_page_is_still_paged_past(self):
+        shopify = FakeShopify(([{"id": "c"}], {"hasNextPage": False, "endCursor": "c"}))
+        found = list(source.variants_with_product(shopify, product(["a"], True, "a")))
+        self.assertEqual([node["id"] for node in found], ["a", "c"])
+
+    def test_a_product_with_no_variants_yields_nothing(self):
+        found = list(source.variants_with_product(FakeShopify(), {"id": "gid://x/1"}))
+        self.assertEqual(found, [])
+
+    def test_the_mapping_reads_the_parent_it_attaches(self):
+        """The end of the contract ``main`` used to hand-roll: a record built
+        from what this yields names the product the variant came beneath."""
+        found = list(source.variants_with_product(
+            FakeShopify(),
+            product(["gid://shopify/ProductVariant/555"], title="The Hidden Snowboard"),
+        ))
+        record = build_record(variant_mapping(), found[0])
+        self.assertEqual(record["Shopify_Product_Id__c"], "9")
+        self.assertEqual(record["Shopify_Variant_Id__c"], "555")
+        self.assertEqual(record["Name"], "The Hidden Snowboard")
+
+
 class Filter(unittest.TestCase):
 
     def test_the_filter_has_the_shape_shopify_expects(self):
@@ -310,7 +363,7 @@ class Filter(unittest.TestCase):
 
 
 def variant_document(title="Blue / Medium", **product_fields):
-    """A variant as ``main`` hands it to the record builder."""
+    """A variant as ``source.variants_with_product`` hands it to the builder."""
     product_fields.setdefault("id", "gid://shopify/Product/9")
     product_fields.setdefault("title", "The Hidden Snowboard")
     product_fields.setdefault("hasOnlyDefaultVariant", False)

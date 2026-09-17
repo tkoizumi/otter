@@ -58,8 +58,8 @@ def variant_mapping():
     always stored, which is why those two are ``(path, transform)`` pairs rather
     than bare paths.
 
-    The product-side paths resolve because ``main`` hands each variant its
-    parent product under ``product``; see the comment there.
+    The product-side paths resolve because ``source.variants_with_product``
+    hands each variant its parent product under ``product``.
     """
     return {
         Product2.Shopify_Product_Id__c: (ProductVariant.product.id, numeric_id),

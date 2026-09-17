@@ -37,8 +37,8 @@ for path in (os.path.join(REPO_ROOT, "lib", "python"), INTEGRATION_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from otter_connectors.clients import shopify_client  # noqa: E402
 from otter_connectors.config import env, require_env  # noqa: E402
-from otter_connectors.shopify import ShopifyClient  # noqa: E402
 from otter_connectors.timeutil import to_iso, utcnow  # noqa: E402
 
 from source import CUSTOMERS_QUERY, updated_since  # noqa: E402
@@ -75,15 +75,7 @@ def main():
     window_start = utcnow() - timedelta(days=args.days)
     search = args.filter_expr or updated_since(window_start)
 
-    client = ShopifyClient(
-        store=require_env("SHOPIFY_STORE"),
-        api_version=env("SHOPIFY_API_VERSION", "2026-07"),
-        client_id=env("SHOPIFY_CLIENT_ID"),
-        client_secret=env("SHOPIFY_CLIENT_SECRET"),
-        token=env("SHOPIFY_ACCESS_TOKEN"),
-        api_base=env("SHOPIFY_API_BASE"),
-        token_url=env("SHOPIFY_TOKEN_URL"),
-    )
+    client = shopify_client(require_env("SHOPIFY_STORE"))
 
     variables = {"first": page_size, "query": search, "sortKey": args.sort_key}
     print("filter:   %s" % search)

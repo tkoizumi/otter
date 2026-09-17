@@ -15,10 +15,10 @@ import time
 
 from otter import run
 from otter_connectors.checkpoint import Watermark
+from otter_connectors.clients import salesforce_client, shopify_client
 from otter_connectors.config import env, env_bool, env_int, require_env
 from otter_connectors.records import build_record, validate_mapping
-from otter_connectors.salesforce import SalesforceClient
-from otter_connectors.shopify import ShopifyClient, ShopifyError
+from otter_connectors.shopify import ShopifyError
 from otter_connectors.timeutil import parse_iso, to_iso, utcnow
 
 from mapping import MAX_FIELD_LENGTH, contact_mapping
@@ -38,34 +38,17 @@ def main(ctx):
     max_pages = env_int("MAX_PAGES_PER_RUN", 20)
     overlap_seconds = env_int("OVERLAP_SECONDS", 600)
     budget_seconds = env_int("RUN_BUDGET_SECONDS", 240)
-    batch_size = env_int("SALESFORCE_BATCH_SIZE", 200)
     sync_address = env_bool("SYNC_ADDRESS", True)
     dry_run = env_bool("DRY_RUN", False)
 
-    shopify = ShopifyClient(
-        store=store,
-        api_version=env("SHOPIFY_API_VERSION", "2026-07"),
-        # Only set for a legacy pre-generated token; otherwise the client
-        # credentials grant supplies a fresh 24 hour token per run.
-        token=env("SHOPIFY_ACCESS_TOKEN"),
-        client_id=env("SHOPIFY_CLIENT_ID"),
-        client_secret=env("SHOPIFY_CLIENT_SECRET"),
-        api_base=env("SHOPIFY_API_BASE"),
-        token_url=env("SHOPIFY_TOKEN_URL"),
-    )
+    # The store is an explicit argument: a Shopify client is bound to one store.
+    # SALESFORCE_BATCH_SIZE is a client setting rather than a sync one, so
+    # salesforce_client reads it.
+    shopify = shopify_client(store)
     salesforce = (
         None
         if dry_run
-        else SalesforceClient(
-            instance_url=require_env("SALESFORCE_INSTANCE_URL"),
-            api_version=env("SALESFORCE_API_VERSION", "62.0"),
-            auth=env("SALESFORCE_AUTH", "client_credentials"),
-            client_id=env("SALESFORCE_CLIENT_ID"),
-            client_secret=env("SALESFORCE_CLIENT_SECRET"),
-            username=env("SALESFORCE_USERNAME"),
-            password=env("SALESFORCE_PASSWORD"),
-            batch_size=batch_size,
-        )
+        else salesforce_client(require_env("SALESFORCE_INSTANCE_URL"))
     )
 
     # With State/Country picklists enabled, MailingCountry/MailingState only

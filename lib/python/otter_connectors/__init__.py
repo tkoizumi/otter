@@ -16,6 +16,7 @@ no install step at all. Point the manifest at it::
 
 __all__ = [
     "checkpoint",
+    "clients",
     "config",
     "errors",
     "http",
