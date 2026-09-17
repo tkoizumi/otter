@@ -4,7 +4,7 @@ System:       shopify
 Root:         ProductVariant
 Source:       robin-dev-3.myshopify.com
 API version:  2026-07
-Fetched:      2026-09-17T03:05:05Z
+Fetched:      2026-09-17T03:54:18Z
 Types:        23
 
 Regenerate with::

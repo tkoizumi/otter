@@ -176,6 +176,8 @@ def parse_args(argv):
     parser.add_argument("--depth", type=int, default=2,
                         help="shopify: how many hops of nested object fields to "
                              "follow from each root type (default 2)")
+    parser.add_argument("--no-sdl", action="store_true",
+                        help="shopify: skip shopify.graphql, the schema editors use")
     parser.add_argument("--picklists", action="store_true",
                         help="embed each picklist's active values")
     parser.add_argument("--dry-run", action="store_true",
@@ -350,6 +352,17 @@ def pull_shopify(args, setting, objects, out_dir, link):
                                    api_version=api_version, fetched_at=fetched_at,
                                    connections=shopify.find_root_connections(client, set(types))),
               args.dry_run)
+
+    # The schema an editor validates `.graphql` documents against. One extra
+    # fetch, and it is the whole schema: a trimmed one reports errors that are
+    # not real, which is the worst property a validation aid can have.
+    if not args.no_sdl:
+        _emit(os.path.join(out_dir, "shopify.graphql"),
+              shopify.render_sdl(shopify.fetch_introspection(client), integration=link,
+                                 source_url=store, api_version=api_version,
+                                 fetched_at=fetched_at),
+              args.dry_run)
+
     print("pulled %d type(s) for %s into %s" % (total, ", ".join(objects), out_dir))
 
 

@@ -66,8 +66,7 @@ make sync-schema INTEGRATION=x SYSTEM=salesforce OBJECT="Contact Shopify_Order__
 ```
 
 `SYSTEM` selects which system to pull from and writes to `schema/<SYSTEM>/`.
-Only `salesforce` is implemented so far; asking for another is a clear error
-rather than a confusing failure later. `OBJECT` takes several, space- or
+`salesforce` and `shopify` are implemented. `OBJECT` takes several, space- or
 comma-separated.
 
 Equivalent without make -- no `PYTHONPATH`, no sourcing:
@@ -91,6 +90,8 @@ and autocomplete it without network access.
 | `--instance-url URL` | default: the manifest, else `$SALESFORCE_INSTANCE_URL` |
 | `--api-version V` | default: the manifest, else `$SALESFORCE_API_VERSION`, else `62.0` |
 | `--picklists` | embed each picklist's active values (off by default: a country picklist is hundreds of lines) |
+| `--depth` | how many object hops to follow from the root (default: 2) |
+| `--no-sdl` | skip the SDL file; only the Python module is written |
 | `--dry-run` | print the module, write nothing |
 
 Pulling one object never drops another: the package index is rebuilt by scanning
@@ -135,9 +136,52 @@ flat schema like Salesforce is unaffected, and read off a nested `Node` it
 returns a copy carrying the prefix. `--depth` (default 2) bounds how many hops
 are followed.
 
+Every generated type also carries a `ROOT` marker — `Product.ROOT` names the
+connection it is reached through, with the arguments that connection takes and
+the values an enum argument accepts. Nothing reads it at run time; it is what
+you write a query against, so the root name and the paging arguments come from
+the pulled schema instead of from memory.
+
+### SDL, and writing the query
+
+A Shopify pull also writes `schema/shopify/shopify.graphql`: the whole schema as
+SDL (3552 types for this store, ~3.5 MB). That is what makes the query a
+**first-class file** rather than a string in `source.py`:
+
+```
+integrations/<name>/queries/*.graphql     the documents, committed
+integrations/<name>/schema/shopify/shopify.graphql
+graphql.config.yml                        points an editor at both
+```
+
+With the [GraphQL extension](https://marketplace.visualstudio.com/items?itemName=GraphQL.vscode-graphql)
+installed, completion, hover and errors come from the pulled schema, and
+go-to-definition on a field lands in the SDL. Nothing about that is specific to
+Otter: any tool that reads SDL works, because the file is the schema.
+
+The same artifact is what CI validates, so a renamed Shopify field fails a test
+rather than producing an empty value in a run that still reports `succeeded`:
+
+```sh
+pip install -e 'lib/python[dev]'   # graphql-core
+python3 -m unittest discover -s integrations/<name>/tests
+```
+
+`make sync-schema SYSTEM=shopify` passes `--no-sdl` to skip the SDL when you only
+want the Python module. `--depth` bounds the module, not the SDL — the SDL is
+always the complete schema, because a truncated schema would make an editor
+report false errors.
+
 ## What is not here yet
 
-Deriving the GraphQL query from declared source fields, which is what would
-remove the `source.py` ↔ `mapping.py` drift for good. It cannot be derived from
-the mapping — a transform hides what it reads, and a computed field has no
-source — so the fetch list has to be declared.
+A `--check` that re-describes and diffs the committed schema, to run in CI or
+before a deploy; until then a pull is a snapshot with a `Fetched:` timestamp, and
+the SDL goes stale the same way the module does.
+
+Drift between what a document *selects* and what the mapping *reads* is only
+partly covered. `graphql-core` proves every selected field exists; it cannot
+prove the mapping reads a field the document happens to omit, because that
+resolves to `""` silently. An integration asserts that itself, over the parsed
+document — see `integrations/shopify-product-to-salesforce-product/tests/test_source.py`.
+A callable in a mapping is opaque to that check, which is why the one computed
+field there names its own reads by hand.

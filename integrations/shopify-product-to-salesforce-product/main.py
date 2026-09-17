@@ -23,7 +23,7 @@ from otter_connectors.shopify import ShopifyClient, ShopifyError
 from otter_connectors.timeutil import parse_iso, to_iso, utcnow
 
 from mapping import variant_mapping
-from source import fetch_page
+from source import all_variants, fetch_page
 
 #: How many rejected records to keep for inspection.
 MAX_DLQ_ENTRIES = 100
@@ -32,8 +32,8 @@ MAX_DLQ_ENTRIES = 100
 @run
 def main(ctx):
     store = require_env("SHOPIFY_STORE")
-    external_id_field = env("SALESFORCE_EXTERNAL_ID_FIELD", "Shopify_Customer_Id__c")
-    sobject = env("SALESFORCE_OBJECT", "Contact")
+    external_id_field = env("SALESFORCE_EXTERNAL_ID_FIELD", "Shopify_Variant_Id__c")
+    sobject = env("SALESFORCE_OBJECT", "Product2")
 
     page_size = env_int("PAGE_SIZE", 100)
     max_pages = env_int("MAX_PAGES_PER_RUN", 20)
@@ -70,6 +70,7 @@ def main(ctx):
 
     # Fail on a malformed mapping before touching any data, rather than on
     # whichever record happens to hit it first.
+    mapping = validate_mapping(variant_mapping())
 
     started = utcnow()
     deadline = time.monotonic() + budget_seconds
@@ -118,13 +119,6 @@ def main(ctx):
             window_start=window_start,
             page_size=page_size,
             cursor=cursor,
-            sort_key=env("SHOPIFY_SORT_KEY", "UPDATED_AT"),
-        )
-        ctx.log.info(
-            "shopify page",
-            page=pages,
-            count=len(products),
-            first=products[0] if products else None,
         )
         pages += 1
 
@@ -132,20 +126,34 @@ def main(ctx):
             complete = True
             break
 
+        # The query roots at products, because a product-level change does not
+        # bump its variants' updatedAt -- so a variant-level watermark would
+        # never re-sync a renamed product, and the mapping reads product.title.
+        # The mapping is still written against a variant, so each variant is
+        # handed its parent under ``product``: ``ProductVariant.product.id``
+        # then names the product it was fetched beneath, and the field list in
+        # the mapping stays the only place a field is named.
+        #
+        # ``variants`` is dropped from that subtree because the variant is
+        # logged as JSON and keeping it would make the document cyclic. Nothing
+        # reads it there -- the variants are this loop.
         records = []
-
         for product in products:
-            variants = product.get("variants").get("nodes")
-            for variant in variants:
-                ctx.log.info(
-                    "variant",
-                    variant=variant,
-                )
-                mapping = variant_mapping()
+            parent = {key: value for key, value in product.items() if key != "variants"}
+            for variant in all_variants(shopify, product):
+                variant["product"] = parent
+                records.append(build_record(mapping, variant))
 
-                variant["product_id"] = product.get("id")
-                variant_record = build_record(mapping, variant)
-                records.append(variant_record)
+        # The product itself is deliberately not logged: it now carries every
+        # variant beneath it, so one page would write a few hundred nodes per
+        # line. The records below are what you actually read.
+        ctx.log.info(
+            "shopify page",
+            page=pages,
+            products=len(products),
+            variants=len(records),
+            first=products[0].get("title"),
+        )
 
         ctx.log.info(
             "records",
@@ -198,13 +206,16 @@ def main(ctx):
             "window partially drained; next run continues", cursor=cursor, pages=pages
         )
 
+    # Only reachable once the mapping writes an address field; this integration
+    # maps three fields, none of them one. Kept because the failure is otherwise
+    # silent: Salesforce blanks the field rather than rejecting the record.
     if not dry_run and salesforce is not None and salesforce.address_fallbacks:
         ctx.log.warning(
-            "wrote some products without their mailing address: the org's "
-            "State/Country picklist rejected the value",
+            "wrote some records without their address: the org's State/Country "
+            "picklist rejected the value",
             count=salesforce.address_fallbacks,
             first_reason=salesforce.address_fallback_reason,
-            hint="align the State/Country picklist values, or set SYNC_ADDRESS=0 to skip addresses",
+            hint="align the State/Country picklist values in the org",
         )
 
     if failures:
@@ -244,22 +255,24 @@ def main(ctx):
             failed=len(failures),
             state_key="failed_products",
             written=written,
-            first_customer_id=failures[0][0],
+            first_id=failures[0][0],
             first_error=failures[0][1],
         )
-        for customer_id, message in failures[:3]:
+        for variant_id, message in failures[:3]:
             ctx.log.warning(
-                "customer rejected", shopify_customer_id=customer_id, error=message
+                "record rejected", shopify_variant_id=variant_id, error=message
             )
 
 
 def _record_failures(ctx, failures):
     """Keep a bounded record of permanent per-record failures.
 
-    They are deliberately not raised: a single malformed customer must not stop
-    the other 2000 from syncing, and the watermark should still advance.
+    They are deliberately not raised: one product Salesforce will not accept
+    must not stop the other 2000 from syncing, and the watermark should still
+    advance.
 
-    Inspect with: otter state get shopify-to-salesforce failed_products
+    Inspect with:
+        otter state get shopify-product-to-salesforce-product failed_products
     """
     existing = ctx.state.get("failed_products") or []
     if not isinstance(existing, list):
@@ -268,11 +281,11 @@ def _record_failures(ctx, failures):
 
     merged = existing + [
         {
-            "shopify_customer_id": str(customer_id),
+            "shopify_variant_id": str(variant_id),
             "error": str(message)[:500],
             "at": stamp,
         }
-        for customer_id, message in failures
+        for variant_id, message in failures
     ]
     ctx.state.set("failed_products", merged[-MAX_DLQ_ENTRIES:])
     ctx.state.set("failed_total", (ctx.state.get("failed_total") or 0) + len(failures))

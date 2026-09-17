@@ -146,16 +146,31 @@ func TestStageSkipsSecretsAndCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(f.source, "__pycache__", "main.cpython-313.pyc"), "cache")
+	// The pulled schema is editor tooling and runs to megabytes; the query
+	// document beside it is read while the integration runs.
+	for _, dir := range []string{filepath.Join("schema", "shopify"), "queries"} {
+		if err := os.MkdirAll(filepath.Join(f.source, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(f.source, "schema", "shopify", "shopify.graphql"), "type Product { id: ID }\n")
+	write(t, filepath.Join(f.source, "queries", "products.graphql"), "query { products { nodes { id } } }\n")
 
 	meta := f.stage(t, "env-1")
 	dir, err := f.manager().Dir(f.name, meta.Digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{".env", "otter.db", "__pycache__"} {
-		if _, err := os.Stat(filepath.Join(SourceDir(dir, f.name), forbidden)); err == nil {
+	released := SourceDir(dir, f.name)
+	for _, forbidden := range []string{
+		".env", "otter.db", "__pycache__", "schema/shopify/shopify.graphql",
+	} {
+		if _, err := os.Stat(filepath.Join(released, filepath.FromSlash(forbidden))); err == nil {
 			t.Errorf("release captured %s; it must never become immutable", forbidden)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(released, "queries", "products.graphql")); err != nil {
+		t.Errorf("release dropped the query document the integration reads: %v", err)
 	}
 }
 

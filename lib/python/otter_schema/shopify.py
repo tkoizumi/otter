@@ -24,8 +24,9 @@ data -- so this works on an app that cannot yet read a single product.
 from . import SchemaError
 
 __all__ = [
-    "Arg", "Connection", "Var", "build_query", "collect", "enum_values",
-    "find_root_connections", "introspection_query", "is_connection", "render_root",
+    "Arg", "Connection", "collect", "enum_values",
+    "fetch_introspection", "find_root_connections", "introspection_query",
+    "is_connection", "render_root", "render_sdl", "sdl_header",
     "render_types", "unwrap",
 ]
 
@@ -276,17 +277,6 @@ class Connection:
         self.args = dict(args or {})
 
 
-class Var:
-    """Marks a connection argument as a variable rather than a literal.
-
-    ``sortKey="UPDATED_AT"`` is fixed for the life of the query;
-    ``query=Var("query")`` is supplied per page, so the document declares it.
-    """
-
-    def __init__(self, name):
-        self.name = name
-
-
 def enum_values(client, type_name):
     data = client.graphql(_ENUM_VALUES, {"name": type_name})
     entries = (data.get("__type") or {}).get("enumValues") or []
@@ -327,8 +317,11 @@ def find_root_connections(client, wanted):
 def render_root(class_name, connection):
     """The generated ``_Root.ROOT = Connection(...)`` block.
 
-    Attached to the class rather than left as a module global so ``build_query``
-    can find it from the instance it was handed, with no import guessing.
+    Records the connection a type is reached through, with the arguments it
+    takes and the values an enum argument accepts. Nothing reads it at run time
+    any more -- the query is a ``.graphql`` document -- but it is what you write
+    that document against, so the root name and its paging arguments come from
+    the pulled schema rather than from memory.
     """
     lines = ["", "%s.ROOT = Connection(" % class_name, "    %r," % connection.name, "    {"]
     for name in sorted(connection.args):
@@ -343,100 +336,98 @@ def render_root(class_name, connection):
     return lines
 
 
-def build_query(root, fields, **args):
-    """Render a GraphQL document that fetches ``fields`` from ``root``.
+# -- SDL, for editor tooling ------------------------------------------------ #
+#
+# The Python symbols above serve the mapping: they are paths and metadata. An
+# editor needs something else -- a schema it can validate documents against --
+# and that is SDL. Shopify serves the whole schema introspectively, so this is a
+# conversion rather than a walk: no closure to choose, and nothing a document
+# might reference is missing.
+#
+# It is deliberately the *whole* schema. A trimmed SDL fails validation on
+# anything left out, so a query using a type outside the trim reports an error
+# that is not real -- the worst property for a validation aid.
 
-    The field list is *declared*, not derived: a transform hides what it reads
-    and a computed field has no source, so there is nothing to derive from. What
-    the declaration buys is that the document writes itself -- connections,
-    ``pageInfo`` and paging arguments included -- and that every name in it came
-    from the schema rather than from memory.
+#: Nesting depth for ofType wrappers. Several Shopify types are decorated deeply
+#: enough that the usual four levels fail with "Decorated type deeper than
+#: introspection query".
+_SDL_OF_TYPE = "kind name ofType { " * 8 + "kind name " + "}" * 8
+
+_INTROSPECTION = """query IntrospectSchema {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    directives {
+      name description isRepeatable locations
+      args { name description defaultValue type { %s } }
+    }
+    types {
+      kind name description
+      fields(includeDeprecated: true) {
+        name description isDeprecated deprecationReason
+        args { name description defaultValue type { %s } }
+        type { %s }
+      }
+      inputFields { name description defaultValue type { %s } }
+      interfaces { name }
+      enumValues(includeDeprecated: true) {
+        name description isDeprecated deprecationReason
+      }
+      possibleTypes { name }
+    }
+  }
+}""" % ((_SDL_OF_TYPE,) * 4)
+
+
+def fetch_introspection(client):
+    """The whole GraphQL schema, as introspection JSON."""
+    data = client.graphql(_INTROSPECTION)
+    schema = data.get("__schema")
+    if not schema:
+        raise SchemaError("Shopify returned no __schema for introspection")
+    return schema
+
+
+def render_sdl(schema, *, integration, source_url, api_version, fetched_at):
+    """SDL for the whole schema, so an editor can validate documents offline.
+
+    Needs ``graphql-core``, which is a development dependency: it converts
+    introspection to SDL and validates documents, and neither belongs in a
+    prepared runtime environment.
     """
-    connection = getattr(root, "ROOT", None)
-    if connection is None:
+    try:
+        from graphql import build_client_schema, print_schema
+    except ImportError as exc:  # pragma: no cover - exercised by the message
         raise SchemaError(
-            "%s has no recorded root connection. Re-pull its schema, or build the "
-            "query from a type that a QueryRoot field returns." % type(root).__name__.lstrip("_"))
+            "SDL output needs graphql-core. Install it with:\n"
+            "    python3 -m pip install graphql-core") from exc
 
-    paths = []
-    for field in fields:
-        path = str(field)
-        if path not in paths:
-            paths.append(path)
-    if not paths:
-        raise SchemaError("build_query needs at least one field to fetch")
-
-    # Paging always owns `after`, so it is a variable whether or not it was named.
-    args.setdefault("after", Var("after"))
-
-    declarations = []
-    rendered = []
-    for name in connection.args:
-        if name not in args:
-            continue
-        value = args[name]
-        arg = connection.args[name]
-        if isinstance(value, Var):
-            declarations.append("$%s: %s%s" % (value.name, arg.type, "!" if arg.required else ""))
-            rendered.append("%s: $%s" % (name, value.name))
-            continue
-        if arg.values and value not in arg.values:
-            raise SchemaError(
-                "%s.%s = %r is not one of: %s"
-                % (connection.name, name, value, ", ".join(arg.values)))
-        rendered.append("%s: %s" % (name, _literal(value)))
-
-    for name in args:
-        if name not in connection.args:
-            raise SchemaError(
-                "%s has no argument %r; it takes %s"
-                % (connection.name, name, ", ".join(sorted(connection.args))))
-
-    operation = connection.name[:1].upper() + connection.name[1:]
-    lines = [
-        "query %s(%s) {" % (operation, ", ".join(declarations)),
-        "  %s(%s) {" % (connection.name, ", ".join(rendered)),
-        "    pageInfo { hasNextPage endCursor }",
-        "    nodes {",
-    ]
-    lines.extend(_render_selection(_selection_tree(paths), 6))
-    lines.extend(["    }", "  }", "}"])
-    return "\n".join(lines)
+    body = print_schema(build_client_schema({"__schema": schema}))
+    return sdl_header(integration=integration, source_url=source_url,
+                      api_version=api_version, fetched_at=fetched_at) + body
 
 
-def _selection_tree(paths):
-    """Group dotted paths into a selection tree: ``a.b`` and ``a.c`` share ``a``."""
-    tree = {}
-    for path in paths:
-        node = tree
-        parts = path.split(".")
-        for part in parts[:-1]:
-            child = node.get(part)
-            if not isinstance(child, dict):
-                child = {}
-                node[part] = child
-            node = child
-        node.setdefault(parts[-1], None)
-    return tree
+def sdl_header(*, integration, source_url, api_version, fetched_at):
+    """The provenance block at the top of the generated SDL.
 
-
-def _render_selection(tree, indent):
-    pad = " " * indent
-    lines = []
-    for name in sorted(tree):
-        child = tree[name]
-        if child is None:
-            lines.append(pad + name)
-            continue
-        lines.append(pad + name + " {")
-        lines.extend(_render_selection(child, indent + 2))
-        lines.append(pad + "}")
-    return lines
-
-
-def _literal(value):
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    return '"%s"' % value
+    Separate from :func:`render_sdl` so it can be checked without graphql-core
+    installed, which is the usual case -- it is a development extra.
+    """
+    return "\n".join([
+        "# Generated by `make sync-schema`. Do not edit by hand.",
+        "#",
+        "# System:       shopify",
+        "# Source:       %s" % source_url,
+        "# API version:  %s" % api_version,
+        "# Fetched:      %s" % fetched_at,
+        "#",
+        "# Regenerate with::",
+        "#",
+        "#     make sync-schema INTEGRATION=%s SYSTEM=shopify OBJECT=ProductVariant"
+        % integration,
+        "#",
+        "# This is the schema an editor validates `.graphql` documents against,",
+        "# wired up by graphql.config.yml at the repository root. It is the whole",
+        "# schema on purpose: a trimmed one reports errors that are not real.",
+        "",
+    ]) + "\n"

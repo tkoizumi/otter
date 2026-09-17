@@ -530,6 +530,13 @@ class ShopifyTypeRefs(unittest.TestCase):
         self.assertEqual(shopify.module_name("Product"), "product")
 
 
+CONNECTION = shopify.Connection("productVariants", {
+    "first": shopify.Arg("Int"),
+    "after": shopify.Arg("String"),
+    "sortKey": shopify.Arg("ProductVariantSortKeys", values=("ID", "TITLE", "SKU")),
+})
+
+
 class ShopifyGeneratedModule(unittest.TestCase):
 
     def render(self, types=None, root="ProductVariant"):
@@ -583,90 +590,10 @@ class ShopifyGeneratedModule(unittest.TestCase):
         self.assertIsInstance(namespace["ProductVariant"], Node)
         self.assertIsInstance(namespace["ProductVariant"].product, Node)
 
-
-CONNECTION = shopify.Connection("productVariants", {
-    "first": shopify.Arg("Int"),
-    "after": shopify.Arg("String"),
-    "before": shopify.Arg("String"),
-    "query": shopify.Arg("String"),
-    "sortKey": shopify.Arg("ProductVariantSortKeys", values=("ID", "TITLE", "SKU")),
-})
-
-
-class BuildQuery(unittest.TestCase):
-    """The document writes itself: connections, pageInfo and paging included."""
-
-    def namespace(self):
-        source = shopify.render_types(
-            "ProductVariant", TYPES, integration="i", source_url="s",
-            api_version="2026-07", fetched_at="t",
-            connections={"ProductVariant": CONNECTION})
-        namespace = {"Field": Field, "Node": Node,
-                     "Arg": shopify.Arg, "Connection": shopify.Connection}
-        exec(compile(source, "generated.py", "exec"), namespace)  # noqa: S102
-        return namespace
-
-    def query(self, **kwargs):
-        ns = self.namespace()
-        pv = ns["ProductVariant"]
-        kwargs.setdefault("first", 100)
-        return shopify.build_query(pv, [pv.sku, pv.product.title], **kwargs)
-
-    def test_it_uses_the_connection_the_schema_recorded(self):
-        self.assertIn("productVariants(", self.query())
-
-    def test_it_adds_paging_and_page_info(self):
-        rendered = self.query()
-        self.assertIn("pageInfo { hasNextPage endCursor }", rendered)
-        self.assertIn("nodes {", rendered)
-        self.assertIn("after: $after", rendered)
-
-    def test_nested_paths_merge_into_one_selection(self):
-        ns = self.namespace()
-        pv = ns["ProductVariant"]
-        rendered = shopify.build_query(pv, [pv.product.title, pv.product.status, pv.sku])
-        self.assertEqual(rendered.count("product {"), 1, rendered)
-        self.assertIn("title", rendered)
-        self.assertIn("status", rendered)
-
-    def test_a_literal_is_inlined_and_a_var_becomes_a_declaration(self):
-        rendered = self.query(query=shopify.Var("query"), sortKey="ID")
-        self.assertIn("$query: String", rendered)
-        self.assertIn("query: $query", rendered)
-        self.assertIn('sortKey: "ID"', rendered)
-        self.assertNotIn("$sortKey", rendered)
-
-    def test_an_enum_value_outside_the_schema_is_rejected_here(self):
-        """The trap this exists for: UPDATED_AT is not a ProductVariantSortKeys."""
-        with self.assertRaises(shopify.SchemaError) as caught:
-            self.query(sortKey="UPDATED_AT")
-        self.assertIn("UPDATED_AT", str(caught.exception))
-        self.assertIn("ID", str(caught.exception))
-
-    def test_an_argument_the_connection_does_not_take_is_rejected(self):
-        with self.assertRaises(shopify.SchemaError) as caught:
-            self.query(nonsense=1)
-        self.assertIn("nonsense", str(caught.exception))
-
-    def test_a_type_with_no_connection_says_so(self):
-        ns = self.namespace()
-        with self.assertRaises(shopify.SchemaError) as caught:
-            shopify.build_query(ns["Product"], [ns["Product"].title])
-        self.assertIn("Re-pull", str(caught.exception))
-
-    def test_no_fields_is_an_error(self):
-        with self.assertRaises(shopify.SchemaError):
-            self.query() if False else shopify.build_query(
-                self.namespace()["ProductVariant"], [])
-
-    def test_output_is_deterministic(self):
-        self.assertEqual(self.query(), self.query())
-
-    def test_selection_tree_merges_and_keeps_leaves(self):
-        tree = shopify._selection_tree(["a.b", "a.c", "d"])
-        self.assertEqual(tree, {"a": {"b": None, "c": None}, "d": None})
-
     def test_connections_are_recorded_per_type_not_just_the_root(self):
+        """``ROOT`` is what you read to hand-write a ``.graphql`` document: it
+        names the connection a type is reached through and the arguments it
+        takes, so the root name and its paging arguments are never guessed."""
         source = shopify.render_types(
             "ProductVariant", TYPES, integration="i", source_url="s",
             api_version="2026-07", fetched_at="t",
@@ -674,3 +601,96 @@ class BuildQuery(unittest.TestCase):
                          "Product": shopify.Connection("products", {})})
         self.assertIn("_ProductVariant.ROOT", source)
         self.assertIn("_Product.ROOT", source)
+        self.assertIn("values=('ID', 'TITLE', 'SKU',)", source)
+
+
+try:
+    import graphql  # noqa: F401
+    HAVE_GRAPHQL = True
+except ImportError:  # pragma: no cover - depends on the dev extra
+    HAVE_GRAPHQL = False
+
+#: The smallest introspection result build_client_schema accepts.
+TINY_SCHEMA = {
+    "queryType": {"name": "Query"},
+    "types": [
+        {"kind": "OBJECT", "name": "Query", "interfaces": [], "fields": [
+            {"name": "products", "args": [
+                {"name": "first", "type": {"kind": "SCALAR", "name": "Int"}},
+                {"name": "sortKey", "type": {"kind": "ENUM", "name": "ProductSortKeys"}},
+            ], "type": {"kind": "OBJECT", "name": "ProductConnection"}},
+        ]},
+        {"kind": "OBJECT", "name": "ProductConnection", "interfaces": [], "fields": [
+            {"name": "nodes", "args": [],
+             "type": {"kind": "LIST", "ofType": {"kind": "OBJECT", "name": "Product"}}},
+        ]},
+        {"kind": "OBJECT", "name": "Product", "interfaces": [], "fields": [
+            {"name": "title", "args": [], "type": {"kind": "SCALAR", "name": "String"}},
+        ]},
+        {"kind": "ENUM", "name": "ProductSortKeys", "enumValues": [
+            {"name": "UPDATED_AT"}, {"name": "TITLE"},
+        ]},
+        {"kind": "SCALAR", "name": "String"},
+        {"kind": "SCALAR", "name": "Int"},
+    ],
+}
+
+
+class SdlRendering(unittest.TestCase):
+
+    def render(self):
+        return shopify.render_sdl(
+            TINY_SCHEMA, integration="integrations/demo",
+            source_url="store.myshopify.com", api_version="2026-07",
+            fetched_at="2026-09-16T00:00:00Z")
+
+    def test_the_header_says_where_it_came_from(self):
+        """Checked without graphql-core: the header is ours, the SDL is not."""
+        header = shopify.sdl_header(
+            integration="integrations/demo", source_url="store.myshopify.com",
+            api_version="2026-07", fetched_at="2026-09-16T00:00:00Z")
+        self.assertTrue(header.startswith("# Generated by `make sync-schema`"))
+        self.assertIn("# System:       shopify", header)
+        self.assertIn("# API version:  2026-07", header)
+        self.assertIn("make sync-schema INTEGRATION=integrations/demo", header)
+
+    @unittest.skipUnless(HAVE_GRAPHQL, "graphql-core is a development extra")
+    def test_the_rendered_file_starts_with_that_header(self):
+        self.assertTrue(self.render().startswith("# Generated by `make sync-schema`"))
+
+    @unittest.skipUnless(HAVE_GRAPHQL, "graphql-core is a development extra")
+    def test_it_renders_real_sdl(self):
+        source = self.render()
+        self.assertIn("type Product {", source)
+        self.assertIn("enum ProductSortKeys {", source)
+        self.assertIn("products(", source)
+
+    @unittest.skipUnless(HAVE_GRAPHQL, "graphql-core is a development extra")
+    def test_the_output_is_a_schema_an_editor_can_use(self):
+        """The point of the file: a language server validates documents with it."""
+        from graphql import build_schema, parse, validate
+
+        schema = build_schema(self.render())
+        self.assertEqual(validate(schema, parse(
+            "query { products(first: 1, sortKey: UPDATED_AT) { nodes { title } } }")), [])
+
+    @unittest.skipUnless(HAVE_GRAPHQL, "graphql-core is a development extra")
+    def test_a_field_typo_is_caught_offline(self):
+        from graphql import build_schema, parse, validate
+
+        schema = build_schema(self.render())
+        errors = validate(schema, parse("query { products(first: 1) { nodes { titel } } }"))
+        self.assertTrue(errors)
+        self.assertIn("titel", errors[0].message)
+
+    @unittest.skipUnless(HAVE_GRAPHQL, "graphql-core is a development extra")
+    def test_a_bad_enum_value_is_caught_offline(self):
+        """UPDATED_AT is not a valid sort key for a variant connection, which
+        cost a run to discover before there was a schema to check against."""
+        from graphql import build_schema, parse, validate
+
+        schema = build_schema(self.render())
+        errors = validate(schema, parse(
+            "query { products(first: 1, sortKey: NONSENSE) { nodes { title } } }"))
+        self.assertTrue(errors)
+        self.assertIn("NONSENSE", errors[0].message)

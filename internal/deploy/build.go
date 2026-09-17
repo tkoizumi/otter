@@ -151,6 +151,12 @@ func stageSkip(path string, d fs.DirEntry) bool {
 	switch {
 	case name == ".env" || strings.HasSuffix(name, ".env"):
 		return true // never ship secrets inside a synced tree
+	case strings.HasSuffix(name, ".graphql"):
+		// A query document is read at run time; the pulled schema beside it is
+		// editor and test tooling, 3.5 MB of it for Shopify. Keeping the schema
+		// out of the pushed tree also keeps it out of every release staged from
+		// that tree -- the two lists must agree on what a release carries.
+		return strings.Contains(filepath.ToSlash(path), "/schema/")
 	case strings.HasSuffix(name, ".pyc"), strings.HasSuffix(name, ".pyo"):
 		return true
 	case strings.HasSuffix(name, ".db"), strings.HasSuffix(name, ".db-wal"),

@@ -294,6 +294,14 @@ func skip(path string, d fs.DirEntry) bool {
 	switch {
 	case name == ".env" || strings.HasSuffix(name, ".env"):
 		return true
+	case strings.HasSuffix(name, ".graphql"):
+		// A query document is run-time input: the integration reads it while it
+		// runs. The pulled schema beside it is tooling -- editors and tests read
+		// it, the runtime never does -- and it is large (3.5 MB for Shopify), so
+		// carrying it in every release would grow .releases for nothing. The
+		// `/schema/` delimiters keep this from matching a directory that merely
+		// starts with those letters, such as `schema-tools`.
+		return strings.Contains(filepath.ToSlash(path), "/schema/")
 	case strings.HasSuffix(name, ".pyc"), strings.HasSuffix(name, ".pyo"):
 		return true
 	case strings.HasSuffix(name, ".db"), strings.HasSuffix(name, ".db-wal"),
