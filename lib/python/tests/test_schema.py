@@ -9,8 +9,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from otter_connectors.records import build_record  # noqa: E402
-from otter_schema import Field  # noqa: E402
-from otter_schema.generate import attribute_name, render_init, render_module  # noqa: E402
+from otter_schema import Field, Node  # noqa: E402
+from otter_schema import shopify  # noqa: E402
+from otter_schema.generate import (  # noqa: E402
+    attribute_name, render_init, render_module,
+)
 from otter_schema.pull import (  # noqa: E402
     find_repo_root, main, object_names, read_env_file, read_manifest_env,
     resolve_integration,
@@ -176,7 +179,8 @@ class GeneratorOutput(unittest.TestCase):
 
     def test_the_generated_module_is_valid_python(self):
         compile(render(), "product2.py", "exec")
-        compile(render_init(["Product2", "Contact"]), "__init__.py", "exec")
+        compile(render_init({"product2": ["Product2"], "contact": ["Contact"]}),
+                "__init__.py", "exec")
 
     def test_the_generated_module_actually_imports_and_works(self):
         """End to end: executed source, then used as a mapping."""
@@ -344,9 +348,10 @@ class UnknownSystem(unittest.TestCase):
     def test_it_is_rejected_before_anything_network_facing(self):
         import tempfile
         with self.assertRaises(SystemExit) as caught:
-            main(["--system", "shopify", "--integration", tempfile.mkdtemp()])
-        self.assertIn("shopify", str(caught.exception))
+            main(["--system", "netsuite", "--integration", tempfile.mkdtemp()])
+        self.assertIn("netsuite", str(caught.exception))
         self.assertIn("salesforce", str(caught.exception))
+        self.assertIn("shopify", str(caught.exception))
 
 
 class ObjectNames(unittest.TestCase):
@@ -446,3 +451,226 @@ class EnvFile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def scalar(name):
+    return {"kind": "SCALAR", "name": name}
+
+
+def obj(name):
+    return {"kind": "OBJECT", "name": name}
+
+
+def non_null(inner):
+    return {"kind": "NON_NULL", "name": None, "ofType": inner}
+
+
+def as_list(inner):
+    return {"kind": "LIST", "name": None, "ofType": inner}
+
+
+#: A miniature introspection result: the wrappers that actually trip people up.
+TYPES = {
+    "ProductVariant": [
+        {"name": "sku", "type": non_null(scalar("String"))},
+        {"name": "product", "type": non_null(obj("Product"))},
+        {"name": "metafields", "type": non_null(obj("MetafieldConnection"))},
+        {"name": "selectedOptions",
+         "type": non_null(as_list(non_null(obj("SelectedOption"))))},
+        {"name": "inventoryPolicy", "type": non_null({"kind": "ENUM", "name": "ProductVariantInventoryPolicy"})},
+    ],
+    "Product": [
+        {"name": "title", "type": non_null(scalar("String"))},
+        {"name": "status", "type": non_null({"kind": "ENUM", "name": "ProductStatus"})},
+    ],
+}
+
+
+class ShopifyTypeRefs(unittest.TestCase):
+    """The rules that decide what a mapping path may walk into.
+
+    Getting these wrong is silent: a list or a connection in a path resolves to
+    nothing, exactly like a typo.
+    """
+
+    def field(self, type_name, field_name):
+        for entry in TYPES[type_name]:
+            if entry["name"] == field_name:
+                return entry["type"]
+        raise AssertionError("no such field %s.%s" % (type_name, field_name))
+
+    def test_it_unwraps_non_null(self):
+        self.assertEqual(shopify.unwrap(non_null(scalar("String"))),
+                         ("SCALAR", "String", False, True))
+
+    def test_it_unwraps_a_list_of_non_null(self):
+        self.assertEqual(shopify.unwrap(non_null(as_list(non_null(obj("X"))))),
+                         ("OBJECT", "X", True, True))
+
+    def test_a_singular_object_is_followable(self):
+        self.assertEqual(shopify.followable(self.field("ProductVariant", "product")), "Product")
+
+    def test_a_connection_is_not_followable(self):
+        self.assertIsNone(shopify.followable(self.field("ProductVariant", "metafields")))
+
+    def test_a_list_is_not_followable(self):
+        self.assertIsNone(shopify.followable(self.field("ProductVariant", "selectedOptions")))
+
+    def test_a_scalar_is_not_followable(self):
+        self.assertIsNone(shopify.followable(self.field("ProductVariant", "sku")))
+
+    def test_an_enum_named_like_an_object_is_not_followable(self):
+        """`ProductVariantInventoryPolicy` looks like a type by name. It is an
+        enum, and only the kind says so."""
+        self.assertIsNone(shopify.followable(self.field("ProductVariant", "inventoryPolicy")))
+
+    def test_module_names_are_snake_case(self):
+        self.assertEqual(shopify.module_name("ProductVariant"), "product_variant")
+        self.assertEqual(shopify.module_name("SEO"), "seo")
+        self.assertEqual(shopify.module_name("Product"), "product")
+
+
+class ShopifyGeneratedModule(unittest.TestCase):
+
+    def render(self, types=None, root="ProductVariant"):
+        return shopify.render_types(
+            root, types if types is not None else TYPES,
+            integration="integrations/demo", source_url="store.myshopify.com",
+            api_version="2026-07", fetched_at="2026-09-16T00:00:00Z")
+
+    def namespace(self):
+        namespace = {"Field": Field, "Node": Node}
+        exec(compile(self.render(), "generated.py", "exec"), namespace)  # noqa: S102
+        return namespace
+
+    def test_it_is_valid_python(self):
+        compile(self.render(), "product_variant.py", "exec")
+
+    def test_a_flat_field_resolves_to_its_name(self):
+        self.assertEqual(str(self.namespace()["ProductVariant"].sku), "sku")
+
+    def test_a_nested_field_carries_its_path(self):
+        """The whole reason generated types are instances rather than classes."""
+        namespace = self.namespace()
+        self.assertEqual(str(namespace["ProductVariant"].product.title), "product.title")
+
+    def test_a_connection_field_is_not_generated(self):
+        with self.assertRaises(AttributeError):
+            self.namespace()["ProductVariant"].metafields
+
+    def test_a_list_field_is_not_generated(self):
+        with self.assertRaises(AttributeError):
+            self.namespace()["ProductVariant"].selectedOptions
+
+    def test_the_error_names_the_schema_type_not_the_generated_class(self):
+        with self.assertRaises(AttributeError) as caught:
+            self.namespace()["ProductVariant"].featuredImage
+        self.assertIn("ProductVariant", str(caught.exception))
+        self.assertNotIn("_ProductVariant", str(caught.exception))
+
+    def test_nested_references_drive_a_real_mapping(self):
+        namespace = self.namespace()
+        product_variant = namespace["ProductVariant"]
+
+        mapping = {"ProductCode": product_variant.sku,
+                   "Name": product_variant.product.title}
+        record = build_record(mapping, {"sku": "TS-1", "product": {"title": "Tee"}})
+
+        self.assertEqual(record, {"ProductCode": "TS-1", "Name": "Tee"})
+
+    def test_it_exports_instances_so_chaining_works(self):
+        namespace = self.namespace()
+        self.assertIsInstance(namespace["ProductVariant"], Node)
+        self.assertIsInstance(namespace["ProductVariant"].product, Node)
+
+
+CONNECTION = shopify.Connection("productVariants", {
+    "first": shopify.Arg("Int"),
+    "after": shopify.Arg("String"),
+    "before": shopify.Arg("String"),
+    "query": shopify.Arg("String"),
+    "sortKey": shopify.Arg("ProductVariantSortKeys", values=("ID", "TITLE", "SKU")),
+})
+
+
+class BuildQuery(unittest.TestCase):
+    """The document writes itself: connections, pageInfo and paging included."""
+
+    def namespace(self):
+        source = shopify.render_types(
+            "ProductVariant", TYPES, integration="i", source_url="s",
+            api_version="2026-07", fetched_at="t",
+            connections={"ProductVariant": CONNECTION})
+        namespace = {"Field": Field, "Node": Node,
+                     "Arg": shopify.Arg, "Connection": shopify.Connection}
+        exec(compile(source, "generated.py", "exec"), namespace)  # noqa: S102
+        return namespace
+
+    def query(self, **kwargs):
+        ns = self.namespace()
+        pv = ns["ProductVariant"]
+        kwargs.setdefault("first", 100)
+        return shopify.build_query(pv, [pv.sku, pv.product.title], **kwargs)
+
+    def test_it_uses_the_connection_the_schema_recorded(self):
+        self.assertIn("productVariants(", self.query())
+
+    def test_it_adds_paging_and_page_info(self):
+        rendered = self.query()
+        self.assertIn("pageInfo { hasNextPage endCursor }", rendered)
+        self.assertIn("nodes {", rendered)
+        self.assertIn("after: $after", rendered)
+
+    def test_nested_paths_merge_into_one_selection(self):
+        ns = self.namespace()
+        pv = ns["ProductVariant"]
+        rendered = shopify.build_query(pv, [pv.product.title, pv.product.status, pv.sku])
+        self.assertEqual(rendered.count("product {"), 1, rendered)
+        self.assertIn("title", rendered)
+        self.assertIn("status", rendered)
+
+    def test_a_literal_is_inlined_and_a_var_becomes_a_declaration(self):
+        rendered = self.query(query=shopify.Var("query"), sortKey="ID")
+        self.assertIn("$query: String", rendered)
+        self.assertIn("query: $query", rendered)
+        self.assertIn('sortKey: "ID"', rendered)
+        self.assertNotIn("$sortKey", rendered)
+
+    def test_an_enum_value_outside_the_schema_is_rejected_here(self):
+        """The trap this exists for: UPDATED_AT is not a ProductVariantSortKeys."""
+        with self.assertRaises(shopify.SchemaError) as caught:
+            self.query(sortKey="UPDATED_AT")
+        self.assertIn("UPDATED_AT", str(caught.exception))
+        self.assertIn("ID", str(caught.exception))
+
+    def test_an_argument_the_connection_does_not_take_is_rejected(self):
+        with self.assertRaises(shopify.SchemaError) as caught:
+            self.query(nonsense=1)
+        self.assertIn("nonsense", str(caught.exception))
+
+    def test_a_type_with_no_connection_says_so(self):
+        ns = self.namespace()
+        with self.assertRaises(shopify.SchemaError) as caught:
+            shopify.build_query(ns["Product"], [ns["Product"].title])
+        self.assertIn("Re-pull", str(caught.exception))
+
+    def test_no_fields_is_an_error(self):
+        with self.assertRaises(shopify.SchemaError):
+            self.query() if False else shopify.build_query(
+                self.namespace()["ProductVariant"], [])
+
+    def test_output_is_deterministic(self):
+        self.assertEqual(self.query(), self.query())
+
+    def test_selection_tree_merges_and_keeps_leaves(self):
+        tree = shopify._selection_tree(["a.b", "a.c", "d"])
+        self.assertEqual(tree, {"a": {"b": None, "c": None}, "d": None})
+
+    def test_connections_are_recorded_per_type_not_just_the_root(self):
+        source = shopify.render_types(
+            "ProductVariant", TYPES, integration="i", source_url="s",
+            api_version="2026-07", fetched_at="t",
+            connections={"ProductVariant": CONNECTION,
+                         "Product": shopify.Connection("products", {})})
+        self.assertIn("_ProductVariant.ROOT", source)
+        self.assertIn("_Product.ROOT", source)

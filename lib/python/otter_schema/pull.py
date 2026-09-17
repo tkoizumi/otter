@@ -32,11 +32,16 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from otter_connectors.salesforce import DEFAULT_API_VERSION, SalesforceClient  # noqa: E402
+from otter_connectors.shopify import ShopifyClient  # noqa: E402
 
+from otter_schema import shopify  # noqa: E402
 from otter_schema.generate import module_name, render_init, render_module  # noqa: E402
 
-__all__ = ["find_repo_root", "main", "object_names", "read_env_file",
-           "read_manifest_env", "relative_integration"]
+__all__ = [
+    "existing_modules", "find_repo_root", "main", "object_names",
+    "pull_salesforce", "pull_shopify", "read_env_file", "read_manifest_env",
+    "relative_integration",
+]
 
 #: Where the shared credentials file lives inside a checkout.
 SHARED_ENV_FILE = "otter.env"
@@ -44,7 +49,7 @@ SHARED_ENV_FILE = "otter.env"
 #: Systems a schema can be pulled from. Each names its own output directory,
 #: ``schema/<system>/``. Only one implementation exists so far; the tuple is the
 #: place a second one announces itself.
-SYSTEMS = ("salesforce",)
+SYSTEMS = ("salesforce", "shopify")
 DEFAULT_SYSTEM = "salesforce"
 
 
@@ -168,6 +173,9 @@ def parse_args(argv):
     parser.add_argument("--api-version", default="",
                         help="Salesforce API version (default: the manifest, else "
                              + DEFAULT_API_VERSION + ")")
+    parser.add_argument("--depth", type=int, default=2,
+                        help="shopify: how many hops of nested object fields to "
+                             "follow from each root type (default 2)")
     parser.add_argument("--picklists", action="store_true",
                         help="embed each picklist's active values")
     parser.add_argument("--dry-run", action="store_true",
@@ -252,14 +260,33 @@ def main(argv=None):
         return (os.environ.get(key) or file_env.get(key)
                 or manifest.get(key) or default)
 
-    objects = object_names(args.object) or [setting("SALESFORCE_OBJECT", "Contact")]
+    objects = object_names(args.object)
+    out_dir = args.out or os.path.join(integration, "schema", args.system)
+    link = relative_integration(integration, repo)
+
+    if args.system == "shopify":
+        pull_shopify(args, setting, objects, out_dir, link)
+    else:
+        pull_salesforce(args, setting, objects, out_dir, link)
+
+    if args.dry_run:
+        return 0
+
+    # Rebuilt from the directory, so pulling one object or type never drops
+    # another.
+    _write(os.path.join(out_dir, "__init__.py"), render_init(existing_modules(out_dir)))
+    return 0
+
+
+def pull_salesforce(args, setting, objects, out_dir, link):
+    """Describe each object and write one module per object."""
+    objects = objects or [setting("SALESFORCE_OBJECT", "Contact")]
     instance_url = args.instance_url or setting("SALESFORCE_INSTANCE_URL")
     if not instance_url:
         raise SystemExit(
-            "otter: no instance URL. Add SALESFORCE_INSTANCE_URL to the manifest's "
-            "env: block, or to %s, or pass --instance-url." % env_file)
+            "otter: no Salesforce instance URL. Add SALESFORCE_INSTANCE_URL to the "
+            "manifest's env: block, or to otter.env, or pass --instance-url.")
     api_version = args.api_version or setting("SALESFORCE_API_VERSION", DEFAULT_API_VERSION)
-    out_dir = args.out or os.path.join(integration, "schema", args.system)
 
     client = SalesforceClient(
         instance_url=instance_url,
@@ -271,47 +298,81 @@ def main(argv=None):
         password=setting("SALESFORCE_PASSWORD"),
     )
 
-    fetched_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    rendered = []
+    fetched_at = _now()
     fields = 0
     for object_name in objects:
         describe = client.describe(object_name)
         fields += len(describe.get("fields") or [])
-        source = render_module(
-            object_name, describe,
-            system=args.system,
-            integration=relative_integration(integration, repo),
-            source_url=client.instance_url,
-            api_version=api_version,
-            fetched_at=fetched_at,
-            include_picklists=args.picklists,
-        )
-        rendered.append((object_name, source))
-        if args.dry_run:
-            sys.stdout.write(source)
-
-    if args.dry_run:
-        return 0
-
-    for object_name, source in rendered:
-        _write(os.path.join(out_dir, module_name(object_name) + ".py"), source)
-
-    # Rebuilt from the directory, so pulling one object never drops another.
-    names = existing_objects(out_dir) | {name for name, _ in rendered}
-    _write(os.path.join(out_dir, "__init__.py"), render_init(names))
-
-    print("pulled %d field(s) for %s into %s"
-          % (fields, ", ".join(objects), out_dir))
-    return 0
+        _emit(os.path.join(out_dir, module_name(object_name) + ".py"),
+              render_module(object_name, describe,
+                            system="salesforce", integration=link,
+                            source_url=client.instance_url, api_version=api_version,
+                            fetched_at=fetched_at, include_picklists=args.picklists),
+              args.dry_run)
+    print("pulled %d field(s) for %s into %s" % (fields, ", ".join(objects), out_dir))
 
 
-def existing_objects(out_dir):
-    """Object names already generated in ``out_dir``, so an index rebuild keeps
-    objects that this run did not touch."""
-    names = set()
+def pull_shopify(args, setting, objects, out_dir, link):
+    """Walk the type graph from each root and write one module per root.
+
+    One module per *root*, not per type: Shopify types reference each other in
+    cycles (``ProductVariant.product`` and the product's own object fields), and
+    a module per type would need imports that loop. A closure in one file has no
+    import graph to get wrong. Two roots that share a type both define it, which
+    is harmless -- they came from the same introspection.
+    """
+    if not objects:
+        raise SystemExit(
+            "otter: name at least one Shopify type, for example OBJECT=ProductVariant.\n"
+            "       A type is not an upsert target, so there is no manifest default.")
+    store = setting("SHOPIFY_STORE")
+    if not store:
+        raise SystemExit(
+            "otter: no Shopify store. Add SHOPIFY_STORE to the manifest's env: block, "
+            "or to otter.env as SHOPIFY_STORE=your-store.myshopify.com.")
+    api_version = setting("SHOPIFY_API_VERSION", "2026-07")
+
+    client = ShopifyClient(
+        store=store,
+        api_version=api_version,
+        token=setting("SHOPIFY_ACCESS_TOKEN"),
+        client_id=setting("SHOPIFY_CLIENT_ID"),
+        client_secret=setting("SHOPIFY_CLIENT_SECRET"),
+    )
+
+    fetched_at = _now()
+    total = 0
+    for root in objects:
+        types = shopify.collect(client, root, depth=args.depth)
+        total += len(types)
+        _emit(os.path.join(out_dir, shopify.module_name(root) + ".py"),
+              shopify.render_types(root, types, integration=link, source_url=store,
+                                   api_version=api_version, fetched_at=fetched_at,
+                                   connections=shopify.find_root_connections(client, set(types))),
+              args.dry_run)
+    print("pulled %d type(s) for %s into %s" % (total, ", ".join(objects), out_dir))
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _emit(path, source, dry_run):
+    if dry_run:
+        sys.stdout.write(source)
+        return
+    _write(path, source)
+
+
+def existing_modules(out_dir):
+    """``{module stem: [exported names]}`` for every generated module on disk.
+
+    Read back from each module's ``__all__`` rather than re-derived, so it works
+    for either system and for anything else that generates into the directory.
+    """
+    modules = {}
     if not os.path.isdir(out_dir):
-        return names
+        return modules
     for entry in sorted(os.listdir(out_dir)):
         if entry == "__init__.py" or not entry.endswith(".py"):
             continue
@@ -321,9 +382,15 @@ def existing_objects(out_dir):
         except (OSError, SyntaxError):
             continue
         for node in tree.body:
-            if isinstance(node, ast.ClassDef):
-                names.add(node.name)
-    return names
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(getattr(target, "id", None) == "__all__" for target in node.targets):
+                continue
+            try:
+                modules[entry[:-3]] = [element.value for element in node.value.elts]
+            except AttributeError:
+                pass
+    return modules
 
 
 def _write(path, content):

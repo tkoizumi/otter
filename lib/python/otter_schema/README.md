@@ -108,10 +108,36 @@ in CI or before a deploy. Until then, treat `schema/` as a snapshot with a
 snapshot is still strictly better than hand-typed names, which are stale the
 moment someone edits the org and wrong from the start when a name is a typo.
 
+## Shopify
+
+`make sync-schema SYSTEM=shopify OBJECT=ProductVariant` walks Shopify's type
+graph from a root and writes one module per root. Two differences from the flat
+Salesforce case, both forced by the schema:
+
+- **Only the `kind` decides what is a field.** `inventoryPolicy` resolves to
+  `ProductVariantInventoryPolicy`, an enum; `legacyResourceId` to
+  `UnsignedInt64`, a scalar. Both look like object types by name.
+- **Connections and lists are skipped, not emitted.** A connection needs
+  `first`/`after` and wraps its results in `nodes`; a list is a list. `resolve`
+  walks dicts and cannot index either, so a symbol for one would promise a
+  reference that silently resolves to nothing.
+
+Nested types chain, because a field reference has to carry a *path* and not just
+a name:
+
+```python
+from schema.shopify import ProductVariant
+ProductVariant.product.title        # Field("product.title")
+```
+
+That works because `Field` is a descriptor: read off a class it is itself, so a
+flat schema like Salesforce is unaffected, and read off a nested `Node` it
+returns a copy carrying the prefix. `--depth` (default 2) bounds how many hops
+are followed.
+
 ## What is not here yet
 
-* Shopify introspection. The same idea applies, and the Shopify side has full
-  schema introspection available even without data scopes — but it is a typed
-  graph rather than a flat field list, so it needs a different shape.
-* Deriving the GraphQL query from the mapping's source paths, which is what
-  would remove the `source.py` ↔ `mapping.py` drift for good.
+Deriving the GraphQL query from declared source fields, which is what would
+remove the `source.py` ↔ `mapping.py` drift for good. It cannot be derived from
+the mapping — a transform hides what it reads, and a computed field has no
+source — so the fetch list has to be declared.
