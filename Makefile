@@ -2,13 +2,11 @@
 #
 # Everything here works with a plain `go` on PATH. Override any of these:
 #   make build GO=/usr/local/go/bin/go
-#   make docker VERSION=1.2.3
 
 GO      ?= go
 GOFLAGS ?=
 BIN     ?= bin
 EXAMPLES?= ./examples
-IMAGE   ?= otter
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
@@ -33,7 +31,7 @@ export CGO_ENABLED = 0
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-go test-python lint cross docker clean fmt tidy clean-pycache
+.PHONY: help build test test-go test-python lint cross clean fmt tidy clean-pycache
 .PHONY: start start-detached stop restart release schema
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
@@ -118,10 +116,6 @@ cross-build:
 		$(GO) build $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)/otterd$(SUFFIX) ./cmd/otterd
 	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 \
 		$(GO) build $(GOFLAGS) -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)/otter$(SUFFIX) ./cmd/otter
-
-## docker: build the runtime image (run make build first)
-docker:
-	docker build -t $(IMAGE):$(VERSION) .
 
 # Stopping first is not politeness: the project's state directory holds both the
 # extracted Python SDK the running daemon put on its children's PYTHONPATH and

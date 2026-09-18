@@ -179,8 +179,7 @@ not take the listener down until it has already stopped accepting work.
 hint that the daemon requires a token, which is how a typo in
 `OTTER_API_TOKEN` becomes visible instead of silent.
 
-The Docker `HEALTHCHECK` and the systemd examples in
-[operations.md](operations.md) both poll this endpoint.
+The systemd examples in [operations.md](operations.md) poll this endpoint.
 
 ## Integrations
 
@@ -537,7 +536,7 @@ curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O
 }
 ```
 
-Ctrl-C on a foreground `otterd` (or `docker stop`, or `systemctl stop`) cancels
+Ctrl-C on a foreground `otterd` (or `systemctl stop`) cancels
 nothing — it triggers graceful shutdown instead, which waits for running
 integrations and only then terminates them. Use this endpoint when you want a
 specific run to stop now.

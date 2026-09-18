@@ -118,33 +118,6 @@ The pattern that works with Otter's design is **one daemon per trust boundary**,
 not one daemon with many tenants. Each daemon is cheap: one process, one SQLite
 file, one Python child per run.
 
-For containers specifically:
-
-```bash
-docker run -d --name otter-team-a \
-  --read-only \
-  --tmpfs /tmp \
-  --cap-drop ALL \
-  --security-opt no-new-privileges \
-  --pids-limit 256 \
-  --memory 2g \
-  -e OTTER_API_TOKEN="$TEAM_A_TOKEN" \
-  -v /srv/team-a/integrations:/var/lib/otter/integrations:ro \
-  -v team-a-data:/var/lib/otter \
-  -p 127.0.0.1:7337:7337 \
-  otter:dev --integrations /var/lib/otter/integrations --listen 0.0.0.0:7337
-```
-
-`--read-only` with the data volume writable means a compromised integration
-still cannot modify the host filesystem. Mount the integrations directory
-read-only: Otter never writes to it.
-
-Note that the container image deliberately does not switch to a non-root
-container user, so that the operator can choose the uid that matches the mounted
-data volume. The default is root **inside** the container; use `--user` (for
-example `--user 10001:10001`) plus `chown` on the volume to run unprivileged, and
-do not add `--privileged` or mount the Docker socket.
-
 ## Network exposure and API authentication
 
 The default `--listen 127.0.0.1:7337` is the safe configuration: only processes
@@ -395,8 +368,8 @@ values:
   ```sql
   DELETE FROM run_logs WHERE message LIKE '%shpat_%';
   ```
-- Daemon logs on stdout go to journald or the container log driver. Ensure those
-  are access-controlled too; they contain integration names, run ids, peer
+- Daemon logs on stdout go to journald or the supervisor's log store. Ensure
+  those are access-controlled too; they contain integration names, run ids, peer
   addresses and error strings.
 
 ## Hardening checklist

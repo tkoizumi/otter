@@ -541,8 +541,8 @@ than retry; the default trades a slower restart for a fast, predictable one.
 
 ## Logging
 
-Daemon logs go to stdout, never to a file, so the supervisor (systemd, Docker,
-journald) owns rotation.
+Daemon logs go to stdout, never to a file, so the supervisor (systemd/journald)
+owns rotation.
 
 - Default format is structured JSON, one object per line:
 

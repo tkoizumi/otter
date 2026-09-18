@@ -6,7 +6,6 @@ layout, backups, retention, upgrades, tuning and troubleshooting.
 - [Deployment targets](#deployment-targets)
 - [First run on a Linux VM or EC2 instance](#first-run-on-a-linux-vm-or-ec2-instance)
 - [systemd unit](#systemd-unit)
-- [Docker](#docker)
 - [Raspberry Pi](#raspberry-pi)
 - [Data directory layout](#data-directory-layout)
 - [Backups](#backups)
@@ -21,7 +20,6 @@ layout, backups, retention, upgrades, tuning and troubleshooting.
 | Target | Notes |
 | --- | --- |
 | Linux VM / EC2 | The primary target. One static binary, one directory, systemd. |
-| Docker / Podman | Mount the data directory as a volume and the integrations directory read-only. |
 | Raspberry Pi (arm64/armv7) | Cross-compiled with `make cross`; fine for a handful of integrations. |
 
 Otter has no external service dependencies: no database server, no broker, no
@@ -167,48 +165,6 @@ Note that `Restart=always` plus crash recovery is exactly the intended
 combination: a killed daemon restarts, marks orphaned `running` runs as `failed`
 with `otter daemon restarted during execution`, and re-enqueues them if the
 manifest's retry policy allows.
-
-## Docker
-
-The image is a slim Python base plus the two binaries. Build it locally — the
-binaries are **not** built inside the image:
-
-```bash
-make build          # produces bin/otterd and bin/otter
-make docker         # docker build -t otter:$(VERSION) .
-```
-
-Run it:
-
-```bash
-export OTTER_API_TOKEN=$(openssl rand -hex 32)
-
-docker run -d --name otter \
-  -p 127.0.0.1:7337:7337 \
-  -e OTTER_API_TOKEN="$OTTER_API_TOKEN" \
-  -e OTTER_LISTEN=0.0.0.0:7337 \
-  -e SHOPIFY_TOKEN="$SHOPIFY_TOKEN" \
-  -v /srv/otter/integrations:/var/lib/otter/integrations:ro \
-  -v otter-data:/var/lib/otter \
-  --restart unless-stopped \
-  otter:dev --integrations /var/lib/otter/integrations
-```
-
-- `-p 127.0.0.1:7337:7337` keeps the API on the host loopback even though the
-  daemon binds all interfaces inside the container.
-- `OTTER_API_TOKEN` is mandatory because the container binds `0.0.0.0`; the
-  daemon refuses to start without it.
-- The integrations directory is mounted read-only. Otter does not write to it,
-  so read-only is strictly better.
-- `docker stop` sends `SIGTERM`, so the graceful shutdown path (including
-  `--shutdown-grace`) runs. Keep `--stop-timeout` (default 10s in Docker)
-  larger than the grace period, for example `docker stop -t 60 otter`.
-- The image's `HEALTHCHECK` polls `/health` with `python3`, which the base image
-  provides. `docker ps` shows `healthy`/`unhealthy`.
-
-Persisting data in a named volume means `docker compose down` does not lose
-state. Back the volume up the same way as a bare-metal data directory
-(see [Backups](#backups)).
 
 ## Raspberry Pi
 
@@ -442,10 +398,6 @@ not written to disk by Otter, so rotation is the supervisor's job:
   sudo journalctl -u otter --since '1 hour ago'
   # Cap journald usage if this host is small:
   #   /etc/systemd/journald.conf -> SystemMaxUse=500M
-  ```
-- Docker: use the `json-file` driver with limits.
-  ```bash
-  docker run --log-opt max-size=10m --log-opt max-file=5 ...
   ```
 - If you must write to a file, pipe stdout through `logrotate` (for example via
   `ExecStart=/bin/sh -c 'exec /usr/local/bin/otterd 2>&1 | rotatelogs ...'`) or a

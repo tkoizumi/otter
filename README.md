@@ -556,12 +556,10 @@ otter runs --limit 10
 [docs/deploy.md](docs/deploy.md) covers secrets, tokens, configuration,
 upgrades, backups and removal.
 
-The native binary is the primary deployment mechanism; Docker is optional
-convenience packaging.
+Cross-compile every supported platform into `./bin`:
 
 ```bash
 make cross      # linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 in ./bin
-make docker     # python:3.13-slim image with both binaries
 ```
 
 By hand, the runtime is one systemd unit:
@@ -582,7 +580,7 @@ RestartSec=2
 WantedBy=multi-user.target
 ```
 
-Runs on a Linux VM, EC2, Docker, an on-prem server, a customer VPC or a
+Runs on a Linux VM, EC2, an on-prem server, a customer VPC or a
 Raspberry Pi. The runtime requires only the Otter binary, Python and the local
 filesystem. [docs/operations.md](docs/operations.md) covers backups, log
 retention, upgrades and troubleshooting.
