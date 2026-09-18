@@ -34,6 +34,12 @@ const (
 type ServerConfig struct {
 	Listen   string
 	APIToken string
+
+	// OnReady is called once the listener is bound, with the address the
+	// kernel actually chose -- which is not necessarily the configured one
+	// when it names port 0. A daemon that will be addressed by other
+	// processes needs the resolved value, not the request.
+	OnReady func(addr string)
 }
 
 // Server serves the Otter HTTP API.
@@ -99,6 +105,10 @@ func (s *Server) Run(ctx context.Context) error {
 	s.logger.Info("api_listening",
 		"listen", listener.Addr().String(),
 		"auth_required", s.cfg.APIToken != "")
+
+	if s.cfg.OnReady != nil {
+		s.cfg.OnReady(listener.Addr().String())
+	}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.http.Serve(listener) }()

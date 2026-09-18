@@ -27,11 +27,24 @@ cd otter
 make build
 ```
 
-Start the daemon on the bundled examples:
+Bring up this checkout's runtime:
 
 ```bash
-./bin/otterd --integrations ./examples --data ./tmp
+./bin/otter start --integrations ./examples --data ./tmp/examples
 ```
+
+`otter start` finds the project you are in, picks a free loopback port, loads
+`otter.env` and `otter.daemon.env` if they exist, and records where it listens
+in `.otter/serve/`. Every other command then finds that runtime on its own:
+
+```bash
+otter run counter
+otter logs "$(otter run counter)"
+otter stop
+```
+
+Run it in the background with `--detach`, or in the foreground on `make start`
+(see `make help`).
 
 In another terminal, list what was discovered:
 
@@ -364,7 +377,9 @@ otter state get <integration> <key>
 otter state set <integration> <key> <json>
 otter state delete <integration> <key>
 otter validate <otter.yaml|directory>   # validate without a running daemon
-otter serve                             # run the daemon (same as otterd)
+otter start [--detach]                  # this project's runtime, free port, env loaded
+otter stop                              # stop the runtime serving this project
+otter serve                             # the daemon with the daemon's own flag defaults
 otter deploy --host <user@host>         # install or update a runtime over SSH
 otter deploy --status                   # what this checkout last deployed
 otter prepare [<integration>]           # prepare opt-in managed Python environments
@@ -377,6 +392,11 @@ locked dependencies, so it does not depend on the host's Python. See
 [docs/managed-python.md](docs/managed-python.md).
 
 Global flags: `--api <url>`, `--token <token>`, `--json`, `--version`.
+
+Without `--api` or `OTTER_API_URL`, the daemon URL is read from the nearest
+`.otter/serve/listen.url`, walking up from the working directory. That is what
+makes `otter run <integration>` work in a project whose runtime is not on the
+default port, with nothing to export and no wrapper script to remember.
 `otter integrations`, `otter run` and `otter state get` print machine-friendly
 output so they compose in scripts:
 

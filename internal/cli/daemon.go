@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -105,6 +106,36 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 		Config:  cfg,
 		Logger:  logger,
 		Version: version,
+		// Record where this daemon can be reached, beside the data it serves,
+		// so the developer's next command in this project is `otter run x`
+		// rather than a copy-pasted --api URL. The address is the one the
+		// kernel actually bound, which is why the API server reports it back
+		// instead of the CLI guessing from the requested flag.
+		OnReady: func(addr string) {
+			base := listenAPIURL(addr)
+			// A daemon started by `otter start` is told which project it
+			// serves, so the record goes there and survives any --data. A
+			// daemon started by hand has no project, and the data directory is
+			// the only place it could reasonably put one.
+			record := serveDir(os.Getenv(ProjectRootEnvName), cfg.DataDir)
+			if err := writeListenURLFile(record, base); err != nil {
+				logger.Warn("listen_url_not_recorded", "error", err.Error(), "record", record)
+			} else {
+				logger.Info("listen_url_recorded",
+					"url", base,
+					"file", filepath.Join(record, ListenURLFileName))
+			}
+			// The pid goes beside it so `otter stop` stops the runtime that
+			// serves this project instead of guessing from a process name.
+			// A detached child is the exception: its parent recorded the pid
+			// before returning, and overwriting it with the same value would
+			// only create a window where neither is current.
+			if os.Getenv(pidRecordedEnvName) == "" {
+				if err := writeServePID(record, os.Getpid()); err != nil {
+					logger.Warn("serve_pid_not_recorded", "error", err.Error(), "record", record)
+				}
+			}
+		},
 	})
 	if err != nil {
 		logger.Error("startup_failed", err)
@@ -115,5 +146,8 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 		logger.Error("daemon_failed", err)
 		return 1
 	}
+	// The listener is closed by now, so the record would only send the next
+	// command to a port nothing is serving.
+	removeListenURLFile(cfg.DataDir)
 	return 0
 }

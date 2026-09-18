@@ -30,7 +30,7 @@ export CGO_ENABLED = 0
 .DEFAULT_GOAL := help
 
 .PHONY: help build test test-go test-python lint run example cross docker clean fmt tidy clean-pycache
-.PHONY: sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart sync-release sync-schedule sync-schema
+.PHONY: start start-detached stop restart sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart sync-release sync-schedule sync-schema
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 
 ## help: list the available targets (default goal)
@@ -219,17 +219,29 @@ sync-schema:
 	  $(foreach obj,$(OBJECT),--object $(obj))
 
 ## sync-up: start the daemon with its environment (Ctrl-C stops)
+## start: run this checkout's runtime in the foreground (Ctrl-C stops it)
+start: build
+	@$(OTTER) start --integrations $(INTEGRATIONS) --data $(DATA) --log-format=pretty
+
+## start-detached: the same runtime in the background; `make stop` ends it
+start-detached: build
+	@$(OTTER) start --detach --integrations $(INTEGRATIONS) --data $(DATA) --log-format=json
+
+## stop: stop the runtime serving this checkout
+stop:
+	@OTTER_SERVE_DIR="$(CURDIR)/.otter/serve" $(OTTER) stop
+
+## restart: stop, then start in the foreground
+restart: stop
+	@$(MAKE) --no-print-directory start
+
+# `make sync-up` predates `otter start`. It is kept because it is in muscle
+# memory and in older notes, and it is now the same runtime started the same
+# way: `otter start` loads otter.daemon.env and otter.env itself, picks its own
+# free port when OTTER_LISTEN is unset, and records where it listens so other
+# shells can find it without --api.
 sync-up:
-	@test -x $(OTTERD) || { echo "missing $(OTTERD) -- run 'make build' first"; exit 1; }
-	@test -f $(SHARED_ENV) || { echo "missing $(SHARED_ENV)"; echo "  cp $(INTEGRATIONS)/$(INTEGRATION)/.env.example $(SHARED_ENV)"; exit 1; }
-	@if [ -f "$(DAEMON_ENV)" ]; then echo "daemon env: $(DAEMON_ENV)"; else echo "daemon env: none ($(DAEMON_ENV) not present)"; fi
-	@echo "shared env: $(SHARED_ENV)"
-	@echo "otterd on $(INTEGRATIONS), data in $(DATA), API on $(API) -- Ctrl-C to stop"
-	@set -a; \
-	  test -f "$(DAEMON_ENV)" && . $(DAEMON_ENV); \
-	  . $(SHARED_ENV); \
-	  set +a; \
-	  exec $(OTTERD) --integrations $(INTEGRATIONS) --data $(DATA) --listen $${OTTER_LISTEN:-127.0.0.1:$(API_PORT)} --log-format pretty
+	@$(OTTER) start --integrations $(INTEGRATIONS) --data $(DATA) --log-format=pretty
 
 ## sync-run: trigger the integration now, wait, and show what it did
 sync-run:

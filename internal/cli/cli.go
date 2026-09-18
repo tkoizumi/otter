@@ -53,6 +53,11 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return 2
 	}
 
+	// Resolve the daemon before any command needs it. This is what lets a bare
+	// `otter run hello` reach a project runtime that is not on the default
+	// port, with no --api flag and no wrapper to remember.
+	resolveAPI(&g)
+
 	if g.version {
 		fmt.Fprintf(a.Stdout, "otter %s\n", a.Version)
 		return 0
@@ -86,8 +91,16 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdState(ctx, g, commandArgs)
 	case "validate":
 		return a.cmdValidate(commandArgs)
+	case "start":
+		// Project-aware: finds the project, picks a free port, loads the
+		// project's environment files, records where it listens.
+		return a.cmdStart(ctx, commandArgs)
+	case "stop":
+		return a.cmdStop(ctx, commandArgs)
 	case "serve":
-		// `otter serve` is the same daemon as `otterd`, in one process.
+		// `otter serve` is the daemon itself, with the daemon's own flag
+		// defaults. It stays for systemd units and scripts that already pass
+		// --integrations, --data and --listen explicitly.
 		return RunDaemon(ctx, a.Version, commandArgs, a.Stdout, a.Stderr)
 	case "deploy":
 		return a.cmdDeploy(ctx, g, commandArgs)
@@ -890,12 +903,14 @@ Usage:
   otter [--api <url>] [--token <token>] [--json] <command> [arguments]
 
 Runtime:
+  start [--detach]                run this project's runtime, free port, env loaded
+  stop                            stop the runtime serving this project
   status                          show daemon health and run counts
   integrations [--all]            list integration names
   integrations --schedule         cron, next run and last outcome per integration
   inspect <integration>           show one integration in detail
   run <integration> [--body J]    queue a manual run and print its run id
-  serve [flags]                   run the daemon (same as the otterd binary)
+  serve [flags]                   run the daemon with the daemon's own defaults
 
 Runs:
   runs [--integration I] [--status S] [--limit N]
@@ -927,10 +942,17 @@ Global flags:
   --json         emit raw JSON instead of formatted text
   --version      print the version
 
+Without --api or OTTER_API_URL, the daemon URL is read from the nearest recorded
+address below .otter/, walking up from the working directory. A running daemon
+records its address there when it starts, so commands in a project reach the
+daemon serving that project -- including one on a non-default port.
+
 Examples:
-  otter integrations
-  otter integrations --schedule
+  otter start                     # in a project: free port, env files loaded
+  otter start --detach            # same, in the background
   otter run counter
+  otter stop
+  otter integrations
   otter logs $(otter run counter) --follow
   otter state get counter count
   otter prepare shopify-to-salesforce

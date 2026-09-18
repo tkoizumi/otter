@@ -41,6 +41,12 @@ type Options struct {
 
 	// Version is reported through /health.
 	Version string
+
+	// OnReady is called once the API listener is bound, with the resolved
+	// address. `otter serve` uses it to record where this daemon can be
+	// reached, so a developer's next command is `otter run`, not a
+	// copy-pasted --api URL.
+	OnReady func(addr string)
 }
 
 // cancelReason records why a running process was signalled. It decides the
@@ -222,6 +228,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	d.apiServer = api.NewServer(api.ServerConfig{
 		Listen:   cfg.Listen,
 		APIToken: cfg.APIToken,
+		OnReady:  opts.OnReady,
 	}, d, opts.Logger)
 
 	keepOwner = true
