@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +13,52 @@ import (
 	"github.com/tkoizumi/otter/internal/pyenv"
 	"github.com/tkoizumi/otter/internal/release"
 )
+
+// resolveReleaseData decides which data directory a release belongs to.
+//
+// The workspace's live runtime is authoritative when there is one: a release
+// goes where that daemon will look, or it is not made. Without a live runtime
+// the project convention decides, so a workspace that has not been started yet
+// still has exactly one place its state will appear.
+func resolveReleaseData(stderr io.Writer, requested string, explicit bool) (string, int) {
+	wd, err := workingDirForTest()
+	if err != nil {
+		fmt.Fprintf(stderr, "otter: cannot determine the working directory: %v\n", err)
+		return "", 1
+	}
+	root, inProject := detectProjectRoot(wd)
+	if !inProject {
+		if explicit {
+			return requested, 0
+		}
+		fmt.Fprintf(stderr, "otter: no workspace here (no .otter in this directory or above)\n")
+		fmt.Fprintf(stderr, "otter: run release from a workspace, or pass --data <dir>\n")
+		return "", 2
+	}
+
+	convention := filepath.Join(root, stateDirName, "data")
+	record := serveDir(root, convention)
+	if base, ok := runningURL(record); ok {
+		// The data directory the live daemon reads, which is what the release
+		// has to match. The record falls back to the convention for a runtime
+		// started before the directory was written down.
+		served, hasServed := readServeData(record)
+		if !hasServed {
+			served = convention
+		}
+		if explicit && !sameDir(requested, served) {
+			fmt.Fprintf(stderr, "otter: refusing to release into %s\n", requested)
+			fmt.Fprintf(stderr, "otter: the runtime serving this workspace reads %s (at %s)\n", served, base)
+			fmt.Fprintf(stderr, "otter: a release the daemon cannot see is never active; drop --data or fix the runtime\n")
+			return "", 1
+		}
+		return served, 0
+	}
+	if explicit {
+		return requested, 0
+	}
+	return convention, 0
+}
 
 // cmdRelease stages an integration as an immutable release, prepares its
 // environment, and activates it.
@@ -24,7 +71,7 @@ func (a *App) cmdRelease(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	integrations := fs.String("integrations", config.DefaultIntegrations, "integrations root")
-	data := fs.String("data", config.DefaultDataDir, "Otter data directory")
+	data := fs.String("data", "", "Otter data directory (default: the workspace's, .otter/data)")
 	source := fs.String("source", "", "integration directory to snapshot; defaults to discovering <integration> under --integrations")
 	shared := fs.String("shared", "", "comma-separated shared code directories to snapshot with the integration")
 	uv := fs.String("uv", "", "uv executable used only during preparation")
@@ -38,6 +85,16 @@ func (a *App) cmdRelease(ctx context.Context, args []string) int {
 		return 2
 	}
 	id := fs.Arg(0)
+
+	// A release written anywhere but the daemon's own data directory is
+	// invisible to it, which surfaces much later as "no active release" while
+	// the release sits on disk. Resolve it against the workspace and refuse a
+	// disagreement rather than create one.
+	dataDir, code := resolveReleaseData(a.Stderr, *data, flagWasSet(fs, "data"))
+	if code != 0 {
+		return code
+	}
+	*data = dataDir
 
 	manager := release.Manager{DataDir: *data}
 	if *list {

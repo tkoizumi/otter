@@ -131,6 +131,9 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 			// before returning, and overwriting it with the same value would
 			// only create a window where neither is current.
 			if os.Getenv(pidRecordedEnvName) == "" {
+				if err := writeServeData(record, cfg.DataDir); err != nil {
+					logger.Warn("serve_data_not_recorded", "error", err.Error(), "record", record)
+				}
 				if err := writeServePID(record, os.Getpid()); err != nil {
 					logger.Warn("serve_pid_not_recorded", "error", err.Error(), "record", record)
 				}

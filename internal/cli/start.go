@@ -373,6 +373,19 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	// A live daemon already serving this workspace, with a different data
+	// directory or port, is a second runtime for one workspace -- which is how
+	// a release written for one daemon becomes invisible to the other. Over-
+	// writing its record is what let a stray daemon hijack a project, so it is
+	// refused and named instead.
+	if other, ok := otherLiveRuntime(opts); ok {
+		fmt.Fprintf(a.Stderr, "otter: %s is already served by a runtime at %s (pid %d)\n",
+			describeProject(opts), other.URL, other.PID)
+		fmt.Fprintf(a.Stderr, "otter: that runtime uses data %s\n", other.Data)
+		fmt.Fprintf(a.Stderr, "otter: one workspace has one runtime; stop it with otter stop, or pass a different --data\n")
+		return 1
+	}
+
 	if *detach {
 		return a.startDetached(opts, passthrough)
 	}
@@ -528,6 +541,55 @@ func (a *App) cmdStop(ctx context.Context, args []string) int {
 	_ = process.Signal(syscall.SIGKILL)
 	removeServeFiles(data)
 	return 1
+}
+
+// liveRuntime is a runtime that is still answering, with the state it owns.
+type liveRuntime struct {
+	URL  string
+	Data string
+	PID  int
+}
+
+// sameDir compares two paths after resolving them, so `./tmp` and `tmp` and
+// an absolute spelling of either all agree.
+func sameDir(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return absA == absB
+}
+
+// otherLiveRuntime reports a runtime already serving this workspace with a
+// different data directory or port.
+//
+// One workspace has one runtime. A second one sharing the project's record is
+// how a release written for the first becomes invisible to the second, and how
+// a stray daemon used to take a project over. The same address *and* the same
+// data directory is "already running" instead, which the caller checks first,
+// so reaching here means the live owner genuinely differs.
+func otherLiveRuntime(opts startOptions) (liveRuntime, bool) {
+	recordDir := serveDir(opts.ProjectRoot, opts.Data)
+	base, ok := readListenURLFile(filepath.Join(recordDir, ListenURLFileName))
+	if !ok || !apiAnswers(base) {
+		return liveRuntime{}, false
+	}
+	pid, _ := readServePID(recordDir)
+	owner, hasOwner := readServeData(recordDir)
+	if !hasOwner {
+		// A record from before the data directory was written down. The
+		// address is still evidence of an owner, so treat a different address
+		// as a different runtime.
+		if base == listenAPIURL(opts.Listen) {
+			return liveRuntime{}, false
+		}
+		return liveRuntime{URL: base, Data: recordDir, PID: pid}, true
+	}
+	if sameDir(owner, opts.Data) && base == listenAPIURL(opts.Listen) {
+		return liveRuntime{}, false
+	}
+	return liveRuntime{URL: base, Data: owner, PID: pid}, true
 }
 
 // runningURL reports where the project's runtime is reachable, if the record

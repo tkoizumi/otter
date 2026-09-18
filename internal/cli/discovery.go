@@ -44,6 +44,12 @@ const ListenURLFileName = "listen.url"
 // its port or its process name.
 const ServePIDFileName = "serve.pid"
 
+// ServeDataFileName records which data directory the named daemon owns. Without
+// it a workspace cannot tell a runtime that is merely already running from a
+// runtime serving a different state directory, and those need opposite
+// answers: the first is success, the second is a refusal.
+const ServeDataFileName = "serve.data"
+
 // stateDirName is the directory that marks a project. Discovery looks for the
 // listen file somewhere below it, so a project is identified the way git
 // identifies a repository: by a dotted directory at its root.
@@ -68,19 +74,51 @@ var workingDirForTest = os.Getwd
 // The environment stays above discovery because an operator pointing every
 // command at one daemon with an exported variable must not be silently
 // redirected by whatever directory they happen to be in.
-func resolveAPI(g *globals) {
+func resolveAPI(g *globals) bool {
 	if g.api != "" {
-		return
+		return true
 	}
 	if fromEnv := strings.TrimSpace(os.Getenv("OTTER_API_URL")); fromEnv != "" {
 		g.api = fromEnv
-		return
+		return true
 	}
-	if dir, err := workingDirForTest(); err == nil {
-		if base, _, ok := discoverAPIURL(dir); ok {
+	dir, err := workingDirForTest()
+	if err != nil {
+		return false
+	}
+	// Every root from here upward, nearest first: a record left behind by a
+	// stopped daemon must not hide a live one further up, and a dead record
+	// must never become the answer.
+	inProject := false
+	for _, root := range projectRoots(dir) {
+		inProject = true
+		if base, _, ok := discoverAPIURL(root); ok && apiAnswers(base) {
 			g.api = base
+			return true
 		}
 	}
+	return inProject
+}
+
+// projectRoots lists the directories from dir upward that carry a workspace
+// marker, nearest first.
+func projectRoots(dir string) []string {
+	var roots []string
+	dir = filepath.Clean(dir)
+	for depth := 0; depth < maxDiscoveryDepth; depth++ {
+		for _, marker := range projectMarkers {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				roots = append(roots, dir)
+				break
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return roots
 }
 
 // discoverAPIURL walks up from dir looking for a project whose daemon recorded
@@ -237,6 +275,30 @@ func writeListenURLFile(dataDir, base string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dataDir, ListenURLFileName), []byte(base+"\n"), 0o644)
+}
+
+// writeServeData records the data directory a daemon serves.
+func writeServeData(recordDir, dataDir string) error {
+	if recordDir == "" || dataDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(recordDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(recordDir, ServeDataFileName), []byte(dataDir+"\n"), 0o644)
+}
+
+// readServeData reports the data directory the recorded daemon uses.
+func readServeData(recordDir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(recordDir, ServeDataFileName))
+	if err != nil {
+		return "", false
+	}
+	dir := strings.TrimSpace(string(data))
+	if dir == "" {
+		return "", false
+	}
+	return dir, true
 }
 
 // removeListenURLFile clears the record on a clean shutdown, so a stale address

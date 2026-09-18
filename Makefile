@@ -8,7 +8,6 @@ GO      ?= go
 GOFLAGS ?=
 BIN     ?= bin
 EXAMPLES?= ./examples
-DATA    ?= ./tmp
 IMAGE   ?= otter
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -46,7 +45,7 @@ help:
 	@grep -hE '^## ' $(MAKEFILE_LIST) | sed -e 's/^## //' | awk -F': ' '{ printf "  %-18s %s\n", $$1, $$2 }'
 	@echo ""
 	@echo "Integration operations take INTEGRATION=$(INTEGRATION) (any directory"
-	@echo "under $(INTEGRATIONS)); runtime state lives in $(DATA)."
+	@echo "under $(INTEGRATIONS)); each project keeps its state in .otter/data."
 	@echo ""
 	@echo "Running the runtime, and everything you do to it once it is up, is the"
 	@echo "otter command, not make: otter start | stop | run | logs | state | status."
@@ -124,19 +123,14 @@ cross-build:
 docker:
 	docker build -t $(IMAGE):$(VERSION) .
 
-# Stopping first is not politeness: $(DATA) holds both the extracted Python SDK
-# the running daemon put on its children's PYTHONPATH and the SQLite database it
-# holds open. Deleting them underneath a live daemon breaks `import otter`
-# (ModuleNotFoundError) and unlinking the database silently discards its state.
-# Stopping first is not politeness: ./tmp holds the extracted Python SDK the
-# running daemon put on its children's PYTHONPATH and the SQLite file it holds
-# open. Deleting them underneath a live daemon breaks `import otter` and
-# silently discards state. `otter stop` stops the runtime serving this
-# checkout, which is not necessarily the one on the default port.
-## clean: remove ./bin and ./tmp (stops this checkout's runtime first)
+# Stopping first is not politeness: the project's state directory holds both the
+# extracted Python SDK the running daemon put on its children's PYTHONPATH and
+# the SQLite database it holds open. Deleting them underneath a live daemon
+# breaks `import otter` and silently discards state.
+## clean: remove ./bin and the project state (stops this checkout's runtime first)
 clean:
 	-@$(OTTER) stop
-	rm -rf $(ROOT)/$(BIN) $(ROOT)/$(DATA)
+	rm -rf $(ROOT)/$(BIN) $(ROOT)/.otter/data
 
 ## fmt: rewrite all Go files with gofmt
 fmt:

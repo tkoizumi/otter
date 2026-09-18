@@ -54,9 +54,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 
 	// Resolve the daemon before any command needs it. This is what lets a bare
-	// `otter run hello` reach a project runtime that is not on the default
-	// port, with no --api flag and no wrapper to remember.
-	resolveAPI(&g)
+	// `otter run hello` reach a project runtime with no --api flag and no
+	// wrapper to remember. The boolean reports whether a workspace was found
+	// at all, which the daemon commands below require.
+	inProject := resolveAPI(&g)
 
 	if g.version {
 		fmt.Fprintf(a.Stdout, "otter %s\n", a.Version)
@@ -68,6 +69,15 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	}
 
 	command, commandArgs := rest[0], rest[1:]
+
+	// Commands that act on a runtime need one to act on. There is deliberately
+	// no ambient default: falling back to a fixed port meant a command could
+	// silently answer for a different workspace, which is worse than refusing.
+	if !inProject && g.api == "" && needsDaemon(command) {
+		fmt.Fprintf(a.Stderr, "otter: no workspace here (no .otter in this directory or above)\n")
+		fmt.Fprintf(a.Stderr, "otter: cd into a workspace, start one with otter start, or pass --api <url>\n")
+		return 2
+	}
 
 	switch command {
 	case "help", "-h", "--help":
@@ -1180,6 +1190,19 @@ Examples:
 }
 
 // small helpers ---------------------------------------------------------------
+
+// needsDaemon reports whether a command acts on a running runtime rather than
+// on files in the working tree. The local commands -- init, validate, serve,
+// release, prepare, deploy -- are their own authority on where state lives and
+// must keep working outside a workspace.
+func needsDaemon(command string) bool {
+	switch command {
+	case "status", "integrations", "inspect", "run", "runs", "run-status", "logs", "state":
+		return true
+	default:
+		return false
+	}
+}
 
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
