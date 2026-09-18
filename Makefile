@@ -135,7 +135,7 @@ docker:
 # checkout, which is not necessarily the one on the default port.
 ## clean: remove ./bin and ./tmp (stops this checkout's runtime first)
 clean:
-	-@OTTER_SERVE_DIR="$(ROOT)/.otter/serve" $(OTTER) stop
+	-@$(OTTER) stop
 	rm -rf $(ROOT)/$(BIN) $(ROOT)/$(DATA)
 
 ## fmt: rewrite all Go files with gofmt
@@ -191,11 +191,11 @@ OBJECT ?=
 
 ## release: stage, prepare and activate INTEGRATION's managed Python release
 release:
-	@$(OTTER) release --integrations $(INTEGRATIONS) --data $(DATA) --shared ../../lib $(INTEGRATION)
+	@$(OTTER) release --integrations $(INTEGRATIONS) --shared ../../lib $(INTEGRATION)
 
 ## release-list: staged releases for INTEGRATION, newest first
 release-list:
-	@$(OTTER) release --list --data $(DATA) $(INTEGRATION)
+	@$(OTTER) release --list $(INTEGRATION)
 
 # The schema puller is integration *authoring* tooling: it writes a typed
 # model of a vendor's API into the integration so mapping code can be checked
@@ -216,15 +216,15 @@ schema:
 
 ## start: run this checkout's runtime in the foreground (Ctrl-C stops it)
 start: build
-	@$(OTTER) start --integrations $(INTEGRATIONS) --data $(DATA) --log-format=pretty
+	@$(OTTER) start --integrations $(INTEGRATIONS) --log-format=pretty
 
 ## start-detached: the same runtime in the background; `make stop` ends it
 start-detached: build
-	@$(OTTER) start --detach --integrations $(INTEGRATIONS) --data $(DATA)
+	@$(OTTER) start --detach --integrations $(INTEGRATIONS)
 
 ## stop: stop the runtime serving this checkout
 stop:
-	@OTTER_SERVE_DIR="$(ROOT)/.otter/serve" $(OTTER) stop
+	@$(OTTER) stop
 
 ## restart: stop, then start in the foreground
 restart: stop

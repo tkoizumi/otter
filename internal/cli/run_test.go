@@ -217,8 +217,10 @@ func TestCmdRunPrintsTheIDItQueued(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "run: "+id) {
-		t.Errorf("the queued run id is not on stdout:\n%s", got)
+	// Exactly once: the id goes out before the wait and must not be repeated
+	// after it.
+	if n := strings.Count(got, "run: "+id); n != 1 {
+		t.Errorf("the queued run id appears %d times, want exactly 1:\n%s", n, got)
 	}
 	if !strings.Contains(got, "status: succeeded") {
 		t.Errorf("no status line:\n%s", got)

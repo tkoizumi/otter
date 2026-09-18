@@ -592,11 +592,9 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		return 1
 	}
 
-	// Four lines at most: the id you will paste into `otter logs`, the
-	// outcome you asked for, and the run's own output. The id is printed in
-	// full because the daemon does not resolve prefixes, so an abbreviated
-	// one would be unusable in the next command.
-	fmt.Fprintf(a.Stdout, "run: %s\n", view.ID)
+	// The id is already out; what remains is the outcome and the run's own
+	// output. It is printed in full above because the daemon does not resolve
+	// prefixes, so an abbreviated id would be unusable in the next command.
 	a.printRunOutcome(a.Stdout, view)
 	a.printRunOutput(ctx, client, view.ID)
 	return runExitCode(view)
