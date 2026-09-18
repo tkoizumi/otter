@@ -361,6 +361,11 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 		opts.EnvFiles = projectEnvFiles(root)
 	}
 
+	// A workspace records the runtime that created it. Nothing enforces it --
+	// pinning is the operator's decision -- but a silent mismatch is how state
+	// gets migrated by surprise, so it is worth one line of output.
+	warnVersionDrift(a.Stderr, opts.ProjectRoot, a.Version)
+
 	// Starting twice is a mistake worth naming, not a second daemon sharing
 	// one SQLite file.
 	if base, ok := runningURL(serveDir(opts.ProjectRoot, opts.Data)); ok {

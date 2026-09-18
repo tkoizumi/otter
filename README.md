@@ -33,14 +33,24 @@ published by `.github/workflows/release.yml`; see [Releases](#releases).
 ## Quickstart (about five minutes)
 
 ```bash
-mkdir my-project && cd my-project && mkdir .otter
-otter start --detach
-otter integrations
+mkdir my-project && cd my-project
+otter init my-project        # workspace marker, manifest, entrypoint, tests
+otter validate my-project
+otter start --detach         # free port, loads otter.env if present
+otter run my-project
+otter state get my-project count
 otter stop
 ```
 
+`otter init` writes a workspace and one integration: the `.otter/` marker that
+names the project, a manifest with no trigger, an entrypoint, a pure
+`logic.py` and a test suite that needs no runtime. Run it again inside the
+workspace to add another integration. It records the runtime version that
+created the workspace in `.otter/version`, and `otter start` says so when a
+different one serves it.
+
 An integration is a directory with an `otter.yaml` and a Python entrypoint, so
-adding one is `mkdir` plus two files — see
+`init` is a convenience rather than a requirement — see
 [What an integration looks like](#what-an-integration-looks-like).
 
 To run the bundled examples from a checkout instead:
@@ -398,6 +408,7 @@ otter logs <run-id> [--follow]          # captured output
 otter state get <integration> <key>
 otter state set <integration> <key> <json>
 otter state delete <integration> <key>
+otter init [name]                       # scaffold a workspace and one integration
 otter validate <otter.yaml|directory>   # validate without a running daemon
 otter start [--detach]                  # this project's runtime, free port, env loaded
 otter stop                              # stop the runtime serving this project

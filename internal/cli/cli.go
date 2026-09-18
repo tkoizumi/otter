@@ -91,6 +91,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdState(ctx, g, commandArgs)
 	case "validate":
 		return a.cmdValidate(commandArgs)
+	case "init":
+		// Scaffolds a workspace and one integration. Local: no daemon, no
+		// network, nothing but files the developer is expected to edit.
+		return a.cmdInit(commandArgs)
 	case "start":
 		// Project-aware: finds the project, picks a free port, loads the
 		// project's environment files, records where it listens.
@@ -902,6 +906,9 @@ func (a *App) printUsage(w io.Writer) {
 Usage:
   otter [--api <url>] [--token <token>] [--json] <command> [arguments]
 
+Getting started:
+  init [--force] [name]           scaffold a workspace and one integration
+
 Runtime:
   start [--detach]                run this project's runtime, free port, env loaded
   stop                            stop the runtime serving this project
@@ -948,6 +955,7 @@ records its address there when it starts, so commands in a project reach the
 daemon serving that project -- including one on a non-default port.
 
 Examples:
+  otter init acme                 # scaffold a workspace and an integration
   otter start                     # in a project: free port, env files loaded
   otter start --detach            # same, in the background
   otter run counter
