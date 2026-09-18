@@ -36,10 +36,13 @@ const workspaceEnvFileName = "otter.env.example"
 // one, because appending to a project's ignore rules is not a scaffold's job.
 const gitignoreFileName = ".gitignore"
 
-// integrationNamePattern is deliberately narrow. The name is an identifier
-// used by the API, the CLI and durable state, and it becomes a directory name,
-// so it stays lowercase, digits and hyphens.
-var integrationNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+// integrationNamePattern is the runtime's own manifest name rule, verbatim:
+// lowercase letters, digits, dot, dash and underscore, starting and ending
+// alphanumeric. It is duplicated here rather than shared because init has to
+// reject a name before writing a manifest that validation would reject -- but
+// it must not be *stricter* than validation, or init refuses names the runtime
+// accepts.
+var integrationNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
 
 // scaffoldFile is one file `init` may write.
 type scaffoldFile struct {
@@ -96,7 +99,8 @@ func (a *App) cmdInit(args []string) int {
 	}
 	if !integrationNamePattern.MatchString(name) {
 		fmt.Fprintf(a.Stderr, "otter: %q is not a usable integration name\n", name)
-		fmt.Fprintf(a.Stderr, "otter: use lowercase letters, digits and hyphens, starting with a letter or digit\n")
+		fmt.Fprintf(a.Stderr, "otter: use lowercase letters, digits, dot, dash or underscore,\n")
+		fmt.Fprintf(a.Stderr, "otter: starting and ending with a letter or digit (for example tshirt-company)\n")
 		return 2
 	}
 

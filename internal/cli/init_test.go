@@ -168,8 +168,19 @@ func TestInitNameDefaultsToTheDirectory(t *testing.T) {
 	}
 }
 
+// The name rule must match the manifest's, not be stricter: a name the runtime
+// accepts must be scaffoldable.
+func TestInitAcceptsTheNamesTheRuntimeAccepts(t *testing.T) {
+	for _, name := range []string{"tshirt_company", "acme.sync", "acme-sync", "a", "svc2"} {
+		dir := t.TempDir()
+		if _, stderr, code := initIn(t, dir, "0.1.0", name); code != 0 {
+			t.Errorf("init refused %q, which the manifest pattern allows: %s", name, stderr)
+		}
+	}
+}
+
 func TestInitRejectsUnusableNames(t *testing.T) {
-	for _, name := range []string{"Acme", "acme sync", "acme/sync", "-acme"} {
+	for _, name := range []string{"Acme", "acme sync", "acme/sync", "-acme", "_acme", "acme_"} {
 		dir := t.TempDir()
 		_, stderr, code := initIn(t, dir, "0.1.0", name)
 		if code == 0 {
