@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // ErrNotFound is returned when a run id does not exist.

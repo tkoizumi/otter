@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // DefaultBaseURL is where a locally running daemon listens.

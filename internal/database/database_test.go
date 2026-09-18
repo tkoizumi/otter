@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/migrations"
+	"github.com/tkoizumi/otter/migrations"
 )
 
 func openTempDB(t *testing.T) *DB {

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/api"
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // runTokenRegistry hands out short-lived bearer tokens to child processes.

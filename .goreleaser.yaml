@@ -1,0 +1,130 @@
+# GoReleaser configuration for the Otter runtime.
+#
+#   goreleaser release --snapshot --clean     # build locally, publish nothing
+#   git tag v0.1.0 && git push origin v0.1.0  # the release workflow does the rest
+#
+# Two binaries ship, not one: `otter` is the client and the project-aware
+# entry point, `otterd` is the daemon. They are the same build flags, so they
+# stay in step by construction. Both are static (CGO_ENABLED=0, the SQLite
+# driver is pure Go), which is what makes a single tarball per platform enough.
+version: 2
+
+project_name: otter
+
+before:
+  hooks:
+    # The Python SDK is embedded into otterd with go:embed all:python, so a
+    # stale __pycache__ would be compiled into the shipped binary.
+    - sh -c 'find . -name .cache -prune -o -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true'
+    - go mod tidy
+
+builds:
+  - id: otter
+    main: ./cmd/otter
+    binary: otter
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: otterd
+    main: ./cmd/otterd
+    binary: otterd
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # One tarball per platform holding both binaries. The name is what install.sh
+  # and the Homebrew formula look for, so it is a published interface:
+  #   otter_<version>_<os>_<arch>.tar.gz
+  - id: otter
+    ids:
+      - otter
+      - otterd
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^Merge pull request"
+      - "^Merge branch"
+
+# `brew install tkoizumi/tap/otter`, against the tap repository the release
+# workflow pushes the generated formula into. The formula installs the two
+# prebuilt binaries rather than building from source: a Go toolchain on every
+# developer's machine is exactly the cost this release exists to remove.
+homebrew_casks:
+  - name: otter
+    ids:
+      - otter
+    repository:
+      owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
+      name: homebrew-tap
+      # The one manual setup step: a token with contents:write on the tap
+      # repository. The default GITHUB_TOKEN cannot push to another repo.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/otter"
+    description: "Runtime for reliable Python integrations: scheduling, retries, state and logs"
+    # Both binaries, because the client and the daemon are separate programs.
+    binaries:
+      - otter
+      - otterd
+    # The archives are unsigned and unnotarized, so macOS quarantines what the
+    # cask unpacks and refuses to run it. `quarantine: true` is the declarative
+    # form of the xattr hook; the explicit hook is kept as well because it is
+    # what GoReleaser's own docs prescribe and it is harmless when there is no
+    # attribute to strip.
+    quarantine: true
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/otter"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/otterd"]
+          end
+    # Offline, so a broken install fails `brew test` rather than at a
+    # developer's first command.
+    test: |
+      system "#{bin}/otter", "help"
+    caveats: |
+      Two binaries are installed: `otter` (client and project runtime) and
+      `otterd` (the same daemon, with its own flag defaults).
+
+      Start a runtime for a project:
+
+        cd my-project && otter start
+
+      Python 3 is required by integrations that use the default external
+      Python mode. An integration that opts into `python.mode: managed`
+      prepares its own interpreter and needs no host Python.

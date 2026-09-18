@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // capture runs one Send and returns the decoded body the endpoint received.

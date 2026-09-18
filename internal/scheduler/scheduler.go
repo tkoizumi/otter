@@ -13,7 +13,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/logging"
 )
 
 // Scheduler wraps a cron runner keyed by integration id.

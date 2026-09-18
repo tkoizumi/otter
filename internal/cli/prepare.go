@@ -5,8 +5,8 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/pyenv"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/pyenv"
 )
 
 // cmdPrepare prepares managed integrations before they can execute.

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/logging"
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // requirePython skips the test when no Python interpreter is available.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/retry"
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/retry"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // crashMessage is recorded on runs that were executing when a previous daemon

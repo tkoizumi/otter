@@ -21,9 +21,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/api"
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // App is the CLI entry point.

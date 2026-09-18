@@ -240,14 +240,15 @@ run otter release shopify-to-salesforce before submitting runs
 environment without creating a release, which is what you want when diagnosing a
 dependency problem.
 
-`make sync-release` wraps the release step for the local workflow, so a typical
+`make release` wraps the release step for the local workflow, so a typical
 session is:
 
 ```sh
 make build
-make sync-release      # after changing code or dependencies
-make sync-up           # terminal 1
-make sync-run          # terminal 2
+make release           # after changing code or dependencies
+otter start            # terminal 1
+make start             # or: same, after a rebuild
+otter run <integration>  # terminal 2
 ```
 
 Preparation:

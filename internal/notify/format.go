@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // This file renders the request body for each supported format.

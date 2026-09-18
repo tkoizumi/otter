@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/logging"
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // defaultTerminateGrace is how long a process gets to exit after SIGTERM

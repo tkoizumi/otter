@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // Sentinel errors. The API layer maps these onto HTTP status codes.

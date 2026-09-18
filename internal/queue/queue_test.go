@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // fakeCapacity is a deterministic test double for Capacity. An integration

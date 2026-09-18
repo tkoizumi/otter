@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // The two files `otter start` reads, if a project has them. They are the same

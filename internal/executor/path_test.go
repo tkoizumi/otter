@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // PYTHONPATH must be ordered: the runtime SDK first (so `import otter` always

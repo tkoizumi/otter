@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/logging"
 )
 
 func testLogger() *logging.Logger {

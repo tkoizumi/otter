@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 func newSeededBackend() *fakeBackend {

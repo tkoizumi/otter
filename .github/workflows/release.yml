@@ -1,0 +1,100 @@
+name: release
+
+# Two jobs, deliberately separate:
+#
+#   test    the same suite a pull request runs, so a tag cannot publish a
+#           binary that does not pass its own tests
+#   release cross-compile, checksum, publish the GitHub release, and push the
+#           generated Homebrew formula to the tap
+#
+# A tag is the only trigger. Nothing here runs on a branch, because the point
+# of the workflow is that a published version corresponds to exactly one commit
+# and cannot be republished by a later push.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  # Lets the pipeline be exercised without a tag: builds and uploads the
+  # archives as workflow artifacts, publishes nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Go tests
+        run: go test ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Python suites
+        run: |
+          python3 -m unittest discover -s sdk/python/tests
+          PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
+          for dir in integrations/*/tests; do
+            [ -d "$dir" ] || continue
+            echo "== $dir"
+            python3 -m unittest discover -s "$dir"
+          done
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser renders the changelog from history.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The same validation this used locally: a config that cannot pass
+      # `check` must fail here, before anything is published, rather than
+      # half way through a release.
+      - name: Validate the release config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: Build the archives without publishing
+        if: github.event_name == 'workflow_dispatch'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: Upload the snapshot archives
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: otter-snapshot
+          path: dist/*.tar.gz
+
+      # Publishing needs the tap token: GoReleaser commits the generated
+      # formula into <owner>/homebrew-tap, which the default GITHUB_TOKEN
+      # cannot write to. Create a fine-grained PAT with contents:write on that
+      # one repository and store it as HOMEBREW_TAP_TOKEN.
+      - name: Publish the release and the Homebrew formula
+        if: github.event_name == 'push'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}

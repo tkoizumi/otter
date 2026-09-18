@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // Sentinel errors a Backend returns so the API layer can choose a status

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 func TestSendPostsThePayload(t *testing.T) {

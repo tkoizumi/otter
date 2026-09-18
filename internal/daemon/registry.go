@@ -4,7 +4,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // registered is an integration known to the daemon together with the runtime

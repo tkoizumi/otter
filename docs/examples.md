@@ -1,6 +1,6 @@
 # Examples
 
-Two examples ship in `examples/` so that `make example` starts something
+Two examples ship in `examples/` so that `otter start --integrations ./examples` starts something
 meaningful. This document covers both, then walks through the manifest patterns
 that are **not** shipped as directories — keep-alive originals you can copy into
 your own integrations root.

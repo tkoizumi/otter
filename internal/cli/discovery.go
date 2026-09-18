@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/otter-runtime/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/api"
 )
 
 // This file is how the CLI finds a project's daemon.

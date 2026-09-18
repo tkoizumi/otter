@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/otter-runtime/otter/internal/deploy"
+	"github.com/tkoizumi/otter/internal/deploy"
 )
 
 // cmdDeploy implements `otter deploy` and `otter deploy --destroy`.

@@ -20,6 +20,11 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 # Every target runs in the repository root, so it works from any directory.
 ROOT := $(CURDIR)
 
+# The two binaries every other target invokes. OTTER is what a developer uses;
+# OTTERD is the daemon, for `cross` and for scripts that predate `otter start`.
+OTTER  ?= $(BIN)/otter
+OTTERD ?= $(BIN)/otterd
+
 # Go source directories. Scoping tools to these keeps gofmt from walking
 # unrelated trees such as a local module cache under .cache/.
 GO_DIRS := ./cmd ./internal ./sdk ./migrations
@@ -29,8 +34,9 @@ export CGO_ENABLED = 0
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-go test-python lint run example cross docker clean fmt tidy clean-pycache
-.PHONY: start start-detached stop restart sync-up sync-run sync-status sync-retry sync-logs sync-stop sync-restart sync-release sync-schedule sync-schema
+.PHONY: help build test test-go test-python lint cross docker clean fmt tidy clean-pycache
+.PHONY: start start-detached stop restart release schema
+.PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 
 ## help: list the available targets (default goal)
@@ -40,8 +46,11 @@ help:
 	@grep -hE '^## ' $(MAKEFILE_LIST) | sed -e 's/^## //' | awk -F': ' '{ printf "  %-18s %s\n", $$1, $$2 }'
 	@echo ""
 	@echo "Integration operations take INTEGRATION=$(INTEGRATION) (any directory"
-	@echo "under $(INTEGRATIONS)). Credentials are shared by every integration and"
-	@echo "read from $(SHARED_ENV)."
+	@echo "under $(INTEGRATIONS)); runtime state lives in $(DATA)."
+	@echo ""
+	@echo "Running the runtime, and everything you do to it once it is up, is the"
+	@echo "otter command, not make: otter start | stop | run | logs | state | status."
+	@echo "otter.env and otter.daemon.env are loaded by otter start."
 	@echo ""
 
 ## build: build ./bin/otterd and ./bin/otter with VERSION injected
@@ -90,13 +99,8 @@ lint:
 		echo "golangci-lint not found on PATH — skipping (install it for the full lint pass)"; \
 	fi
 
-## run: build, then run otterd against ./examples with data in ./tmp
-run: build
-	$(BIN)/otterd --integrations $(EXAMPLES) --data $(DATA)
-
-## example: build, then run otterd on ./examples with pretty logs
-example: build
-	$(BIN)/otterd --integrations $(EXAMPLES) --data $(DATA) --log-format pretty
+# `run` and `example` are gone: `otter start --integrations ./examples` is the
+# same runtime with a free port, and it records where it listens.
 
 ## cross: build linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 into ./bin
 cross:
@@ -124,8 +128,14 @@ docker:
 # the running daemon put on its children's PYTHONPATH and the SQLite database it
 # holds open. Deleting them underneath a live daemon breaks `import otter`
 # (ModuleNotFoundError) and unlinking the database silently discards its state.
-## clean: remove ./bin and ./tmp (stops the daemon first)
-clean: sync-stop
+# Stopping first is not politeness: ./tmp holds the extracted Python SDK the
+# running daemon put on its children's PYTHONPATH and the SQLite file it holds
+# open. Deleting them underneath a live daemon breaks `import otter` and
+# silently discards state. `otter stop` stops the runtime serving this
+# checkout, which is not necessarily the one on the default port.
+## clean: remove ./bin and ./tmp (stops this checkout's runtime first)
+clean:
+	-@OTTER_SERVE_DIR="$(ROOT)/.otter/serve" $(OTTER) stop
 	rm -rf $(ROOT)/$(BIN) $(ROOT)/$(DATA)
 
 ## fmt: rewrite all Go files with gofmt
@@ -135,160 +145,91 @@ fmt:
 ## tidy: sync go.mod/go.sum
 tidy:
 	$(GO) mod tidy
-
 # ---------------------------------------------------------------------------
 # Integration operations
 #
-# Deliberately parameterised rather than hard-coded to one integration: point
-# INTEGRATION at any directory under INTEGRATIONS and the same targets work.
-# Defaults target the shipped Shopify -> Salesforce sync.
+# These are thin wrappers over `otter`, for one integration at a time, with the
+# two paths that are easy to get wrong (integrations root, data directory)
+# filled in. Everything they call works without make:
 #
-# These talk to a *running* daemon over its HTTP API, so they need no secrets
-# themselves; only `sync-up` loads the environment files, because the daemon is
-# what reads the secrets.
+#   make release INTEGRATION=shopify-to-salesforce
+#   make schema  INTEGRATION=... SYSTEM=salesforce OBJECT=Contact
+#
+# Everything else an operator does to a running runtime is already a command
+# and is deliberately not duplicated here. The mapping, so nobody has to guess
+# which of two names is current:
+#
+#   was                 is now
+#   make sync-up        otter start
+#   make sync-restart   otter stop && otter start
+#   make sync-stop      otter stop
+#   make sync-run       otter run <integration>
+#   make sync-schedule  otter integrations --schedule
+#   make sync-logs      otter logs <run-id> [--follow]
+#   make sync-status    otter state get / otter runs
+#   make sync-retry     otter state set / delete, then otter run
+#   make run            otter start --integrations ./examples
+#   make example        otter start --integrations ./examples --log-format=pretty
+#
+# The sync-* names were a second interface over the same runtime, and one of
+# them (`sync-stop`) killed whatever held port 7337 rather than the runtime
+# serving this checkout. A single interface is worth more than the muscle
+# memory.
 # ---------------------------------------------------------------------------
 
 INTEGRATION  ?= shopify-to-salesforce
 INTEGRATIONS ?= ./integrations
 
-# Credentials, shared by every integration. One file rather than one per
-# integration: the daemon's environment is a single process environment, and an
-# integration only receives the keys its own manifest declares, so per-
-# integration files isolated nothing while making one rotation an N-file edit.
-SHARED_ENV   ?= ./otter.env
+# The interpreter used for authoring tooling. The runtime never needs this: a
+# managed integration prepares its own interpreter, and an external one uses
+# whatever `python.executable` names.
+PYTHON ?= python3
 
-# Daemon-wide settings (notification URL, log level, retention). Not committed,
-# not per-integration: it configures the daemon, so it applies locally and on
-# the host identically.
-DAEMON_ENV   ?= ./otter.daemon.env
-OTTER        ?= $(BIN)/otter
-OTTERD       ?= $(BIN)/otterd
-PYTHON       ?= python3
-API          ?= http://127.0.0.1:7337
-API_PORT     ?= 7337
+# Which vendor schema `make schema` pulls unless OBJECT overrides it.
+SYSTEM ?= salesforce
+OBJECT ?=
 
-# Which system to pull a schema from. Each writes to schema/<SYSTEM>/.
-SYSTEM       ?= salesforce
-
-# Objects to pull for `sync-schema`, space-separated. Empty means "whatever the
-# manifest says", which is the common case; set it to pull several, or to
-# retarget, without editing anything:
-#   make sync-schema INTEGRATION=x OBJECT="Contact Shopify_Order__c"
-OBJECT       ?=
-
-# Where `sync-retry` rewinds the watermark to. Defaults to the example
-# manifest's BACKFILL_FROM; raise it if your data starts later.
-REWIND_TO ?= 2026-01-01T00:00:00Z
-
-# Wait for a run to leave a non-terminal state, then print what it did.
-define run_and_report
-	id=$$($(OTTER) --api $(API) run $(INTEGRATION)) || exit 1; \
-	echo "run: $$id"; \
-	state=""; \
-	for i in $$(seq 1 240); do \
-		state=$$($(OTTER) --api $(API) --json run-status $$id 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status",""))' 2>/dev/null); \
-		case "$$state" in queued|running|retrying|"") sleep 0.5 ;; *) break ;; esac; \
-	done; \
-	echo "status: $$state"; \
-	$(OTTER) --api $(API) logs $$id | grep -E 'sync finished|rejected|integration failed' || true
-endef
-
-# Print the sync's durable state plus recent runs.
-define print_status
-	echo "--- state ---"; \
-	for key in sync_cursor failed_total; do \
-		printf '%-18s' "$$key:"; $(OTTER) --api $(API) state get $(INTEGRATION) $$key 2>/dev/null || echo "unset"; \
-	done; \
-	printf '%-18s' "last_run:"; $(OTTER) --api $(API) state get $(INTEGRATION) last_run 2>/dev/null || echo "unset"; \
-	printf '%-18s' "failed_customers:"; $(OTTER) --api $(API) state get $(INTEGRATION) failed_customers 2>/dev/null || echo "none"; \
-	echo; echo "--- recent runs ---"; \
-	$(OTTER) --api $(API) runs --integration $(INTEGRATION) --limit 5
-endef
-
-## sync-release: stage, prepare and activate the integration's managed release
-sync-release:
-	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
+## release: stage, prepare and activate INTEGRATION's managed Python release
+release:
 	@$(OTTER) release --integrations $(INTEGRATIONS) --data $(DATA) --shared ../../lib $(INTEGRATION)
+
+## release-list: staged releases for INTEGRATION, newest first
+release-list:
 	@$(OTTER) release --list --data $(DATA) $(INTEGRATION)
 
-## sync-schema: pull the integration's schema (SYSTEM=, OBJECT= to override)
-sync-schema:
+# The schema puller is integration *authoring* tooling: it writes a typed
+# model of a vendor's API into the integration so mapping code can be checked
+# against it. It is not part of the runtime, so it is not an `otter` command.
+## schema: pull INTEGRATION's vendor schema (SYSTEM=, OBJECT= to override)
+schema:
 	@$(PYTHON) lib/python/otter_schema/pull.py \
 	  --integration $(INTEGRATIONS)/$(INTEGRATION) \
 	  --system $(SYSTEM) \
 	  $(foreach obj,$(OBJECT),--object $(obj))
 
-## sync-up: start the daemon with its environment (Ctrl-C stops)
+# ---------------------------------------------------------------------------
+# Local runtime
+#
+# `otter start` needs nothing from make. These exist because `make start` is
+# what people type in this repository, and because `make` can rebuild first.
+# ---------------------------------------------------------------------------
+
 ## start: run this checkout's runtime in the foreground (Ctrl-C stops it)
 start: build
 	@$(OTTER) start --integrations $(INTEGRATIONS) --data $(DATA) --log-format=pretty
 
 ## start-detached: the same runtime in the background; `make stop` ends it
 start-detached: build
-	@$(OTTER) start --detach --integrations $(INTEGRATIONS) --data $(DATA) --log-format=json
+	@$(OTTER) start --detach --integrations $(INTEGRATIONS) --data $(DATA)
 
 ## stop: stop the runtime serving this checkout
 stop:
-	@OTTER_SERVE_DIR="$(CURDIR)/.otter/serve" $(OTTER) stop
+	@OTTER_SERVE_DIR="$(ROOT)/.otter/serve" $(OTTER) stop
 
 ## restart: stop, then start in the foreground
 restart: stop
 	@$(MAKE) --no-print-directory start
 
-# `make sync-up` predates `otter start`. It is kept because it is in muscle
-# memory and in older notes, and it is now the same runtime started the same
-# way: `otter start` loads otter.daemon.env and otter.env itself, picks its own
-# free port when OTTER_LISTEN is unset, and records where it listens so other
-# shells can find it without --api.
-sync-up:
-	@$(OTTER) start --integrations $(INTEGRATIONS) --data $(DATA) --log-format=pretty
-
-## sync-run: trigger the integration now, wait, and show what it did
-sync-run:
-	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
-	@$(run_and_report)
-
-## sync-schedule: is it running on a schedule? cron, next run, last outcome
-sync-schedule:
-	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
-	@$(OTTER) --api $(API) integrations --schedule
-
-## sync-status: watermark, dead letters and recent runs
-sync-status:
-	@$(print_status)
-
-## sync-retry: rewind the watermark to REWIND_TO, clear dead letters, run, report
-sync-retry:
-	@echo "rewinding sync_cursor to $(REWIND_TO)"
-	@$(OTTER) --api $(API) state set $(INTEGRATION) sync_cursor '"$(REWIND_TO)"' >/dev/null
-	@$(OTTER) --api $(API) state delete $(INTEGRATION) in_progress_cursor >/dev/null 2>&1 || true
-	@$(OTTER) --api $(API) state delete $(INTEGRATION) in_progress_window_start >/dev/null 2>&1 || true
-	@$(OTTER) --api $(API) state delete $(INTEGRATION) failed_customers >/dev/null 2>&1 || true
-	@$(OTTER) --api $(API) state delete $(INTEGRATION) failed_total >/dev/null 2>&1 || true
-	@$(run_and_report)
-	@echo
-	@$(print_status)
-
-## sync-logs: logs for the latest run, or RUN=<id> for a specific one
-sync-logs:
-	@test -x $(OTTER) || { echo "missing $(OTTER) -- run 'make build' first"; exit 1; }
-	@id="$(RUN)"; \
-	if [ -z "$$id" ]; then \
-		id=$$($(OTTER) --api $(API) runs --integration $(INTEGRATION) --limit 1 --json | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])'); \
-	fi; \
-	echo "--- logs for $$id ---"; \
-	$(OTTER) --api $(API) logs $$id
-
-## sync-stop: stop whatever daemon is holding the API port
-sync-stop:
-	@pids="$$(lsof -ti:$(API_PORT) 2>/dev/null || true)"; \
-	if [ -n "$$pids" ]; then echo "stopping daemon (pid $$pids)"; echo "$$pids" | xargs kill; \
-	else echo "no daemon on port $(API_PORT)"; fi
-
-## sync-restart: stop the daemon, then start it again with a fresh .env
-sync-restart: sync-stop
-	@sleep 1
-	@$(MAKE) --no-print-directory sync-up
 
 # ---------------------------------------------------------------------------
 # Deployment

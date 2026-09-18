@@ -10,12 +10,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/otter-runtime/otter/internal/api"
-	"github.com/otter-runtime/otter/internal/pyenv"
-	"github.com/otter-runtime/otter/internal/release"
-	"github.com/otter-runtime/otter/internal/runs"
-	"github.com/otter-runtime/otter/internal/state"
-	"github.com/otter-runtime/otter/sdk"
+	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/pyenv"
+	"github.com/tkoizumi/otter/internal/release"
+	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/state"
+	"github.com/tkoizumi/otter/sdk"
 )
 
 // Integration views -----------------------------------------------------------

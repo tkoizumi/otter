@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/logging"
-	"github.com/otter-runtime/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // fakeBackend is an in-memory Backend that lets the real HTTP handler be

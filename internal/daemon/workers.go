@@ -13,15 +13,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/executor"
-	"github.com/otter-runtime/otter/internal/logging"
-	"github.com/otter-runtime/otter/internal/notify"
-	"github.com/otter-runtime/otter/internal/pyenv"
-	"github.com/otter-runtime/otter/internal/queue"
-	"github.com/otter-runtime/otter/internal/retry"
-	"github.com/otter-runtime/otter/internal/runs"
-	"github.com/otter-runtime/otter/internal/secrets"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/executor"
+	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/notify"
+	"github.com/tkoizumi/otter/internal/pyenv"
+	"github.com/tkoizumi/otter/internal/queue"
+	"github.com/tkoizumi/otter/internal/retry"
+	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/secrets"
 )
 
 // workerIdlePoll is how often an idle worker re-checks the queue. Retries sit

@@ -20,8 +20,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/logging"
 )
 
 // Defaults for delivery.

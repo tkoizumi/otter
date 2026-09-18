@@ -20,9 +20,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/otter-runtime/otter/internal/logging"
-	"github.com/otter-runtime/otter/internal/runs"
-	"github.com/otter-runtime/otter/internal/state"
+	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/state"
 )
 
 const (

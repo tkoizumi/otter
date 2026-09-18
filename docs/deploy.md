@@ -135,7 +135,7 @@ drift:
 
 | | How it is read |
 |---|---|
-| `make sync-up` | sourced before the daemon starts |
+| `otter start` | loaded before the daemon starts |
 | `otter deploy` | uploaded to `/etc/otter/daemon.env`, loaded by the unit |
 
 ```

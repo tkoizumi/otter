@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // newTestStore returns a run and log store backed by a fresh migrated database.

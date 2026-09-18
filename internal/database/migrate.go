@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/otter-runtime/otter/migrations"
+	"github.com/tkoizumi/otter/migrations"
 )
 
 const createMigrationsTable = `

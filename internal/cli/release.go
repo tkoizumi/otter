@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/pyenv"
-	"github.com/otter-runtime/otter/internal/release"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/pyenv"
+	"github.com/tkoizumi/otter/internal/release"
 )
 
 // cmdRelease stages an integration as an immutable release, prepares its

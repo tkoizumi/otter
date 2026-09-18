@@ -12,9 +12,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/daemon"
-	"github.com/otter-runtime/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/daemon"
+	"github.com/tkoizumi/otter/internal/logging"
 )
 
 // flagWasSet reports whether a flag appeared on the command line, so a value

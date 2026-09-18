@@ -1,0 +1,80 @@
+name: test
+
+# Everything that must pass before a release tag is allowed to publish. The
+# release workflow runs the release job only after this suite, so a red suite
+# on the tag commit fails the release instead of shipping a binary.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: gofmt -l ./cmd ./internal ./sdk ./migrations
+      - run: go vet ./...
+      - run: go test ./...
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: SDK and shared library
+        run: |
+          python3 -m unittest discover -s sdk/python/tests
+          PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
+      - name: Integration suites
+        run: |
+          for dir in integrations/*/tests; do
+            [ -d "$dir" ] || continue
+            echo "== $dir"
+            python3 -m unittest discover -s "$dir"
+          done
+
+  release-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The release pipeline's own config, checked on every change to it rather
+      # than discovered to be broken by a tag. `check` validates the schema;
+      # `build --snapshot` proves the four targets actually compile and package
+      # into the names the cask and any installer expect.
+      - name: Validate
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+      - name: Build without publishing
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: The archive names install.sh and the cask depend on
+        run: |
+          set -e
+          for want in darwin_arm64 darwin_amd64 linux_arm64 linux_amd64; do
+            ls dist/otter_*_${want}.tar.gz >/dev/null || {
+              echo "missing archive for ${want}"; ls dist; exit 1; }
+          done
+          tar tzf "$(ls dist/otter_*_darwin_arm64.tar.gz)" | sort
+          test -f dist/checksums.txt

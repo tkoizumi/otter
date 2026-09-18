@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/api"
-	"github.com/otter-runtime/otter/internal/config"
-	"github.com/otter-runtime/otter/internal/database"
-	"github.com/otter-runtime/otter/internal/logging"
-	"github.com/otter-runtime/otter/internal/notify"
-	"github.com/otter-runtime/otter/internal/runs"
-	"github.com/otter-runtime/otter/internal/secrets"
+	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/notify"
+	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/secrets"
 )
 
 // ---------------------------------------------------------------- test setup

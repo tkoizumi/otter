@@ -110,7 +110,7 @@ sudo install -o otter -g otter -m 0600 /dev/null /etc/otter/otter.env   # then e
 ```ini
 [Unit]
 Description=Otter integration runtime
-Documentation=https://github.com/otter-run/otter/blob/main/docs/operations.md
+Documentation=https://github.com/tkoizumi/otter/blob/main/docs/operations.md
 After=network-online.target
 Wants=network-online.target
 
@@ -288,7 +288,7 @@ answer it.
 what happened last time:
 
 ```sh
-make sync-schedule
+otter integrations --schedule
 # or: otter integrations --schedule
 ```
 
@@ -301,14 +301,14 @@ shopify-to-salesforce */5 * * * *     2026-09-13 17:05:00   2m14s      succeeded
 An integration that has never run reports `no runs yet`, which distinguishes
 "not yet due" from "silently not firing".
 
-**The daemon log** records every tick as it happens. `make sync-up` runs the
+**The daemon log** records every tick as it happens. `otter start` runs the
 daemon in the foreground, so cron lines appear in that terminal:
 
 ```
 INFO cron_fired integration=shopify-to-salesforce cron=*/5 * * * *
 ```
 
-To keep that output, start the daemon with a log file instead of `make sync-up`:
+To keep that output, start the daemon with a log file instead of `otter start`:
 
 ```sh
 set -a; . ./otter.env; set +a

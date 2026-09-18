@@ -15,15 +15,37 @@ provides the runtime primitives that make it reliable.
 
 ---
 
-## Quickstart (about five minutes)
-
-You need Go 1.22+ to build, and Python 3 on the machine that runs the
-integrations. There are no cloud accounts, no servers to provision and no
-external services to start.
+## Install
 
 ```bash
-git clone <repo> otter
-cd otter
+brew install tkoizumi/tap/otter
+```
+
+Installs `otter` — the client, and the runtime for a project — and `otterd`,
+the same daemon with its own flag defaults. Python 3 is required on the machine
+that runs integrations, unless an integration opts into `python.mode: managed`,
+which prepares its own interpreter.
+
+To build from source instead, `make build` produces `./bin/otter` and
+`./bin/otterd`. Tagged releases are packaged by `.goreleaser.yaml` and
+published by `.github/workflows/release.yml`; see [Releases](#releases).
+
+## Quickstart (about five minutes)
+
+```bash
+mkdir my-project && cd my-project && mkdir .otter
+otter start --detach
+otter integrations
+otter stop
+```
+
+An integration is a directory with an `otter.yaml` and a Python entrypoint, so
+adding one is `mkdir` plus two files — see
+[What an integration looks like](#what-an-integration-looks-like).
+
+To run the bundled examples from a checkout instead:
+
+```bash
 make build
 ```
 
@@ -92,8 +114,8 @@ $ ./bin/otter state get counter count
 ```
 
 That is the whole runtime: discovery, scheduling, execution, durable state,
-logs and run history, surviving a restart. `make example` is the same thing
-with human-readable daemon logs.
+logs and run history, surviving a restart. `otter start --integrations ./examples --log-format=pretty` is the same
+thing with human-readable daemon logs.
 
 > `counter` is also registered on an hourly cron (`0 * * * *`), so it advances on
 > its own too. It is deliberately not `* * * * *`: an every-minute schedule would
@@ -620,7 +642,7 @@ schema and the run lifecycle — it is a ten-minute read by design.
 make build     # ./bin/otterd and ./bin/otter
 make test      # unit and integration tests
 make lint      # gofmt, go vet, golangci-lint when installed
-make example   # run the daemon against ./examples with pretty logs
+make start     # run this checkout's runtime in the foreground
 make cross     # cross-compile for Linux and macOS
 ```
 
@@ -649,6 +671,37 @@ PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
 | [docs/examples.md](docs/examples.md) | Worked examples, including webhook and scheduled patterns. |
 
 ---
+
+## Releases
+
+A tag publishes; nothing else does.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` then runs the test suite, cross-compiles `otter`
+and `otterd` for darwin and linux on amd64 and arm64, validates the release
+config with `goreleaser check`, publishes `otter_<version>_<os>_<arch>.tar.gz`
+plus `checksums.txt`, and pushes the generated Homebrew cask into the tap.
+
+The archive name is a published interface — `otter_<version>_<os>_<arch>.tar.gz`
+containing both binaries — because the cask and any future installer resolve
+them by name. `.github/workflows/test.yml` builds the same archives on every
+push without publishing, so the config cannot rot between tags.
+
+First-time setup, once:
+
+1. Create the tap: `gh repo create <owner>/homebrew-tap --public`.
+2. Create a fine-grained PAT with `contents: write` on that one repository and
+   store it as the `HOMEBREW_TAP_TOKEN` secret. The default `GITHUB_TOKEN`
+   cannot push to another repository.
+3. Tag.
+
+`goreleaser release --snapshot --clean` builds and packages locally without
+publishing anything. It needs a Go toolchain new enough to build GoReleaser
+itself, which is why the validation also runs in CI on every push.
 
 ## What Otter is not
 

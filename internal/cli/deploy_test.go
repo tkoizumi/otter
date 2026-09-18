@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // tempRepo creates a directory that looks enough like an Otter checkout for

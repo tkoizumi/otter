@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // ErrEmpty is returned by Claim when no run is currently claimable.

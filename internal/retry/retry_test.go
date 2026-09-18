@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 func exponentialConfig(initial, max time.Duration) config.RetryConfig {

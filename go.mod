@@ -1,4 +1,4 @@
-module github.com/otter-runtime/otter
+module github.com/tkoizumi/otter
 
 go 1.22.3
 

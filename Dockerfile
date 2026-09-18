@@ -17,8 +17,8 @@ FROM python:3.13-slim
 LABEL org.opencontainers.image.title="Otter" \
       org.opencontainers.image.description="Lightweight self-hosted runtime for Python integrations" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/otter-run/otter" \
-      org.opencontainers.image.documentation="https://github.com/otter-run/otter/blob/main/docs/operations.md"
+      org.opencontainers.image.source="https://github.com/tkoizumi/otter" \
+      org.opencontainers.image.documentation="https://github.com/tkoizumi/otter/blob/main/docs/operations.md"
 
 # NOTE: integrations execute as the container user, with that user's full
 # permissions (Otter does not sandbox them in the MVP). Anyone who can add a

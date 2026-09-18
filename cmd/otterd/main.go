@@ -9,7 +9,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/otter-runtime/otter/internal/cli"
+	"github.com/tkoizumi/otter/internal/cli"
 )
 
 // version is injected at build time:

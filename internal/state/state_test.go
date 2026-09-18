@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // newTestStore opens and migrates a throwaway SQLite database and returns a

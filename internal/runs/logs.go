@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/otter-runtime/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/database"
 )
 
 // Log streams stored in run_logs.

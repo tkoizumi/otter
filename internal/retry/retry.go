@@ -10,7 +10,7 @@ package retry
 import (
 	"time"
 
-	"github.com/otter-runtime/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // Delay returns how long to wait before the attempt that follows a failure of
