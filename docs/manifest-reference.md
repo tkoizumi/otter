@@ -289,6 +289,10 @@ the child process's environment just before execution.
 - `name` is the integration id. It is what you pass to `otter run`, what appears
   in `OTTER_INTEGRATION_ID`, and the first path segment of
   `/v1/integrations/{id}/...`.
+- Commands also accept the filesystem path that holds the manifest. `otter run .`
+  and a bare `otter run` read the working directory's `otter.yaml` and use the
+  `name` it declares, and `otter inspect .` does the same. The path is only a
+  way to find the name; the daemon still addresses the integration by `name`.
 - Names must be **unique across the integrations root**. Two directories
   declaring the same `name` make the second one invalid.
 - Renaming an integration does not migrate its state, run history or webhook

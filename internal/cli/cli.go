@@ -422,7 +422,13 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 		fmt.Fprintln(a.Stderr, "otter: usage: otter inspect <integration>")
 		return 2
 	}
-	id := fs.Arg(0)
+	// Accept a directory or manifest too, so `otter inspect .` shows the
+	// integration the working directory holds.
+	id, err := resolveIntegrationRef(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+		return 2
+	}
 
 	client := g.client()
 	it, err := client.GetIntegration(ctx, id)
@@ -558,8 +564,8 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter run <integration> [--body <json>] [--no-wait]")
+	if fs.NArg() > 1 {
+		fmt.Fprintln(a.Stderr, "otter: usage: otter run [integration] [--body <json>] [--no-wait]")
 		return 2
 	}
 
@@ -572,7 +578,18 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		payload = json.RawMessage(*body)
 	}
 
-	integration := fs.Arg(0)
+	// No argument means "the integration I am standing in", so `otter run` and
+	// `otter run .` are the same command.
+	ref := "."
+	if fs.NArg() == 1 {
+		ref = fs.Arg(0)
+	}
+	integration, err := resolveIntegrationRef(ref)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+		return 2
+	}
+
 	client := g.client()
 	rootID, err := client.SubmitRun(ctx, integration, payload)
 	if err != nil {
@@ -1137,7 +1154,7 @@ Runtime:
   integrations [--all]            list integration names
   integrations --schedule         cron, next run and last outcome per integration
   inspect <integration>           show one integration in detail
-  run <integration> [--no-wait]   run it, wait, print the outcome and its output
+  run [<integration>] [--no-wait] run it, wait, print the outcome and its output
   serve [flags]                   run the daemon with the daemon's own defaults
 
 Runs:
@@ -1175,11 +1192,17 @@ address below .otter/, walking up from the working directory. A running daemon
 records its address there when it starts, so commands in a project reach the
 daemon serving that project -- including one on a non-default port.
 
+An integration is addressed by the name in its manifest, or by the filesystem
+path that holds that manifest: otter run . runs the integration in the working
+directory, otter run inside one does the same, and otter inspect . looks at it.
+The name is read from otter.yaml, so the directory name does not matter.
+
 Examples:
   otter init acme                 # scaffold a workspace and an integration
   otter start                     # in a project: free port, env files loaded
   otter start --detach            # same, in the background
   otter run counter
+  otter run                       # the integration in the working directory
   otter stop
   otter integrations
   otter logs $(otter run counter) --follow

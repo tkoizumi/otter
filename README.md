@@ -401,7 +401,7 @@ synced 16 customers; checkpoint=25
 otter status                            # daemon health, queue depth, run counts
 otter integrations [--all]              # integration names (--all includes invalid)
 otter inspect <integration>             # full manifest view, triggers, recent runs
-otter run <integration> [--body <json>] # queue a manual run; prints the run id
+otter run [<integration>] [--body <json>] # queue a manual run; prints the run id
 otter runs [--integration I] [--status S] [--limit N]
 otter run-status <run-id>               # one run plus its retry attempts
 otter logs <run-id> [--follow]          # captured output
@@ -430,6 +430,12 @@ Without `--api` or `OTTER_API_URL`, the daemon URL is read from the nearest
 `.otter/serve/listen.url`, walking up from the working directory. That is what
 makes `otter run <integration>` work in a project whose runtime is not on the
 default port, with nothing to export and no wrapper script to remember.
+
+An integration is named by the `name` in its manifest, or by the path that holds
+that manifest. Standing in an integration, `otter run .` runs it and `otter run`
+with no argument does the same; `otter inspect .` works too. The name is read
+from `otter.yaml`, so the directory name does not have to match.
+
 `otter integrations`, `otter run` and `otter state get` print machine-friendly
 output so they compose in scripts:
 
