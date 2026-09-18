@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,7 +187,14 @@ func TestDiscoverPrunesHeavyStateDirectories(t *testing.T) {
 // command at one daemon must not be redirected by their current directory.
 func TestResolveAPIPrecedence(t *testing.T) {
 	dir := t.TempDir()
-	record(t, filepath.Join(dir, ".otter", "data"), "http://127.0.0.1:7400")
+	// A real listener: discovery only accepts a record whose runtime answers,
+	// so a made-up address here would make this test pass or fail depending on
+	// whether something unrelated happens to hold that port.
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer live.Close()
+	record(t, filepath.Join(dir, ".otter", "data"), live.URL)
 	original := workingDirForTest
 	workingDirForTest = func() (string, error) { return dir, nil }
 	defer func() { workingDirForTest = original }()
@@ -212,8 +221,32 @@ func TestResolveAPIPrecedence(t *testing.T) {
 		t.Setenv("OTTER_API_URL", "")
 		g := globals{}
 		resolveAPI(&g)
-		if g.api != "http://127.0.0.1:7400" {
-			t.Errorf("api = %q, want the discovered address", g.api)
+		if g.api != live.URL {
+			t.Errorf("api = %q, want the discovered address %q", g.api, live.URL)
+		}
+	})
+
+	// A record whose runtime does not answer is a dead end, not an answer:
+	// accepting it would point commands at a workspace that is not running.
+	t.Run("a dead record is not an answer", func(t *testing.T) {
+		t.Setenv("OTTER_API_URL", "")
+		dead := t.TempDir()
+		gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := gone.URL
+		gone.Close()
+		record(t, filepath.Join(dead, ".otter", "data"), deadURL)
+
+		original := workingDirForTest
+		workingDirForTest = func() (string, error) { return dead, nil }
+		defer func() { workingDirForTest = original }()
+
+		g := globals{}
+		inProject := resolveAPI(&g)
+		if !inProject {
+			t.Error("a workspace with a dead record was reported as no workspace")
+		}
+		if g.api != "" {
+			t.Errorf("api = %q, want empty: the recorded runtime does not answer", g.api)
 		}
 	})
 
