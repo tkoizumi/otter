@@ -481,11 +481,25 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	body := fs.String("body", "", "JSON value recorded as the trigger body")
+	noWait := fs.Bool("no-wait", false, "queue the run and print its id without waiting")
+	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the run and any retries to finish")
+	// Only --body and --timeout take a value; the rest are booleans, so the
+	// reorderer needs no reflection over the flag set.
+	takesValue := func(arg string) bool {
+		name := strings.TrimLeft(arg, "-")
+		if i := strings.Index(name, "="); i >= 0 {
+			name = name[:i]
+		}
+		return name == "body" || name == "timeout" || name == "poll"
+	}
+	args = flagsFirst(normalizeLongFlags(args), func(arg string) (bool, bool) {
+		return takesValue(arg), true
+	})
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter run <integration> [--body <json>]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter run <integration> [--body <json>] [--no-wait]")
 		return 2
 	}
 
@@ -498,14 +512,220 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		payload = json.RawMessage(*body)
 	}
 
-	runID, err := g.client().SubmitRun(ctx, fs.Arg(0), payload)
+	integration := fs.Arg(0)
+	client := g.client()
+	// Queueing is printed before anything is waited on, so the id exists in
+	// the output even if the wait is interrupted or the daemon dies mid-run.
+	rootID, err := client.SubmitRun(ctx, integration, payload)
 	if err != nil {
 		return a.fail(err)
 	}
 
-	// Only the run id goes to stdout so it can be captured by scripts.
-	fmt.Fprintln(a.Stdout, runID)
-	return 0
+	// A non-terminal stdout means the caller is a script or a pipe, where the
+	// bare id is the useful answer -- the same rule `otter logs` uses. An
+	// explicit --json or --no-wait says the same thing out loud.
+	waiting := !*noWait && !g.jsonOut && isTerminal(a.Stdout)
+	if !waiting {
+		fmt.Fprintln(a.Stdout, rootID)
+		return 0
+	}
+
+	view, err := a.waitForRun(ctx, client, rootID, *timeout)
+	if err != nil {
+		// The run exists; say where to find it rather than losing it behind
+		// the failure to watch it.
+		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+		fmt.Fprintf(a.Stderr, "otter: the run was queued: otter logs %s --follow\n", rootID)
+		return 1
+	}
+
+	fmt.Fprintf(a.Stdout, "run        %s %s\n", integration, shortID(view.ID))
+	a.printRunOutcome(a.Stdout, view)
+	a.printRunOutput(ctx, client, view.ID)
+	return runExitCode(view)
+}
+
+// normalizeLongFlags rewrites `--name value` to `-name value`, which is the
+// spelling the standard flag package understands. Without it, `otter run x
+// --no-wait` fails with "flag provided but not defined" while `--no-wait=true`
+// works, which is a difference nobody should have to know.
+// flagsFirst moves flag arguments ahead of positional ones.
+//
+// The standard flag package stops parsing at the first non-flag argument, so
+// `otter run counter --no-wait` would leave --no-wait as a second positional
+// and fail with a usage error. Developers write flags last; reordering before
+// parsing is what makes the obvious spelling work.
+func flagsFirst(args []string, isFlag func(string) (takesValue, ok bool)) []string {
+	flags := make([]string, 0, len(args))
+	positional := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positional = append(positional, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		// A flag written as `-name value` needs its value moved with it.
+		if takesValue, ok := isFlag(arg); ok && takesValue && !strings.Contains(arg, "=") && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...)
+}
+
+func normalizeLongFlags(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i, arg := range args {
+		// Everything after a bare `--` is a positional argument, not a flag.
+		if arg == "--" {
+			return append(out, args[i:]...)
+		}
+		// `--name=value` is left alone: flag understands that form.
+		if strings.HasPrefix(arg, "--") && len(arg) > 2 && !strings.Contains(arg, "=") {
+			out = append(out, "-"+arg[2:])
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// waitForRun polls until the whole retry chain reaches a terminal status.
+//
+// A failed attempt is retried as a new run, so the attempt that was submitted
+// goes terminal while the work is still going. The view carries the root run
+// and the latest attempt's status, which is what has to settle before the
+// answer is known.
+func (a *App) waitForRun(ctx context.Context, client *api.Client, rootID string, timeout time.Duration) (*api.RunView, error) {
+	deadline := time.Now().Add(timeout)
+	var lastAttempt string
+	var lastProgress time.Time
+	for {
+		view, err := client.GetRun(ctx, rootID)
+		if err != nil {
+			return nil, err
+		}
+		if settled(view) {
+			return view, nil
+		}
+
+		// Track movement through the chain: a new attempt, or a different
+		// status, is progress. A failure that is not followed by another
+		// attempt is the end of the chain rather than a pause in it.
+		attempt := latestAttemptID(view)
+		if attempt != lastAttempt {
+			lastAttempt = attempt
+			lastProgress = time.Now()
+		}
+		if view.LatestStatus == runs.StatusFailed && time.Since(lastProgress) > retryGrace {
+			return view, nil
+		}
+
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("the run did not finish within %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// retryGrace bounds how long a failed chain is watched for a scheduled retry.
+// The retry is queued before its delay elapses, so a short grace is enough to
+// see that one exists; for a backoff longer than this, `otter run-status` and
+// the run history remain the way to follow it, rather than leaving the command
+// blocked on someone else's retry policy.
+const retryGrace = 15 * time.Second
+
+// settled reports whether a retry chain has reached its final answer. A failed
+// latest attempt is deliberately not settled: the daemon queues the next
+// attempt before the previous one's failure is visible, so `failed` can be a
+// pause rather than an end.
+func settled(view *api.RunView) bool {
+	switch view.LatestStatus {
+	case runs.StatusSucceeded, runs.StatusCancelled, runs.StatusTimedOut:
+		return true
+	}
+	return false
+}
+
+// latestAttemptID identifies the newest attempt in the chain, which is how the
+// wait notices that a retry has begun.
+func latestAttemptID(view *api.RunView) string {
+	if len(view.Attempts) > 0 {
+		return view.Attempts[len(view.Attempts)-1].ID
+	}
+	return view.ID
+}
+
+// printRunOutcome summarises a finished run the way `run-status` does, minus
+// the fields nobody reads after a manual run.
+func (a *App) printRunOutcome(w io.Writer, view *api.RunView) {
+	// The newest attempt is the one whose outcome the status names; the
+	// submitted run may be an earlier attempt of the same retry chain.
+	latest := view.Run
+	if len(view.Attempts) > 0 {
+		latest = view.Attempts[len(view.Attempts)-1]
+	}
+	fmt.Fprintf(w, "status     %s", view.LatestStatus)
+	if latest.Duration() > 0 {
+		fmt.Fprintf(w, " (attempt %d of %d, %s)",
+			latest.Attempt, len(view.Attempts), latest.Duration().Round(time.Millisecond))
+	} else if latest.Attempt > 0 {
+		fmt.Fprintf(w, " (attempt %d of %d)", latest.Attempt, len(view.Attempts))
+	}
+	fmt.Fprintln(w)
+	if latest.ExitCode != nil {
+		fmt.Fprintf(w, "exit code  %d\n", *latest.ExitCode)
+	}
+	if latest.Error != nil && *latest.Error != "" {
+		fmt.Fprintf(w, "error      %s\n", oneLine(*latest.Error))
+	}
+}
+
+// printRunOutput shows what the run printed, so `otter run` answers "did it
+// work and what did it say" in one command. Indented under the summary, and
+// prefixed with the id it came from so a later `otter logs` on the same run
+// reads the same way.
+func (a *App) printRunOutput(ctx context.Context, client *api.Client, runID string) {
+	entries, err := client.GetLogs(ctx, runID, 0, 1000)
+	if err != nil || len(entries) == 0 {
+		fmt.Fprintf(a.Stdout, "logs       otter logs %s --follow\n", runID)
+		return
+	}
+	fmt.Fprintf(a.Stdout, "output     %s\n", runID)
+	for _, entry := range entries {
+		text, _ := splitStructured(entry.Message)
+		for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+			fmt.Fprintf(a.Stdout, "  %s\n", line)
+		}
+	}
+}
+
+// runExitCode makes `otter run` usable in a shell conditional: a failed,
+// timed-out or cancelled run is a non-zero exit.
+func runExitCode(view *api.RunView) int {
+	if view.LatestStatus == runs.StatusSucceeded {
+		return 0
+	}
+	return 1
+}
+
+// shortID is the first segment of a run id, which is what a human needs to
+// copy or recognise. The full id is always printed by `run-status` and in the
+// logs command this prints.
+func shortID(id string) string {
+	if i := strings.Index(id, "-"); i > 0 {
+		return id[:i]
+	}
+	return id
 }
 
 func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
@@ -916,7 +1136,7 @@ Runtime:
   integrations [--all]            list integration names
   integrations --schedule         cron, next run and last outcome per integration
   inspect <integration>           show one integration in detail
-  run <integration> [--body J]    queue a manual run and print its run id
+  run <integration> [--no-wait]   run it, wait, print the outcome and its output
   serve [flags]                   run the daemon with the daemon's own defaults
 
 Runs:
