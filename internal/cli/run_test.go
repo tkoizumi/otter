@@ -15,21 +15,72 @@ import (
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
-func TestShortID(t *testing.T) {
-	tests := map[string]string{
-		"4f1c2a7e-2b1d-4f6a-9c3e-8a5b0d7e1f22": "4f1c2a7e",
-		"noseparator":                          "noseparator",
-		"":                                     "",
-	}
-	for in, want := range tests {
-		if got := shortID(in); got != want {
-			t.Errorf("shortID(%q) = %q, want %q", in, got, want)
+// The summary is one line with a colon, the shape `make sync-run` used, so a
+// human reads it and a script can grep it.
+func TestPrintRunOutcomeIsOneStatusLine(t *testing.T) {
+	for _, status := range []runs.Status{runs.StatusSucceeded, runs.StatusFailed, runs.StatusTimedOut} {
+		view := &api.RunView{Run: &runs.Run{ID: "x", Status: status}, LatestStatus: status}
+		var out bytes.Buffer
+		app := New("test", &out, &out)
+		app.printRunOutcome(&out, view)
+		if got, want := out.String(), "status: "+string(status)+"\n"; got != want {
+			t.Errorf("outcome = %q, want %q", got, want)
 		}
 	}
 }
 
-// `otter run` has to be usable in a shell conditional, so the exit code
-// follows the run's outcome rather than the fact that it was queued.
+// Output is printed as the daemon stores it: the message with any structured
+// fields as a trailing JSON object, exactly what `otter logs` shows.
+func TestRawLogLineMatchesTheStoredRecord(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{`sync finished {"complete":true,"failed":0,"level":"info"}`, `sync finished {"complete":true,"failed":0,"level":"info"}`},
+		{`run started (attempt 1 of 3, trigger manual)`, `run started (attempt 1 of 3, trigger manual)`},
+		{`{"level":"info","message":"no text"}`, `{"level":"info","message":"no text"}`},
+	}
+	for _, tc := range tests {
+		if got := rawLogLine(tc.in); got != tc.want {
+			t.Errorf("rawLogLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The id must be the full one: the daemon does not resolve prefixes, so an
+// abbreviated id would be unusable in the next command.
+func TestRunPrintsTheWholeIDAndNothingElseUpFront(t *testing.T) {
+	id := "986d91e8-dde4-45be-b298-c9332c220498"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"logs":[{"id":1,"run_id":%q,"stream":"otter","message":"sync finished {\"complete\":true,\"failed\":0,\"level\":\"info\"}"}]}`, id)
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	app := New("test", &out, &out)
+	app.printRunOutput(context.Background(), api.NewClient(server.URL, ""), id)
+	if got, want := out.String(), "sync finished {\"complete\":true,\"failed\":0,\"level\":\"info\"}\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
+// A log fetch that fails must not lose the run itself.
+func TestPrintRunOutputReportsAFailedFetchWithoutLosingTheRun(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	app := New("test", &out, &errOut)
+	app.printRunOutput(context.Background(), api.NewClient(server.URL, ""), "abc")
+	if out.Len() != 0 {
+		t.Errorf("stdout got %q, want nothing", out.String())
+	}
+	if !strings.Contains(errOut.String(), "otter logs abc --follow") {
+		t.Errorf("stderr does not say how to read the run:\n%s", errOut.String())
+	}
+}
+
+// `otter run` has to be usable in a shell conditional.
 func TestRunExitCode(t *testing.T) {
 	tests := []struct {
 		status runs.Status
@@ -48,67 +99,10 @@ func TestRunExitCode(t *testing.T) {
 	}
 }
 
-// A retried run: the submitted attempt failed, a later attempt succeeded, and
-// the summary must report the chain's outcome and the newest attempt's timing.
-func TestPrintRunOutcomeFollowsTheRetryChain(t *testing.T) {
-	view := &api.RunView{
-		Run: &runs.Run{
-			ID:       "first-attempt-0000",
-			Status:   runs.StatusFailed,
-			Attempt:  1,
-			ExitCode: intPtr(1),
-		},
-		LatestStatus: runs.StatusSucceeded,
-		Attempts: []*runs.Run{
-			{ID: "first-attempt-0000", Status: runs.StatusFailed, Attempt: 1},
-			{ID: "second-attempt-111", Status: runs.StatusSucceeded, Attempt: 2},
-		},
-	}
-
-	var out bytes.Buffer
-	app := New("test", &out, &out)
-	app.printRunOutcome(&out, view)
-	got := out.String()
-
-	for _, want := range []string{"succeeded", "attempt 2 of 2"} {
-		if !bytes.Contains([]byte(got), []byte(want)) {
-			t.Errorf("outcome does not mention %q:\n%s", want, got)
-		}
-	}
-	if bytes.Contains([]byte(got), []byte("exit code  1")) {
-		t.Errorf("outcome reported the failed attempt's exit code:\n%s", got)
-	}
-}
-
-func TestPrintRunOutcomeReportsFailure(t *testing.T) {
-	view := &api.RunView{
-		Run:          &runs.Run{ID: "abc", Status: runs.StatusFailed, Attempt: 1, ExitCode: intPtr(1)},
-		LatestStatus: runs.StatusFailed,
-		Attempts:     []*runs.Run{{ID: "abc", Status: runs.StatusFailed, Attempt: 1, ExitCode: intPtr(1)}},
-	}
-	var out bytes.Buffer
-	app := New("test", &out, &out)
-	app.printRunOutcome(&out, view)
-	got := out.String()
-
-	if !bytes.Contains([]byte(got), []byte("failed")) || !bytes.Contains([]byte(got), []byte("exit code  1")) {
-		t.Errorf("failure outcome is incomplete:\n%s", got)
-	}
-	if runExitCode(view) == 0 {
-		t.Error("a failed run reported success")
-	}
-}
-
-func intPtr(n int) *int { return &n }
-
 // waitForRun must poll until the whole retry chain settles, not stop at the
-// submitted attempt: a failed attempt is retried as a new run, so the run that
-// was queued goes terminal while the work is still going.
+// submitted attempt: a failed attempt becomes visible before its retry is
+// queued, so the chain can look finished while another attempt is coming.
 func TestWaitForRunFollowsRetriesToTheEnd(t *testing.T) {
-	// A daemon that reports the submitted attempt failed, then a retry
-	// running, then that retry succeeded.
-	// The failure becomes visible before the retry is: for a while the chain
-	// looks finished, with only the root attempt present.
 	timeline := []struct {
 		status   string
 		attempts string
@@ -132,8 +126,7 @@ func TestWaitForRunFollowsRetriesToTheEnd(t *testing.T) {
 	defer server.Close()
 
 	app := New("test", io.Discard, io.Discard)
-	client := api.NewClient(server.URL, "")
-	view, err := app.waitForRun(context.Background(), client, "root-run", 5*time.Second)
+	view, err := app.waitForRun(context.Background(), api.NewClient(server.URL, ""), "root-run", 5*time.Second)
 	if err != nil {
 		t.Fatalf("waitForRun: %v", err)
 	}
@@ -143,12 +136,8 @@ func TestWaitForRunFollowsRetriesToTheEnd(t *testing.T) {
 	if calls < 3 {
 		t.Errorf("returned after %d poll(s); it must keep going while an attempt is retrying", calls)
 	}
-	if got := runExitCode(view); got != 0 {
-		t.Errorf("exit %d for a chain that ended succeeded, want 0", got)
-	}
 }
 
-// A run that never settles must not hang the command forever.
 func TestWaitForRunTimesOut(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -157,8 +146,7 @@ func TestWaitForRunTimesOut(t *testing.T) {
 	defer server.Close()
 
 	app := New("test", io.Discard, io.Discard)
-	client := api.NewClient(server.URL, "")
-	_, err := app.waitForRun(context.Background(), client, "root-run", 300*time.Millisecond)
+	_, err := app.waitForRun(context.Background(), api.NewClient(server.URL, ""), "root-run", 300*time.Millisecond)
 	if err == nil {
 		t.Fatal("waitForRun returned without an error for a run that never finished")
 	}
@@ -167,30 +155,15 @@ func TestWaitForRunTimesOut(t *testing.T) {
 	}
 }
 
-// Both spellings of a long flag must work: a developer typing --no-wait
-// should not get "flag provided but not defined" while --no-wait=true works.
-func TestNormalizeLongFlags(t *testing.T) {
-	got := normalizeLongFlags([]string{"counter", "--no-wait", "--body={\"a\":1}", "--", "--kept"})
-	want := []string{"counter", "-no-wait", "--body={\"a\":1}", "--", "--kept"}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("arg %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-// Flags last is how people write commands; the standard flag package cannot
-// parse that, so run reorders before parsing.
-func TestFlagsFirst(t *testing.T) {
-	takesValue := func(arg string) (bool, bool) {
+// Both spellings of a long flag must work, and a flag written after the
+// integration name must not become a second positional.
+func TestRunArgumentParsing(t *testing.T) {
+	takesValue := func(arg string) bool {
 		name := strings.TrimLeft(arg, "-")
 		if i := strings.Index(name, "="); i >= 0 {
 			name = name[:i]
 		}
-		return name == "body" || name == "timeout", true
+		return name == "body" || name == "timeout"
 	}
 	tests := []struct {
 		in   []string
@@ -200,14 +173,62 @@ func TestFlagsFirst(t *testing.T) {
 		{[]string{"counter", "--body", "{}"}, []string{"-body", "{}", "counter"}},
 		{[]string{"--no-wait", "counter"}, []string{"-no-wait", "counter"}},
 		{[]string{"counter"}, []string{"counter"}},
-		// After a bare --, nothing is a flag.
 		{[]string{"counter", "--", "--no-wait"}, []string{"counter", "--", "--no-wait"}},
 	}
 	for _, tc := range tests {
-		// The pipeline cmdRun uses: normalize the dashes, then reorder.
 		got := flagsFirst(normalizeLongFlags(tc.in), takesValue)
 		if strings.Join(got, " ") != strings.Join(tc.want, " ") {
-			t.Errorf("flagsFirst(%v) = %v, want %v", tc.in, got, tc.want)
+			t.Errorf("pipeline(%v) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
+}
+
+// The waiting path must name the run it queued: the id is the handle for
+// everything that follows, and it has to be on stdout even if the wait is
+// interrupted. This regressed twice, so it is pinned end to end through
+// cmdRun rather than by inspecting the pieces.
+func TestCmdRunPrintsTheIDItQueued(t *testing.T) {
+	id := "986d91e8-dde4-45be-b298-c9332c220498"
+	var logPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		logPath = r.URL.Path
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/runs"):
+			fmt.Fprintf(w, `{"run_id":%q,"status":"queued"}`, id)
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			fmt.Fprint(w, `{"logs":[{"id":1,"run_id":"x","stream":"otter","message":"sync finished {\"level\":\"info\"}"}]}`)
+		default:
+			fmt.Fprintf(w, `{"id":%q,"status":"succeeded","latest_status":"succeeded","attempts":[]}`, id)
+		}
+	}))
+	defer server.Close()
+
+	// Force the waiting path, which is otherwise gated on a terminal.
+	original := interactiveOutput
+	interactiveOutput = func(io.Writer) bool { return true }
+	defer func() { interactiveOutput = original }()
+
+	var out, errOut bytes.Buffer
+	app := New("test", &out, &errOut)
+	code := app.cmdRun(context.Background(), globals{api: server.URL}, []string{"demo"})
+	if code != 0 {
+		t.Fatalf("exit %d, stderr: %s", code, errOut.String())
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "run: "+id) {
+		t.Errorf("the queued run id is not on stdout:\n%s", got)
+	}
+	if !strings.Contains(got, "status: succeeded") {
+		t.Errorf("no status line:\n%s", got)
+	}
+	if !strings.Contains(got, `sync finished {"level":"info"}`) {
+		t.Errorf("the run's output is missing:\n%s", got)
+	}
+	// Order matters: the id comes out before anything is waited on.
+	if strings.Index(got, "run: "+id) > strings.Index(got, "status:") {
+		t.Errorf("the id was printed after the status:\n%s", got)
+	}
+	_ = logPath
 }

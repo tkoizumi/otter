@@ -477,6 +477,58 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
+// interactiveOutput decides whether `otter run` waits and prints a summary.
+// It is a variable so a test can exercise the waiting path without a terminal,
+// which is otherwise the one branch that cannot be driven in CI.
+var interactiveOutput = func(w io.Writer) bool { return isTerminal(w) }
+
+// normalizeLongFlags rewrites `--name value` to `-name value`, which is the
+// spelling the standard flag package understands. Without it, `otter run x
+// --no-wait` fails with "flag provided but not defined" while `--no-wait=true`
+// works, which is a difference nobody should have to know.
+func normalizeLongFlags(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i, arg := range args {
+		if arg == "--" {
+			return append(out, args[i:]...)
+		}
+		if strings.HasPrefix(arg, "--") && len(arg) > 2 && !strings.Contains(arg, "=") {
+			out = append(out, "-"+arg[2:])
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+// flagsFirst moves flag arguments ahead of positional ones.
+//
+// The standard flag package stops parsing at the first non-flag argument, so
+// `otter run counter --no-wait` would leave --no-wait as a second positional
+// and fail with a usage error. Developers write flags last; reordering before
+// parsing is what makes the obvious spelling work.
+func flagsFirst(args []string, takesValue func(string) bool) []string {
+	flags := make([]string, 0, len(args))
+	positional := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positional = append(positional, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		if takesValue(arg) && !strings.Contains(arg, "=") && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...)
+}
+
 func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -492,9 +544,7 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		}
 		return name == "body" || name == "timeout" || name == "poll"
 	}
-	args = flagsFirst(normalizeLongFlags(args), func(arg string) (bool, bool) {
-		return takesValue(arg), true
-	})
+	args = flagsFirst(normalizeLongFlags(args), takesValue)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -514,8 +564,6 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 
 	integration := fs.Arg(0)
 	client := g.client()
-	// Queueing is printed before anything is waited on, so the id exists in
-	// the output even if the wait is interrupted or the daemon dies mid-run.
 	rootID, err := client.SubmitRun(ctx, integration, payload)
 	if err != nil {
 		return a.fail(err)
@@ -524,75 +572,74 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	// A non-terminal stdout means the caller is a script or a pipe, where the
 	// bare id is the useful answer -- the same rule `otter logs` uses. An
 	// explicit --json or --no-wait says the same thing out loud.
-	waiting := !*noWait && !g.jsonOut && isTerminal(a.Stdout)
+	waiting := !*noWait && !g.jsonOut && interactiveOutput(a.Stdout)
 	if !waiting {
 		fmt.Fprintln(a.Stdout, rootID)
 		return 0
 	}
 
+	// The id goes out before the wait begins: it is the handle for everything
+	// that follows, and it must exist even if the wait is interrupted, the
+	// daemon restarts, or this process is killed.
+	fmt.Fprintf(a.Stdout, "run: %s\n", rootID)
+
 	view, err := a.waitForRun(ctx, client, rootID, *timeout)
 	if err != nil {
-		// The run exists; say where to find it rather than losing it behind
+		// The run exists; say how to follow it rather than losing it behind
 		// the failure to watch it.
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
-		fmt.Fprintf(a.Stderr, "otter: the run was queued: otter logs %s --follow\n", rootID)
+		fmt.Fprintf(a.Stderr, "otter: otter logs %s --follow\n", rootID)
 		return 1
 	}
 
-	fmt.Fprintf(a.Stdout, "run        %s %s\n", integration, shortID(view.ID))
+	// Four lines at most: the id you will paste into `otter logs`, the
+	// outcome you asked for, and the run's own output. The id is printed in
+	// full because the daemon does not resolve prefixes, so an abbreviated
+	// one would be unusable in the next command.
+	fmt.Fprintf(a.Stdout, "run: %s\n", view.ID)
 	a.printRunOutcome(a.Stdout, view)
 	a.printRunOutput(ctx, client, view.ID)
 	return runExitCode(view)
 }
 
-// normalizeLongFlags rewrites `--name value` to `-name value`, which is the
-// spelling the standard flag package understands. Without it, `otter run x
-// --no-wait` fails with "flag provided but not defined" while `--no-wait=true`
-// works, which is a difference nobody should have to know.
-// flagsFirst moves flag arguments ahead of positional ones.
-//
-// The standard flag package stops parsing at the first non-flag argument, so
-// `otter run counter --no-wait` would leave --no-wait as a second positional
-// and fail with a usage error. Developers write flags last; reordering before
-// parsing is what makes the obvious spelling work.
-func flagsFirst(args []string, isFlag func(string) (takesValue, ok bool)) []string {
-	flags := make([]string, 0, len(args))
-	positional := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			positional = append(positional, args[i:]...)
-			break
-		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			positional = append(positional, arg)
-			continue
-		}
-		flags = append(flags, arg)
-		// A flag written as `-name value` needs its value moved with it.
-		if takesValue, ok := isFlag(arg); ok && takesValue && !strings.Contains(arg, "=") && i+1 < len(args) {
-			i++
-			flags = append(flags, args[i])
-		}
-	}
-	return append(flags, positional...)
+// printRunOutcome is one line, in the shape `make sync-run` used: a status
+// with a colon, so a human reads it and a script can grep it.
+func (a *App) printRunOutcome(w io.Writer, view *api.RunView) {
+	fmt.Fprintf(w, "status: %s\n", view.LatestStatus)
 }
 
-func normalizeLongFlags(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i, arg := range args {
-		// Everything after a bare `--` is a positional argument, not a flag.
-		if arg == "--" {
-			return append(out, args[i:]...)
-		}
-		// `--name=value` is left alone: flag understands that form.
-		if strings.HasPrefix(arg, "--") && len(arg) > 2 && !strings.Contains(arg, "=") {
-			out = append(out, "-"+arg[2:])
-			continue
-		}
-		out = append(out, arg)
+// printRunOutput prints the run's captured records exactly as the daemon holds
+// them -- the message with any structured fields as a trailing JSON object --
+// so the output of `otter run` is the same text `otter logs` shows. No
+// prefixing, no indenting, and no summary of somebody else's log format.
+func (a *App) printRunOutput(ctx context.Context, client *api.Client, runID string) {
+	entries, err := client.GetLogs(ctx, runID, 0, 1000)
+	if err != nil {
+		// The run is queued and its id is on the first line; losing the log
+		// fetch must not lose the run.
+		fmt.Fprintf(a.Stderr, "otter: could not read the run's output: %v\n", err)
+		fmt.Fprintf(a.Stderr, "otter: otter logs %s --follow\n", runID)
+		return
 	}
-	return out
+	for _, entry := range entries {
+		fmt.Fprintln(a.Stdout, rawLogLine(entry.Message))
+	}
+}
+
+// rawLogLine is the log record as stored: `message {"field":...}`.
+func rawLogLine(message string) string {
+	text, fields := splitStructured(message)
+	if len(fields) == 0 {
+		return text
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return text
+	}
+	if text == "" {
+		return string(encoded)
+	}
+	return text + " " + string(encoded)
 }
 
 // waitForRun polls until the whole retry chain reaches a terminal status.
@@ -665,50 +712,6 @@ func latestAttemptID(view *api.RunView) string {
 	return view.ID
 }
 
-// printRunOutcome summarises a finished run the way `run-status` does, minus
-// the fields nobody reads after a manual run.
-func (a *App) printRunOutcome(w io.Writer, view *api.RunView) {
-	// The newest attempt is the one whose outcome the status names; the
-	// submitted run may be an earlier attempt of the same retry chain.
-	latest := view.Run
-	if len(view.Attempts) > 0 {
-		latest = view.Attempts[len(view.Attempts)-1]
-	}
-	fmt.Fprintf(w, "status     %s", view.LatestStatus)
-	if latest.Duration() > 0 {
-		fmt.Fprintf(w, " (attempt %d of %d, %s)",
-			latest.Attempt, len(view.Attempts), latest.Duration().Round(time.Millisecond))
-	} else if latest.Attempt > 0 {
-		fmt.Fprintf(w, " (attempt %d of %d)", latest.Attempt, len(view.Attempts))
-	}
-	fmt.Fprintln(w)
-	if latest.ExitCode != nil {
-		fmt.Fprintf(w, "exit code  %d\n", *latest.ExitCode)
-	}
-	if latest.Error != nil && *latest.Error != "" {
-		fmt.Fprintf(w, "error      %s\n", oneLine(*latest.Error))
-	}
-}
-
-// printRunOutput shows what the run printed, so `otter run` answers "did it
-// work and what did it say" in one command. Indented under the summary, and
-// prefixed with the id it came from so a later `otter logs` on the same run
-// reads the same way.
-func (a *App) printRunOutput(ctx context.Context, client *api.Client, runID string) {
-	entries, err := client.GetLogs(ctx, runID, 0, 1000)
-	if err != nil || len(entries) == 0 {
-		fmt.Fprintf(a.Stdout, "logs       otter logs %s --follow\n", runID)
-		return
-	}
-	fmt.Fprintf(a.Stdout, "output     %s\n", runID)
-	for _, entry := range entries {
-		text, _ := splitStructured(entry.Message)
-		for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-			fmt.Fprintf(a.Stdout, "  %s\n", line)
-		}
-	}
-}
-
 // runExitCode makes `otter run` usable in a shell conditional: a failed,
 // timed-out or cancelled run is a non-zero exit.
 func runExitCode(view *api.RunView) int {
@@ -716,16 +719,6 @@ func runExitCode(view *api.RunView) int {
 		return 0
 	}
 	return 1
-}
-
-// shortID is the first segment of a run id, which is what a human needs to
-// copy or recognise. The full id is always printed by `run-status` and in the
-// logs command this prints.
-func shortID(id string) string {
-	if i := strings.Index(id, "-"); i > 0 {
-		return id[:i]
-	}
-	return id
 }
 
 func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
