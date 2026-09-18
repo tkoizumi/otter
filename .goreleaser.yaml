@@ -101,11 +101,10 @@ homebrew_casks:
       - otter
       - otterd
     # The archives are unsigned and unnotarized, so macOS quarantines what the
-    # cask unpacks and refuses to run it. `quarantine: true` is the declarative
-    # form of the xattr hook; the explicit hook is kept as well because it is
-    # what GoReleaser's own docs prescribe and it is harmless when there is no
-    # attribute to strip.
-    quarantine: true
+    # cask unpacks and refuses to run it. There is no `quarantine:` field on a
+    # HomebrewCask (checked against the v2.18.2 schema, where it is rejected),
+    # so this is the hook GoReleaser's own docs prescribe. It is a no-op on a
+    # platform without xattr, which is why it is guarded rather than scoped.
     hooks:
       post:
         install: |
@@ -113,10 +112,9 @@ homebrew_casks:
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/otter"]
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/otterd"]
           end
-    # Offline, so a broken install fails `brew test` rather than at a
-    # developer's first command.
-    test: |
-      system "#{bin}/otter", "help"
+    # A cask has no test stanza -- Homebrew runs tests for formulae, not casks
+    # -- so the install is verified by the caveats below and by
+    # `otter validate`, which needs no daemon.
     caveats: |
       Two binaries are installed: `otter` (client and project runtime) and
       `otterd` (the same daemon, with its own flag defaults).
