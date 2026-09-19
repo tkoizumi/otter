@@ -40,7 +40,7 @@ interpreter you would have started by hand:
 
 ```go
 exec.Command("python3", "main.py")   // literally this argv
-  Dir           = the integration directory
+  Dir           = the integration's directory inside its active release
   Env           = the daemon's environment, minus every OTTER_* variable,
                   plus the per-run values and the manifest's env and secrets
   Stdout/Stderr = pipes the daemon reads line by line
@@ -77,7 +77,7 @@ attempts except what is in SQLite.
 | Is there an embedded interpreter? | No. The daemon has no Python dependency and no cgo. |
 | Is there a sandbox? | No. The child runs as the daemon's OS user with its full permissions — see [security.md](security.md). |
 | Container per run? | No. `execve`. No container runtime, no image pull, no warm pool. |
-| Which Python? | Whatever `python.executable` resolves to (default `python3`), on `PATH` or absolute — point it at a virtualenv. |
+| Which Python? | An external integration uses whatever `python.executable` resolves to (default `python3`), on `PATH` or absolute. A managed one uses the interpreter of the environment prepared for its release. |
 | Do runs share memory? | No. Separate processes; the only channels are the environment, the pipes and loopback HTTP. |
 | Can an integration read stdin? | No, it is `/dev/null`. An integration cannot prompt. |
 | What does a run cost to start? | One interpreter start per attempt: a trivial run is ~75–150 ms end to end (measured for the bundled `counter`), plus your own imports. |
@@ -94,6 +94,22 @@ and that the child needs no database driver at all.
 
 For the exact environment the child receives, and how timeouts and cancellation
 signal it, see [Execution, timeouts and cancellation](#execution-timeouts-and-cancellation).
+
+### What runs is the release, not the tree
+
+The directory the child runs in is not the integration directory in your
+checkout: it is the integration's copy inside its **active release**, an
+immutable snapshot addressed by a digest of its contents. Every integration
+needs one before it can run -- external and managed Python alike -- and
+submission is where the binding happens: the digest is recorded on the run, so
+activating a newer release cannot move a queued or retried attempt onto
+different code.
+
+`otter release` stages and activates a release (`otter deploy` does it on the
+host before the daemon restarts). What a release pins beyond the code depends on
+the mode: managed Python also binds a prepared interpreter and a locked
+dependency set, while an external integration runs the interpreter its manifest
+names.
 
 ## Persistence in one picture
 

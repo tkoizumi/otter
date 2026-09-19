@@ -32,7 +32,7 @@ export CGO_ENABLED = 0
 .DEFAULT_GOAL := help
 
 .PHONY: help build test test-go test-python lint cross clean fmt tidy clean-pycache
-.PHONY: start start-detached stop restart release schema
+.PHONY: start start-detached stop restart release release-all release-list schema
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 .PHONY: deploy deploy-plan deploy-status deploy-tunnel deploy-remote-runs deploy-destroy deploy-purge
 
@@ -136,9 +136,9 @@ tidy:
 # ---------------------------------------------------------------------------
 # Integration operations
 #
-# These are thin wrappers over `otter`, for one integration at a time, with the
-# two paths that are easy to get wrong (integrations root, data directory)
-# filled in. Everything they call works without make:
+# These are thin wrappers over `otter`, for one integration at a time. The
+# commands resolve the workspace and the data directory themselves now, so
+# there are no paths to get wrong here:
 #
 #   make release INTEGRATION=shopify-to-salesforce
 #   make schema  INTEGRATION=... SYSTEM=salesforce OBJECT=Contact
@@ -177,9 +177,13 @@ PYTHON ?= python3
 SYSTEM ?= salesforce
 OBJECT ?=
 
-## release: stage, prepare and activate INTEGRATION's managed Python release
+## release: stage, prepare and activate INTEGRATION's release
 release:
-	@$(OTTER) release --integrations $(INTEGRATIONS) --shared ../../lib $(INTEGRATION)
+	@$(OTTER) release $(INTEGRATION)
+
+## release-all: stage, prepare and activate every integration in the workspace
+release-all:
+	@$(OTTER) release --all
 
 ## release-list: staged releases for INTEGRATION, newest first
 release-list:

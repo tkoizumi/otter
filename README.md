@@ -36,6 +36,7 @@ published by `.github/workflows/release.yml`; see [Releases](#releases).
 mkdir my-project && cd my-project
 otter init my-project        # workspace marker, manifest, entrypoint, tests
 otter validate my-project
+otter release my-project     # stage and activate the release runs execute
 otter start --detach         # free port, loads otter.env if present
 otter run my-project
 otter state get my-project count
@@ -48,6 +49,12 @@ names the project, a manifest with no trigger, an entrypoint, a pure
 workspace to add another integration. It records the runtime version that
 created the workspace in `.otter/version`, and `otter start` says so when a
 different one serves it.
+
+A run executes the integration's **active release**, not its source tree, so
+`otter release` is part of the loop: nothing runs until an integration has been
+released, and an edit is not live until it is released again. `otter release`
+with no argument releases the integration in the working directory, and
+`otter release --all` covers a whole workspace.
 
 An integration is a directory with an `otter.yaml` and a Python entrypoint, so
 `init` is a convenience rather than a requirement — see
@@ -67,9 +74,11 @@ Bring up this checkout's runtime:
 
 `otter start` finds the project you are in, picks a free loopback port, loads
 `otter.env` and `otter.daemon.env` if they exist, and records where it listens
-in `.otter/serve/`. Every other command then finds that runtime on its own:
+in `.otter/serve/`. Every other command then finds that runtime on its own.
+Release what you are about to run, then run it:
 
 ```bash
+otter release counter
 otter run counter
 otter logs "$(otter run counter)"
 otter stop
@@ -409,19 +418,23 @@ otter state get <integration> <key>
 otter state set <integration> <key> <json>
 otter state delete <integration> <key>
 otter init [name]                       # scaffold a workspace and one integration
-otter validate <otter.yaml|directory>   # validate without a running daemon
+otter validate <otter.yaml|dir|name>    # validate without a running daemon
 otter start [--detach]                  # this project's runtime, free port, env loaded
 otter stop                              # stop the runtime serving this project
 otter serve                             # the daemon with the daemon's own flag defaults
 otter deploy --host <user@host>         # install or update a runtime over SSH
 otter deploy --status                   # what this checkout last deployed
 otter prepare [<integration>]           # prepare opt-in managed Python environments
-otter release <integration>             # stage, prepare and activate a release
+otter release [<integration>|.] [--all] # stage and activate an immutable release
 otter release --list <integration>      # staged releases, newest first
+otter release --activate <digest> <integration>  # roll back to a staged release
 ```
 
-`python.mode: managed` opts an integration into a prepared interpreter and
-locked dependencies, so it does not depend on the host's Python. See
+A run executes the integration's active release, so `otter release` is required
+before an integration can run at all -- external and managed Python alike. With
+no argument it releases the integration in the working directory. What managed
+mode adds is the other half: a prepared interpreter and locked dependencies, so
+it does not depend on the host's Python. See
 [docs/managed-python.md](docs/managed-python.md).
 
 Global flags: `--api <url>`, `--token <token>`, `--json`, `--version`.
@@ -433,8 +446,9 @@ default port, with nothing to export and no wrapper script to remember.
 
 An integration is named by the `name` in its manifest, or by the path that holds
 that manifest. Standing in an integration, `otter run .` runs it and `otter run`
-with no argument does the same; `otter inspect .` works too. The name is read
-from `otter.yaml`, so the directory name does not have to match.
+with no argument does the same; `otter inspect .` works too, and `otter release`
+and `otter prepare` accept the same references. The name is read from
+`otter.yaml`, so the directory name does not have to match.
 
 `otter integrations`, `otter run` and `otter state get` print machine-friendly
 output so they compose in scripts:

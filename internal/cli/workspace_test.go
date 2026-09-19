@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // inWorkspace runs fn with the working directory set to dir.
@@ -196,9 +198,9 @@ func TestStartDoesNotCallItsOwnRuntimeATakeover(t *testing.T) {
 	}
 }
 
-// A release written where the live daemon does not look is refused, with both
+// State written where the live daemon does not look is refused, with both
 // directories named: that is the mistake this guard exists to prevent.
-func TestReleaseRefusesADataDirectoryTheRuntimeDoesNotRead(t *testing.T) {
+func TestWorkspaceDataRefusesADirectoryTheRuntimeDoesNotRead(t *testing.T) {
 	root := t.TempDir()
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -216,7 +218,7 @@ func TestReleaseRefusesADataDirectoryTheRuntimeDoesNotRead(t *testing.T) {
 
 	inWorkspace(t, root, func() {
 		var errOut bytes.Buffer
-		_, code := resolveReleaseData(&errOut, "/tmp/elsewhere", true)
+		_, code := resolveWorkspaceData(&errOut, "/tmp/elsewhere", true)
 		if code == 0 {
 			t.Fatal("a release into a data directory the runtime does not read was allowed")
 		}
@@ -232,7 +234,7 @@ func TestReleaseRefusesADataDirectoryTheRuntimeDoesNotRead(t *testing.T) {
 
 // Without a live runtime the project convention decides, so a workspace that
 // has not been started still has exactly one place its state will appear.
-func TestReleaseDefaultsToTheWorkspaceConvention(t *testing.T) {
+func TestWorkspaceDataDefaultsToTheProjectConvention(t *testing.T) {
 	root := t.TempDir()
 	// A workspace is a directory with the marker; without it there is no
 	// convention to default to.
@@ -241,7 +243,7 @@ func TestReleaseDefaultsToTheWorkspaceConvention(t *testing.T) {
 	}
 	inWorkspace(t, root, func() {
 		var errOut bytes.Buffer
-		got, code := resolveReleaseData(&errOut, "", false)
+		got, code := resolveWorkspaceData(&errOut, "", false)
 		if code != 0 {
 			t.Fatalf("exited %d: %s", code, errOut.String())
 		}
@@ -251,13 +253,49 @@ func TestReleaseDefaultsToTheWorkspaceConvention(t *testing.T) {
 	})
 }
 
-// Outside a workspace the release needs to be told where to write.
-func TestReleaseRefusesOutsideAWorkspaceWithoutData(t *testing.T) {
+// Outside a workspace the data directory has to be named explicitly.
+func TestWorkspaceDataRefusesOutsideAWorkspaceWithoutAFlag(t *testing.T) {
 	dir := t.TempDir()
 	inWorkspace(t, dir, func() {
 		var errOut bytes.Buffer
-		if _, code := resolveReleaseData(&errOut, "", false); code == 0 {
+		if _, code := resolveWorkspaceData(&errOut, "", false); code == 0 {
 			t.Fatal("release outside a workspace was allowed to guess")
+		}
+		if !strings.Contains(errOut.String(), "no workspace here") {
+			t.Errorf("refusal does not explain itself:\n%s", errOut.String())
+		}
+	})
+}
+
+// The integrations root defaults to the workspace, so a local command works
+// wherever an integration sits under it, and refuses outside one rather than
+// scanning a relative ./integrations that probably is not there.
+func TestIntegrationsRootDefaultsToTheWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inWorkspace(t, filepath.Join(root, "group"), func() {
+		var errOut bytes.Buffer
+		got, code := resolveIntegrationsRoot(&errOut, config.DefaultIntegrations, false)
+		if code != 0 {
+			t.Fatalf("exited %d: %s", code, errOut.String())
+		}
+		if got != root {
+			t.Errorf("integrations root = %q, want the workspace root %q", got, root)
+		}
+		// An explicit flag is still honoured: deploy names a path on a host
+		// that has no workspace marker of its own.
+		if got, code := resolveIntegrationsRoot(&errOut, "/srv/otter/integrations", true); code != 0 || got != "/srv/otter/integrations" {
+			t.Errorf("explicit --integrations = %q (code %d), want it honoured", got, code)
+		}
+	})
+
+	outside := t.TempDir()
+	inWorkspace(t, outside, func() {
+		var errOut bytes.Buffer
+		if _, code := resolveIntegrationsRoot(&errOut, config.DefaultIntegrations, false); code == 0 {
+			t.Fatal("a workspace-scoped command was allowed to guess outside a workspace")
 		}
 		if !strings.Contains(errOut.String(), "no workspace here") {
 			t.Errorf("refusal does not explain itself:\n%s", errOut.String())

@@ -57,18 +57,27 @@ my-integration/
 
 ## Releases
 
-A managed integration does not execute its source tree. It executes an
-**immutable release**: a snapshot of the integration plus the shared code it
-declares, copied under the data directory and addressed by a digest of its
-contents.
+Every integration executes an **immutable release** rather than its source
+tree: a snapshot of the integration plus the shared code it declares, copied
+under the data directory and addressed by a digest of its contents. A release
+is required before anything runs, for external and managed Python alike, and an
+edit is not live until the integration is released again.
 
 ```sh
-otter release <integration>          # stage, prepare and activate
+otter release                        # the integration in the working directory
+otter release <integration>          # by name, from anywhere in the workspace
+otter release --all                  # every integration in the workspace
 otter release --list <integration>   # what is staged, and which one is active
 ```
 
-`otter deploy` runs this for every managed integration automatically, before the
-daemon restarts.
+`otter deploy` runs this for every integration automatically, before the daemon
+restarts.
+
+What managed Python adds to a release is the environment: a pinned interpreter
+and a locked dependency set, prepared before activation. An external
+integration's release pins the code and nothing else -- it still runs the
+interpreter its manifest names. The rest of this document is about that managed
+half.
 
 ### Why
 
@@ -141,14 +150,16 @@ entirely, the field is simply absent and a release still works.
 
 ### Binding
 
-A managed run binds to the active release **when it is submitted**, and the
-recorded snapshot is what execution uses. Activating a newer release therefore
-cannot move a queued or retried attempt onto different code, and a run keeps
-working while a deploy is in progress. An attempt whose snapshot has been
-removed fails with an explicit error instead of silently running something else.
+A run binds to the active release **when it is submitted**, and the recorded
+snapshot is what execution uses. Activating a newer release therefore cannot
+move a queued or retried attempt onto different code, and a run keeps working
+while a deploy is in progress. An attempt whose snapshot has been removed fails
+with an explicit error instead of silently running something else.
 
-Integrations that do not set `python.mode: managed` are unaffected: they execute
-their source tree exactly as before, and no release is created for them.
+That is true of every integration. Managed mode binds one thing more: the
+interpreter and the dependency set, recorded on the run at submission, so a
+later dependency change cannot move a queued or retried attempt onto a different
+environment either.
 
 ### Retention
 
@@ -160,15 +171,18 @@ consuming disk.
 
 ### Rollback
 
-Activate an older release by name:
+Activate an older release by digest prefix, which is the way `--list` prints
+them:
 
 ```sh
-otter release --list my-integration          # find the digest
+otter release --list my-integration                   # find the digest
+otter release --activate 3c850cfa6c9c my-integration  # point the active link at it
 ```
 
 Rolling back means pointing the active link at a previous digest. The previous
 release is still on disk unless retention removed it, and the runs that used it
-are still recorded.
+are still recorded. Running attempts are unaffected: they keep executing the
+snapshot they bound to.
 
 ## Layout on disk
 
@@ -228,17 +242,19 @@ otter prepare --integrations ./integrations --data /var/lib/otter
 ```
 
 For a local run, `otter release` is the one you want: the daemon executes the
-**active release**, so a managed integration that has never been released has
-nothing to run. The daemon says so explicitly rather than falling back:
+**active release**, so an integration that has never been released has nothing
+to run -- managed or not. The daemon says so explicitly rather than falling
+back:
 
 ```
-managed integration shopify-to-salesforce has no active release;
+integration shopify-to-salesforce has no active release;
 run otter release shopify-to-salesforce before submitting runs
 ```
 
-`otter prepare` on its own is still useful: it builds and validates the
-environment without creating a release, which is what you want when diagnosing a
-dependency problem.
+`otter prepare` on its own is still useful for a managed integration: it builds
+and validates the environment without staging a release, which is what you want
+when diagnosing a dependency problem. It says so and does nothing for an
+external one, which has no environment to prepare.
 
 `make release` wraps the release step for the local workflow, so a typical
 session is:
@@ -350,13 +366,18 @@ otter prepare <integration>     # prints the identity, or prepares it
 
 ## Guarantees
 
-For a managed integration:
+For every integration:
 
 - A run executes the snapshot it was submitted against, not the live tree.
 - A retry executes the same snapshot as the attempt it retries.
 - A deploy cannot rewrite the code an in-flight attempt is using.
-- Every run records the release digest and the environment digest that ran it.
-- A failed stage or preparation leaves the active release serving.
+- Every run records the release digest that ran it.
+- A failed stage leaves the active release serving.
+
+Additionally, for a managed integration:
+
+- Every run also records the environment digest it ran on.
+- A failed preparation leaves the active release serving.
 
 ## Limits in this release
 

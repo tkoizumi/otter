@@ -226,8 +226,8 @@ fi
 `
 }
 
-// ReleaseScript stages, prepares and activates a release for each managed
-// integration on the host.
+// ReleaseScript stages, prepares and activates a release for each integration
+// on the host.
 //
 // It runs after the sources land and before the daemon restarts. Order matters
 // twice over: preparation must not happen underneath a running attempt, and a
@@ -235,8 +235,13 @@ fi
 // is the last thing `otter release` does rather than something this script
 // performs.
 //
-// Shared code is passed as a relative path, exactly as the manifest declares
-// it, so the release captures the same tree at the same depth the checkout has.
+// Shared code is not named here. Each manifest declares its own python.path,
+// and the release captures exactly those trees at the depth the manifest
+// resolves them at, so the layout lives in one place instead of being repeated
+// on this command line.
+//
+// Integrations are named one by one rather than released with --all so each
+// release reports its own failure against its own name in the deploy log.
 func ReleaseScript(t Target, integrations []string, uvPath string) string {
 	script := `set -e
 RUN_AS=` + ShellQuote(t.RunAsUser) + `
@@ -257,8 +262,7 @@ test -x "$CLI" || { echo "otter: missing $CLI" >&2; exit 1; }
 	for _, name := range integrations {
 		command := runAs + `"$CLI" release` +
 			" --integrations " + ShellQuote(t.IntegrationsDir()) +
-			" --data " + ShellQuote(t.DataDir) +
-			" --shared " + ShellQuote("../../lib")
+			" --data " + ShellQuote(t.DataDir)
 		if uvPath != "" {
 			command += " --uv " + ShellQuote(uvPath)
 		}

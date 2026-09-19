@@ -139,10 +139,11 @@ Start the mock API first — the integration has no data to sync without it:
 python3 examples/customer-sync/mock_api.py
 ```
 
-In a second terminal, validate and run the integration:
+In a second terminal, release and run the integration:
 
 ```bash
 otter validate examples/customer-sync
+otter release customer-sync          # runs execute the active release, not the tree
 RUN_ID=$(otter run customer-sync)
 echo "$RUN_ID"
 
@@ -720,3 +721,16 @@ The three unshipped patterns live here rather than in `examples/` so that
 `--integrations ./examples` stays small: fewer integrations means less scheduler
 noise when you are following the README, and less Python to read before you
 understand the runtime.
+
+One thing every example has in common: **release before you run**. A run
+executes the integration's active release rather than its source tree, so
+`otter run` refuses until the integration has been released once. From this
+checkout:
+
+```bash
+otter release --all          # every integration under the workspace
+otter release counter        # or one at a time, by name
+```
+
+After editing an example, release it again — `otter release counter` — or the
+run will keep executing the snapshot that was active before the edit.

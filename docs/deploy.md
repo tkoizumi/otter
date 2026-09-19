@@ -102,12 +102,17 @@ In order:
    every integration. The contents travel over SSH **stdin**, never in a command
    line: `argv` is visible to every process on the host for the lifetime of the
    call.
-6. **Install and restart** the systemd unit, then poll the health endpoint on
+6. **Release** every integration on the host: stage an immutable snapshot,
+   prepare the environment when the manifest asks for managed Python, and
+   activate it. A run executes the active release, so an unreleased integration
+   would deploy and then refuse to run. A failure here still leaves the previous
+   release active, which is why this happens before the restart.
+7. **Install and restart** the systemd unit, then poll the health endpoint on
    the host itself. The API stays bound to loopback the whole time. This is the
    first step that changes anything the running daemon depends on, and it is
    deliberately last: everything before it is reversible, and a failure there
    leaves the previous deployment serving.
-7. **Record** what happened in `.otter/deploy.json` and `.otter/state.secret.json`.
+8. **Record** what happened in `.otter/deploy.json` and `.otter/state.secret.json`.
 
 The same script also takes ownership of `bin/`, `integrations/` and `lib/` for
 the service account — rsync pushes as the SSH login, so the files must be

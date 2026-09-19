@@ -282,15 +282,19 @@ otter runs --integration shopify-to-salesforce --limit 10
 
 ## Managed Python
 
-Integrations that set `python.mode: managed` run on an interpreter and
-dependency set that Otter prepared, not on the host's Python, and execute an
-immutable release snapshot rather than their source tree. Both steps are
-separate from execution (`otter release`, or automatically during
-`otter deploy`), never part of a run. See [managed-python.md](managed-python.md).
+Every integration executes an immutable release snapshot rather than its source
+tree, so a release is required before its first run and an edit is not live
+until it is released again (`otter release`, or automatically during
+`otter deploy`). Separately, integrations that set `python.mode: managed` run on
+an interpreter and a dependency set that Otter prepared, not on the host's
+Python. Both are separate from execution and never part of a run. See
+[managed-python.md](managed-python.md).
 
 Releases accumulate under `<data dir>/.releases`. Nothing removes them unless
 you pass `otter release --keep N`, so check `otter release --list <integration>`
-if the data directory grows.
+if the data directory grows. Retention is per integration and `--keep` applies
+to `--all` as well, so `otter release --all --keep 3` prunes a whole workspace
+in one command.
 
 ## Backups
 

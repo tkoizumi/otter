@@ -1055,15 +1055,28 @@ func (a *App) cmdValidate(args []string) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter validate <otter.yaml|directory>")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter validate <otter.yaml|directory|integration>")
 		return 2
 	}
 	target := fs.Arg(0)
 
 	info, err := os.Stat(target)
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
-		return 2
+		// Not a path. `otter init` tells a developer to run `otter validate
+		// <name>`, and a name is the one thing a path-only command cannot take,
+		// so a bare word is looked up in the workspace first.
+		resolved, ok := manifestByName(target)
+		if !ok {
+			fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+			return 2
+		}
+		m, err := config.LoadAndValidate(resolved)
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "invalid: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(a.Stdout, "ok: %s (%s)\n", m.Name, m.Path)
+		return 0
 	}
 
 	if !info.IsDir() {
@@ -1130,6 +1143,8 @@ func (a *App) fail(err error) int {
 			fmt.Fprintln(a.Stderr, "hint: set OTTER_API_TOKEN or pass --token")
 			fmt.Fprintln(a.Stderr, "hint: on the Otter host, the token is in "+EnvDir+"/*.env")
 		}
+		// The daemon answered, so it is running: the reachability hint would
+		// only misdirect. Its own message is the actionable one.
 		return 1
 	}
 
@@ -1146,6 +1161,7 @@ Usage:
 
 Getting started:
   init [--force] [name]           scaffold a workspace and one integration
+  release [<integration>|.]       stage and activate an immutable release
 
 Runtime:
   start [--detach]                run this project's runtime, free port, env loaded
@@ -1168,13 +1184,16 @@ State:
   state delete <integration> <key>
 
 Manifests:
-  validate <otter.yaml|directory> validate without a running daemon
+  validate <otter.yaml|dir|name>  validate without a running daemon
 
 Python:
-  prepare [--integrations DIR] [--data DIR] [integration]
+  prepare [--integrations DIR] [--data DIR] [<integration>|.]
                                   prepare opt-in managed Python environments
-  release <integration>           stage, prepare and activate an immutable release
+  release [--all] [<integration>|.]
+                                  stage and activate an immutable release
   release --list <integration>    list staged releases
+  release --activate <digest> <integration>
+                                  roll back to a staged release
 
 Deployment:
   deploy --host <user@host>       install or update a remote runtime over SSH
@@ -1197,12 +1216,19 @@ path that holds that manifest: otter run . runs the integration in the working
 directory, otter run inside one does the same, and otter inspect . looks at it.
 The name is read from otter.yaml, so the directory name does not matter.
 
+A run executes the integration's active release rather than its source tree, so
+an edit is not live until otter release stages and activates a new one. Every
+integration needs a release before its first run, whether or not it uses managed
+Python; otter release --all covers a whole workspace.
+
 Examples:
   otter init acme                 # scaffold a workspace and an integration
   otter start                     # in a project: free port, env files loaded
   otter start --detach            # same, in the background
   otter run counter
   otter run                       # the integration in the working directory
+  otter release                   # release the integration in this directory
+  otter release --all             # release every integration in the workspace
   otter stop
   otter integrations
   otter logs $(otter run counter) --follow
@@ -1216,8 +1242,10 @@ Examples:
 
 // needsDaemon reports whether a command acts on a running runtime rather than
 // on files in the working tree. The local commands -- init, validate, serve,
-// release, prepare, deploy -- are their own authority on where state lives and
-// must keep working outside a workspace.
+// release, prepare, deploy -- read and write files directly and need no daemon.
+// The workspace-scoped ones among them resolve their directories from the
+// workspace when there is one and from explicit flags when there is not, which
+// is how `otter deploy` operates on a host that has no checkout.
 func needsDaemon(command string) bool {
 	switch command {
 	case "status", "integrations", "inspect", "run", "runs", "run-status", "logs", "state":

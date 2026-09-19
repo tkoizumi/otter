@@ -127,29 +127,33 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 	if pythonMode == "" {
 		pythonMode = "external"
 	}
+	// Every integration runs from an immutable release, so binding happens here,
+	// at submission: activating a newer release cannot move a queued or retried
+	// attempt onto different source code.
+	//
+	// A managed integration's release also pins an interpreter and a dependency
+	// set. An external one pins only the source and still runs on the
+	// interpreter its manifest names, which is the whole difference between the
+	// two modes.
+	released, digest, ok, err := release.ActiveSourceDir(d.cfg.DataDir, integrationID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		// A conflict with the integration's current state, not a server fault:
+		// the request is well formed and the integration exists, but nothing has
+		// been made live for it to run.
+		return "", fmt.Errorf("integration %s has no active release; run otter release %s before submitting runs: %w",
+			integrationID, integrationID, api.ErrConflict)
+	}
+	releaseDigest, releaseSourceDir := digest, released
+	sourceDir := released
+
 	// A managed run binds to an environment now, at submission, so that a
 	// later dependency change cannot silently move a queued run onto a
 	// different interpreter. The daemon resolves the current identity here --
 	// the one place on the run path where uv may be consulted -- and records
 	// it, so execution never needs to resolve anything again.
-	// A managed integration runs from an immutable release. Binding happens
-	// here, at submission, so that activating a newer release cannot move a
-	// queued or retried attempt onto different source code.
-	var releaseDigest, releaseSourceDir string
-	sourceDir := entry.Manifest.Dir
-	if pythonMode == "managed" {
-		released, digest, ok, err := release.ActiveSourceDir(d.cfg.DataDir, integrationID)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", fmt.Errorf("managed integration %s has no active release; run otter release %s before submitting runs",
-				integrationID, integrationID)
-		}
-		releaseDigest, sourceDir = digest, released
-		releaseSourceDir = released
-	}
-
 	pythonVersion, environmentDigest, pythonPolicy := "", "", ""
 	if pythonMode == "managed" {
 		manager := pyenv.Manager{DataDir: d.cfg.DataDir}

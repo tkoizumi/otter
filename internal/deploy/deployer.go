@@ -184,18 +184,30 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
-	// --- release managed Python integrations -------------------------------
+	// --- release -----------------------------------------------------------
 	// Runs before the restart so a failure leaves the previously deployed
 	// runtime serving. Each integration is staged, prepared and then activated
 	// in that order, so a candidate that fails preparation never becomes
 	// active and never disturbs what is currently running.
+	//
+	// Every integration is released, not only the managed ones: a run executes
+	// the active release, so an unreleased integration would deploy and then
+	// refuse to run. Preparation is the managed-only part, and it happens
+	// inside the same command.
+	// uv is named only when something actually needs preparing: a host with no
+	// managed integrations never receives the vendored toolchain, so pointing
+	// the release at it would name a path that is not there.
+	uvPath := ""
 	if len(managed) > 0 {
-		d.step("release", "releasing %d managed integration(s)", len(managed))
-		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, managed, d.uvPath(cfg))); err != nil {
-			return nil, fmt.Errorf("release managed Python on %s: %w", cfg.Target, err)
+		uvPath = d.uvPath(cfg)
+	}
+	if len(cfg.Integrations) > 0 {
+		d.step("release", "releasing %d integration(s)", len(cfg.Integrations))
+		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.Integrations, uvPath)); err != nil {
+			return nil, fmt.Errorf("release integrations on %s: %w", cfg.Target, err)
 		}
 	} else {
-		d.step("release", "no managed integrations; nothing to release")
+		d.step("release", "no integrations; nothing to release")
 	}
 
 	// --- activate ----------------------------------------------------------
@@ -623,10 +635,15 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 	} else {
 		d.step("plan", "secrets:   no %s; integrations rely on their manifest env", SharedEnvFileName)
 	}
-	if managed := d.managedIntegrations(cfg); len(managed) > 0 {
-		d.step("plan", "release:   would stage, prepare and activate %s", strings.Join(managed, ", "))
+	if len(cfg.Integrations) > 0 {
+		managed := d.managedIntegrations(cfg)
+		line := "release:   would stage and activate " + strings.Join(cfg.Integrations, ", ")
+		if len(managed) > 0 {
+			line += " (preparing managed Python for " + strings.Join(managed, ", ") + ")"
+		}
+		d.step("plan", line)
 	} else {
-		d.step("plan", "release:   external Python only; nothing to release")
+		d.step("plan", "release:   no integrations; nothing to release")
 	}
 	for _, m := range missing {
 		d.step("plan", "warning:   secret %s", m)

@@ -30,8 +30,22 @@ import (
 // under, and the daemon gives its own clear answer when the manifest is not
 // part of the library it serves.
 func resolveIntegrationRef(ref string) (string, error) {
+	id, _, err := resolveIntegrationRefDir(ref)
+	return id, err
+}
+
+// resolveIntegrationRefDir is resolveIntegrationRef plus the directory the
+// reference names, for commands that act on the source tree rather than on a
+// running daemon.
+//
+// A bare name returns an empty dir: nothing local knows where an integration
+// with that name lives until the workspace is discovered, so the caller decides
+// whether to search or to refuse. A path reference is read from disk, and its
+// directory is returned so a release snapshots exactly the tree that was named
+// instead of searching for a second copy of it.
+func resolveIntegrationRefDir(ref string) (id, dir string, err error) {
 	if !looksLikePath(ref) {
-		return ref, nil
+		return ref, "", nil
 	}
 
 	// Relative references are resolved against the working directory, not
@@ -39,24 +53,24 @@ func resolveIntegrationRef(ref string) (string, error) {
 	// changing the process-wide directory.
 	target := ref
 	if !filepath.IsAbs(target) {
-		dir, err := workingDirForTest()
+		wd, err := workingDirForTest()
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		target = filepath.Join(dir, ref)
+		target = filepath.Join(wd, ref)
 	}
 	target = filepath.Clean(target)
 
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", fmt.Errorf("%s: no such file or directory", ref)
+		return "", "", fmt.Errorf("%s: no such file or directory", ref)
 	}
 
 	manifest := target
 	if info.IsDir() {
 		manifest = filepath.Join(target, config.ManifestFileName)
 		if _, err := os.Stat(manifest); err != nil {
-			return "", fmt.Errorf("%s is not an integration: no %s", ref, config.ManifestFileName)
+			return "", "", fmt.Errorf("%s is not an integration: no %s", ref, config.ManifestFileName)
 		}
 	}
 
@@ -65,12 +79,12 @@ func resolveIntegrationRef(ref string) (string, error) {
 	// cannot run. Parsing locally is only here to recover the id.
 	m, err := config.Load(manifest)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if strings.TrimSpace(m.Name) == "" {
-		return "", fmt.Errorf("%s does not declare a name", manifest)
+		return "", "", fmt.Errorf("%s does not declare a name", manifest)
 	}
-	return m.Name, nil
+	return m.Name, filepath.Dir(manifest), nil
 }
 
 // looksLikePath reports whether ref can only be a filesystem path.

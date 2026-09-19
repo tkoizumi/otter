@@ -558,9 +558,10 @@ func TestRunReleasesManagedPythonBeforeRestart(t *testing.T) {
 	}
 }
 
-// An integration that did not opt in must not trigger preparation, so a host
-// with no managed integrations needs no uv at all.
-func TestRunSkipsPreparationForExternalPython(t *testing.T) {
+// An integration that did not opt into managed Python is still released -- a
+// run executes the active release -- but nothing about it needs uv, so a host
+// with no managed integrations gets no vendored toolchain.
+func TestExternalPythonIsReleasedWithoutPreparation(t *testing.T) {
 	runner := &fakeRunner{healthy: true}
 	deployer, _, stderr := newTestDeployer(t, runner, newFakeBuilder(t))
 	mustWriteManifest(t, deployer.Config, "counter", "")
@@ -568,13 +569,22 @@ func TestRunSkipsPreparationForExternalPython(t *testing.T) {
 	if _, err := deployer.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v\n%s", err, stderr.String())
 	}
+
+	released := false
 	for _, script := range runner.scripts() {
-		if strings.Contains(script, `"$CLI" release`) {
-			t.Errorf("external integration triggered a release:\n%s", script)
+		if !strings.Contains(script, `"$CLI" release`) {
+			continue
+		}
+		released = true
+		if strings.Contains(script, "--uv") {
+			t.Errorf("an external integration was prepared with uv:\n%s", script)
 		}
 	}
-	if !strings.Contains(stderr.String(), "no managed integrations") {
-		t.Errorf("deploy did not report that the release step was skipped:\n%s", stderr.String())
+	if !released {
+		t.Error("an external integration was not released, so its runs would be refused")
+	}
+	if strings.Contains(stderr.String(), "vendoring uv") || strings.Contains(stderr.String(), "pushing uv") {
+		t.Errorf("uv was shipped for a workspace with no managed integrations:\n%s", stderr.String())
 	}
 }
 

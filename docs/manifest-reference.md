@@ -76,7 +76,7 @@ secrets:
 | `entrypoint` | string | **yes** | — | Path to the Python file to run, relative to the integration directory. Must stay inside the directory and must exist. |
 | `python.mode` | string | no | `external` | `external` preserves host Python behavior. `managed` requires `.python-version`, `pyproject.toml`, and `uv.lock`; prepare it before running. |
 | `python.executable` | string | no | `python3` in external mode | Interpreter used to launch the entrypoint. Resolved on `PATH` or given as an absolute path. Cannot be set in managed mode. |
-| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. In managed mode the declared directories are captured into the release at the same relative depth, so the same relative paths keep working. |
+| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. The declared directories are captured into the integration's release at the same relative depth, so the same relative paths keep working after activation. |
 | `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`). Omit for no schedule. |
 | `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-integration token. |
 | `timeout` | integer \| string | no | `300` | Maximum wall-clock time for one attempt. An integer means seconds; a string is a Go duration (`30s`, `5m`, `1h30m`). |
@@ -291,8 +291,9 @@ the child process's environment just before execution.
   `/v1/integrations/{id}/...`.
 - Commands also accept the filesystem path that holds the manifest. `otter run .`
   and a bare `otter run` read the working directory's `otter.yaml` and use the
-  `name` it declares, and `otter inspect .` does the same. The path is only a
-  way to find the name; the daemon still addresses the integration by `name`.
+  `name` it declares, and `otter inspect .`, `otter release` and
+  `otter prepare` do the same. The path is only a way to find the name; the
+  daemon still addresses the integration by `name`.
 - Names must be **unique across the integrations root**. Two directories
   declaring the same `name` make the second one invalid.
 - Renaming an integration does not migrate its state, run history or webhook

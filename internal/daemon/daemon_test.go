@@ -21,6 +21,7 @@ import (
 	"github.com/tkoizumi/otter/internal/database"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
+	"github.com/tkoizumi/otter/internal/release"
 	"github.com/tkoizumi/otter/internal/runs"
 	"github.com/tkoizumi/otter/internal/secrets"
 )
@@ -68,8 +69,46 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// newDaemon builds a daemon over root. An empty dataDir gets a fresh temp dir.
+// releaseAll stages and activates a release for every valid integration under
+// root. A run executes the active release rather than the source tree, so a
+// workspace with no releases refuses every submission -- including the ones a
+// test is about to make.
+func releaseAll(t *testing.T, root, dataDir string) {
+	t.Helper()
+
+	items, err := config.Discover(root)
+	if err != nil {
+		t.Fatalf("discover %s: %v", root, err)
+	}
+	manager := release.Manager{DataDir: dataDir}
+	for _, item := range items {
+		if !item.Valid {
+			continue // the daemon reports invalid manifests itself
+		}
+		meta, err := manager.Stage(item.ID, item.Dir, nil, "")
+		if err != nil {
+			t.Fatalf("stage %s: %v", item.ID, err)
+		}
+		if err := manager.Activate(item.ID, meta.Digest); err != nil {
+			t.Fatalf("activate %s: %v", item.ID, err)
+		}
+	}
+}
+
+// newDaemon builds a daemon over root, releasing every integration the test
+// wrote before this point so a submission can bind to a snapshot the way
+// production requires. An empty dataDir gets a fresh temp dir.
 func newDaemon(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig)) *Daemon {
+	return newDaemonWith(t, root, dataDir, provider, tweak, true)
+}
+
+// newDaemonUnreleased builds the same daemon with nothing released, which is
+// the state of a workspace before `otter release` has ever run.
+func newDaemonUnreleased(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig)) *Daemon {
+	return newDaemonWith(t, root, dataDir, provider, tweak, false)
+}
+
+func newDaemonWith(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseIntegrations bool) *Daemon {
 	t.Helper()
 	requirePython(t)
 
@@ -86,6 +125,10 @@ func newDaemon(t *testing.T, root, dataDir string, provider secrets.Provider, tw
 	cfg.LogLevel = "error"
 	if tweak != nil {
 		tweak(&cfg)
+	}
+
+	if releaseIntegrations {
+		releaseAll(t, root, dataDir)
 	}
 
 	d, err := New(context.Background(), Options{
@@ -1587,5 +1630,85 @@ func TestNotifyFailureIdentifiesTheHost(t *testing.T) {
 
 	if got.Host != "droplet-1" {
 		t.Errorf("host = %q, want the daemon's hostname", got.Host)
+	}
+}
+
+// An integration with no active release cannot run, whatever its Python mode.
+// This is the strict half of the release model: nothing executes until a
+// snapshot has been activated, so "what ran" is always something that was
+// deliberately made live.
+func TestUnreleasedIntegrationIsRefused(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
+
+	d := newDaemonUnreleased(t, root, "", nil, nil)
+	startDaemon(t, d)
+
+	_, err := d.SubmitRun(context.Background(), "job", api.TriggerPayload{Type: api.TriggerManual})
+	if err == nil {
+		t.Fatal("a run of an unreleased integration was accepted")
+	}
+	// A conflict with the integration's state, not a server fault: the API
+	// must answer 409 rather than 500.
+	if !errors.Is(err, api.ErrConflict) {
+		t.Errorf("refusal is not classified as a conflict: %v", err)
+	}
+	for _, want := range []string{"job", "no active release", "otter release job"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// A run executes the release that was active when it was submitted, not the
+// source tree as it stands at execution time. For an external integration that
+// is the whole value of a release: it pins no interpreter, but it does pin the
+// code.
+func TestRunExecutesTheActiveReleaseNotTheLiveTree(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("released")`)
+
+	d := newDaemon(t, root, "", nil, nil)
+	startDaemon(t, d)
+
+	// Edit the source after the release: the next run must not see this.
+	if err := os.WriteFile(filepath.Join(root, "job", "main.py"), []byte(`print("edited")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runID, err := d.SubmitRun(context.Background(), "job", api.TriggerPayload{Type: api.TriggerManual})
+	if err != nil {
+		t.Fatalf("submit run: %v", err)
+	}
+	view := awaitTerminal(t, d, runID)
+	if view.Run.Status != runs.StatusSucceeded {
+		t.Fatalf("status = %s (%s), want succeeded", view.Run.Status, view.Run.ErrorString())
+	}
+	if view.Run.ReleaseDigest == "" {
+		t.Error("the run did not record a release digest")
+	}
+	stdout := strings.Join(logMessages(t, d, runID, runs.StreamStdout), "\n")
+	if !strings.Contains(stdout, "released") {
+		t.Errorf("the run did not execute the released snapshot:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "edited") {
+		t.Errorf("the run executed the live source tree:\n%s", stdout)
+	}
+
+	// Releasing again is what makes the edit live.
+	releaseAll(t, root, d.cfg.DataDir)
+	nextID, err := d.SubmitRun(context.Background(), "job", api.TriggerPayload{Type: api.TriggerManual})
+	if err != nil {
+		t.Fatalf("submit run after re-release: %v", err)
+	}
+	next := awaitTerminal(t, d, nextID)
+	if next.Run.Status != runs.StatusSucceeded {
+		t.Fatalf("status = %s (%s), want succeeded", next.Run.Status, next.Run.ErrorString())
+	}
+	if stdout := strings.Join(logMessages(t, d, nextID, runs.StreamStdout), "\n"); !strings.Contains(stdout, "edited") {
+		t.Errorf("the re-released snapshot was not executed:\n%s", stdout)
+	}
+	if next.Run.ReleaseDigest == view.Run.ReleaseDigest {
+		t.Error("re-releasing produced the same digest, so the edit was not captured")
 	}
 }

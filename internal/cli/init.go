@@ -138,6 +138,7 @@ func (a *App) cmdInit(args []string) int {
 	}
 	fmt.Fprintf(a.Stdout, "\nnext:\n")
 	fmt.Fprintf(a.Stdout, "  otter validate %s\n", name)
+	fmt.Fprintf(a.Stdout, "  otter release %s\n", name)
 	fmt.Fprintf(a.Stdout, "  otter start --detach\n")
 	fmt.Fprintf(a.Stdout, "  otter run %s\n", name)
 	fmt.Fprintf(a.Stdout, "  otter stop\n")
