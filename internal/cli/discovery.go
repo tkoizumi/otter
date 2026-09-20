@@ -86,18 +86,20 @@ func resolveAPI(g *globals) bool {
 	if err != nil {
 		return false
 	}
-	// Every root from here upward, nearest first: a record left behind by a
-	// stopped daemon must not hide a live one further up, and a dead record
-	// must never become the answer.
-	inProject := false
-	for _, root := range projectRoots(dir) {
-		inProject = true
-		if base, _, ok := discoverAPIURL(root); ok && apiAnswers(base) {
-			g.api = base
-			return true
-		}
+	// Every root from here upward is considered, nearest first, and within a
+	// root every recorded address is probed rather than the first one being
+	// trusted. A project can carry more than one record -- `otter start` writes
+	// its address under .otter/serve, while a hand-started or older daemon may
+	// have left one in the data directory -- and a stale record that sorts
+	// first must not hide the live daemon.
+	roots := projectRoots(dir)
+	if len(roots) == 0 {
+		return false
 	}
-	return inProject
+	if base, _, ok := discoverAPIURL(dir, apiAnswers); ok {
+		g.api = base
+	}
+	return true
 }
 
 // projectRoots lists the directories from dir upward that carry a workspace
@@ -121,28 +123,26 @@ func projectRoots(dir string) []string {
 	return roots
 }
 
-// discoverAPIURL walks up from dir looking for a project whose daemon recorded
-// itself. It returns the URL and the project root that answered.
+// discoverAPIURL walks up from dir and returns the first recorded address for
+// which accept reports true, together with the project root that carries it.
+//
+// accept is the caller's definition of usable: resolveAPI passes a reachability
+// probe, so a record in one directory that no longer answers cannot hide the
+// live daemon's record in another. A nil accept takes the first record found,
+// which is what diagnostics and the walk-order tests want.
 //
 // The project's data directory is not at a fixed depth -- `--data` can point
 // anywhere, and the conventional location is inside the project as well -- so
-// the listen file is searched for below `.otter` rather than assumed to be
+// the listen files are searched for below `.otter` rather than assumed to be
 // directly inside it. That keeps the layout the developer's choice while
 // keeping the lookup deterministic.
-func discoverAPIURL(dir string) (string, string, bool) {
-	dir = filepath.Clean(dir)
-	for depth := 0; depth < maxDiscoveryDepth; depth++ {
-		root := filepath.Join(dir, stateDirName)
-		if info, err := os.Stat(root); err == nil && info.IsDir() {
-			if base, ok := findListenFile(root); ok {
-				return base, dir, true
+func discoverAPIURL(dir string, accept func(string) bool) (string, string, bool) {
+	for _, root := range projectRoots(dir) {
+		for _, base := range findListenFiles(filepath.Join(root, stateDirName)) {
+			if accept == nil || accept(base) {
+				return base, root, true
 			}
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break // filesystem root
-		}
-		dir = parent
 	}
 	return "", "", false
 }
@@ -159,11 +159,16 @@ var heavyStateDirs = map[string]bool{
 	"environments": true,
 }
 
-// findListenFile looks for listen.url below root, at any depth. It returns the
-// first usable address it finds.
-func findListenFile(root string) (string, bool) {
-	var base string
-	var found bool
+// findListenFiles returns every recorded address below root, in walk order and
+// without duplicates.
+//
+// It returns all of them rather than the first because one project can carry
+// several: the serve record and a data-directory record, or a file left behind
+// by a daemon that was killed instead of stopped. Which of them is live is a
+// network question, so it is left to the caller.
+func findListenFiles(root string) []string {
+	var out []string
+	seen := map[string]bool{}
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// An unreadable subdirectory is not a reason to give up: the
@@ -172,9 +177,6 @@ func findListenFile(root string) (string, bool) {
 				return fs.SkipDir
 			}
 			return nil
-		}
-		if found {
-			return fs.SkipDir
 		}
 		if d.IsDir() {
 			if path != root && heavyStateDirs[d.Name()] {
@@ -185,12 +187,13 @@ func findListenFile(root string) (string, bool) {
 		if d.Name() != ListenURLFileName {
 			return nil
 		}
-		if addr, ok := readListenURLFile(path); ok {
-			base, found = addr, true
+		if addr, ok := readListenURLFile(path); ok && !seen[addr] {
+			seen[addr] = true
+			out = append(out, addr)
 		}
 		return nil
 	})
-	return base, found
+	return out
 }
 
 // readListenURLFile reads one recorded address. A missing or empty file is not an

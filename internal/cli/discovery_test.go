@@ -80,7 +80,7 @@ func TestDiscoverFindsTheRecordAtAnyDepthBelowState(t *testing.T) {
 			root := t.TempDir()
 			record(t, filepath.Join(root, dataRel), "http://127.0.0.1:7400")
 
-			got, gotRoot, ok := discoverAPIURL(root)
+			got, gotRoot, ok := discoverAPIURL(root, nil)
 			if !ok {
 				t.Fatalf("nothing discovered from %s (layout: %s)", root, dataRel)
 			}
@@ -103,7 +103,7 @@ func TestDiscoverWalksUpToTheProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{root, filepath.Join(root, "hello"), nested} {
-		got, _, ok := discoverAPIURL(dir)
+		got, _, ok := discoverAPIURL(dir, nil)
 		if !ok {
 			t.Fatalf("no daemon discovered from %s", dir)
 		}
@@ -124,7 +124,7 @@ func TestDiscoverPrefersTheNearestProject(t *testing.T) {
 	record(t, filepath.Join(outer, ".otter", "data"), "http://127.0.0.1:7400")
 	record(t, filepath.Join(inner, ".otter", "data"), "http://127.0.0.1:7500")
 
-	got, root, ok := discoverAPIURL(inner)
+	got, root, ok := discoverAPIURL(inner, nil)
 	if !ok || got != "http://127.0.0.1:7500" {
 		t.Errorf("got (%q, %q, %v), want the inner project on 7500", got, root, ok)
 	}
@@ -141,13 +141,13 @@ func TestDiscoverKeepsWalkingPastAProjectWithoutARecord(t *testing.T) {
 	}
 	record(t, filepath.Join(outer, ".otter", "data"), "http://127.0.0.1:7400")
 
-	if got, _, ok := discoverAPIURL(inner); !ok || got != "http://127.0.0.1:7400" {
+	if got, _, ok := discoverAPIURL(inner, nil); !ok || got != "http://127.0.0.1:7400" {
 		t.Errorf("got (%q, %v), want the outer project's daemon", got, ok)
 	}
 }
 
 func TestDiscoverWithoutAProject(t *testing.T) {
-	if got, root, ok := discoverAPIURL(t.TempDir()); ok {
+	if got, root, ok := discoverAPIURL(t.TempDir(), nil); ok {
 		t.Errorf("discovered (%q, %q) in an empty directory, want nothing", got, root)
 	}
 }
@@ -161,7 +161,7 @@ func TestDiscoverIgnoresAnEmptyRecord(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ListenURLFileName), []byte("\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, ok := discoverAPIURL(root); ok {
+	if got, _, ok := discoverAPIURL(root, nil); ok {
 		t.Errorf("discovered %q from an empty record, want nothing", got)
 	}
 }
@@ -178,8 +178,67 @@ func TestDiscoverPrunesHeavyStateDirectories(t *testing.T) {
 	// walk never looks there.
 	record(t, heavy, "http://127.0.0.1:9999")
 
-	if got, _, ok := discoverAPIURL(root); ok {
+	if got, _, ok := discoverAPIURL(root, nil); ok {
 		t.Errorf("discovered %q inside a pruned directory, want nothing", got)
+	}
+}
+
+// A project can carry more than one record: `otter start` writes the address it
+// bound under .otter/serve, while a hand-started or older daemon may have left
+// one in its data directory. The walk must therefore offer every record, not
+// just the first one it happens to meet, and the caller's predicate decides.
+func TestDiscoverTriesEveryRecordInAProject(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, ".otter", "data")
+	live := filepath.Join(root, ".otter", "serve")
+	record(t, stale, "http://127.0.0.1:7400")
+	record(t, live, "http://127.0.0.1:7500")
+
+	found := findListenFiles(filepath.Join(root, stateDirName))
+	if len(found) != 2 {
+		t.Fatalf("findListenFiles = %v, want both records", found)
+	}
+
+	// The stale record sorts first (`data` before `serve`); a predicate that
+	// only accepts the live one has to be given the chance to reach it.
+	got, gotRoot, ok := discoverAPIURL(root, func(base string) bool { return base == "http://127.0.0.1:7500" })
+	if !ok || got != "http://127.0.0.1:7500" {
+		t.Errorf("discoverAPIURL = (%q, %q, %v), want the answering record", got, gotRoot, ok)
+	}
+	if gotRoot != root {
+		t.Errorf("root = %q, want %q", gotRoot, root)
+	}
+}
+
+// This is the regression that made `otter run` unreachable right after `otter
+// start`: a stale data-directory record answered nothing, and the live serve
+// record behind it was never tried, so the client fell back to the default port
+// while a daemon was in fact serving the project.
+func TestResolveAPISkipsAStaleRecord(t *testing.T) {
+	root := t.TempDir()
+	// Write the dead record into the directory the walk visits first.
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := gone.URL
+	gone.Close()
+	record(t, filepath.Join(root, ".otter", "data"), deadURL)
+
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer live.Close()
+	record(t, filepath.Join(root, ".otter", "serve"), live.URL)
+
+	original := workingDirForTest
+	workingDirForTest = func() (string, error) { return root, nil }
+	defer func() { workingDirForTest = original }()
+
+	t.Setenv("OTTER_API_URL", "")
+	g := globals{}
+	if !resolveAPI(&g) {
+		t.Fatal("a workspace with a live daemon was reported as no workspace")
+	}
+	if g.api != live.URL {
+		t.Errorf("api = %q, want the live record %q", g.api, live.URL)
 	}
 }
 
