@@ -103,10 +103,22 @@ In order:
    line: `argv` is visible to every process on the host for the lifetime of the
    call.
 6. **Release** every integration on the host: stage an immutable snapshot,
-   prepare the environment when the manifest asks for managed Python, and
-   activate it. A run executes the active release, so an unreleased integration
-   would deploy and then refuse to run. A failure here still leaves the previous
-   release active, which is why this happens before the restart.
+   validate the snapshot's own manifest, prepare the environment when the
+   manifest asks for managed Python, and activate it. A run executes the active
+   release, so an unreleased integration would deploy and then refuse to run. A
+   failure here still leaves the previous release active, which is why this
+   happens before the restart.
+
+   The release runs with `--integrations /opt/otter/integrations` while shared
+   code lives at `/opt/otter/lib/python`, so the release base is `/opt/otter`
+   and the snapshot places the integration at `integrations/<name>` with the
+   tree at `lib/python`. That is what lets the shipped manifest keep
+   `python.path: [../../lib/python]` verbatim. Each integration is released by
+   name, so its failure is reported against its own name in the deploy log.
+   Deploying a newer Otter also re-releases every integration, which is required
+   after an upgrade: the release digest format is versioned and an older
+   snapshot is never reused. Old snapshots stay in the host's data directory
+   until retention prunes them, so a rollback across the upgrade still works.
 7. **Install and restart** the systemd unit, then poll the health endpoint on
    the host itself. The API stays bound to loopback the whole time. This is the
    first step that changes anything the running daemon depends on, and it is

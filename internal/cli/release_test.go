@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/release"
 )
 
@@ -210,4 +212,360 @@ func TestReleaseRejectsAllWithAName(t *testing.T) {
 	if !strings.Contains(stderr, "--all") {
 		t.Errorf("refusal does not explain the conflict:\n%s", stderr)
 	}
+}
+
+// --- layout coverage --------------------------------------------------------
+
+// writeSharedIntegration lays a minimal external integration with python.path
+// relative to its own directory, plus the shared tree it names.
+func writeSharedIntegration(t *testing.T, dir, name, pythonPath string, sharedRel string) string {
+	t.Helper()
+	manifest := "version: 1\nname: " + name + "\nentrypoint: main.py\npython:\n  mode: external\n  path:\n    - " + pythonPath + "\n"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("from greet import hi\nprint(hi())\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(dir, filepath.FromSlash(sharedRel))
+	if err := os.MkdirAll(filepath.Join(shared, "greet"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "greet", "__init__.py"), []byte("def hi():\n    return \"hi\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return shared
+}
+
+// activeSource resolves the code directory of an integration's active release.
+func activeSource(t *testing.T, manager release.Manager, id string) (release.Metadata, string) {
+	t.Helper()
+	meta, ok, err := manager.Active(id)
+	if err != nil || !ok {
+		t.Fatalf("no active release for %s (ok=%v err=%v)", id, ok, err)
+	}
+	src, err := manager.SourceDir(meta)
+	if err != nil {
+		t.Fatalf("resolve active source: %v", err)
+	}
+	return meta, src
+}
+
+// assertManifestResolves validates the snapshot's own manifest, which is the
+// check that proves the shared tree was captured at the depth the manifest
+// names rather than left on the live tree.
+func assertManifestResolves(t *testing.T, sourceDir string) {
+	t.Helper()
+	if _, err := config.LoadAndValidate(filepath.Join(sourceDir, config.ManifestFileName)); err != nil {
+		t.Fatalf("the snapshot manifest does not resolve inside the release: %v", err)
+	}
+}
+
+// The flat workspace: the integration sits at the workspace root and its shared
+// tree beside it. This is the shape the old hardcoded integrations/<name>
+// placement broke.
+func TestReleaseFlatWorkspaceImportsSharedCode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "demo")
+	writeSharedIntegration(t, dir, "demo", "../lib/python", "../lib/python")
+
+	if _, stderr, code := otterIn(t, root, "release", "demo"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	meta, src := activeSource(t, manager, "demo")
+	if meta.IntegrationPath != "demo" {
+		t.Errorf("IntegrationPath = %q, want demo", meta.IntegrationPath)
+	}
+	assertManifestResolves(t, src)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(src), "lib", "python", "greet", "__init__.py")); err != nil {
+		t.Errorf("the shared tree was not captured beside the integration: %v", err)
+	}
+}
+
+// The canonical checkout layout still works unchanged.
+func TestReleaseCanonicalLayoutImportsSharedCode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "integrations", "demo")
+	writeSharedIntegration(t, dir, "demo", "../../lib/python", "../../lib/python")
+
+	if _, stderr, code := otterIn(t, root, "release", "demo"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	meta, src := activeSource(t, manager, "demo")
+	if meta.IntegrationPath != "integrations/demo" {
+		t.Errorf("IntegrationPath = %q, want integrations/demo", meta.IntegrationPath)
+	}
+	assertManifestResolves(t, src)
+}
+
+// A grouped integration: the tree is placed relative to the same base as the
+// integration, so ../lib/python resolves from group/<name>.
+func TestReleaseGroupedLayoutImportsSharedCode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "group", "demo")
+	writeSharedIntegration(t, dir, "demo", "../lib/python", "../lib/python")
+
+	if _, stderr, code := otterIn(t, root, "release", "demo"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	meta, src := activeSource(t, manager, "demo")
+	if meta.IntegrationPath != "group/demo" {
+		t.Errorf("IntegrationPath = %q, want group/demo", meta.IntegrationPath)
+	}
+	assertManifestResolves(t, src)
+}
+
+// The directory name determines relative paths, not the manifest's name, so a
+// directory whose basename differs from `name` still lands at its own path.
+func TestReleasePlacementUsesTheDirectoryNotTheName(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "integrations", "dir-name")
+	writeSharedIntegration(t, dir, "other-name", "../../lib", "../../lib")
+
+	if _, stderr, code := otterIn(t, root, "release", filepath.Join("integrations", "dir-name")); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	meta, src := activeSource(t, manager, "other-name")
+	if meta.IntegrationPath != "integrations/dir-name" {
+		t.Errorf("IntegrationPath = %q, want integrations/dir-name", meta.IntegrationPath)
+	}
+	assertManifestResolves(t, src)
+}
+
+// --source names a tree outside the discovery root; the same ancestor rule
+// still places it and its shared code relative to one base.
+func TestReleaseSourceOutsideTheDiscoveryRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "other", "demo")
+	writeSharedIntegration(t, dir, "demo", "../../lib/python", "../../lib/python")
+
+	if _, stderr, code := otterIn(t, root, "release", "--source", "other/demo"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	meta, src := activeSource(t, manager, "demo")
+	if meta.IntegrationPath != "other/demo" {
+		t.Errorf("IntegrationPath = %q, want other/demo", meta.IntegrationPath)
+	}
+	assertManifestResolves(t, src)
+}
+
+// --- preserve the active release on failure ---------------------------------
+
+func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
+	root, dir := releaseWorkspace(t, "counter")
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
+		t.Fatalf("first release exited %d: %s", code, stderr)
+	}
+	first, _, err := manager.Active("counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// (1) Staging fails: an escaping symlink cannot be captured.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "live.py"), []byte("LIVE = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "escape.py")
+	if err := os.Symlink(filepath.Join(outside, "live.py"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := otterIn(t, dir, "release"); code == 0 {
+		t.Fatal("a release captured a symlink that escapes it")
+	} else if !strings.Contains(stderr, "outside the release") {
+		t.Errorf("staging failure does not explain itself:\n%s", stderr)
+	}
+	assertActive(t, manager, "counter", first.Digest)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+
+	// (2) Validation fails: an absolute python.path passes on this machine but
+	// cannot be reproduced in a release.
+	absolute := t.TempDir()
+	writeIntegrationFixture(t, dir, "counter", "print('ok')\n")
+	manifest := "version: 1\nname: counter\nentrypoint: main.py\npython:\n  mode: external\n  path:\n    - " + absolute + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := otterIn(t, dir, "release"); code == 0 {
+		t.Fatal("a release accepted an absolute python.path")
+	} else if !strings.Contains(stderr, "absolute") {
+		t.Errorf("validation failure does not explain itself:\n%s", stderr)
+	}
+	assertActive(t, manager, "counter", first.Digest)
+
+	// (3) Activation fails: a release whose recorded placement escapes the
+	// release root is refused.
+	digest := strings.Repeat("d", 64)
+	corrupt := filepath.Join(root, stateDirName, "data", release.DirName, "counter", digest)
+	if err := os.MkdirAll(corrupt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(release.Metadata{
+		Integration:     "counter",
+		Digest:          digest,
+		IntegrationPath: "../escape",
+		Source:          dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corrupt, release.ManifestFileName), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := otterIn(t, dir, "release", "--activate", digest[:12]); code == 0 {
+		t.Fatal("activated a release whose integration path escapes it")
+	} else if !strings.Contains(stderr, "escapes the release root") {
+		t.Errorf("activation failure does not explain itself:\n%s", stderr)
+	}
+	assertActive(t, manager, "counter", first.Digest)
+}
+
+// A rollback to a release whose snapshot manifest no longer resolves fails
+// cleanly, and the previously active release keeps serving.
+func TestFailedActivatePreservesTheActiveRelease(t *testing.T) {
+	root, dir := releaseWorkspace(t, "counter")
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+
+	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
+		t.Fatalf("first release exited %d: %s", code, stderr)
+	}
+	first, _, err := manager.Active("counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('two')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
+		t.Fatalf("second release exited %d: %s", code, stderr)
+	}
+	second, _, err := manager.Active("counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rollback works and is a first-class activation.
+	if stdout, stderr, code := otterIn(t, dir, "release", "--activate", first.Digest[:12]); code != 0 {
+		t.Fatalf("rollback exited %d: %s", code, stderr)
+	} else if !strings.Contains(stdout, first.Digest[:12]) {
+		t.Errorf("rollback output does not name the release:\n%s", stdout)
+	}
+	assertActive(t, manager, "counter", first.Digest)
+
+	// Break the newer snapshot's manifest, then try to activate it.
+	_, secondSource := activeSourceFor(t, manager, "counter", second.Digest)
+	if err := os.Remove(filepath.Join(secondSource, config.ManifestFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := otterIn(t, dir, "release", "--activate", second.Digest[:12]); code == 0 {
+		t.Fatal("activated a release whose manifest no longer resolves")
+	} else if !strings.Contains(stderr, "invalid") {
+		t.Errorf("refusal does not explain itself:\n%s", stderr)
+	}
+	assertActive(t, manager, "counter", first.Digest)
+}
+
+// A managed release whose environment was never prepared cannot be activated
+// through --activate; the refusal names otter prepare.
+func TestActivateRefusesAnUnpreparedManagedRelease(t *testing.T) {
+	root, dir := releaseWorkspace(t, "counter")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	manager := release.Manager{DataDir: dataDir}
+	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
+		t.Fatalf("first release exited %d: %s", code, stderr)
+	}
+	first, _, err := manager.Active("counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hand-build a managed snapshot with no prepared environment.
+	digest := strings.Repeat("e", 64)
+	source := filepath.Join(dataDir, release.DirName, "counter", digest, "integrations", "counter")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "version: 1\nname: counter\nentrypoint: main.py\npython:\n  mode: managed\n"
+	if err := os.WriteFile(filepath.Join(source, "otter.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "main.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".python-version", "pyproject.toml", "uv.lock"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte("3.13.5\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	meta := release.Metadata{
+		Integration:     "counter",
+		Digest:          digest,
+		IntegrationPath: "integrations/counter",
+		Source:          dir,
+	}
+	body, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(filepath.Dir(source)), release.ManifestFileName), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, stderr, code := otterIn(t, dir, "release", "--activate", digest[:12]); code == 0 {
+		t.Fatal("activated a managed release with no prepared environment")
+	} else if !strings.Contains(stderr, "otter prepare") {
+		t.Errorf("refusal does not name otter prepare:\n%s", stderr)
+	}
+	assertActive(t, manager, "counter", first.Digest)
+}
+
+func assertActive(t *testing.T, manager release.Manager, id, digest string) {
+	t.Helper()
+	active, ok, err := manager.Active(id)
+	if err != nil || !ok {
+		t.Fatalf("no active release for %s (ok=%v err=%v)", id, ok, err)
+	}
+	if active.Digest != digest {
+		t.Errorf("active release = %s, want %s", active.Digest[:12], digest[:12])
+	}
+}
+
+// activeSourceFor resolves the code directory of one specific staged release.
+func activeSourceFor(t *testing.T, manager release.Manager, id, digest string) (release.Metadata, string) {
+	t.Helper()
+	meta, err := manager.Metadata(id, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := manager.SourceDir(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return meta, src
 }

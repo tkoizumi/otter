@@ -7,35 +7,44 @@
 // snapshot cannot rewrite files underneath an attempt that is already running.
 //
 // The central design decision is the layout: a release mirrors the repository
-// layout rather than flattening it.
+// layout rather than flattening it. The placement rule is one base shared by
+// everything a release carries:
+//
+//	base = the closest common ancestor of the integrations discovery root,
+//	       the integration directory and every captured shared tree
+//
+// The integration lands at rel(base, integrationDir) and each shared tree at
+// rel(base, liveTreeDir). The release root plays the part of base, so every
+// relative declaration in the manifest resolves exactly as it does in the
+// checkout. For the canonical layout that means:
 //
 //	<data dir>/.releases/<integration>/<release-digest>/
 //	├── integrations/<integration>/     the snapshot
 //	├── lib/                            shared code, at the same relative depth
 //	└── otter-release.json              metadata, including the environment digest
 //
+// but the rule is the same for the other shapes a workspace can have: a flat
+// workspace places the integration at <name> and shared code beside it, and a
+// grouped workspace at group/<name> and group/lib/python. `otter deploy` is the
+// case that fixes the base's upper bound: it releases with
+// `--integrations <remote>/integrations` while shared code lives at
+// `<remote>/lib/python`, so the base is `<remote>`, not the discovery root.
+//
 // The activation links live at <data dir>/.releases/active/<integration>. They
 // sit outside the integrations tree on purpose: `otter deploy` rsyncs that tree
 // with --delete, and a symlink inside it would be replaced by a directory, or
 // worse, written through into the snapshot.
 //
-// Mirroring is what lets a manifest keep a relative declaration such as
-// `python.path: [../../lib/python]` verbatim: the release root plays the part
-// of the repository root, so every relative path resolves exactly as it does in
-// the checkout. Nothing has to be rewritten to activate a release, and a
-// manifest that works locally works in a release.
-//
-// The live integrations tree keeps a symlink per managed integration pointing
-// at the active release, so discovery and every path-derived behaviour (the
-// working directory, the SDK's relative resolution, `otter inspect`) work
-// unchanged. The releases root is dot-prefixed, which the existing discovery
-// walk already skips, so snapshots are never discovered as integrations
-// themselves.
+// Nothing has to be rewritten to activate a release: the manifest travels
+// verbatim and a manifest that works locally works in a release. The live
+// integrations tree keeps a symlink per managed integration pointing at the
+// active release, so discovery and every path-derived behaviour (the working
+// directory, the SDK's relative resolution, `otter inspect`) work unchanged.
+// The releases root is dot-prefixed, which the existing discovery walk already
+// skips, so snapshots are never discovered as integrations themselves.
 package release
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +67,11 @@ const activeDirName = "active"
 // ManifestFileName is the metadata file written inside a release.
 const ManifestFileName = "otter-release.json"
 
+// IntegrationRoot is where an integration was placed by releases staged before
+// Metadata.IntegrationPath existed. It is only a fallback: every release staged
+// today records its real placement.
+const IntegrationRoot = "integrations"
+
 // DefaultKeep is how many inactive releases per integration are retained.
 // Retention is bounded so a long-lived install cannot grow without limit, and
 // a release referenced by queued or running work is never removed.
@@ -67,6 +81,13 @@ const DefaultKeep = 3
 type Metadata struct {
 	Integration string `json:"integration"`
 	Digest      string `json:"digest"`
+	// IntegrationPath is the integration directory inside the release,
+	// slash-normalized and relative to the release root. It is the single
+	// source of truth for where the snapshot's code lives, because the
+	// placement depends on where the integration and its shared code sat in the
+	// checkout. Empty on releases staged before this field existed; the
+	// resolver then assumes IntegrationRoot/<integration>.
+	IntegrationPath string `json:"integration_path,omitempty"`
 	// Environment is the prepared Python environment digest this release was
 	// validated against. It is recorded rather than implied so a report can
 	// answer "what did this release run on?".
@@ -82,6 +103,37 @@ type Metadata struct {
 	// development loop.
 	GitRevision string `json:"git_revision,omitempty"`
 	GitDirty    bool   `json:"git_dirty,omitempty"`
+}
+
+// IntegrationRel returns the integration's placement inside a release,
+// validated: relative, no "..", and with the fallback for metadata written
+// before the field existed.
+func (m Metadata) IntegrationRel() (string, error) {
+	raw := strings.TrimSpace(m.IntegrationPath)
+	if raw == "" {
+		if err := validName(m.Integration); err != nil {
+			return "", err
+		}
+		return filepath.ToSlash(filepath.Join(IntegrationRoot, m.Integration)), nil
+	}
+	clean := filepath.Clean(filepath.FromSlash(raw))
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("release: integration_path %q escapes the release root", raw)
+	}
+	return filepath.ToSlash(clean), nil
+}
+
+// SourceDir resolves the integration directory inside the release directory
+// releaseRoot. It is THE resolver: staging writes IntegrationPath, and
+// preparation, `--list`, `--activate`, ActiveSourceDir and the worker all read
+// the placement back through here, so a hand-edited or escaping value is
+// rejected exactly once, in one place.
+func (m Metadata) SourceDir(releaseRoot string) (string, error) {
+	rel, err := m.IntegrationRel()
+	if err != nil {
+		return "", err
+	}
+	return safeJoin(releaseRoot, rel)
 }
 
 // Manager owns the releases under one data directory.
@@ -164,14 +216,17 @@ func (m Manager) Metadata(integration, digest string) (Metadata, error) {
 	return readMetadata(dir)
 }
 
-// SourceDir returns the integration directory inside a release: the path the
-// daemon should treat as the integration's directory.
-func SourceDir(root string, integration string) string {
-	return filepath.Join(root, "integrations", integration)
+// SourceDir resolves the directory one staged release's code lives in.
+func (m Manager) SourceDir(meta Metadata) (string, error) {
+	dir, err := m.Dir(meta.Integration, meta.Digest)
+	if err != nil {
+		return "", err
+	}
+	return meta.SourceDir(dir)
 }
 
-// ActiveSourceDir resolves the directory a managed integration should execute
-// from, given a data directory. The second return value is false when the
+// ActiveSourceDir resolves the directory an integration should execute from,
+// given a data directory. The second return value is false when the
 // integration has never been released, so the caller can fall back to the live
 // source tree for integrations that did not opt in.
 func ActiveSourceDir(dataDir, integration string) (string, string, bool, error) {
@@ -180,51 +235,11 @@ func ActiveSourceDir(dataDir, integration string) (string, string, bool, error) 
 	if err != nil || !ok {
 		return "", "", false, err
 	}
-	dir, err := manager.Dir(integration, meta.Digest)
+	src, err := manager.SourceDir(meta)
 	if err != nil {
 		return "", "", false, err
 	}
-	return SourceDir(dir, integration), meta.Digest, true, nil
-}
-
-// Digest hashes everything that determines what a release executes: the
-// integration's own files, the shared code it imports, and the prepared
-// environment it was validated against.
-//
-// Two stageings of identical inputs produce the same digest, which is what
-// makes redeploying an unchanged integration a no-op rather than a new release.
-func Digest(integrationDir string, sharedDirs []string, environmentDigest string) (string, error) {
-	return DigestNamed(integrationDir, sharedTreesFrom(sharedDirs), environmentDigest)
-}
-
-// DigestNamed hashes an integration and named shared trees.
-//
-// The name a shared tree lands under is part of the hash, not just its
-// contents: moving `lib` to `vendor` changes every relative import the
-// integration performs, so it must produce a different release.
-func DigestNamed(integrationDir string, shared []SharedTree, environmentDigest string) (string, error) {
-	h := sha256.New()
-	fmt.Fprintf(h, "otter-release-v1\x00%s\x00%s\x00", filepath.Base(integrationDir), environmentDigest)
-
-	if err := hashTree(h, integrationDir, integrationDir); err != nil {
-		return "", err
-	}
-	// Sorted so the digest does not depend on the order the caller listed them.
-	sorted := append([]SharedTree(nil), shared...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	for _, tree := range sorted {
-		if _, err := os.Stat(tree.Source); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return "", err
-		}
-		fmt.Fprintf(h, "shared\x00%s\x00", filepath.ToSlash(tree.Name))
-		if err := hashTree(h, tree.Source, tree.Source); err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return src, meta.Digest, true, nil
 }
 
 // hashTree walks one tree in deterministic order, hashing relative paths and
@@ -285,7 +300,7 @@ func skip(path string, d fs.DirEntry) bool {
 	name := d.Name()
 	if d.IsDir() {
 		switch name {
-		case "__pycache__", ".git", ".pytest_cache", ".venv", "venv", "node_modules",
+		case "__pycache__", ".git", ".otter", ".pytest_cache", ".venv", "venv", "node_modules",
 			".mypy_cache", ".tox", "tests":
 			return true
 		}

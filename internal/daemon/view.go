@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/pyenv"
 	"github.com/tkoizumi/otter/internal/release"
 	"github.com/tkoizumi/otter/internal/runs"
@@ -123,18 +125,14 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 	}
 
 	now := time.Now().UTC()
-	pythonMode := entry.Manifest.Python.Mode
-	if pythonMode == "" {
-		pythonMode = "external"
-	}
 	// Every integration runs from an immutable release, so binding happens here,
 	// at submission: activating a newer release cannot move a queued or retried
 	// attempt onto different source code.
 	//
-	// A managed integration's release also pins an interpreter and a dependency
-	// set. An external one pins only the source and still runs on the
-	// interpreter its manifest names, which is the whole difference between the
-	// two modes.
+	// The execution settings come from the BOUND RELEASE's manifest, never from
+	// the live one. The live manifest describes code that may already be
+	// different -- editing python.mode must not move a released run onto the
+	// live tree -- while the snapshot is what actually executes.
 	released, digest, ok, err := release.ActiveSourceDir(d.cfg.DataDir, integrationID)
 	if err != nil {
 		return "", err
@@ -145,6 +143,15 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 		// been made live for it to run.
 		return "", fmt.Errorf("integration %s has no active release; run otter release %s before submitting runs: %w",
 			integrationID, integrationID, api.ErrConflict)
+	}
+	bound, err := config.LoadAndValidate(filepath.Join(released, config.ManifestFileName))
+	if err != nil {
+		return "", fmt.Errorf("integration %s: active release %s is invalid: %v; re-run otter release %s: %w",
+			integrationID, shortDigest(digest), err, integrationID, api.ErrConflict)
+	}
+	pythonMode := bound.Python.Mode
+	if pythonMode == "" {
+		pythonMode = "external"
 	}
 	releaseDigest, releaseSourceDir := digest, released
 	sourceDir := released

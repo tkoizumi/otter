@@ -13,53 +13,50 @@ import (
 	"time"
 )
 
-// SharedTree is a top-level directory captured alongside the integration.
+// SharedTree is a shared directory captured alongside the integration.
 //
-// Name is where the tree lands in the release root, which must be the same
-// relative depth it has relative to the integration directory. Copying
-// `../../lib` into the release root as `lib` is what lets a manifest keep
-// `python.path: [../../lib/python]` verbatim.
+// Source is the live directory; Name is where it lands in the release root,
+// slash-normalized, as computed by Plan. The two must reproduce the tree's
+// depth relative to the integration directory, or a manifest's relative
+// python.path stops resolving after activation.
 type SharedTree struct {
 	Source string
 	Name   string
 }
 
-// Stage copies an integration and the shared code it imports into a new
-// release directory and publishes its metadata.
+// StageWithLayout copies an integration and the shared code it imports into a
+// new release directory and publishes its metadata, using the placements Plan
+// computed.
 //
 // The copy happens into a temporary directory that is renamed into place, so a
 // release directory either exists complete or not at all. Two stagings of
 // identical inputs produce the same digest, so re-staging an unchanged
 // integration returns the existing release instead of creating a second copy.
-func (m Manager) Stage(integration, sourceDir string, sharedDirs []string, environmentDigest string) (Metadata, error) {
-	return m.StageWithShared(integration, sourceDir, sharedTreesFrom(sharedDirs), environmentDigest)
-}
-
-// sharedTreesFrom keeps the historical []string form working: each directory
-// lands under its own base name.
-func sharedTreesFrom(dirs []string) []SharedTree {
-	out := make([]SharedTree, 0, len(dirs))
-	for _, dir := range dirs {
-		out = append(out, SharedTree{Source: dir, Name: filepath.Base(dir)})
-	}
-	return out
-}
-
-// StageWithShared stages an integration together with explicitly named shared
-// trees.
-func (m Manager) StageWithShared(integration, sourceDir string, shared []SharedTree, environmentDigest string) (Metadata, error) {
+//
+// A declared shared tree that is missing or is not a directory is an error
+// rather than a skip: a release that silently drops a tree would import the
+// live copy on the machine that made it and fail on the machine that runs it.
+func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, environmentDigest string) (Metadata, error) {
 	if err := validName(integration); err != nil {
 		return Metadata{}, err
 	}
 	if _, err := os.Stat(filepath.Join(sourceDir, "otter.yaml")); err != nil {
 		return Metadata{}, fmt.Errorf("release: %s has no otter.yaml: %w", sourceDir, err)
 	}
-
-	sources := make([]string, 0, len(shared))
-	for _, tree := range shared {
-		sources = append(sources, tree.Source)
+	if err := layout.validate(); err != nil {
+		return Metadata{}, err
 	}
-	digest, err := DigestNamed(sourceDir, shared, environmentDigest)
+	for _, tree := range layout.Trees {
+		info, err := os.Stat(tree.Source)
+		if err != nil {
+			return Metadata{}, fmt.Errorf("release: shared tree %s is missing: %w", tree.Source, err)
+		}
+		if !info.IsDir() {
+			return Metadata{}, fmt.Errorf("release: shared tree %s is not a directory", tree.Source)
+		}
+	}
+
+	digest, err := layout.Digest(sourceDir, environmentDigest)
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -89,35 +86,56 @@ func (m Manager) StageWithShared(integration, sourceDir string, shared []SharedT
 	}
 	defer os.RemoveAll(tmp)
 
-	src := filepath.Join(tmp, "integrations", integration)
-	if err := copyTree(sourceDir, src); err != nil {
+	// A captured tree that contains the staging directory would copy the
+	// release into itself. That happens when the data directory lives inside
+	// the integration directory -- an integration at the workspace root with
+	// the default data location is the common case -- so it is refused
+	// explicitly rather than left to run out of disk.
+	captured := make([]string, 0, len(layout.Trees)+1)
+	captured = append(captured, filepath.Clean(sourceDir))
+	for _, tree := range layout.Trees {
+		captured = append(captured, filepath.Clean(tree.Source))
+	}
+	for _, live := range captured {
+		if within(tmp, live) {
+			return Metadata{}, fmt.Errorf(
+				"release: the data directory %s is inside %s, so a snapshot would copy itself; "+
+					"release with a data directory outside the integration", filepath.Dir(root), live)
+		}
+	}
+
+	// Every symlink a release preserves has to resolve inside one of these
+	// trees. Anything else is either live code the release would import on this
+	// machine or a dangling link on the host.
+	roots := captured
+
+	src, err := safeJoin(tmp, layout.IntegrationPath)
+	if err != nil {
+		return Metadata{}, err
+	}
+	if err := copyTree(sourceDir, src, roots); err != nil {
 		return Metadata{}, fmt.Errorf("stage %s: %w", integration, err)
 	}
-	for _, tree := range shared {
-		if _, err := os.Stat(tree.Source); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return Metadata{}, err
-		}
+	for _, tree := range layout.Trees {
 		dest, err := safeJoin(tmp, tree.Name)
 		if err != nil {
 			return Metadata{}, err
 		}
-		if err := copyTree(tree.Source, dest); err != nil {
+		if err := copyTree(tree.Source, dest, roots); err != nil {
 			return Metadata{}, fmt.Errorf("stage shared %s: %w", tree.Source, err)
 		}
 	}
 
 	git := ReadGitState(context.Background(), sourceDir)
 	meta := Metadata{
-		Integration: integration,
-		Digest:      digest,
-		Environment: environmentDigest,
-		Source:      sourceDir,
-		CreatedAt:   time.Now().UTC(),
-		GitRevision: git.Revision,
-		GitDirty:    git.Dirty,
+		Integration:     integration,
+		Digest:          digest,
+		IntegrationPath: layout.IntegrationPath,
+		Environment:     environmentDigest,
+		Source:          sourceDir,
+		CreatedAt:       time.Now().UTC(),
+		GitRevision:     git.Revision,
+		GitDirty:        git.Dirty,
 	}
 	if err := writeMetadata(tmp, meta); err != nil {
 		return Metadata{}, err
@@ -171,17 +189,21 @@ func (m Manager) Activate(integration, digest string) error {
 	return nil
 }
 
-// safeJoin joins a relative name onto a release root, refusing anything that
-// would escape it. A manifest's python.path is user input, so it must not be
-// able to place content outside the snapshot.
+// safeJoin joins a relative release path onto a release root, refusing anything
+// that would escape it. A manifest's python.path and a release's recorded
+// IntegrationPath are both untrusted by the time they are read back, so they
+// must not be able to reach outside the snapshot.
+//
+// The root itself (".") is allowed: an integration can sit at the release root
+// when the discovery root is the integration directory.
 func safeJoin(root, name string) (string, error) {
 	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
-		return "", fmt.Errorf("release: shared tree name %q escapes the release root", name)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("release: path %q escapes the release root", name)
 	}
 	joined := filepath.Join(root, clean)
-	if !strings.HasPrefix(joined, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("release: shared tree name %q escapes the release root", name)
+	if joined != filepath.Clean(root) && !strings.HasPrefix(joined, filepath.Clean(root)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("release: path %q escapes the release root", name)
 	}
 	return joined, nil
 }
@@ -269,7 +291,15 @@ func (m Manager) Retain(integration string, keep int, referenced map[string]bool
 
 // copyTree copies a directory, preserving symlinks and skipping everything a
 // release must not carry.
-func copyTree(src, dst string) error {
+//
+// A preserved symlink must resolve inside one of roots, the live directories
+// the release captures. Links within a tree, or from one captured tree into
+// another, stay relative-identical in the release and are preserved. A link
+// that resolves anywhere else -- including an absolute target, which can never
+// point inside a release on another host -- is rejected: locally it would
+// import live code that the snapshot pretends to contain, and on the host it
+// would dangle.
+func copyTree(src, dst string, roots []string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -298,11 +328,32 @@ func copyTree(src, dst string) error {
 			if err != nil {
 				return err
 			}
+			if !linkInside(path, link, roots) {
+				return fmt.Errorf("symlink %s -> %s resolves outside the release; "+
+					"a release cannot import live code or ship a dangling link", path, link)
+			}
 			_ = os.Remove(target)
 			return os.Symlink(link, target)
 		}
 		return copyFile(path, target, info.Mode())
 	})
+}
+
+// linkInside reports whether a symlink at livePath resolves into one of the
+// captured live roots. The check is lexical, so an internal link whose target
+// does not exist yet is still preserved; only links that leave the captured
+// trees are rejected.
+func linkInside(livePath, link string, roots []string) bool {
+	if filepath.IsAbs(link) {
+		return false
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(livePath), link))
+	for _, root := range roots {
+		if within(resolved, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {

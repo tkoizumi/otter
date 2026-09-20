@@ -236,9 +236,15 @@ fi
 // performs.
 //
 // Shared code is not named here. Each manifest declares its own python.path,
-// and the release captures exactly those trees at the depth the manifest
-// resolves them at, so the layout lives in one place instead of being repeated
+// and the release captures exactly those trees, placed relative to the same base
+// as the integration, so the layout lives in one place instead of being repeated
 // on this command line.
+//
+// The --integrations root matters to that placement. It is <remote>/integrations
+// while shared code lives at <remote>/lib, so the release base is <remote> and
+// the snapshot lands the integration at integrations/<name> and the tree at
+// lib/python. Passing the repository root here instead would leave no way to
+// spell the tree's path inside the release.
 //
 // Integrations are named one by one rather than released with --all so each
 // release reports its own failure against its own name in the deploy log.

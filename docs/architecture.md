@@ -109,7 +109,24 @@ different code.
 host before the daemon restarts). What a release pins beyond the code depends on
 the mode: managed Python also binds a prepared interpreter and a locked
 dependency set, while an external integration runs the interpreter its manifest
-names.
+names. The mode and the environment binding are read from the **bound release's**
+manifest at submission, not from the live tree, so editing the source cannot
+change how an already-staged release executes.
+
+A release mirrors the workspace with one placement rule: the base is the
+closest common ancestor of the integrations discovery root, the integration
+directory and every captured shared tree, and the integration and each tree land
+at their path relative to that base. The release root plays the part of the
+base, so a manifest's relative `python.path` resolves verbatim. The discovery
+root takes part because deploy releases with
+`--integrations /opt/otter/integrations` while shared code lives at
+`/opt/otter/lib/python`; without it the tree would have to be placed at
+`../lib/python`, which no release path can express. The normalized placement and
+each tree's destination name are part of the release digest, so a snapshot laid
+out differently is a different release; the digest is prefixed with a version so
+an older layout can never be reused. A release that cannot capture a declared
+tree — missing, absolute, or reachable only through an escaping symlink — is
+refused rather than shipped.
 
 ## Persistence in one picture
 

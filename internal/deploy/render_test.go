@@ -194,3 +194,33 @@ func TestEnvFilePathsAreStable(t *testing.T) {
 		t.Error("the daemon and shared environment files resolve to the same path")
 	}
 }
+
+// The release command names the integrations discovery root explicitly, which
+// is what makes the release base the repository root rather than
+// /opt/otter/integrations: the shared library is a sibling of that root and no
+// release path can spell "../lib/python".
+func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
+	target := testTarget()
+	script := ReleaseScript(target, []string{"counter", "invoices"}, "/opt/otter/tools/uv/uv")
+
+	for _, want := range []string{
+		`"$CLI" release`,
+		"--integrations " + ShellQuote(target.IntegrationsDir()),
+		"--data " + ShellQuote(target.DataDir),
+		"--uv " + ShellQuote("/opt/otter/tools/uv/uv"),
+		ShellQuote("counter"),
+		ShellQuote("invoices"),
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("release script is missing %q\n---\n%s", want, script)
+		}
+	}
+	if target.IntegrationsDir() != "/opt/otter/integrations" {
+		t.Errorf("IntegrationsDir = %q, want /opt/otter/integrations", target.IntegrationsDir())
+	}
+	// Each integration is released by name, so a failure is reported against
+	// the integration that caused it.
+	if strings.Count(script, `"$CLI" release`) != 2 {
+		t.Errorf("release script does not release each integration separately:\n%s", script)
+	}
+}

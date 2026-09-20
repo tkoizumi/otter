@@ -437,6 +437,19 @@ mode adds is the other half: a prepared interpreter and locked dependencies, so
 it does not depend on the host's Python. See
 [docs/managed-python.md](docs/managed-python.md).
 
+A release places the integration and every shared tree it imports relative to one
+base: the closest common ancestor of the integrations discovery root, the
+integration and each captured tree. That is what lets a manifest keep
+`python.path` verbatim -- including `otter deploy`, which releases with
+`--integrations /opt/otter/integrations` while shared code lives at
+`/opt/otter/lib/python`. The placement and each tree's destination name are part
+of the release digest, so a snapshot laid out differently is never reused; a
+release that cannot capture a declared tree (missing, absolute, or reachable
+only through an escaping symlink) is refused instead of shipped. Every
+integration must be released once after upgrading Otter: the digest format is
+versioned and old snapshots are left on disk until retention prunes them, so a
+rollback across the upgrade still works.
+
 Global flags: `--api <url>`, `--token <token>`, `--json`, `--version`.
 
 Without `--api` or `OTTER_API_URL`, the daemon URL is read from the nearest

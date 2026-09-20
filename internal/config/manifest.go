@@ -84,18 +84,74 @@ type PythonConfig struct {
 // PythonPaths resolves python.path entries to absolute directories.
 func (m *Manifest) PythonPaths() []string {
 	out := make([]string, 0, len(m.Python.Path))
-	for _, entry := range m.Python.Path {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if filepath.IsAbs(entry) {
-			out = append(out, filepath.Clean(entry))
-			continue
-		}
-		out = append(out, filepath.Join(m.Dir, filepath.FromSlash(entry)))
+	for _, spec := range m.PythonPathEntries() {
+		out = append(out, spec.Resolved)
 	}
 	return out
+}
+
+// PythonPathSpec is one declared python.path entry after resolution.
+type PythonPathSpec struct {
+	// Declared is the manifest's own spelling, for error messages.
+	Declared string
+	// Resolved is the absolute directory the entry points at on this machine.
+	Resolved string
+	// Absolute reports that the declaration itself was absolute rather than
+	// relative to the integration directory.
+	Absolute bool
+}
+
+// PythonPathEntries resolves every declared python.path entry, keeping the
+// declaration alongside the result so callers can tell a relative path from an
+// absolute one.
+func (m *Manifest) PythonPathEntries() []PythonPathSpec {
+	out := make([]PythonPathSpec, 0, len(m.Python.Path))
+	for _, entry := range m.Python.Path {
+		declared := strings.TrimSpace(entry)
+		if declared == "" {
+			continue
+		}
+		if filepath.IsAbs(declared) {
+			out = append(out, PythonPathSpec{
+				Declared: declared,
+				Resolved: filepath.Clean(declared),
+				Absolute: true,
+			})
+			continue
+		}
+		out = append(out, PythonPathSpec{
+			Declared: declared,
+			Resolved: filepath.Join(m.Dir, filepath.FromSlash(declared)),
+		})
+	}
+	return out
+}
+
+// ValidatePythonPathsForRelease rejects python.path declarations a release
+// cannot reproduce.
+//
+// Validate checks that each entry exists on the machine running it, which is
+// the right question for the live tree and the wrong one for a release: an
+// absolute path exists on the developer's machine and is a missing directory on
+// the host, so it passes locally and fails at run time. A release can only
+// carry a tree whose placement is expressed relative to the integration
+// directory, so an absolute declaration is refused here, at release time,
+// before a snapshot that depends on live code is written.
+func (m *Manifest) ValidatePythonPathsForRelease() error {
+	var problems []string
+	for i, entry := range m.Python.Path {
+		declared := strings.TrimSpace(entry)
+		if declared == "" || !filepath.IsAbs(declared) {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"python.path[%d] %q is absolute: a release cannot reproduce it on another host, so use a path relative to the integration directory",
+			i, declared))
+	}
+	if len(problems) > 0 {
+		return &ValidationError{Path: m.Path, Errors: problems}
+	}
+	return nil
 }
 
 // TriggerConfig describes what starts a run. Triggers are optional: manual

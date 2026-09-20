@@ -116,6 +116,12 @@ func (b *LocalBuilder) Build(ctx context.Context, cfg Config, outDir string) err
 // Stage copies the runtime tree into outDir: the shared Python library, every
 // integration, and nothing else.
 //
+// The result is the layout the host releases from: <remote>/integrations/<name>
+// with shared code at <remote>/lib. That is why deploy runs `otter release
+// --integrations <remote>/integrations`: the release base becomes <remote>, and
+// the snapshot can place the integration at integrations/<name> and the tree at
+// lib/python so the manifest's ../../lib keeps resolving.
+//
 // What is left out matters as much as what is included. Tests are not needed
 // to run an integration, and bytecode caches must never be shipped: a stale
 // .pyc compiled for a different Python would shadow the real module.

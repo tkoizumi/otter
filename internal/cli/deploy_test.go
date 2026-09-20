@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/release"
 )
 
 // tempRepo creates a directory that looks enough like an Otter checkout for
@@ -132,71 +133,10 @@ func TestUsageDocumentsDeploy(t *testing.T) {
 	}
 }
 
-// releaseRelativeName decides where a shared tree lands inside a release. The
-// landing place has to reproduce the checkout's relative depth, or the
-// manifest's own python.path stops resolving after activation.
-func TestReleaseRelativeName(t *testing.T) {
-	tests := []struct {
-		name     string
-		source   string
-		target   string
-		want     string
-		wantFail bool
-	}{
-		{
-			name:   "sibling shared tree at the repo root",
-			source: "/repo/integrations/foo",
-			target: "/repo/lib",
-			want:   "lib",
-		},
-		{
-			name:   "a tree deeper inside a shared root",
-			source: "/repo/integrations/foo",
-			target: "/repo/lib/python/connectors",
-			want:   "lib/python/connectors",
-		},
-		{
-			name:   "nested integration directories",
-			source: "/repo/integrations/team/foo",
-			target: "/repo/lib",
-			want:   "lib",
-		},
-		{
-			name:     "no common ancestor with the source directory",
-			source:   "/repo/integrations/foo",
-			target:   "/elsewhere/lib",
-			wantFail: true,
-		},
-		{
-			name:     "a tree inside the integration itself needs no capture",
-			source:   "/repo/integrations/foo",
-			target:   "/repo/integrations/foo/vendor",
-			wantFail: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := releaseRelativeName(tc.source, tc.target)
-			if tc.wantFail {
-				if ok {
-					t.Fatalf("releaseRelativeName(%q, %q) = %q, want no name", tc.source, tc.target, got)
-				}
-				return
-			}
-			if !ok {
-				t.Fatalf("releaseRelativeName(%q, %q) found no name", tc.source, tc.target)
-			}
-			if got != tc.want {
-				t.Errorf("releaseRelativeName(%q, %q) = %q, want %q", tc.source, tc.target, got, tc.want)
-			}
-		})
-	}
-}
-
-// sharedTreesFor must take the manifest's own declared paths as authoritative
-// and skip anything already inside the integration directory.
-func TestSharedTreesForUsesManifestPaths(t *testing.T) {
+// sharedSourcesFor resolves the manifest's own declared python.path entries;
+// the release captures exactly what the integration imports, and --shared adds
+// trees the manifest cannot express.
+func TestSharedSourcesForUsesManifestPaths(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "integrations", "foo")
 	shared := filepath.Join(root, "lib")
@@ -211,16 +151,22 @@ func TestSharedTreesForUsesManifestPaths(t *testing.T) {
 		Python: config.PythonConfig{Path: []string{"../../lib", "vendor"}},
 	}
 
-	trees := sharedTreesFor(source, manifest, "")
-	if len(trees) != 1 {
-		t.Fatalf("captured %d shared trees, want only the one outside the integration: %+v", len(trees), trees)
+	sources, err := sharedSourcesFor(source, manifest, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if trees[0].Name != "lib" {
-		t.Errorf("shared tree landed as %q, want lib", trees[0].Name)
+	// The integration-local entry is handed to Plan too, which drops it because
+	// the integration's own copy already carries it.
+	if len(sources) != 2 {
+		t.Fatalf("resolved %d shared sources, want the declared lib and vendor: %+v", len(sources), sources)
 	}
-	if !strings.HasSuffix(trees[0].Source, filepath.Join("repo", "lib")) &&
-		trees[0].Source != shared {
-		t.Errorf("shared tree source = %q, want %q", trees[0].Source, shared)
+
+	layout, err := release.Plan(root, source, []release.SharedTree{{Source: sources[0]}, {Source: sources[1]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layout.Trees) != 1 || layout.Trees[0].Name != "lib" {
+		t.Fatalf("layout = %+v, want only lib captured from outside the integration", layout.Trees)
 	}
 
 	// An explicit --shared entry is additive and deduplicated.
@@ -228,8 +174,81 @@ func TestSharedTreesForUsesManifestPaths(t *testing.T) {
 	if err := os.MkdirAll(extra, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	trees = sharedTreesFor(source, manifest, "../../lib,"+extra)
-	if len(trees) != 2 {
-		t.Fatalf("captured %d shared trees with --shared, want 2: %+v", len(trees), trees)
+	sources, err = sharedSourcesFor(source, manifest, "../../lib,"+extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 3 {
+		t.Fatalf("resolved %d shared sources with --shared, want 3: %+v", len(sources), sources)
+	}
+}
+
+// A missing declared tree is a hard error, not a silent omission: a release
+// that dropped it would run against live code here and fail on the host.
+func TestSharedSourcesForRefusesAMissingTree(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "integrations", "foo")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &config.Manifest{
+		Dir:    source,
+		Python: config.PythonConfig{Path: []string{"../../gone"}},
+	}
+	if _, err := sharedSourcesFor(source, manifest, ""); err == nil {
+		t.Fatal("a missing python.path tree was accepted")
+	}
+	// --shared names the same policy.
+	if _, err := sharedSourcesFor(source, manifest, filepath.Join(root, "gone")); err == nil {
+		t.Fatal("a missing --shared tree was accepted")
+	}
+}
+
+// An absolute python.path passes the live check on this machine and is a
+// missing directory on the host. The release path refuses it up front.
+func TestAbsolutePythonPathIsRefusedForRelease(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "integrations", "foo")
+	shared := filepath.Join(root, "lib")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &config.Manifest{
+		Dir:    source,
+		Python: config.PythonConfig{Path: []string{shared}},
+	}
+	if err := manifest.ValidatePythonPathsForRelease(); err == nil {
+		t.Fatal("an absolute python.path was accepted for release")
+	}
+}
+
+// Deploy releases from a distinct discovery root while the shared library sits
+// beside it. The one base rule has to place the integration at
+// integrations/<name> and the tree at lib/python, which is what makes the
+// manifest's ../../lib/python resolve after activation.
+func TestDeployLayoutUsesTheRepositoryBase(t *testing.T) {
+	remote := t.TempDir()
+	root := filepath.Join(remote, "integrations")
+	name := "counter"
+	source := filepath.Join(root, name)
+	shared := filepath.Join(remote, "lib", "python")
+	for _, dir := range []string{source, shared} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	layout, err := release.Plan(root, source, []release.SharedTree{{Source: shared}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layout.IntegrationPath != "integrations/"+name {
+		t.Errorf("integration placed at %q, want integrations/%s", layout.IntegrationPath, name)
+	}
+	if len(layout.Trees) != 1 || layout.Trees[0].Name != "lib/python" {
+		t.Fatalf("shared tree placed at %+v, want lib/python", layout.Trees)
 	}
 }

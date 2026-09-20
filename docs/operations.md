@@ -290,6 +290,16 @@ an interpreter and a dependency set that Otter prepared, not on the host's
 Python. Both are separate from execution and never part of a run. See
 [managed-python.md](managed-python.md).
 
+A release places the integration and every shared tree it declares relative to
+one base — the closest common ancestor of the discovery root, the
+integration and each captured tree — so `python.path` keeps resolving verbatim
+whatever shape the workspace has. A declared tree that is missing, an absolute
+`python.path`, and a symlink that resolves outside the captured trees are all
+refused at release time rather than shipped as a snapshot that depends on the
+live tree. Activation re-validates the snapshot and, for a managed integration,
+that its environment is ready, so `--activate` cannot roll back onto a broken or
+unprepared release.
+
 Releases accumulate under `<data dir>/.releases`. Nothing removes them unless
 you pass `otter release --keep N`, so check `otter release --list <integration>`
 if the data directory grows. Retention is per integration and `--keep` applies
@@ -519,6 +529,13 @@ Behavior worth expecting:
 - **Manifests are re-validated** at startup. An upgrade that adds stricter
   validation can turn a previously valid integration invalid; the daemon logs
   `integration_invalid` and keeps running.
+- **Every integration must be released once after upgrading.** The release
+  digest format is versioned, and the new implementation deliberately does not
+  reuse a snapshot laid out by an older one, even for identical inputs. Old
+  snapshots are not deleted by the upgrade and stay on disk until retention
+  prunes them, so a rollback to a pre-upgrade release still works. A deployment
+  does this automatically; a local workspace needs `otter release --all` (or one
+  `otter release` per integration) before runs resume executing current code.
 
 ## Capacity and concurrency tuning
 

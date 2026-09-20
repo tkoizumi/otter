@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,10 +18,10 @@ import (
 // cmdRelease stages integrations as immutable releases, prepares their managed
 // Python environments, and activates them.
 //
-// The order is deliberate: stage, then prepare against the staged snapshot,
-// then switch. A failure at any point leaves the previous release active, so a
-// bad candidate can never take down a working integration. Activation is the
-// last step, and it is a single atomic rename.
+// The order is deliberate: stage, validate the snapshot's manifest, prepare
+// against the staged snapshot, then switch. A failure at any point leaves the
+// previous release active, so a bad candidate can never take down a working
+// integration. Activation is the last step, and it is a single atomic rename.
 //
 // Every integration runs from its active release, so this is the command that
 // makes code live, for external and managed Python alike. The difference is
@@ -119,11 +120,11 @@ func (a *App) cmdRelease(ctx context.Context, args []string) int {
 			fmt.Fprintln(a.Stderr, "otter: --activate works on one integration at a time")
 			return 2
 		}
-		return a.activateRelease(manager, targets[0].ID, *activate)
+		return a.activateRelease(ctx, manager, targets[0].ID, *activate, *uv)
 	}
 
 	for _, target := range targets {
-		if code := a.releaseOne(ctx, manager, target, *shared, *uv, *keep); code != 0 {
+		if code := a.releaseOne(ctx, manager, integrationsRoot, target, *shared, *uv, *keep); code != 0 {
 			return code
 		}
 	}
@@ -235,8 +236,8 @@ func absoluteDir(path string) (string, error) {
 	return filepath.Clean(filepath.Join(wd, path)), nil
 }
 
-// releaseOne stages, prepares and activates one integration.
-func (a *App) releaseOne(ctx context.Context, manager release.Manager, target integrationTarget, shared, uv string, keep int) int {
+// releaseOne stages, validates, prepares and activates one integration.
+func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrationsRoot string, target integrationTarget, shared, uv string, keep int) int {
 	manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", target.ID, err)
@@ -246,12 +247,35 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, target in
 		fmt.Fprintf(a.Stderr, "otter: %s: manifest at %s declares %q\n", target.ID, target.Dir, manifest.Name)
 		return 1
 	}
+	// A release can only carry a tree whose depth is expressed relative to the
+	// integration directory. An absolute python.path passes validation on this
+	// machine and is a missing directory on the host, so it is refused here.
+	if err := manifest.ValidatePythonPathsForRelease(); err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", target.ID, err)
+		return 1
+	}
 
 	// The manifest's own python.path is the authoritative list of shared code,
 	// so a release captures exactly what the integration imports without the
 	// operator having to repeat it on the command line. --shared adds trees
 	// the manifest cannot express.
-	sharedTrees := sharedTreesFor(target.Dir, manifest, shared)
+	sources, err := sharedSourcesFor(target.Dir, manifest, shared)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", target.ID, err)
+		return 1
+	}
+	trees := make([]release.SharedTree, 0, len(sources))
+	for _, src := range sources {
+		trees = append(trees, release.SharedTree{Source: src})
+	}
+	// ONE placement rule: the base is the closest common ancestor of the
+	// discovery root, this integration and every captured tree.
+	layout, err := release.Plan(integrationsRoot, target.Dir, trees)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", target.ID, err)
+		return 1
+	}
+
 	envManager := pyenv.Manager{DataDir: manager.DataDir}
 
 	// Bound one release: a release that hangs on a package download must not
@@ -277,7 +301,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, target in
 
 	// 2. Stage the snapshot. Releasing identical inputs is a no-op, so a
 	//    redeploy does not create a second copy of the same tree.
-	meta, err := manager.StageWithShared(target.ID, target.Dir, sharedTrees, environmentDigest)
+	meta, err := manager.StageWithLayout(target.ID, target.Dir, layout, environmentDigest)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", target.ID, err)
 		return 1
@@ -293,10 +317,16 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, target in
 		fmt.Fprintf(a.Stdout, "%s: release %s\n", target.ID, meta.Digest[:12])
 	}
 
-	// 3. Prepare against the staged tree, not the live one. The snapshot is
-	//    what will run, so it is what must be validated.
-	if manifest.Python.Mode == "managed" {
-		releaseSource := release.SourceDir(mustReleaseDir(manager, target.ID, meta.Digest), target.ID)
+	// 3. Validate the staged manifest before preparation: the snapshot's own
+	//    python.path entries have to resolve inside the snapshot, which is a
+	//    different question from whether they resolve on this machine. The
+	//    snapshot manifest, not the live one, decides whether preparation runs.
+	releaseSource, bound, err := a.snapshotRelease(manager, target.ID, meta)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", target.ID, err)
+		return 1
+	}
+	if bound.Python.Mode == "managed" {
 		ready, err := envManager.Prepare(ctx, releaseSource, target.ID, uv)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", target.ID, err)
@@ -311,11 +341,11 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, target in
 	}
 
 	// 4. Activate. Everything above is reversible; this is the commit point.
-	if err := manager.Activate(target.ID, meta.Digest); err != nil {
-		fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", target.ID, err)
-		return 1
+	//    activateStaged re-validates the snapshot and, for a managed release,
+	//    its environment, so a rollback and a fresh release share one gate.
+	if code := a.activateStaged(ctx, manager, target.ID, meta.Digest, uv); code != 0 {
+		return code
 	}
-	fmt.Fprintf(a.Stdout, "%s: activated %s\n", target.ID, meta.Digest[:12])
 
 	if keep > 0 {
 		removed, err := manager.Retain(target.ID, keep, nil)
@@ -333,8 +363,10 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, target in
 //
 // This is rollback. Every staged digest is still on disk unless retention
 // removed it, and switching is the same atomic rename a new release performs.
-// A prefix is enough to name one, matching how `--list` prints digests.
-func (a *App) activateRelease(manager release.Manager, id, ref string) int {
+// A prefix is enough to name one, matching how `--list` prints digests. The
+// target's own manifest and environment are re-validated first, so rolling back
+// to a broken or unprepared snapshot fails without disturbing the active one.
+func (a *App) activateRelease(ctx context.Context, manager release.Manager, id, ref, uv string) int {
 	releases, err := manager.List(id)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
@@ -361,105 +393,141 @@ func (a *App) activateRelease(manager release.Manager, id, ref string) int {
 		return 1
 	}
 
-	if err := manager.Activate(id, matches[0].Digest); err != nil {
+	return a.activateStaged(ctx, manager, id, matches[0].Digest, uv)
+}
+
+// activateStaged validates one staged release and switches to it.
+//
+// It is the single activation path: a fresh release and a rollback both go
+// through it, so both refuse a snapshot whose manifest no longer resolves
+// inside the release and a managed release whose environment is not ready.
+// Activation is the last step, so every failure here leaves the previous
+// active release untouched.
+func (a *App) activateStaged(ctx context.Context, manager release.Manager, id, digest, uv string) int {
+	meta, err := manager.Metadata(id, digest)
+	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", id, err)
 		return 1
 	}
-	fmt.Fprintf(a.Stdout, "%s: activated %s\n", id, matches[0].Digest[:12])
+	sourceDir, bound, err := a.snapshotRelease(manager, id, meta)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", id, err)
+		return 1
+	}
+	if bound.Python.Mode == "managed" {
+		if err := a.requireReadyEnvironment(ctx, manager, id, sourceDir, uv); err != nil {
+			fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", id, err)
+			return 1
+		}
+	}
+	if err := manager.Activate(id, digest); err != nil {
+		fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", id, err)
+		return 1
+	}
+	fmt.Fprintf(a.Stdout, "%s: activated %s\n", id, digest[:12])
 	return 0
 }
 
-// mustReleaseDir resolves a release directory that was just staged, so a
-// failure here means the filesystem changed underneath us.
-func mustReleaseDir(m release.Manager, id, digest string) string {
-	dir, err := m.Dir(id, digest)
+// snapshotRelease resolves a staged release's integration directory and loads
+// and validates the manifest that travels inside it. Validating the snapshot
+// manifest is what tells "the paths exist on the machine that released" apart
+// from "the release captured the trees the paths name": a release that names an
+// absolute python.path is refused here, because the path it names belongs to
+// the machine that staged it and to no other.
+func (a *App) snapshotRelease(manager release.Manager, id string, meta release.Metadata) (string, *config.Manifest, error) {
+	sourceDir, err := manager.SourceDir(meta)
 	if err != nil {
-		// Dir only fails on an invalid name or digest; both are impossible
-		// for a value just produced by Stage.
-		panic(fmt.Sprintf("release: %v", err))
+		return "", nil, fmt.Errorf("release %s is unusable: %w", shortDigest(meta.Digest), err)
 	}
-	return dir
+	bound, err := config.LoadAndValidate(filepath.Join(sourceDir, config.ManifestFileName))
+	if err != nil {
+		return "", nil, fmt.Errorf("release %s is invalid: %w", shortDigest(meta.Digest), err)
+	}
+	if err := bound.ValidatePythonPathsForRelease(); err != nil {
+		return "", nil, fmt.Errorf("release %s is invalid: %w", shortDigest(meta.Digest), err)
+	}
+	return sourceDir, bound, nil
 }
 
-// sharedTreesFor works out which shared trees a release must capture.
+// requireReadyEnvironment confirms that a managed release's environment was
+// prepared. It is checked at activation, not only at preparation time, so
+// `--activate` cannot switch to a release whose environment is missing. The
+// error names `otter prepare`, which is the command that fixes it.
+func (a *App) requireReadyEnvironment(ctx context.Context, manager release.Manager, id, sourceDir, uv string) error {
+	envManager := pyenv.Manager{DataDir: manager.DataDir}
+	spec, err := envManager.ResolveCurrentAt(ctx, sourceDir, id, uv)
+	if err != nil {
+		return fmt.Errorf("resolve managed Python for %s: %w", id, err)
+	}
+	if _, err := envManager.GetReady(spec); err != nil {
+		return err
+	}
+	return nil
+}
+
+// sharedSourcesFor works out which live directories a release must capture.
 //
 // The manifest's own python.path is the starting point. Its entries are already
 // resolved to absolute directories by the config package, so this does not
-// reinterpret them: it only decides where each tree lands inside the release.
+// reinterpret them: it only confirms each one exists as a directory. An entry
+// inside the integration directory is returned too and dropped later by
+// release.Plan, because the integration's own copy already carries it. --shared
+// adds trees the manifest cannot express and may be absolute.
 //
-// The landing place is the shared ancestor that contains both the integration
-// and the tree. That is the release root's counterpart in the checkout, so a
-// named tree keeps the same relative path it has today and the manifest's
-// relative declaration keeps resolving after activation. For the shipped
-// layout, `../../lib` from integrations/<name> lands as `lib` at the root.
-//
-// An entry inside the integration directory needs no separate capture: the
-// integration's own copy already carries it. --shared adds trees the manifest
-// does not declare.
-func sharedTreesFor(sourceDir string, manifest *config.Manifest, flagValue string) []release.SharedTree {
-	var trees []release.SharedTree
+// A declared tree that is missing is an error rather than a skip: silently
+// dropping it would produce a release that runs against the live tree here and
+// fails on the host.
+func sharedSourcesFor(sourceDir string, manifest *config.Manifest, flagValue string) ([]string, error) {
+	var out []string
 	seen := map[string]bool{}
 
-	add := func(target string) {
+	add := func(target, label string) error {
 		target = filepath.Clean(target)
-		if target == sourceDir || strings.HasPrefix(target, sourceDir+string(filepath.Separator)) {
-			return
+		info, err := os.Stat(target)
+		if err != nil {
+			return fmt.Errorf("%s does not exist (%s)", label, target)
 		}
-		name, ok := releaseRelativeName(sourceDir, target)
-		if !ok || seen[name] {
-			return
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", label)
 		}
-		seen[name] = true
-		trees = append(trees, release.SharedTree{Source: target, Name: name})
+		if seen[target] {
+			return nil
+		}
+		seen[target] = true
+		out = append(out, target)
+		return nil
 	}
 
-	for _, target := range manifest.PythonPaths() {
-		add(target)
+	for _, spec := range manifest.PythonPathEntries() {
+		if err := add(spec.Resolved, fmt.Sprintf("python.path %q", spec.Declared)); err != nil {
+			return nil, err
+		}
 	}
-	for _, entry := range strings.Split(flagValue, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
+	for _, raw := range strings.Split(flagValue, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
 			continue
 		}
-		if !filepath.IsAbs(entry) {
-			entry = filepath.Join(sourceDir, entry)
+		target := raw
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(sourceDir, filepath.FromSlash(raw))
 		}
-		add(entry)
+		if err := add(target, fmt.Sprintf("--shared %q", raw)); err != nil {
+			return nil, err
+		}
 	}
-	return trees
+	return out, nil
 }
 
-// releaseRelativeName names a shared directory relative to the release root,
-// which is the shallowest ancestor that contains both the integration and the
-// tree. Ancestors are tried nearest first, so the tree lands as shallowly as
-// the existing layout allows.
-//
-// Two cases yield no name. A tree inside the integration directory needs no
-// separate capture, because the integration's own copy already carries it. A
-// tree with no common ancestor short of the filesystem root cannot be
-// reproduced at a relative depth, and capturing it would put a directory at the
-// root of the release that no manifest path could reach.
-func releaseRelativeName(sourceDir, target string) (string, bool) {
-	source := filepath.Clean(sourceDir)
-	if target == source || strings.HasPrefix(target, source+string(filepath.Separator)) {
-		return "", false
+// shortDigest abbreviates a digest for a message, tolerating an empty value.
+func shortDigest(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
 	}
-
-	ancestor := filepath.Dir(source)
-	for {
-		// Stop before the filesystem root. Rel against "/" produces a path with
-		// no "..", so accepting that iteration would capture an unrelated tree
-		// at a depth no manifest path could reach.
-		parent := filepath.Dir(ancestor)
-		if parent == ancestor {
-			return "", false
-		}
-		if rel, err := filepath.Rel(ancestor, target); err == nil && rel != "." &&
-			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return filepath.ToSlash(rel), true
-		}
-		ancestor = parent
+	if digest == "" {
+		return "unknown"
 	}
+	return digest
 }
 
 func (a *App) printReleases(m release.Manager, id string) int {
@@ -472,6 +540,7 @@ func (a *App) printReleases(m release.Manager, id string) int {
 		fmt.Fprintf(a.Stderr, "otter: %s has no staged releases\n", id)
 		return 1
 	}
+	code := 0
 	for _, rel := range releases {
 		marker := " "
 		if rel.Active {
@@ -488,14 +557,37 @@ func (a *App) printReleases(m release.Manager, id string) int {
 				git += "+dirty"
 			}
 		}
-		fmt.Fprintf(a.Stdout, "%s %s  %s  env=%s%s  %s\n",
+		// The placement is read back through the one resolver, so a hand-edited
+		// release is reported as broken instead of looking healthy.
+		placement := "invalid"
+		if src, err := m.SourceDir(rel.Metadata); err == nil {
+			if shown, relErr := filepath.Rel(mustReleaseDir(m, id, rel.Digest), src); relErr == nil {
+				placement = filepath.ToSlash(shown)
+			}
+		} else {
+			fmt.Fprintf(a.Stderr, "otter: release %s has an invalid integration path: %v\n", rel.Digest[:12], err)
+			code = 1
+		}
+		fmt.Fprintf(a.Stdout, "%s %s  %s  env=%s%s  at=%s  %s\n",
 			marker, rel.Digest[:12], rel.CreatedAt.Format("2006-01-02 15:04:05"),
-			environment, git, rel.Source)
+			environment, git, placement, rel.Source)
 	}
 	if active, ok, err := m.Active(id); err == nil && ok {
 		fmt.Fprintf(a.Stdout, "\nactive release: %s\n", active.Digest[:12])
 	} else {
 		fmt.Fprintf(a.Stderr, "\nno active release; runs of %s are refused until one is activated\n", id)
 	}
-	return 0
+	return code
+}
+
+// mustReleaseDir resolves a release directory that has already been listed, so
+// a failure here means the filesystem changed underneath us.
+func mustReleaseDir(m release.Manager, id, digest string) string {
+	dir, err := m.Dir(id, digest)
+	if err != nil {
+		// Dir only fails on an invalid name or digest; both are impossible for
+		// a value that just came from List.
+		panic(fmt.Sprintf("release: %v", err))
+	}
+	return dir
 }

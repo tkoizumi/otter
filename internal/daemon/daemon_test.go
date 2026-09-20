@@ -85,7 +85,11 @@ func releaseAll(t *testing.T, root, dataDir string) {
 		if !item.Valid {
 			continue // the daemon reports invalid manifests itself
 		}
-		meta, err := manager.Stage(item.ID, item.Dir, nil, "")
+		layout, err := release.Plan(root, item.Dir, nil)
+		if err != nil {
+			t.Fatalf("plan %s: %v", item.ID, err)
+		}
+		meta, err := manager.StageWithLayout(item.ID, item.Dir, layout, "")
 		if err != nil {
 			t.Fatalf("stage %s: %v", item.ID, err)
 		}
@@ -1304,11 +1308,67 @@ entrypoint: main.py
 	}
 }
 
+// A submission binds to the released manifest, so editing the live manifest's
+// python.mode cannot move a released run onto different execution settings. The
+// live manifest here claims managed Python (with the files such a manifest
+// requires) while the release was staged external; the run must record external.
+func TestSubmissionBindsToTheReleasedPythonMode(t *testing.T) {
+	root := t.TempDir()
+	dir := writeIntegration(t, root, "demo", `
+version: 1
+name: demo
+entrypoint: main.py
+python:
+  mode: external
+`, `print("ok")`)
+	dataDir := t.TempDir()
+
+	manager := release.Manager{DataDir: dataDir}
+	layout, err := release.Plan(root, dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := manager.StageWithLayout("demo", dir, layout, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Activate("demo", meta.Digest); err != nil {
+		t.Fatal(err)
+	}
+
+	// The live manifest now claims managed Python. Only the bound release can
+	// still say the code runs external.
+	writeIntegration(t, root, "demo", `
+version: 1
+name: demo
+entrypoint: main.py
+python:
+  mode: managed
+`, `print("ok")`)
+	for _, name := range []string{".python-version", "pyproject.toml", "uv.lock"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("3.13.5\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d := newDaemonWith(t, root, dataDir, nil, nil, false)
+	runID, err := d.SubmitRun(context.Background(), "demo", api.TriggerPayload{Type: api.TriggerManual})
+	if err != nil {
+		t.Fatalf("submit run: %v", err)
+	}
+	run, err := d.runs.Get(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PythonMode != "external" {
+		t.Errorf("bound run python mode = %q, want external from the released manifest", run.PythonMode)
+	}
+}
+
 func TestStateAPIRoundTripAndNamespacing(t *testing.T) {
 	root := t.TempDir()
 	writeIntegration(t, root, "a", "version: 1\nname: a\nentrypoint: main.py\n", `print("a")`)
 	writeIntegration(t, root, "b", "version: 1\nname: b\nentrypoint: main.py\n", `print("b")`)
-
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 

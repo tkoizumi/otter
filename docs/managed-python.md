@@ -50,10 +50,30 @@ my-integration/
   floating minor version would make the environment's identity depend on the
   day it was built.
 - `python.path` works in managed mode. Each declared directory is captured into
-  the release at the same relative depth, so a path like `../../lib/python`
-  resolves inside the snapshot exactly as it does in the checkout. Shared code
-  that can be published as a package is better declared in `pyproject.toml`,
-  because then it is locked and versioned with everything else.
+  the release at the depth it has relative to the **release base** — the
+  closest common ancestor of the integrations discovery root, the
+  integration and every captured tree. A path like `../../lib/python` from
+  `integrations/<name>` therefore resolves inside the snapshot exactly as it does
+  in the checkout. Shared code that can be published as a package is better
+  declared in `pyproject.toml`, because then it is locked and versioned with
+  everything else.
+
+  Three shared-tree rules are enforced at release time, before a snapshot is
+  written:
+
+  - **A declared tree that is missing is an error.** It is never silently
+    skipped: a release that dropped it would import the live copy here and fail
+    on the host.
+  - **An absolute `python.path` is unsupported and refused.** It exists on the
+    machine that releases and is a missing directory everywhere else, which is
+    exactly the failure that is impossible to see locally. A tree that shares no
+    ancestor below the filesystem root with the integration has no relative
+    placement either, and is refused for the same reason.
+  - **Symlinks are preserved only when they resolve inside a captured tree.**
+    An internal link keeps working because every captured path is placed
+    relative to the same base. A link that resolves anywhere else — including an
+    absolute target — is refused: locally it would import live code the snapshot
+    pretends to contain, and on the host it would dangle.
 
 ## Releases
 
@@ -97,13 +117,38 @@ identifies the exact snapshot it executed.
 <data dir>/.releases/<integration>/<release-digest>/
 ├── integrations/<integration>/   the snapshot, discovered as usual
 ├── lib/                          shared code at the same relative depth
-└── otter-release.json            digest, environment, source, timestamp
+└── otter-release.json            placement, digest, environment, source, timestamp
 ```
 
-Mirroring the checkout is what lets a manifest keep `python.path: [../../lib]`
-verbatim: the release root plays the part of the repository root, so every
-relative path resolves the same way before and after activation. Nothing is
-rewritten to release an integration.
+The integration and every shared tree land relative to **one base**: the
+closest common ancestor of the integrations discovery root, the
+integration directory and every captured tree. The release root plays the part
+of that base, so every relative path resolves the same way before and after
+activation and nothing is rewritten to release an integration.
+
+One rule covers every workspace shape:
+
+| Workspace | Integration | Shared tree |
+| --- | --- | --- |
+| `<root>/integrations/<name>` + `<root>/lib/python` | `integrations/<name>` | `lib/python` |
+| `<root>/<name>` + `<root>/lib/python` | `<name>` | `lib/python` |
+| `<root>/group/<name>` + `<root>/group/lib/python` | `group/<name>` | `group/lib/python` |
+| Deploy: `/opt/otter/integrations/<name>` + `/opt/otter/lib/python` | `integrations/<name>` | `lib/python` |
+
+Deploy is the case that fixes the upper bound of the base. It releases with
+`--integrations /opt/otter/integrations` while shared code lives at
+`/opt/otter/lib/python`, so the base is `/opt/otter`, not the discovery root —
+with the discovery root as the base there would be no way to spell
+`../lib/python` inside the release.
+
+The recorded placement is part of the release digest, together with each
+shared tree's destination name. Moving `lib` to `vendor`, or an integration from
+`integrations/<name>` to `<name>`, changes every relative import the integration
+performs, so it produces a different release rather than reusing one.
+
+Releases staged before the placement was recorded default to
+`integrations/<name>`, so a snapshot already on disk keeps working after an
+upgrade.
 
 The activation link lives at `<data dir>/.releases/active/<integration>`,
 outside the integrations tree, so `otter deploy` can keep syncing sources
@@ -111,17 +156,32 @@ normally without touching what is currently being served.
 
 ### Ordering
 
-Release is stage → prepare → activate, and each step fails safely:
+Release is stage → validate → prepare → activate, and each step fails safely:
 
 - **Staging** copies into a temporary directory and renames it into place, so a
   release directory either exists complete or not at all.
-- **Preparation** runs against the staged snapshot, not the live tree, so what
-  is validated is what will run.
-- **Activation** is a single atomic `rename` of a symlink. A failure in any
-  earlier step leaves the previous release active.
+- **Validation** loads the snapshot's *own* manifest and resolves its
+  `python.path` entries against the snapshot. This is the check that tells "the
+  path exists on the machine that released" apart from "the release captured the
+  tree the path names"; an absolute path passes the first and fails here.
+- **Preparation** runs against the staged snapshot, not the live tree, and the
+  snapshot manifest — not the live one — decides whether it runs at all. What is
+  validated is what will run.
+- **Activation** is a single atomic `rename` of a symlink, and it re-validates
+  the snapshot and, for a managed release, that its environment is ready. A
+  failure in any step leaves the previous release active.
 
 Redeploying unchanged inputs stages nothing new: identical inputs produce an
 identical digest, so an existing release is reused.
+
+### Upgrading
+
+Every integration must be released once after upgrading Otter. The digest format
+is versioned, and a new implementation deliberately does not reuse a snapshot
+laid out by an older one, even when the inputs look identical. Old snapshots are
+not deleted by the upgrade: they stay on disk until retention (`--keep`) prunes
+them, so a rollback to a pre-upgrade release still works. `otter deploy` performs
+the re-release for every integration as part of the deploy.
 
 ### Traceability, not gating
 
@@ -161,6 +221,11 @@ interpreter and the dependency set, recorded on the run at submission, so a
 later dependency change cannot move a queued or retried attempt onto a different
 environment either.
 
+The execution settings come from the **bound release's** manifest, never from the
+live one. Editing `python.mode` in the source tree does not change how an
+already-staged release runs, and does not affect a rollback to it: the snapshot
+is what executes, so the snapshot is what describes it.
+
 ### Retention
 
 `otter release --keep N` removes inactive releases beyond `N`, never touching
@@ -183,6 +248,12 @@ Rolling back means pointing the active link at a previous digest. The previous
 release is still on disk unless retention removed it, and the runs that used it
 are still recorded. Running attempts are unaffected: they keep executing the
 snapshot they bound to.
+
+Activation checks the target before it switches: the release's snapshot manifest
+must still resolve, and a managed release's environment must still be ready. A
+rollback to a broken or unprepared snapshot is refused with the command that
+fixes it (`otter prepare`), and the release that is currently active keeps
+serving.
 
 ## Layout on disk
 
@@ -372,7 +443,10 @@ For every integration:
 - A retry executes the same snapshot as the attempt it retries.
 - A deploy cannot rewrite the code an in-flight attempt is using.
 - Every run records the release digest that ran it.
-- A failed stage leaves the active release serving.
+- A run's Python mode is taken from the release it bound to, not from the live
+  manifest, so editing the source cannot change a released run's settings.
+- A failed stage, a failed validation, a failed preparation or a failed
+  activation leaves the active release serving.
 
 Additionally, for a managed integration:
 
