@@ -873,7 +873,7 @@ otter logs <run-id> --follow
 otter state get shopify-to-erp cursor
 otter state set shopify-to-erp cursor '"123"'
 otter state delete shopify-to-erp cursor
-otter validate ./examples/counter
+otter validate my-integration
 ```
 
 Add `--json` to any CLI command for raw JSON instead of the human-readable

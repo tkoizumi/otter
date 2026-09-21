@@ -333,15 +333,13 @@ and validates the environment without staging a release, which is what you want
 when diagnosing a dependency problem. It says so and does nothing for an
 external one, which has no environment to prepare.
 
-`make release` wraps the release step for the local workflow, so a typical
-session is:
+A typical session, using an installed Otter in your own project:
 
 ```sh
-make build
-make release           # after changing code or dependencies
-otter start            # terminal 1
-make start             # or: same, after a rebuild
-otter run <integration>  # terminal 2
+otter release <integration>   # after changing code or dependencies
+otter start --detach          # the runtime
+otter run <integration>       # queue a run and follow it
+otter stop
 ```
 
 Preparation:

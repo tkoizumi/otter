@@ -607,9 +607,9 @@ Sizing guidance:
   leave room for the page cache that makes SQLite fast.
 - **Raise `concurrency` only for stateless integrations.** An integration that
   increments a shared counter through `ctx.state` is safe at `concurrency: 1`
-  and racy above it. `examples/counter` is deliberately `concurrency: 1`;
-  `examples/customer-sync` is checkpoint-based and would need care to run
-  concurrently.
+  and racy above it. A counter that reads and writes one key must stay at
+  `concurrency: 1`; a checkpoint-based sync needs care to run concurrently
+  because two attempts can claim the same work.
 - **Long runs + cron schedules queue up.** A 20-minute integration on a
   `*/5` schedule with `concurrency: 1` produces a growing backlog of queued runs
   instead of overlapping execution. Fix the schedule or shorten the run; raising
@@ -841,8 +841,8 @@ systemctl show otter -p NRestarts
 ```
 
 Make integrations idempotent, or checkpoint with `ctx.state` so a repeated
-attempt resumes instead of starting over — that is exactly the pattern in
-`examples/customer-sync`.
+attempt resumes instead of starting over — persist a cursor in `ctx.state` and
+read it back at the start of the next run.
 
 ### Runs pile up in the queue
 

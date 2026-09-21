@@ -20,7 +20,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: gofmt -l ./cmd ./internal ./sdk ./migrations
+      # `gofmt -l` prints offenders and exits 0, so it has to be wrapped to
+      # fail the job. Printing filenames on its own enforces nothing.
+      - name: gofmt
+        run: |
+          files="$(gofmt -l ./cmd ./internal ./sdk ./migrations)"
+          if [ -n "$files" ]; then
+            echo "gofmt needed for:"
+            echo "$files"
+            exit 1
+          fi
       - run: go vet ./...
       - run: go test ./...
 
@@ -31,17 +40,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: SDK and shared library
-        run: |
-          python3 -m unittest discover -s sdk/python/tests
-          PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
-      - name: Integration suites
-        run: |
-          for dir in integrations/*/tests; do
-            [ -d "$dir" ] || continue
-            echo "== $dir"
-            python3 -m unittest discover -s "$dir"
-          done
+      - name: Embedded SDK suite
+        run: python3 -m unittest discover -s sdk/python/tests
+
+  # The product, driven the way a user drives it: `otter init` in a temporary
+  # workspace, then validate, release, start, run and read back state. This is
+  # what keeps the scaffold and the docs from drifting apart.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: make smoke
 
   release-config:
     runs-on: ubuntu-latest

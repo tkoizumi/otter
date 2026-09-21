@@ -171,8 +171,8 @@ func (b *fakeBuilder) Stage(_ Config, outDir string) error {
 	files := b.contents
 	if files == nil {
 		files = map[string]string{
-			"integrations/counter/main.py":            "print('counter')",
-			"lib/python/otter_connectors/__init__.py": "",
+			"integrations/counter/main.py":          "print('counter')",
+			"lib/python/example_shared/__init__.py": "",
 		}
 	}
 	for rel, content := range files {
@@ -320,8 +320,8 @@ func TestRunRevisionTracksSourceChanges(t *testing.T) {
 	}
 
 	builder.contents = map[string]string{
-		"integrations/counter/main.py":            "print('counter and more')",
-		"lib/python/otter_connectors/__init__.py": "",
+		"integrations/counter/main.py":          "print('counter and more')",
+		"lib/python/example_shared/__init__.py": "",
 	}
 	second, err := deployer.Run(context.Background())
 	if err != nil {

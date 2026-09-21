@@ -128,8 +128,8 @@ trigger:
   expression did not change keep their next fire time.
 - **Missed occurrences are not replayed.** If the daemon is offline from 12:00
   to 12:20 with a `*/5` schedule, the four missed ticks are gone. Design
-  integrations to reconcile from a checkpoint (see `examples/customer-sync`)
-  instead of assuming one run per tick.
+  integrations to reconcile from a checkpoint stored in `ctx.state` instead of
+  assuming one run per tick.
 
 Useful expressions:
 
@@ -328,9 +328,9 @@ the child process's environment just before execution.
 Validate without starting the daemon:
 
 ```bash
-otter validate ./examples/counter
-otter validate ./examples/counter/otter.yaml
-otter validate ./salesforce-to-netsuite     # any directory containing otter.yaml
+otter validate ./my-integration
+otter validate ./my-integration/otter.yaml
+otter validate my-integration               # by label, from inside the workspace
 ```
 
 `otter validate` exits non-zero and prints the field-level error on failure.

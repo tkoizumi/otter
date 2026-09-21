@@ -2,19 +2,19 @@
 bin/
 dist/
 
-# Local runtime data (SQLite database, extracted SDK, logs)
+# Runtime state a contributor may create by running Otter in this checkout: the
+# SQLite database, extracted SDK, releases, serve records and lock. Using Otter
+# for real means running it in your own directory, not this one, so none of it
+# is ever committed.
+.otter/
 tmp/
 *.db
 *.db-wal
 *.db-shm
 
-# Deploy state: which host this checkout last deployed to, and its API token.
-# Never commit either file.
-.otter/
-
-# Integration identity markers. The runtime writes one per registered
-# integration; it names this checkout's instance, so a fresh clone registering
-# its own is intended. Never commit one.
+# Integration identity markers. The runtime writes one into an integration
+# directory; it names a local instance, so a fresh clone registering its own is
+# the intended behaviour and the file stays out of git.
 .otter-id
 .otter-id.tmp-*
 
@@ -29,19 +29,22 @@ venv/
 .cache/
 .gocache/
 
-# Runtime configuration at the repository root. Both are ignored by the *.env
-# rule below; named without a leading dot so they stay visible, because they are
-# configuration an operator has to find and edit. Credentials live in otter.env
-# shared by every integration, rather than one file per integration, so
-# rotating a credential is one edit instead of N.
+# Environment files. A contributor testing a runtime here may create one; the
+# values are credentials, so nothing named like an env file is committed, and a
+# template is excluded too because git cannot tell a filled-in one from a
+# placeholder.
 otter.daemon.env
 otter.env
-
-# Secrets: real credentials live in the daemon's environment, never here.
-# .env.example is committed; .env files are not.
 .env
+.env.*
 *.env
+*.env.*
 !*.env.example
+
+# Local logs and editor state
+run.log
+.nvimlog
+*.log
 
 # Editors / OS
 .DS_Store

@@ -32,120 +32,34 @@ published by `.github/workflows/release.yml`; see [Releases](#releases).
 
 ## Quickstart (about five minutes)
 
+You do not need this repository to use Otter. Install it and work in your own
+directory:
+
 ```bash
-mkdir my-project && cd my-project
-otter init my-project        # workspace marker, manifest, entrypoint, tests
+brew install tkoizumi/tap/otter     # or a release tarball, or go install
+
+otter init my-project               # a workspace and one integration
+cd my-project
 otter validate my-project
-otter release my-project     # stage and activate the release runs execute
-otter start --detach         # free port, loads otter.env if present
-otter run my-project
+otter release my-project            # stage and activate an immutable snapshot
+otter start --detach                # free loopback port; records where it listens
+otter run my-project                # queue a run and follow the outcome
 otter state get my-project count
 otter stop
-```
-
-`otter init` writes a workspace and one integration: the `.otter/` marker that
-names the project, a manifest with no trigger, an entrypoint, a pure
-`logic.py` and a test suite that needs no runtime. Run it again inside the
-workspace to add another integration. It records the runtime version that
-created the workspace in `.otter/version`, and `otter start` says so when a
-different one serves it.
-
-A run executes the integration's **active release**, not its source tree, so
-`otter release` is part of the loop: nothing runs until an integration has been
-released, and an edit is not live until it is released again. `otter release`
-with no argument releases the integration in the working directory, and
-`otter release --all` covers a whole workspace.
-
-The daemon reads the integrations directory when it starts, so a new integration
-needs `otter reload` before it is visible. Reload re-reads the directory against
-the running daemon: the process is not restarted, executing runs are not
-interrupted, and a cron schedule that did not change keeps its next fire time.
-Release is still required afterwards, because a run executes the active release.
-
-An integration is a directory with an `otter.yaml` and a Python entrypoint, so
-`init` is a convenience rather than a requirement — see
-[What an integration looks like](#what-an-integration-looks-like).
-
-To run the bundled examples from a checkout instead:
-
-```bash
-make build
-```
-
-Bring up this checkout's runtime:
-
-```bash
-./bin/otter start --integrations ./examples --data ./tmp/examples
 ```
 
 `otter start` finds the project you are in, picks a free loopback port, loads
 `otter.env` and `otter.daemon.env` if they exist, and records where it listens
 in `.otter/serve/`. Every other command then finds that runtime on its own.
-Release what you are about to run, then run it:
 
-```bash
-otter release counter
-otter run counter
-otter logs "$(otter run counter)"
-otter stop
-```
+`otter init` writes the smallest useful integration: a manifest, an entrypoint,
+a pure-logic module and its test. Edit those files. A run executes the active
+release rather than the source tree, so an edit is not live until `otter
+release` has staged and activated a new snapshot.
 
-Run it in the background with `--detach`, or in the foreground on `make start`
-(see `make help`).
-
-In another terminal, list what was discovered:
-
-```console
-$ ./bin/otter integrations
-counter
-customer-sync
-```
-
-Trigger the `counter` integration by hand and look at what happened:
-
-```console
-$ ./bin/otter run counter
-4f1c2a7e-2b1d-4f6a-9c3e-8a5b0d7e1f22
-
-$ ./bin/otter logs 4f1c2a7e-2b1d-4f6a-9c3e-8a5b0d7e1f22
-run queued (trigger manual)
-run started (attempt 1 of 3, trigger manual)
-Counter executed {"count":1,"level":"info"}
-run succeeded (attempt 1, 148ms), exit code 0
-```
-
-The integration persisted a counter. Read it back:
-
-```console
-$ ./bin/otter state get counter count
-1
-```
-
-Run it again and the state advances:
-
-```console
-$ ./bin/otter run counter
-9a2f5c31-7d4e-4a8b-b6c1-2e3f4a5b6c7d
-$ ./bin/otter state get counter count
-2
-```
-
-Now restart the daemon (Ctrl-C, then start it again with the same `--data`
-directory) and run it a third time:
-
-```console
-$ ./bin/otter state get counter count
-3
-```
-
-That is the whole runtime: discovery, scheduling, execution, durable state,
-logs and run history, surviving a restart. `otter start --integrations ./examples --log-format=pretty` is the same
-thing with human-readable daemon logs.
-
-> `counter` is also registered on an hourly cron (`0 * * * *`), so it advances on
-> its own too. It is deliberately not `* * * * *`: an every-minute schedule would
-> race the `1`/`2`/`3` sequence above. `otter inspect counter` shows the registered
-> expression and the next fire time.
+Working on Otter itself — building, testing, the smoke workflow, the source
+tree — is [CONTRIBUTING.md](CONTRIBUTING.md). The rest of this file documents
+the installed product.
 
 ---
 
@@ -364,49 +278,12 @@ stopped.
 
 ---
 
-## Second example: a resumable sync
+## Long-running and resumable runs
 
-`examples/customer-sync` simulates a source API, a transformation and a
-destination API using a local mock server — no SaaS credentials involved.
-
-```bash
-# terminal 1
-python3 examples/customer-sync/mock_api.py
-
-# terminal 2
-./bin/otterd --integrations ./examples --data ./tmp
-./bin/otter run customer-sync
-./bin/otter state get customer-sync last_processed_customer_id
-```
-
-It pages through 25 customers five at a time and checkpoints after each one.
-Run it again and it correctly does nothing:
-
-```console
-$ ./bin/otter logs $(./bin/otter run customer-sync) | tail -3
-customer sync finished {"checkpoint":25,"level":"info","synced":0}
-synced 0 customers; checkpoint=25
-run succeeded (attempt 1, 82ms), exit code 0
-```
-
-Simulate a crash by starting the daemon with `CRASH_AFTER=3`. Each attempt
-stops after three customers and the checkpoint advances to 3, then 6, then 9
-across the retries instead of restarting:
-
-```console
-$ CRASH_AFTER=3 ./bin/otterd --integrations ./examples --data ./tmp/cs
-$ ./bin/otter state get customer-sync last_processed_customer_id
-9
-```
-
-Restart without `CRASH_AFTER` and the next run finishes the job — 16 more
-customers, no duplicates:
-
-```console
-$ ./bin/otter logs $(./bin/otter run customer-sync) | tail -2
-customer sync finished {"checkpoint":25,"level":"info","synced":16}
-synced 16 customers; checkpoint=25
-```
+A sync that must survive a crash is a pattern rather than a shipped example:
+persist a cursor in `ctx.state` and read it back on the next run, so a restart
+resumes instead of replaying. [docs/examples.md](docs/examples.md) shows the
+shape, and `otter state get <integration> <key>` inspects one from the CLI.
 
 ---
 
@@ -591,7 +468,7 @@ run history and sync watermarks survive every deploy. The API binds loopback, so
 you reach it through a tunnel rather than an open port:
 
 ```bash
-make deploy-tunnel HOST=droplet
+ssh -N -L 7337:127.0.0.1:7337 droplet
 otter runs --limit 10
 ```
 
@@ -643,21 +520,27 @@ hardening checklist are in [docs/security.md](docs/security.md).
 
 ## Repository layout
 
-```text
-otter/
-├── cmd/
-│   ├── otter/          CLI entrypoint
-│   └── otterd/         daemon entrypoint
+This repository is the runtime. It contains no vendor code and no integration of
+its own; a user's integrations live in the user's project, and `otter init`
+generates them.
+
+```
+.
+├── cmd/otter/          the CLI
+├── cmd/otterd/         the daemon
 ├── internal/
-│   ├── api/            HTTP API server and CLI client
-│   ├── cli/            command implementations
-│   ├── config/         manifest parsing, validation, discovery
+│   ├── api/            HTTP API and the CLI's client
+│   ├── cli/            command implementations, including `otter init`
+│   ├── config/         manifest loading, validation and discovery
 │   ├── daemon/         orchestration: workers, queue, retries, recovery
 │   ├── database/       SQLite connection and migrations
 │   ├── deploy/         `otter deploy`: SSH converge, systemd unit, secrets
 │   ├── executor/       child process execution, timeout, cancellation
+│   ├── identity/       durable integration identity and its registry
 │   ├── logging/        structured daemon logs
+│   ├── pyenv/          managed Python environments
 │   ├── queue/          durable run queue and atomic claiming
+│   ├── release/        immutable source snapshots
 │   ├── retry/          backoff calculation
 │   ├── runs/           run history and captured logs
 │   ├── scheduler/      cron registration
@@ -665,21 +548,15 @@ otter/
 │   └── state/          durable per-integration key/value state
 ├── migrations/         embedded SQL schema
 ├── sdk/python/otter/   the Python SDK (embedded into the daemon binary)
-├── lib/python/         shared vendor clients, e.g. otter_connectors
-│   └── otter_connectors/  Shopify + Salesforce clients, watermark, config
-├── integrations/
-│   └── shopify-to-salesforce/  a real integration, vendor-specific code only
-├── examples/
-│   ├── counter/        cron + state + logs
-│   └── customer-sync/  resumable sync against a local mock API
+├── scripts/smoke.sh    the end-to-end contributor smoke workflow
 └── docs/
 ```
 
-The runtime carries no vendor code. Anything specific to Shopify, Salesforce or
-another product lives in an integration or in `lib/python`, and an integration
-declares the shared code it needs with `python.path` — so the daemon stays small
-and the clients stay yours to read, fork and version independently. See
-[lib/python/README.md](lib/python/README.md).
+Shared Python that several of *your* integrations use belongs in your project,
+not here: an integration declares it with `python.path` and `otter release`
+captures those trees beside the integration so relative imports keep resolving.
+Vendor clients, mappings and real integrations belong in separate projects — the
+daemon stays small and the clients stay yours to read, fork and version.
 
 The runtime is a single process with a durable SQLite queue underneath it. Read
 [docs/architecture.md](docs/architecture.md) for the subsystem diagram, the
@@ -689,22 +566,32 @@ schema and the run lifecycle — it is a ten-minute read by design.
 
 ## Development
 
+For changing Otter itself. Using it means installing it and working in your own
+directory; [CONTRIBUTING.md](CONTRIBUTING.md) has the full loop.
+
 ```bash
 make build     # ./bin/otterd and ./bin/otter
-make test      # unit and integration tests
-make lint      # gofmt, go vet, golangci-lint when installed
-make start     # run this checkout's runtime in the foreground
+make test      # Go suite plus the embedded Python SDK
+make lint      # gofmt (fails on offenders), go vet, golangci-lint when installed
+make smoke     # `otter init` end to end in a temporary workspace
 make cross     # cross-compile for Linux and macOS
 ```
 
-The integration tests start a real daemon, run real Python processes and
-verify run status, logs, state, retries, timeouts, concurrency, crash recovery
-and shutdown. The two Python packages have their own suites:
+`make smoke` matters most: it builds this checkout's binary and drives
+`otter init` → `validate` → `release` → `start` → `run` → `state` → `stop`
+in a temporary workspace outside the repository, so the scaffold users get is
+the scaffold this repository tests. The Go suite starts real daemons and runs
+real Python processes to verify status, logs, state, retries, timeouts,
+concurrency, crash recovery and shutdown.
 
 ```bash
-python3 -m unittest discover -s sdk/python/tests        # the runtime SDK
-PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
+go test ./...
+python3 -m unittest discover -s sdk/python/tests   # the embedded SDK
 ```
+
+Packaging is [.goreleaser.yaml](.goreleaser.yaml): two static binaries per
+platform published as `otter_<version>_<os>_<arch>.tar.gz` by
+`.github/workflows/release.yml`.
 
 ---
 

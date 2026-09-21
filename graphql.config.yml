@@ -1,8 +1,0 @@
-# Editor tooling for the `.graphql` documents in each integration.
-#
-# This is standard GraphQL tooling, not Otter's: point a GraphQL language server
-# at a schema and it autocompletes field names, checks arguments and lists valid
-# enum values while you type. `make sync-schema SYSTEM=shopify` writes both
-# sides of this -- the documents' schema and the documents themselves.
-schema: integrations/*/schema/shopify/shopify.graphql
-documents: integrations/*/queries/*.graphql

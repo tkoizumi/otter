@@ -219,7 +219,7 @@ integration. At deploy it becomes `/etc/otter/shared.env`, owned by root with
 mode `0600`, loaded by systemd's `EnvironmentFile=`.
 
 ```sh
-cp integrations/shopify-to-salesforce/.env.example otter.env
+cp my-integration/.env.example otter.env
 $EDITOR otter.env
 otter deploy --host droplet
 ```
@@ -297,8 +297,7 @@ no firewall rule, no reverse proxy and no TLS certificate to provision or
 renew. Reach it with a tunnel:
 
 ```sh
-make deploy-tunnel HOST=droplet          # foreground, Ctrl-C to stop
-ssh -N -L 7337:127.0.0.1:7337 droplet &  # or by hand
+ssh -N -L 7337:127.0.0.1:7337 droplet    # foreground, Ctrl-C to stop
 export OTTER_API_TOKEN=$(python3 -c 'import json;print(json.load(open(".otter/state.secret.json"))["api_token"])')
 otter integrations
 otter runs --limit 10
@@ -397,18 +396,19 @@ otter deploy --host droplet --destroy               # also delete it
 Without `--keep-data` the command names the data directory, explains what it
 holds, and asks you to type the host name before doing anything. Deleting it
 discards every integration's watermark, which means the next deploy rescans the
-source system from scratch — expensive at Shopify and rude at Salesforce. The
-`make` targets mirror this: `make deploy-destroy` keeps data, `make deploy-purge`
-does not.
+source system from scratch — expensive at Shopify and rude at Salesforce.
+`otter deploy --destroy --keep-data` keeps the data; `otter deploy --destroy`
+removes it.
 
 ## Day-to-day operations
 
 ```sh
-make deploy HOST=droplet            # build locally, then converge the host
-make deploy-plan HOST=droplet       # what would change, touching nothing
-make deploy-status                  # what this checkout last deployed
-make deploy-tunnel HOST=droplet     # forward the API to localhost
-make deploy-remote-runs HOST=droplet
+otter deploy --host droplet              # converge the host
+otter deploy --host droplet --dry-run    # what would change, touching nothing
+otter deploy --status                    # what this checkout last deployed
+
+ssh -N -L 7337:127.0.0.1:7337 droplet    # forward the API to localhost
+otter --api http://127.0.0.1:7337 runs --limit 10
 ```
 
 On the host itself:

@@ -36,18 +36,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Python suites
-        run: |
-          python3 -m unittest discover -s sdk/python/tests
-          PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
-          for dir in integrations/*/tests; do
-            [ -d "$dir" ] || continue
-            echo "== $dir"
-            python3 -m unittest discover -s "$dir"
-          done
+      - name: Embedded SDK suite
+        run: python3 -m unittest discover -s sdk/python/tests
+
+  # The product end to end, from `otter init` to persisted state. Same workflow
+  # a pull request runs, for the same reason `test` is: a tag must not publish
+  # a binary that fails the loop a user actually performs.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: make smoke
 
   release:
-    needs: test
+    needs: [test, smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

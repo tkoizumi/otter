@@ -1,5 +1,10 @@
 # Integration identity: implementation handoff
 
+> **Historical.** This is the implementation plan for the identity redesign,
+> written before the work landed. It is kept for the reasoning and the
+> acceptance matrix, not as current contributor instructions. For the shipped
+> behaviour see [identity.md](identity.md).
+
 Status: proposed implementation specification, September 21, 2026.
 
 ## 1. Assignment and scope

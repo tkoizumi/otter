@@ -1161,7 +1161,7 @@ func (a *App) fail(err error) int {
 	}
 
 	fmt.Fprintln(a.Stderr, "hint: is otterd running? start it with:")
-	fmt.Fprintln(a.Stderr, "  otterd --integrations ./examples --data ./tmp")
+	fmt.Fprintln(a.Stderr, "  otterd --integrations ./integrations --data ./tmp")
 	return 1
 }
 

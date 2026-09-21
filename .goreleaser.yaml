@@ -14,8 +14,10 @@ project_name: otter
 before:
   hooks:
     # The Python SDK is embedded into otterd with go:embed all:python, so a
-    # stale __pycache__ would be compiled into the shipped binary.
-    - sh -c 'find . -name .cache -prune -o -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true'
+    # stale __pycache__ would be compiled into the shipped binary. The scope is
+    # sdk/python, the only embedded tree: nothing else in the repository is
+    # packaged.
+    - sh -c 'find sdk/python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true'
     - go mod tidy
 
 builds:

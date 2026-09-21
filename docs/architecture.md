@@ -576,7 +576,7 @@ work:
 5. Registers cron schedules from the manifests again. Occurrences that fell in
    the downtime window are **not** replayed. If a schedule needs catch-up
    semantics, model it as state (for example a `last_processed_at` checkpoint)
-   so the next run reconciles the gap, as `examples/customer-sync` does.
+   so the next run reconciles the gap.
 
 Integration state, run history, logs and webhook tokens all survive restarts and
 reboots because they are rows in `otter.db`, not memory.

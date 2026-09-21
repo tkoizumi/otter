@@ -188,8 +188,8 @@ real subprocess.
 
 ## Examples
 
-* [`examples/counter`](../../examples/counter) — the smallest possible cron
-  integration.
-* [`examples/customer-sync`](../../examples/customer-sync) — source API →
-  transform → destination API with a per-customer checkpoint, plus a mock API
-  and crash/retry demonstrations.
+The runtime ships no example catalog: `otter init` generates a working
+integration that uses this SDK, and `make smoke` in the runtime repository
+exercises it end to end. [docs/examples.md](../../docs/examples.md) covers the
+manifest patterns — manual, cron-scheduled and webhook-triggered — that an
+integration is built from.
