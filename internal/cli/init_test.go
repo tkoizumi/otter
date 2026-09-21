@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,57 @@ func TestInitAddsToAnExistingWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "kept") {
 		t.Errorf("output does not say the existing files were kept:\n%s", stdout)
+	}
+}
+
+// The scaffolded .gitignore must cover env templates, not only real env files.
+// `otter init` itself writes otter.env.example, and a template is exactly the
+// file an operator tends to paste a live credential into. Ask git for its
+// verdict rather than reading the pattern text, because the pattern text is
+// what was wrong in the first place.
+func TestInitGitignoreCoversEnvTemplates(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	if _, stderr, code := initIn(t, dir, "0.1.0", "acme-sync"); code != 0 {
+		t.Fatalf("init failed: %s", stderr)
+	}
+	// Real env files, templates under both the dot- and word-prefixed spellings,
+	// and a control file that must stay committable.
+	paths := []string{
+		".env", "prod.env", ".env.local", ".env.production",
+		"otter.env.example", "acme-sync/.env.example", "main.py",
+	}
+	for _, rel := range paths {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("X=1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initCmd := exec.Command("git", "init", "-q", ".")
+	initCmd.Dir = dir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	// `git check-ignore` is the only authority on gitignore semantics.
+	cmd := exec.Command("git", "check-ignore", "--stdin")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\n"))
+	out, _ := cmd.Output() // exit 1 when nothing matches
+	ignored := strings.Fields(string(out))
+
+	// Both categories: a real secret and a template that may hold one.
+	for _, want := range []string{
+		".env", "prod.env", ".env.local", ".env.production",
+		"otter.env.example", "acme-sync/.env.example",
+	} {
+		if !slices.Contains(ignored, want) {
+			t.Errorf("%s is not ignored; .gitignore is:\n%s", want, readFile(t, filepath.Join(dir, gitignoreFileName)))
+		}
+	}
+	if slices.Contains(ignored, "main.py") {
+		t.Errorf("main.py is ignored; .gitignore is too broad:\n%s", readFile(t, filepath.Join(dir, gitignoreFileName)))
 	}
 }
 

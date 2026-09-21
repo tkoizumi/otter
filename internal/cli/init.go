@@ -30,6 +30,11 @@ const versionFileName = "version"
 // loads. It is written as an example for the same reason the manifest does not
 // carry secrets: real credentials must not land in a file the scaffold created
 // and a developer forgot about.
+//
+// The template is a local convenience, not a committed one. The scaffolded
+// .gitignore ignores env templates as well as real env files, because git
+// cannot tell a filled-in example from a real file; the file exists to be
+// copied to otter.env, and a fresh clone does not need it.
 const workspaceEnvFileName = "otter.env.example"
 
 // gitignoreFileName is written only when the workspace does not already have
@@ -412,10 +417,13 @@ func gitignoreTemplate() string {
 	return `# Runtime state: SQLite, extracted SDK, the serve record and its log
 .otter/
 
-# Secrets: examples are committed, real values are not
+# Secrets: never commit an env file, templates included. A .env.example that
+# someone pasted real values into is still a secret, and git cannot tell the
+# two apart. Keep placeholders out of any file you commit.
 .env
+.env.*
 *.env
-!*.env.example
+*.env.*
 
 # Python
 __pycache__/
