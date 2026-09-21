@@ -417,6 +417,11 @@ func gitignoreTemplate() string {
 	return `# Runtime state: SQLite, extracted SDK, the serve record and its log
 .otter/
 
+# Integration identity markers. The runtime writes one per integration; it names
+# this checkout's instance, so a fresh clone registering its own is intended.
+.otter-id
+.otter-id.tmp-*
+
 # Secrets: never commit an env file, templates included. A .env.example that
 # someone pasted real values into is still a secret, and git cannot tell the
 # two apart. Keep placeholders out of any file you commit.

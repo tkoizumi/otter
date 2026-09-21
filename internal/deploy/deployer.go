@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -30,6 +31,7 @@ type Result struct {
 	RevealToken  bool
 	Warnings     []string
 	Integrations []string
+	Bindings     []Binding
 	RemoteDir    string
 	APIURL       string
 	ServiceUnit  string
@@ -224,6 +226,18 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
+	// --- bind --------------------------------------------------------------
+	// The destination mints its own identity for each integration. Recording
+	// which one it chose is what makes a later deploy able to say "same
+	// instance, new code" instead of re-registering, and makes the remote
+	// registration inspectable from the checkout.
+	bindings, err := d.readBindings(ctx, cfg)
+	if err != nil {
+		d.step("bindings", "destination identities not recorded: %v", err)
+	} else {
+		d.step("bindings", "recorded %d destination identity(ies)", len(bindings))
+	}
+
 	// --- remember ----------------------------------------------------------
 	st := State{
 		Host:            cfg.Target.Host,
@@ -232,6 +246,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		Revision:        revision,
 		SecretsRevision: envRevision,
 		DeployedAt:      time.Now().UTC(),
+		Bindings:        bindings,
 	}
 	if err := d.Store.Save(st, cfg.Target.APIToken); err != nil {
 		return nil, err
@@ -247,11 +262,45 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		APIToken:     cfg.Target.APIToken,
 		RevealToken:  reveal,
 		Integrations: cfg.Integrations,
+		Bindings:     bindings,
 		RemoteDir:    cfg.Target.RemoteDir,
 		APIURL:       cfg.Target.APIURL(),
 		ServiceUnit:  cfg.Target.ServiceUnit(),
 		Elapsed:      time.Since(started),
 	}, nil
+}
+
+// readBindings asks the destination runtime for the identity it assigned each
+// deployed integration. Local and remote identities are independent, so this
+// is the only place the two are related; a host whose runtime predates the
+// registry fails here and the deploy records no bindings rather than failing.
+func (d *Deployer) readBindings(ctx context.Context, cfg Config) ([]Binding, error) {
+	var stdout, stderr strings.Builder
+	if err := d.Runner.RunStream(ctx, BindingsScript(cfg.Target), &stdout, &stderr); err != nil {
+		return nil, err
+	}
+	body := strings.TrimSpace(stdout.String())
+	if body == "" {
+		return nil, nil
+	}
+	var rows []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(body), &rows); err != nil {
+		return nil, fmt.Errorf("parse destination identities: %w", err)
+	}
+	out := make([]Binding, 0, len(rows))
+	for _, row := range rows {
+		if row.Status != "" && row.Status != "active" {
+			continue
+		}
+		out = append(out, Binding{Name: row.Name, ID: row.ID, Path: row.Path})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
 // detectPlatform opens the SSH connection and asks the host what it is. This

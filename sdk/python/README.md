@@ -29,7 +29,8 @@ The daemon sets these variables for every child process:
 
 | Variable                 | Meaning                                              |
 | ------------------------ | ---------------------------------------------------- |
-| `OTTER_INTEGRATION_ID`   | Integration name, e.g. `counter`.                    |
+| `OTTER_INTEGRATION_ID`   | Durable integration identity; namespaces state.       |
+| `OTTER_INTEGRATION_NAME`  | Manifest label, e.g. `counter`; for logs and messages. |
 | `OTTER_RUN_ID`           | UUID of the current run.                             |
 | `OTTER_API_URL`          | Base URL of the daemon API, e.g. `http://127.0.0.1:7337`. |
 | `OTTER_STATE_TOKEN`      | Per-run bearer token, scoped to this run/integration. |

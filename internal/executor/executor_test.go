@@ -257,7 +257,7 @@ func TestRunSetsOtterEnvironmentAndStripsDaemonSecrets(t *testing.T) {
 
 	m, _ := writeScript(t, `
 import json, os
-keys = ["OTTER_INTEGRATION_ID", "OTTER_RUN_ID", "OTTER_API_URL",
+keys = ["OTTER_INTEGRATION_ID", "OTTER_INTEGRATION_NAME", "OTTER_RUN_ID", "OTTER_API_URL",
         "OTTER_TRIGGER_TYPE", "OTTER_INTEGRATION_DIR", "OTTER_STATE_TOKEN",
         "OTTER_API_TOKEN", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
         "MANIFEST_VAR", "SECRET_TOKEN", "EXPANDED", "OUTER_VAR", "PYTHONPATH"]
@@ -271,13 +271,15 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 
 	sink := &collector{}
 	res := New(testLogger(), "/tmp/fake-sdk").Run(context.Background(), &Request{
-		Manifest:    m,
-		RunID:       "run-5",
-		TriggerType: runs.TriggerWebhook,
-		APIURL:      "http://127.0.0.1:7337",
-		StateToken:  "scoped-run-token",
-		ExtraEnv:    map[string]string{"SECRET_TOKEN": "s3cr3t"},
-		Timeout:     30 * time.Second,
+		Manifest:        m,
+		IntegrationID:   "fixture-id",
+		IntegrationName: "fixture",
+		RunID:           "run-5",
+		TriggerType:     runs.TriggerWebhook,
+		APIURL:          "http://127.0.0.1:7337",
+		StateToken:      "scoped-run-token",
+		ExtraEnv:        map[string]string{"SECRET_TOKEN": "s3cr3t"},
+		Timeout:         30 * time.Second,
 	}, sink)
 	if res.StartError != nil {
 		t.Fatalf("start error: %v", res.StartError)
@@ -297,7 +299,10 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 	}
 
 	wantValues := map[string]string{
-		"OTTER_INTEGRATION_ID":    "fixture",
+		// The identity and the label are different values on purpose: the
+		// manifest name must never become the child's state namespace.
+		"OTTER_INTEGRATION_ID":    "fixture-id",
+		"OTTER_INTEGRATION_NAME":  "fixture",
 		"OTTER_RUN_ID":            "run-5",
 		"OTTER_API_URL":           "http://127.0.0.1:7337",
 		"OTTER_TRIGGER_TYPE":      "webhook",

@@ -158,6 +158,52 @@ func (f *fakeBackend) GetIntegration(id string) (IntegrationView, bool) {
 	return v, ok
 }
 
+func (f *fakeBackend) IntegrationGeneration(id string) (int64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.integrations[id]
+	if !ok {
+		return 0, false
+	}
+	return v.Generation, true
+}
+
+func (f *fakeBackend) ResolveIntegration(ref string) (IntegrationView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.integrations[ref]; ok {
+		return v, nil
+	}
+	for _, v := range f.integrations {
+		if v.Name == ref {
+			return v, nil
+		}
+	}
+	return IntegrationView{}, fmt.Errorf("integration %q: %w", ref, ErrNotFound)
+}
+
+func (f *fakeBackend) RegisterIntegration(_ context.Context, path string) (IntegrationView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return IntegrationView{ID: path, Name: path, Path: path, Valid: true}, nil
+}
+
+func (f *fakeBackend) ResetIntegration(_ context.Context, ref string) (ResetView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return ResetView{OldID: ref, NewID: ref + "-new", Name: ref, Path: "/tmp/" + ref}, nil
+}
+
+func (f *fakeBackend) DeleteIntegration(_ context.Context, ref string) (DeletedView, error) {
+	return DeletedView{Deleted: true, ID: ref, Name: ref}, nil
+}
+
+func (f *fakeBackend) MoveIntegration(_ context.Context, ref, destination string) (IntegrationView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return IntegrationView{ID: ref, Name: ref, Path: destination, Valid: true}, nil
+}
+
 func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -493,6 +539,34 @@ func TestRunTokenScopes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A run token carries the identity generation it was authorized against. When
+// a reset, move, retirement or deletion bumps that generation, a token minted
+// before the change can no longer write state -- the token itself stays valid,
+// which is exactly why the check has to happen at the mutation.
+func TestStateWriteRefusesAStaleGeneration(t *testing.T) {
+	b := newFakeBackend()
+	b.addIntegration("int-A", true, "")
+	b.integrations["int-A"] = IntegrationView{ID: "int-A", Name: "counter", Valid: true, Generation: 3}
+	b.runTokens["stale"] = RunToken{RunID: "run-A", IntegrationID: "int-A", Generation: 2}
+	b.seedState("int-A", "count", "1")
+
+	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
+	defer srv.Close()
+
+	r := do(t, http.MethodPut, srv.URL+"/v1/integrations/int-A/state/count", []byte(`2`),
+		map[string]string{"Authorization": "Bearer stale"})
+	wantStatus(t, r, http.StatusConflict)
+	if env := r.errorEnvelope(t); env.Error.Code != CodeConflict {
+		t.Fatalf("error code = %q, want %q", env.Error.Code, CodeConflict)
+	}
+
+	// A token at the current generation is unaffected.
+	b.runTokens["fresh"] = RunToken{RunID: "run-A", IntegrationID: "int-A", Generation: 3}
+	r = do(t, http.MethodPut, srv.URL+"/v1/integrations/int-A/state/count", []byte(`2`),
+		map[string]string{"Authorization": "Bearer fresh"})
+	wantStatus(t, r, http.StatusOK)
 }
 
 func TestWebhookAuthentication(t *testing.T) {

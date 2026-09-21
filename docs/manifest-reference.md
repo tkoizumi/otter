@@ -71,7 +71,7 @@ secrets:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `version` | integer | **yes** | — | Manifest schema version. Must be `1`. |
-| `name` | string | **yes** | — | Integration id, used in the API, the CLI, state keys and run records. Must match `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$` and be unique across the integrations root. |
+| `name` | string | **yes** | — | Human-facing label, used by the CLI and shown in the API. Must match `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`. Labels need not be unique; the durable identity is separate. See [identity.md](identity.md). |
 | `description` | string | no | `""` | Free-form human description, returned by the API and shown by `otter inspect`. |
 | `entrypoint` | string | **yes** | — | Path to the Python file to run, relative to the integration directory. Must stay inside the directory and must exist. |
 | `python.mode` | string | no | `external` | `external` preserves host Python behavior. `managed` requires `.python-version`, `pyproject.toml`, and `uv.lock`; prepare it before running. |
@@ -255,8 +255,8 @@ env:
 The runtime always adds these variables to the child environment, which override
 anything an integration attempts to set with the same names:
 
-`OTTER_INTEGRATION_ID`, `OTTER_RUN_ID`, `OTTER_API_URL`, `OTTER_STATE_TOKEN`,
-`OTTER_TRIGGER_TYPE`, `OTTER_INTEGRATION_DIR`.
+`OTTER_INTEGRATION_ID`, `OTTER_INTEGRATION_NAME`, `OTTER_RUN_ID`, `OTTER_API_URL`,
+`OTTER_STATE_TOKEN`, `OTTER_TRIGGER_TYPE`, `OTTER_INTEGRATION_DIR`.
 
 ## Secrets
 
@@ -288,20 +288,22 @@ the child process's environment just before execution.
   digits, and `.`, `_`, `-` in the middle; must start and end with a letter or
   digit. `shopify-to-erp` and `erp.sync_v2` are valid; `Shopify-Sync`, `_x` and
   `-x-` are not.
-- `name` is the integration id. It is what you pass to `otter run`, what appears
-  in `OTTER_INTEGRATION_ID`, and the first path segment of
-  `/v1/integrations/{id}/...`.
-- Commands also accept the filesystem path that holds the manifest. `otter run .`
-  and a bare `otter run` read the working directory's `otter.yaml` and use the
-  `name` it declares, and `otter inspect .`, `otter release` and
-  `otter prepare` do the same. The path is only a way to find the name; the
-  daemon still addresses the integration by `name`.
-- Names must be **unique across the integrations root**. Two directories
-  declaring the same `name` make the second one invalid.
-- Renaming an integration does not migrate its state, run history or webhook
-  token: those are keyed by name. Renaming is effectively "new integration".
-- The directory name is irrelevant to identity. Moving a directory does not
-  change the integration's `name` or its state.
+- `name` is a **label**, not a key. State, run history, webhook tokens, releases
+  and prepared environments belong to the integration's durable **identity**,
+  which the runtime mints once and records in a `.otter-id` marker inside the
+  directory. See [identity.md](identity.md).
+- Labels do **not** have to be unique. Two integrations may declare the same
+  `name`; `otter run <name>` then refuses and lists every candidate, and either
+  `id:<id>` or a filesystem path selects one unambiguously.
+- A reference is a label, a path, or `id:<id>`. `otter run .` and a bare
+  `otter run` read the working directory's `otter.yaml`, and `otter inspect .`,
+  `otter release` and `otter prepare` do the same. A path is resolved through
+  the registry's path ownership, never by matching a manifest name.
+- Editing `name` preserves the identity, and therefore the state and history. The
+  new label is recorded on the next scan.
+- The directory name is not identity either. Copying a directory creates a new
+  instance with a fresh identity and empty state; renaming one in place, and
+  recording it with `otter move`, keeps the identity.
 
 ## Entrypoint rules
 

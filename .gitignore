@@ -12,6 +12,12 @@ tmp/
 # Never commit either file.
 .otter/
 
+# Integration identity markers. The runtime writes one per registered
+# integration; it names this checkout's instance, so a fresh clone registering
+# its own is intended. Never commit one.
+.otter-id
+.otter-id.tmp-*
+
 # Python
 __pycache__/
 *.py[cod]

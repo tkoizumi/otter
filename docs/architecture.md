@@ -525,7 +525,8 @@ The child is started as `python.executable` (default `python3`) with
 
 | Variable | Value |
 | --- | --- |
-| `OTTER_INTEGRATION_ID` | Integration `name`. |
+| `OTTER_INTEGRATION_ID` | Durable integration identity. |
+| `OTTER_INTEGRATION_NAME` | Manifest label. |
 | `OTTER_RUN_ID` | This attempt's run id. |
 | `OTTER_API_URL` | Base URL of the daemon API (e.g. `http://127.0.0.1:7337`). |
 | `OTTER_STATE_TOKEN` | Short-lived token authorizing state and log calls for this run. |

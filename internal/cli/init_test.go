@@ -298,3 +298,38 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// The identity marker is instance metadata written by the runtime, so the
+// scaffold must keep it out of git: a fresh clone registering its own identity
+// is the intended behaviour, not a conflict to resolve.
+func TestInitGitignoreCoversIdentityMarkers(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	if _, stderr, code := initIn(t, dir, "0.1.0", "acme-sync"); code != 0 {
+		t.Fatalf("init failed: %s", stderr)
+	}
+	paths := []string{".otter-id", "acme-sync/.otter-id"}
+	for _, rel := range paths {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("counter\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initCmd := exec.Command("git", "init", "-q", ".")
+	initCmd.Dir = dir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command("git", "check-ignore", "--stdin")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\n"))
+	out, _ := cmd.Output()
+	ignored := strings.Fields(string(out))
+	for _, want := range paths {
+		if !slices.Contains(ignored, want) {
+			t.Errorf("%s is not ignored; .gitignore is:\n%s", want, readFile(t, filepath.Join(dir, gitignoreFileName)))
+		}
+	}
+}

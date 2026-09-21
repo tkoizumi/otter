@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/tkoizumi/otter/internal/identity"
 )
 
 // Runner executes work against the remote host.
@@ -341,6 +343,13 @@ func (s *SSH) Push(ctx context.Context, localDir, remoteDir string, extraArgs ..
 		"--delete",
 		"--human-readable",
 		"-e", "ssh " + strings.Join(s.sshBaseArgs(), " "),
+		// The identity marker names a running instance, so it must neither
+		// travel nor be deleted: the destination registers its own identity,
+		// and --delete must not remove the marker it already has. An exclude
+		// does both, because rsync protects excluded files from --delete unless
+		// --delete-excluded is set.
+		"--exclude", identity.MarkerFileName,
+		"--exclude", identity.MarkerTempPrefix + "*",
 	}
 	// rsync authenticates as the login user and runs its own remote command, so
 	// a non-root login needs the remote side to escalate as well. Without this,

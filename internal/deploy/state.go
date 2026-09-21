@@ -35,6 +35,20 @@ type State struct {
 	SecretsRevision string `json:"secrets_revision,omitempty"`
 	// DeployedAt is when that revision landed.
 	DeployedAt time.Time `json:"deployed_at"`
+
+	// Bindings relates each deployed integration's label to the identity the
+	// destination runtime assigned it. The destination mints its own identity
+	// -- local and remote ids are independent -- so this record is the only
+	// place the two are related, and it is what lets a later deploy tell
+	// "same instance, new code" from "new instance" without guessing.
+	Bindings []Binding `json:"bindings,omitempty"`
+}
+
+// Binding is one destination registration as recorded by a deploy.
+type Binding struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+	Path string `json:"path"`
 }
 
 // secretState holds the token, separately from State.

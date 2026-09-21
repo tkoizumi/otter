@@ -283,8 +283,10 @@ watermarks; deleting `environments/` costs a re-preparation, nothing more.
 
 An environment is identified by a digest over:
 
-- **The declared inputs** — the integration name, the exact Python pin, and the
-  contents of `.python-version`, `pyproject.toml` and `uv.lock`.
+- **The declared inputs** — the integration's durable identity (not its label:
+  environments are keyed by identity, so renaming a manifest reuses the
+  environment it already built), the exact Python pin, and the contents of
+  `.python-version`, `pyproject.toml` and `uv.lock`.
 - **The preparation policy** — the environment recipe version, the uv version,
   the target OS and architecture, the libc variant, and the explicit
   dependency-selection and installation policy.
@@ -302,6 +304,10 @@ Two consequences worth knowing:
 Runs record the identity they were submitted against, so a retry after a
 dependency or toolchain change still resolves the environment its parent
 selected rather than moving to the new one.
+
+Environments are content-addressed and may be shared by several integrations, so
+`otter delete` never removes them: it purges only what the identity exclusively
+owns. Reclaiming environment disk is a separate, deliberate operation.
 
 ## Preparing
 

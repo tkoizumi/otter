@@ -173,6 +173,14 @@ func (a *App) deployStatus(store deploy.StateStore) int {
 	fmt.Fprintf(a.Stdout, "data:          %s\n", st.Target.DataDir)
 	fmt.Fprintf(a.Stdout, "service:       %s\n", st.Target.ServiceUnit())
 	fmt.Fprintf(a.Stdout, "api:           %s (loopback on the host)\n", st.Target.APIURL())
+	if len(st.Bindings) > 0 {
+		// The destination mints its own identity, so this is the only place a
+		// local label and the remote identity it became are related.
+		fmt.Fprintln(a.Stdout, "\ndestination identities:")
+		for _, b := range st.Bindings {
+			fmt.Fprintf(a.Stdout, "  %-20s %s\n", b.Name, b.ID)
+		}
+	}
 	if token, err := store.LoadToken(); err == nil && token != "" {
 		fmt.Fprintf(a.Stdout, "\nexport OTTER_API_TOKEN=%s\n", token)
 		fmt.Fprintf(a.Stdout, "ssh -N -L 7337:127.0.0.1:7337 %s &\n", st.Target)

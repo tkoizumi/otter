@@ -444,3 +444,24 @@ megabytes; object storage costs cents.
 machines, manage DNS, terminate TLS, mount volumes, join clusters or talk to a
 cloud API. If a future provider backend is added, it should end by producing the
 same thing: a host you can ssh to, with systemd, running `otterd`.
+
+## Integration identity on the host
+
+The destination registers its own integration identities. Local and remote ids
+are independent and need not match, and nothing about a local `.otter-id` travels
+with a deploy: the file is excluded from the staged tree, and excluded and
+protected in the rsync step so `--delete` cannot remove the marker the host
+already has. Each integration is released by its destination path, so a
+directory whose name differs from its manifest label is still resolved
+correctly.
+
+`otter deploy` records the destination identity of every deployed integration in
+`.otter/deploy.json` and prints them from `otter deploy --status`:
+
+```
+destination identities:
+  counter              c1f0d3a4-6e2b-4b0e-9d21-7a5f8c2e1b90
+```
+
+The deployed tree must be writable by the runtime user, because registering a
+new integration writes its `.otter-id` marker. See [identity.md](identity.md).

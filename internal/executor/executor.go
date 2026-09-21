@@ -45,7 +45,15 @@ func (f LogSinkFunc) Line(stream string, at time.Time, message string) { f(strea
 
 // Request describes one execution.
 type Request struct {
-	Manifest       *config.Manifest
+	Manifest *config.Manifest
+
+	// IntegrationID is the durable identity the child addresses its state and
+	// logs with. IntegrationName is the manifest label. They are separate
+	// values on purpose: the label may change or be shared, the identity may
+	// not, and neither is read back out of the manifest here.
+	IntegrationID   string
+	IntegrationName string
+
 	Executable     string
 	Managed        bool
 	RunID          string
@@ -300,7 +308,8 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 	}
 
 	inherited = append(inherited,
-		"OTTER_INTEGRATION_ID="+m.Name,
+		"OTTER_INTEGRATION_ID="+req.IntegrationID,
+		"OTTER_INTEGRATION_NAME="+req.IntegrationName,
 		"OTTER_RUN_ID="+req.RunID,
 		"OTTER_API_URL="+req.APIURL,
 		"OTTER_TRIGGER_TYPE="+req.TriggerType,

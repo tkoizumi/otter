@@ -48,6 +48,12 @@ type IntegrationView struct {
 	Valid            bool              `json:"valid"`
 	Error            string            `json:"error,omitempty"`
 	NextRunAt        *time.Time        `json:"next_run_at,omitempty"`
+
+	// Generation is the identity generation, bumped whenever authority is
+	// revoked (reset, move, retirement, deletion). Status is the ownership
+	// lifecycle. Both belong to the identity, not to the label.
+	Generation int64  `json:"generation,omitempty"`
+	Status     string `json:"status,omitempty"`
 }
 
 // RetryView describes an integration's retry policy.
@@ -68,6 +74,35 @@ type TriggerView struct {
 	// WebhookToken is only populated on the single-integration endpoint, so
 	// that listing integrations never spills credentials.
 	WebhookToken string `json:"webhook_token,omitempty"`
+}
+
+// ResetView reports the identity change a reset performed. The old identity is
+// retired but its data is kept until an explicit delete.
+type ResetView struct {
+	OldID string `json:"old_id"`
+	NewID string `json:"new_id"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+}
+
+// DeletedView reports an identity that was purged. The source directory is
+// left in place and its path is suppressed, so the name is included for the
+// operator even though the id is what was deleted.
+type DeletedView struct {
+	Deleted bool   `json:"deleted"`
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Path    string `json:"path,omitempty"`
+}
+
+// RegisterRequest is the body of POST /v1/integrations.
+type RegisterRequest struct {
+	Path string `json:"path"`
+}
+
+// MoveRequest is the body of POST /v1/integrations/{id}/move.
+type MoveRequest struct {
+	Destination string `json:"destination"`
 }
 
 // RunView augments a run with the state of its whole retry chain.
@@ -103,9 +138,15 @@ type HealthCounts struct {
 // RunToken is the scope granted to a per-run token handed to a child process.
 // It is deliberately narrow: it can read its own run, read and write state
 // for its own integration and append its own logs, nothing more.
+//
+// Generation is the identity generation the run was authorized against. It is
+// carried through the authorization boundary into state mutation so that a
+// token issued before a reset, move, retirement or deletion cannot write to
+// state that now belongs to a different instance.
 type RunToken struct {
 	RunID         string `json:"run_id"`
 	IntegrationID string `json:"integration_id"`
+	Generation    int64  `json:"generation,omitempty"`
 }
 
 // StateResponse is returned by the whole-state endpoint.

@@ -434,6 +434,8 @@ otter deploy --status                   # what this checkout last deployed
 otter prepare [<integration>]           # prepare opt-in managed Python environments
 otter release [<integration>|.] [--all] # stage and activate an immutable release
 otter release --list <integration>      # staged releases, newest first
+otter release --list --all               # every integration with a release, and every one without
+otter release --list --all --prune --apply  # remove release data left by an unregistered integration
 otter release --activate <digest> <integration>  # roll back to a staged release
 ```
 
@@ -715,6 +717,7 @@ PYTHONPATH=lib/python python3 -m unittest discover -s lib/python/tests
 | [docs/api-reference.md](docs/api-reference.md) | Every endpoint, credential type and error code. |
 | [docs/deploy.md](docs/deploy.md) | `otter deploy`: remote install over SSH, secrets, tunnels, upgrades, removal. |
 | [docs/managed-python.md](docs/managed-python.md) | Opt-in managed Python: pinned interpreter, locked dependencies, identity, preparation. |
+| [docs/identity.md](docs/identity.md) | Durable identities vs labels: markers, reference resolution, copy/move/reset/delete, migration. |
 | [docs/operations.md](docs/operations.md) | Deployment, systemd, backups, retention, upgrades, troubleshooting. |
 | [docs/security.md](docs/security.md) | Trust model, tokens, secrets, hardening checklist. |
 | [docs/examples.md](docs/examples.md) | Worked examples, including webhook and scheduled patterns. |

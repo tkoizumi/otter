@@ -17,10 +17,14 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
+
+	"github.com/tkoizumi/otter/internal/identity"
 )
 
 // ManifestFileName is the file Otter looks for when discovering integrations.
-const ManifestFileName = "otter.yaml"
+// It is aliased from the identity package so the manifest layer, discovery and
+// the registry can never disagree about the name.
+const ManifestFileName = identity.ManifestFileName
 
 // SupportedVersion is the only manifest schema version understood today.
 const SupportedVersion = 1

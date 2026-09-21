@@ -35,7 +35,10 @@ func newRunTokenRegistry() *runTokenRegistry {
 }
 
 // Issue creates a token for a run, replacing any previous token for that run.
-func (r *runTokenRegistry) Issue(runID, integrationID string) (string, error) {
+// Issue creates a token for a run, replacing any previous token for that run.
+// Generation is the identity generation the run was authorized against; it is
+// checked again when the token is used to mutate state.
+func (r *runTokenRegistry) Issue(runID, integrationID string, generation int64) (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("generate run token: %w", err)
@@ -47,7 +50,7 @@ func (r *runTokenRegistry) Issue(runID, integrationID string) (string, error) {
 	if existing, ok := r.byRun[runID]; ok {
 		delete(r.byToken, existing)
 	}
-	r.byToken[token] = api.RunToken{RunID: runID, IntegrationID: integrationID}
+	r.byToken[token] = api.RunToken{RunID: runID, IntegrationID: integrationID, Generation: generation}
 	r.byRun[runID] = token
 	return token, nil
 }

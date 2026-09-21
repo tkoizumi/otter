@@ -30,10 +30,16 @@ type fakeRunner struct {
 	// healthURL, when set, makes the health check talk to a real HTTP server
 	// instead of returning a canned response.
 	healthURL string
+	// bindingsJSON is what the destination runtime answers `identity list
+	// --json` with, so a converge can record destination identities.
+	bindingsJSON string
 }
 
-func (f *fakeRunner) RunStream(_ context.Context, command string, _, _ io.Writer) error {
+func (f *fakeRunner) RunStream(_ context.Context, command string, stdout, _ io.Writer) error {
 	f.records = append(f.records, "stream: "+command)
+	if f.bindingsJSON != "" && strings.Contains(command, "identity list") && stdout != nil {
+		_, _ = io.WriteString(stdout, f.bindingsJSON)
+	}
 	return nil
 }
 
@@ -634,5 +640,68 @@ func TestLimitedDeployProtectsOtherIntegrations(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(runner.pushed(), "\n"), "protect") {
 		t.Error("an unrestricted deploy protected the integrations tree")
+	}
+}
+
+// A converge records the identity the destination assigned to each
+// integration, so a later deploy can tell "same instance, new code" from "a
+// new instance" without guessing. Local and remote ids are independent, and
+// the record is the only place they are related.
+func TestRunRecordsDestinationBindings(t *testing.T) {
+	runner := &fakeRunner{
+		healthy: true,
+		bindingsJSON: `[{"id":"remote-identity-1","name":"counter",` +
+			`"path":"/opt/otter/integrations/counter","status":"active"},` +
+			`{"id":"retired-1","name":"gone","path":"/opt/otter/gone","status":"retired"}]`,
+	}
+	deployer, _, _ := newTestDeployer(t, runner, newFakeBuilder(t))
+
+	result, err := deployer.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Bindings) != 1 {
+		t.Fatalf("bindings = %+v, want just the active registration", result.Bindings)
+	}
+	if result.Bindings[0].ID != "remote-identity-1" || result.Bindings[0].Name != "counter" {
+		t.Fatalf("binding = %+v", result.Bindings[0])
+	}
+
+	// It is persisted, which is what makes it usable by `deploy --status` and
+	// by the next deploy.
+	st, ok, err := deployer.Store.Load()
+	if err != nil || !ok {
+		t.Fatalf("load state: ok=%v err=%v", ok, err)
+	}
+	if len(st.Bindings) != 1 || st.Bindings[0].ID != "remote-identity-1" {
+		t.Fatalf("stored bindings = %+v", st.Bindings)
+	}
+
+	// The command reads the registry rather than the API, so it works with the
+	// runtime stopped, and it names the destination root explicitly.
+	var bindingsCommand string
+	for _, record := range runner.records {
+		if strings.Contains(record, "identity list") {
+			bindingsCommand = record
+		}
+	}
+	if !strings.Contains(bindingsCommand, "'/opt/otter/data'") ||
+		!strings.Contains(bindingsCommand, "'/opt/otter/integrations'") {
+		t.Fatalf("bindings command does not name the destination paths: %q", bindingsCommand)
+	}
+}
+
+// A destination whose runtime cannot answer is not fatal: the deploy succeeds
+// and simply records no bindings.
+func TestRunToleratesMissingDestinationBindings(t *testing.T) {
+	runner := &fakeRunner{healthy: true}
+	deployer, _, _ := newTestDeployer(t, runner, newFakeBuilder(t))
+
+	result, err := deployer.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Bindings) != 0 {
+		t.Fatalf("bindings = %+v, want none", result.Bindings)
 	}
 }

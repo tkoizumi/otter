@@ -34,7 +34,10 @@ from otter.log import Logger  # noqa: E402
 from otter.trigger import Trigger  # noqa: E402
 
 RUN_ID = "11111111-2222-3333-4444-555555555555"
-INTEGRATION_ID = "counter"
+# The identity and the label are deliberately different values, so a test that
+# confuses them fails.
+INTEGRATION_ID = "0195a7c2-8e31-7b64-9f02-6dcb482ea510"
+INTEGRATION_NAME = "counter"
 TOKEN = "secret-token"
 
 
@@ -87,6 +90,10 @@ class FakeDaemon:
 
     def count(self, path):
         return self.counts.get(path, 0)
+
+    def paths(self):
+        """Every request path seen so far, for asserting how state is addressed."""
+        return list(self.counts)
 
     # -- request handling -----------------------------------------------
 
@@ -207,6 +214,7 @@ class SDKTestCase(unittest.TestCase):
     def env(self, **overrides):
         values = {
             "OTTER_INTEGRATION_ID": INTEGRATION_ID,
+            "OTTER_INTEGRATION_NAME": INTEGRATION_NAME,
             "OTTER_RUN_ID": RUN_ID,
             "OTTER_API_URL": self.daemon.url,
             "OTTER_STATE_TOKEN": TOKEN,
@@ -410,9 +418,30 @@ class ContextTests(SDKTestCase):
         ctx = Context.from_environment(self.env())
         self.assertEqual(ctx.run_id, RUN_ID)
         self.assertEqual(ctx.integration_id, INTEGRATION_ID)
+        self.assertEqual(ctx.name, INTEGRATION_NAME)
         self.assertEqual(ctx.api_url, self.daemon.url)
         self.assertEqual(ctx.integration_dir, "/tmp/counter")
         self.assertEqual(ctx.trigger.type, "webhook")
+
+    def test_name_falls_back_to_the_identity(self):
+        """A daemon that predates OTTER_INTEGRATION_NAME still yields a label."""
+        env = self.env()
+        del env["OTTER_INTEGRATION_NAME"]
+        ctx = Context.from_environment(env)
+        self.assertEqual(ctx.name, INTEGRATION_ID)
+
+    def test_state_is_namespaced_by_the_identity_not_the_label(self):
+        ctx = Context.from_environment(self.env())
+        ctx.state.set("count", 1)
+        paths = self.daemon.paths()
+        self.assertTrue(
+            any(INTEGRATION_ID in path for path in paths),
+            "state was not addressed by the identity: %r" % (paths,),
+        )
+        self.assertFalse(
+            any(path.endswith("/integrations/%s/state/count" % INTEGRATION_NAME) for path in paths),
+            "state was addressed by the label: %r" % (paths,),
+        )
 
     def test_missing_api_url_raises_ottererror(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -449,6 +478,7 @@ class RunDecoratorTests(SDKTestCase):
     def _subprocess(self, source, **env_overrides):
         env = {
             "OTTER_INTEGRATION_ID": INTEGRATION_ID,
+            "OTTER_INTEGRATION_NAME": INTEGRATION_NAME,
             "OTTER_RUN_ID": RUN_ID,
             "OTTER_API_URL": self.daemon.url,
             "OTTER_STATE_TOKEN": TOKEN,
@@ -476,9 +506,11 @@ class RunDecoratorTests(SDKTestCase):
             "from otter import run\n"
             "@run\n"
             "def main(ctx):\n"
-            "    print('RAN-ONE', ctx.integration_id)\n"
+            "    print('RAN-ONE', ctx.name)\n"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+        # The label, not the opaque identity, is what a decorator's own output
+        # should show.
         self.assertIn("RAN-ONE counter", result.stdout)
 
     def test_executes_zero_argument_function_and_exits_zero(self):

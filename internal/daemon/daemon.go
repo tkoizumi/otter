@@ -22,7 +22,9 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/datalock"
 	"github.com/tkoizumi/otter/internal/executor"
+	"github.com/tkoizumi/otter/internal/identity"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
 	"github.com/tkoizumi/otter/internal/queue"
@@ -93,7 +95,7 @@ func (c *runControl) getReason() cancelReason {
 // Daemon is the Otter runtime.
 type Daemon struct {
 	cfg     config.DaemonConfig
-	owner   *dataLock
+	owner   *datalock.Lock
 	log     *logging.Logger
 	version string
 
@@ -110,6 +112,10 @@ type Daemon struct {
 
 	reg *registry
 	cap *capacity
+
+	// ident is the durable identity authority: it owns the registry, the
+	// source markers and the reconciliation that assigns identities.
+	ident *identity.Service
 
 	runTokens *runTokenRegistry
 
@@ -156,7 +162,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if provider == nil {
 		provider = secrets.NewEnvProvider()
 	}
-	owner, err := acquireDataLock(cfg.DataDir)
+	owner, err := datalock.Acquire(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +182,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	identStore := identity.NewStore(db.DB)
 	d := &Daemon{
 		cfg:       cfg,
 		owner:     owner,
@@ -190,11 +197,17 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		secrets:   provider,
 		reg:       newRegistry(),
 		cap:       newCapacity(cfg.Workers),
+		ident:     identity.NewService(identStore, cfg.IntegrationsDir),
 		runTokens: newRunTokenRegistry(),
 		stopCh:    make(chan struct{}),
 		wakeCh:    make(chan struct{}, 1),
 		runCtl:    map[string]*runControl{},
 		startedAt: time.Now().UTC(),
+	}
+
+	if err := d.ensureIdentityBootstrap(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	sdkPath, err := d.resolveSDKPath()
@@ -256,45 +269,125 @@ func (d *Daemon) resolveSDKPath() (string, error) {
 	return sdk.Extract(d.cfg.DataDir)
 }
 
-// discover loads manifests, generates webhook tokens and registers cron
-// triggers. Invalid integrations are reported, never fatal.
+// discover reconciles the registry against the source tree, then loads the
+// resulting instances into the runtime registry. Invalid integrations are
+// reported, never fatal.
 func (d *Daemon) discover(ctx context.Context) error {
-	items, tokens, err := d.loadIntegrations(ctx)
+	set, err := d.loadIntegrations(ctx)
 	if err != nil {
 		return err
 	}
 
-	d.reg.load(items, tokens)
+	d.reg.load(set)
 	d.cap.setLimits(d.reg.limits())
 
 	valid, invalid := d.reg.counts()
 	d.log.Info("integrations_discovered",
 		"root", d.cfg.IntegrationsDir,
-		"total", len(items),
+		"total", len(set.items),
 		"valid", valid,
 		"invalid", invalid)
 
-	d.logIntegrations(items)
-	d.syncSchedules(items)
+	d.logIntegrations(set.items)
+	d.syncSchedules(set.items)
 
 	return nil
 }
 
-// loadIntegrations reads the integrations directory and resolves the webhook
-// token of every integration that accepts webhooks.
+// loadIntegrations observes the integrations directory, reconciles the durable
+// identity registry against it, and joins the two into the runtime view.
 //
-// It touches no shared state. That is what lets a reload do all of its slow
-// work -- walking the tree, parsing manifests, generating tokens -- before
-// taking any lock, so a large integrations directory is invisible to
+// Identity comes from the registry, never from the manifest: a manifest names
+// a label, and a directory is a location. That is what makes a copied
+// directory a fresh instance, and a deleted-and-recreated one fresh too.
+//
+// It touches no in-memory shared state. That is what lets a reload do all of
+// its slow work -- walking the tree, parsing manifests, writing markers --
+// before taking any lock, so a large integrations directory is invisible to
 // everything already running.
-func (d *Daemon) loadIntegrations(ctx context.Context) ([]*config.Integration, map[string]string, error) {
-	items, err := config.Discover(d.cfg.IntegrationsDir)
+func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
+	known := d.knownSourcePaths(ctx)
+	scan, err := config.Observe(d.cfg.IntegrationsDir, known)
 	if err != nil {
-		return nil, nil, fmt.Errorf("discover integrations: %w", err)
+		return discovered{}, fmt.Errorf("observe integrations: %w", err)
 	}
 
-	tokens := map[string]string{}
-	for _, it := range items {
+	// Recovery runs before reconciliation so a crash midway through an earlier
+	// mutation converges on one identity instead of minting a second one.
+	if _, err := d.ident.Recover(ctx); err != nil {
+		d.log.Error("identity_recovery_failed", err)
+	}
+	if _, err := d.ident.Reconcile(ctx, scan); err != nil {
+		return discovered{}, fmt.Errorf("reconcile integration identity: %w", err)
+	}
+
+	instances, err := d.ident.Store().Instances(ctx)
+	if err != nil {
+		return discovered{}, err
+	}
+
+	set := discovered{
+		tokens:    map[string]string{},
+		instances: map[string]identity.Instance{},
+	}
+	for _, inst := range instances {
+		if inst.Status != identity.StatusActive {
+			continue
+		}
+		it := &config.Integration{
+			ID:   inst.ID.String(),
+			Name: inst.Name,
+			Dir:  inst.CanonicalPath,
+		}
+		if inst.CanonicalPath == "" {
+			it.Error = "instance has no source path"
+		} else {
+			it.ManifestPath = filepath.Join(inst.CanonicalPath, config.ManifestFileName)
+			m, err := config.LoadAndValidate(it.ManifestPath)
+			if err != nil {
+				it.Error = err.Error()
+			} else {
+				it.Manifest = m
+				it.Valid = true
+			}
+		}
+		set.items = append(set.items, it)
+		set.instances[it.ID] = inst
+	}
+
+	// A directory the registry does not own is surfaced anyway when it is
+	// present but unusable, so an operator still sees a broken manifest or an
+	// untrustworthy marker in `otter integrations --all`. These entries carry
+	// no identity: they cannot run, and they never claim state.
+	owned := map[string]bool{}
+	for _, inst := range instances {
+		if inst.Status == identity.StatusActive || inst.Status == identity.StatusDeleting {
+			owned[inst.CanonicalPath] = true
+		}
+	}
+	for _, obs := range scan.Observations {
+		if !obs.Exists || owned[obs.Path] {
+			continue
+		}
+		if rec, found, err := d.ident.Store().PathRecord(ctx, obs.Path); err == nil && found && rec.Suppressed {
+			continue
+		}
+		label := obs.Name
+		if label == "" {
+			label = filepath.Base(obs.Path)
+		}
+		set.items = append(set.items, &config.Integration{
+			ID:           label,
+			Name:         label,
+			Dir:          obs.Path,
+			ManifestPath: filepath.Join(obs.Path, config.ManifestFileName),
+			Valid:        false,
+			Error:        observationError(obs),
+		})
+	}
+	sort.Slice(set.items, func(i, j int) bool { return set.items[i].ID < set.items[j].ID })
+
+	for _, it := range set.items {
 		if !it.Valid || it.Manifest == nil || !it.Manifest.WebhookEnabled() {
 			continue
 		}
@@ -303,10 +396,27 @@ func (d *Daemon) loadIntegrations(ctx context.Context) ([]*config.Integration, m
 			d.log.Error("webhook_token_failed", err, "integration", it.ID)
 			continue
 		}
-		tokens[it.ID] = token
+		set.tokens[it.ID] = token
 	}
 
-	return items, tokens, nil
+	return set, nil
+}
+
+// knownSourcePaths returns every canonical source path the registry knows, so
+// the scan describes them explicitly instead of inferring deletion from their
+// absence in the manifest walk.
+func (d *Daemon) knownSourcePaths(ctx context.Context) []string {
+	paths, err := d.ident.Store().Paths(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p.CanonicalPath != "" {
+			out = append(out, p.CanonicalPath)
+		}
+	}
+	return out
 }
 
 // logIntegrations reports what discovery found, one integration at a time.
@@ -314,14 +424,16 @@ func (d *Daemon) logIntegrations(items []*config.Integration) {
 	for _, it := range items {
 		if !it.Valid {
 			d.log.Warn("integration_invalid",
-				"integration", it.ID,
+				"integration", it.Name,
+				"id", it.ID,
 				"path", it.ManifestPath,
 				"error", it.Error)
 			continue
 		}
 		m := it.Manifest
 		d.log.Debug("integration_registered",
-			"integration", it.ID,
+			"integration", it.Name,
+			"id", it.ID,
 			"path", it.Dir,
 			"cron", m.Cron(),
 			"webhook", m.WebhookEnabled(),
@@ -398,20 +510,20 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 	}
 	defer d.reloadMu.Unlock()
 
-	items, tokens, err := d.loadIntegrations(ctx)
+	set, err := d.loadIntegrations(ctx)
 	if err != nil {
 		return api.ReloadResult{}, err
 	}
 
 	before := d.reg.snapshot()
-	result := diffRegistry(before, items)
+	result := diffRegistry(before, set.items)
 
 	// Work belonging to an integration that is about to disappear can never
 	// run -- a worker refuses to claim it -- so it is ended here, with a reason
 	// that names the cause, before the swap that makes it unrunnable. Doing it
 	// first also closes the gap in which a worker could claim one and fail it
 	// with a less useful message.
-	cancelled, err := d.cancelRunsOfRemoved(ctx, result.Removed)
+	cancelled, err := d.cancelRunsOfRemoved(ctx, removedIdentityIDs(before, set.items))
 	if err != nil {
 		d.log.Error("reload_cancel_removed_failed", err)
 	}
@@ -419,14 +531,14 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 
 	// Discovery already succeeded, so nothing below can fail: the new set is
 	// applied whole.
-	d.reg.load(items, tokens)
+	d.reg.load(set)
 	d.cap.setLimits(d.reg.limits())
-	d.syncSchedules(items)
+	d.syncSchedules(set.items)
 
 	valid, invalid := d.reg.counts()
 	d.log.Info("integrations_reloaded",
 		"root", d.cfg.IntegrationsDir,
-		"total", len(items),
+		"total", len(set.items),
 		"valid", valid,
 		"invalid", invalid,
 		"added", len(result.Added),
@@ -437,10 +549,11 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 	// An invalid manifest is worth naming on a reload for the same reason it is
 	// at startup: it is the difference between "not there" and "there but
 	// broken", and only one of those is fixed by editing the file.
-	for _, it := range items {
+	for _, it := range set.items {
 		if !it.Valid {
 			d.log.Warn("integration_invalid",
-				"integration", it.ID,
+				"integration", it.Name,
+				"id", it.ID,
 				"path", it.ManifestPath,
 				"error", it.Error)
 		}
@@ -452,31 +565,36 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 // diffRegistry reports what a reload changed, relative to what the daemon knew
 // before it. Changed means the manifest itself differs, which is what an
 // operator who edited otter.yaml expects to see reported.
+//
+// Entries are reported by label: the operator edited a manifest with a name,
+// and an opaque identity would make the report unreadable. The identity is
+// still the key; the label is only what is printed.
 func diffRegistry(before map[string]*registered, items []*config.Integration) api.ReloadResult {
 	result := api.ReloadResult{}
 	present := make(map[string]bool, len(items))
 
 	for _, it := range items {
 		present[it.ID] = true
+		label := displayLabel(it)
 
 		old, existed := before[it.ID]
 		switch {
 		case !existed:
-			result.Added = append(result.Added, it.ID)
+			result.Added = append(result.Added, label)
 		case old.Integration.Valid != it.Valid ||
 			old.Integration.Error != it.Error ||
 			!reflect.DeepEqual(old.Manifest, it.Manifest):
-			result.Changed = append(result.Changed, it.ID)
+			result.Changed = append(result.Changed, label)
 		}
 
 		if !it.Valid {
-			result.Invalid = append(result.Invalid, it.ID)
+			result.Invalid = append(result.Invalid, label)
 		}
 	}
 
-	for id := range before {
+	for id, entry := range before {
 		if !present[id] {
-			result.Removed = append(result.Removed, id)
+			result.Removed = append(result.Removed, displayLabel(entry.Integration))
 		}
 	}
 
@@ -488,6 +606,35 @@ func diffRegistry(before map[string]*registered, items []*config.Integration) ap
 	result.Total = len(items)
 	result.Valid = result.Total - len(result.Invalid)
 	return result
+}
+
+// displayLabel renders an integration for a human-facing report.
+func displayLabel(it *config.Integration) string {
+	if it == nil {
+		return ""
+	}
+	if it.Name != "" {
+		return it.Name
+	}
+	return it.ID
+}
+
+// removedIdentityIDs returns the durable identities that disappeared, which is
+// what cancelling their queued runs needs. The display result reports labels;
+// run records are keyed by identity, so the two must not be confused.
+func removedIdentityIDs(before map[string]*registered, items []*config.Integration) []string {
+	present := make(map[string]bool, len(items))
+	for _, it := range items {
+		present[it.ID] = true
+	}
+	var out []string
+	for id := range before {
+		if !present[id] {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // cancelRunsOfRemoved ends the queued and retrying runs of integrations that a

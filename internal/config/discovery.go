@@ -13,10 +13,13 @@ import (
 // integration or an invalid one that must be reported without taking the
 // daemon down.
 type Integration struct {
-	// ID is the integration name from the manifest. When the manifest cannot
-	// be parsed at all, the directory name is used so the problem is still
-	// addressable.
-	ID           string
+	// ID is the runtime identity. Discovery alone cannot mint one, so the
+	// legacy Discover path fills it with the manifest name; the daemon
+	// replaces it with the durable identity the registry assigned.
+	ID string
+	// Name is the manifest label. It is mutable and may be shared by more
+	// than one instance; it is never a durable key.
+	Name         string
 	Dir          string
 	ManifestPath string
 
@@ -136,12 +139,15 @@ func loadIntegration(manifestPath string) *Integration {
 	m, err := Load(manifestPath)
 	if err != nil {
 		it.ID = filepath.Base(it.Dir)
+		it.Name = it.ID
 		it.Error = err.Error()
 		return it
 	}
+	it.Name = m.Name
 	it.ID = m.Name
 	if it.ID == "" {
 		it.ID = filepath.Base(it.Dir)
+		it.Name = it.ID
 	}
 	it.Manifest = m
 

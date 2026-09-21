@@ -72,6 +72,11 @@ func (s *Server) Handler() http.Handler {
 
 	// Admin-only: these act on the whole runtime.
 	mux.Handle("GET /v1/integrations", s.admin(s.handleListIntegrations))
+	mux.Handle("GET /v1/integrations/resolve", s.admin(s.handleResolveIntegration))
+	mux.Handle("POST /v1/integrations", s.admin(s.handleRegisterIntegration))
+	mux.Handle("POST /v1/integrations/{id}/reset", s.admin(s.handleResetIntegration))
+	mux.Handle("POST /v1/integrations/{id}/move", s.admin(s.handleMoveIntegration))
+	mux.Handle("DELETE /v1/integrations/{id}", s.admin(s.handleDeleteIntegration))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
 	mux.Handle("POST /v1/integrations/{id}/runs", s.admin(s.handleSubmitRun))
 	mux.Handle("GET /v1/runs", s.admin(s.handleListRuns))
@@ -365,6 +370,96 @@ func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, http.StatusOK, map[string]any{"integrations": s.backend.ListIntegrations()})
 }
 
+// handleResolveIntegration resolves a label, path or id reference. It is the
+// one place reference resolution lives, so the CLI never has to guess and
+// never has to read the registry database itself.
+//
+// A reference that is ambiguous is a 409 naming every candidate; a reference
+// that matches nothing is a 404.
+func (s *Server) handleResolveIntegration(w http.ResponseWriter, r *http.Request) {
+	ref := r.URL.Query().Get("ref")
+	if strings.TrimSpace(ref) == "" {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "ref is required")
+		return
+	}
+	view, err := s.backend.ResolveIntegration(ref)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleRegisterIntegration registers a source directory explicitly.
+func (s *Server) handleRegisterIntegration(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req RegisterRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "body must be a JSON object with a path")
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "path is required")
+		return
+	}
+	view, err := s.backend.RegisterIntegration(r.Context(), req.Path)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleResetIntegration retires an identity and mints a fresh one.
+func (s *Server) handleResetIntegration(w http.ResponseWriter, r *http.Request) {
+	result, err := s.backend.ResetIntegration(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// handleMoveIntegration preserves an identity across a directory rename.
+func (s *Server) handleMoveIntegration(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req MoveRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "body must be a JSON object with a destination")
+		return
+	}
+	if strings.TrimSpace(req.Destination) == "" {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "destination is required")
+		return
+	}
+	view, err := s.backend.MoveIntegration(r.Context(), r.PathValue("id"), req.Destination)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleDeleteIntegration purges an identity's durable artifacts. It is a
+// distinct operation from removing the directory: the source files are left
+// alone and the path is suppressed so a scan cannot silently re-register it.
+func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request) {
+	result, err := s.backend.DeleteIntegration(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
 // handleReload re-reads the integrations directory against the running daemon.
 // It is admin-only because it changes what the whole runtime knows about, and
 // therefore what every other caller can address.
@@ -575,10 +670,28 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, CancelRunResponse{RunID: id, Status: "cancelled"})
 }
 
+// generationAllows reports whether a per-run principal may still act on an
+// integration. An admin always may; a run token may only while the generation
+// it was issued against is still the current one, so a token minted before a
+// reset, move, retirement or deletion cannot write to state that now belongs
+// to a different instance.
+func (s *Server) generationAllows(p principal, id string) bool {
+	if p.Admin || p.Token.Generation == 0 {
+		return true
+	}
+	current, ok := s.backend.IntegrationGeneration(id)
+	return ok && current == p.Token.Generation
+}
+
 func (s *Server) handleGetAllState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !principalFrom(r.Context()).allowsIntegration(id) {
 		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+		return
+	}
+
+	if !s.generationAllows(principalFrom(r.Context()), id) {
+		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
 		return
 	}
 
@@ -601,6 +714,11 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.generationAllows(principalFrom(r.Context()), id) {
+		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
+		return
+	}
+
 	value, err := s.backend.GetState(r.Context(), id, key)
 	if err != nil {
 		s.fail(w, r, err)
@@ -619,6 +737,11 @@ func (s *Server) handleSetState(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if !principalFrom(r.Context()).allowsIntegration(id) {
 		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+		return
+	}
+
+	if !s.generationAllows(principalFrom(r.Context()), id) {
+		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
 		return
 	}
 
@@ -651,6 +774,11 @@ func (s *Server) handleDeleteState(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if !principalFrom(r.Context()).allowsIntegration(id) {
 		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+		return
+	}
+
+	if !s.generationAllows(principalFrom(r.Context()), id) {
+		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
 		return
 	}
 

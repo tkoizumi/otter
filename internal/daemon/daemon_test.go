@@ -19,6 +19,7 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/identity"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
 	"github.com/tkoizumi/otter/internal/release"
@@ -73,30 +74,130 @@ func freeAddr(t *testing.T) string {
 // root. A run executes the active release rather than the source tree, so a
 // workspace with no releases refuses every submission -- including the ones a
 // test is about to make.
+//
+// Releases are keyed by the durable identity, which the registry assigns, so
+// this helper performs the same observe-and-reconcile pass the daemon will:
+// the identities it mints are the ones the daemon then reuses.
 func releaseAll(t *testing.T, root, dataDir string) {
 	t.Helper()
 
-	items, err := config.Discover(root)
+	ctx := context.Background()
+	db, err := database.Open(ctx, dataDir)
 	if err != nil {
-		t.Fatalf("discover %s: %v", root, err)
+		t.Fatalf("open %s: %v", dataDir, err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close %s: %v", dataDir, err)
+		}
+	}()
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate %s: %v", dataDir, err)
+	}
+
+	store := identity.NewStore(db.DB)
+	svc := identity.NewService(store, root)
+	scan, err := config.Observe(root, nil)
+	if err != nil {
+		t.Fatalf("observe %s: %v", root, err)
+	}
+	if _, err := svc.Recover(ctx); err != nil {
+		t.Fatalf("identity recover: %v", err)
+	}
+	if _, err := svc.Reconcile(ctx, scan); err != nil {
+		t.Fatalf("identity reconcile: %v", err)
+	}
+
+	// Identity paths are canonical, so the release base must be too: on a
+	// platform where the temporary directory is reached through a symlink,
+	// mixing the two spellings has no common ancestor.
+	canonicalRoot, err := identity.Canonical(root)
+	if err != nil {
+		t.Fatalf("canonical %s: %v", root, err)
+	}
+
+	instances, err := store.Instances(ctx)
+	if err != nil {
+		t.Fatalf("list instances: %v", err)
 	}
 	manager := release.Manager{DataDir: dataDir}
-	for _, item := range items {
-		if !item.Valid {
+	for _, inst := range instances {
+		if inst.Status != identity.StatusActive {
+			continue
+		}
+		manifestPath := filepath.Join(inst.CanonicalPath, config.ManifestFileName)
+		if _, err := config.LoadAndValidate(manifestPath); err != nil {
 			continue // the daemon reports invalid manifests itself
 		}
-		layout, err := release.Plan(root, item.Dir, nil)
+		layout, err := release.Plan(canonicalRoot, inst.CanonicalPath, nil)
 		if err != nil {
-			t.Fatalf("plan %s: %v", item.ID, err)
+			t.Fatalf("plan %s: %v", inst.ID, err)
 		}
-		meta, err := manager.StageWithLayout(item.ID, item.Dir, layout, "")
+		meta, err := manager.StageWithLayout(inst.ID.String(), inst.CanonicalPath, layout, "")
 		if err != nil {
-			t.Fatalf("stage %s: %v", item.ID, err)
+			t.Fatalf("stage %s: %v", inst.ID, err)
 		}
-		if err := manager.Activate(item.ID, meta.Digest); err != nil {
-			t.Fatalf("activate %s: %v", item.ID, err)
+		if err := manager.Activate(inst.ID.String(), meta.Digest); err != nil {
+			t.Fatalf("activate %s: %v", inst.ID, err)
 		}
 	}
+}
+
+// runtimeID resolves the durable identity a test knows by label. Tests assert
+// on identity, never on the label, because the label is not a key.
+func runtimeID(t *testing.T, d *Daemon, label string) string {
+	t.Helper()
+	entry, err := d.resolveRef(label)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", label, err)
+	}
+	return entry.Integration.ID
+}
+
+// identityIDFor runs the same observe-and-reconcile pass the daemon will, so a
+// test can learn an integration's durable identity before the daemon exists --
+// for example to seed a run record or stage a release the way production keys
+// them.
+func identityIDFor(t *testing.T, root, dataDir, label string) string {
+	t.Helper()
+
+	ctx := context.Background()
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open %s: %v", dataDir, err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close %s: %v", dataDir, err)
+		}
+	}()
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate %s: %v", dataDir, err)
+	}
+
+	store := identity.NewStore(db.DB)
+	svc := identity.NewService(store, root)
+	scan, err := config.Observe(root, nil)
+	if err != nil {
+		t.Fatalf("observe %s: %v", root, err)
+	}
+	if _, err := svc.Recover(ctx); err != nil {
+		t.Fatalf("identity recover: %v", err)
+	}
+	if _, err := svc.Reconcile(ctx, scan); err != nil {
+		t.Fatalf("identity reconcile: %v", err)
+	}
+	instances, err := store.Instances(ctx)
+	if err != nil {
+		t.Fatalf("list instances: %v", err)
+	}
+	for _, inst := range instances {
+		if inst.Status == identity.StatusActive && inst.Name == label {
+			return inst.ID.String()
+		}
+	}
+	t.Fatalf("no active identity labeled %q", label)
+	return ""
 }
 
 // newDaemon builds a daemon over root, releasing every integration the test
@@ -657,7 +758,7 @@ time.sleep(0.6)
 	}
 
 	done := func() bool {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: "slow", Limit: 10})
+		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: runtimeID(t, d, "slow"), Limit: 10})
 		if err != nil {
 			return false
 		}
@@ -670,7 +771,7 @@ time.sleep(0.6)
 		return finished == 3
 	}
 
-	peak := trackPeakConcurrency(d, "slow", done, 60*time.Second)
+	peak := trackPeakConcurrency(d, runtimeID(t, d, "slow"), done, 60*time.Second)
 	if peak > 1 {
 		t.Fatalf("concurrency: 1 allowed %d simultaneous runs", peak)
 	}
@@ -710,7 +811,7 @@ time.sleep(1.0)
 	}
 
 	done := func() bool {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: "parallel", Limit: 10})
+		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: runtimeID(t, d, "parallel"), Limit: 10})
 		if err != nil {
 			return false
 		}
@@ -723,7 +824,7 @@ time.sleep(1.0)
 		return finished == 3
 	}
 
-	peak := trackPeakConcurrency(d, "parallel", done, 60*time.Second)
+	peak := trackPeakConcurrency(d, runtimeID(t, d, "parallel"), done, 60*time.Second)
 	if peak < 2 {
 		t.Fatalf("concurrency: 3 only ever ran %d at a time", peak)
 	}
@@ -834,6 +935,7 @@ print("job ran")
 `)
 
 	dataDir := t.TempDir()
+	jobID := identityIDFor(t, root, dataDir, "job")
 
 	// Simulate a daemon that was killed while this run was executing.
 	seed, err := database.Open(context.Background(), dataDir)
@@ -846,7 +948,7 @@ print("job ran")
 	startedAt := time.Now().UTC().Add(-time.Minute)
 	seedRun := &runs.Run{
 		ID:            "interrupted-run",
-		IntegrationID: "job",
+		IntegrationID: jobID,
 		TriggerType:   runs.TriggerManual,
 		Status:        runs.StatusRunning,
 		Attempt:       1,
@@ -907,6 +1009,7 @@ retry:
 `, `print("noop")`)
 
 	dataDir := t.TempDir()
+	jobID := identityIDFor(t, root, dataDir, "job")
 	seed, err := database.Open(context.Background(), dataDir)
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -916,7 +1019,7 @@ retry:
 	}
 	if err := runs.NewStore(seed.DB).Create(context.Background(), &runs.Run{
 		ID:            "interrupted",
-		IntegrationID: "job",
+		IntegrationID: jobID,
 		TriggerType:   runs.TriggerManual,
 		Status:        runs.StatusRunning,
 		Attempt:       1,
@@ -1048,7 +1151,7 @@ print("job ran")
 	// inconsistency a crash can leave behind; reconciliation must repair it.
 	orphan := &runs.Run{
 		ID:            "orphan-run",
-		IntegrationID: "job",
+		IntegrationID: runtimeID(t, d, "job"),
 		TriggerType:   runs.TriggerManual,
 		Status:        runs.StatusQueued,
 		Attempt:       1,
@@ -1116,11 +1219,11 @@ trigger:
 
 	d := newDaemon(t, root, "", nil, nil)
 
-	spec, ok := d.sched.Spec("ticker")
+	spec, ok := d.sched.Spec(runtimeID(t, d, "ticker"))
 	if !ok || spec != "@every 1s" {
 		t.Fatalf("cron spec = %q (registered=%v), want @every 1s", spec, ok)
 	}
-	if _, ok := d.sched.Spec("five-field"); !ok {
+	if _, ok := d.sched.Spec(runtimeID(t, d, "five-field")); !ok {
 		t.Error("the five-field cron expression was not registered")
 	}
 	if d.sched.Count() != 2 {
@@ -1129,11 +1232,11 @@ trigger:
 
 	startDaemon(t, d)
 
-	if next, ok := d.sched.Next("five-field"); !ok || next.IsZero() {
+	if next, ok := d.sched.Next(runtimeID(t, d, "five-field")); !ok || next.IsZero() {
 		t.Error("a registered cron trigger should expose its next fire time")
 	}
 
-	list := awaitRunCount(t, d, "ticker", 1, 20*time.Second)
+	list := awaitRunCount(t, d, runtimeID(t, d, "ticker"), 1, 20*time.Second)
 	if list[0].TriggerType != runs.TriggerCron {
 		t.Errorf("cron run trigger type = %q, want cron", list[0].TriggerType)
 	}
@@ -1323,16 +1426,17 @@ python:
 `, `print("ok")`)
 	dataDir := t.TempDir()
 
+	demoID := identityIDFor(t, root, dataDir, "demo")
 	manager := release.Manager{DataDir: dataDir}
 	layout, err := release.Plan(root, dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, err := manager.StageWithLayout("demo", dir, layout, "")
+	meta, err := manager.StageWithLayout(demoID, dir, layout, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Activate("demo", meta.Digest); err != nil {
+	if err := manager.Activate(demoID, meta.Digest); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1420,7 +1524,7 @@ func TestStateAPIRoundTripAndNamespacing(t *testing.T) {
 func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	registry := newRunTokenRegistry()
 
-	token, err := registry.Issue("run-1", "integration-a")
+	token, err := registry.Issue("run-1", "integration-a", 0)
 	if err != nil {
 		t.Fatalf("issue token: %v", err)
 	}
@@ -1445,8 +1549,8 @@ func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	}
 
 	// Issuing a second token for the same run replaces the first.
-	first, _ := registry.Issue("run-2", "integration-b")
-	second, _ := registry.Issue("run-2", "integration-b")
+	first, _ := registry.Issue("run-2", "integration-b", 0)
+	second, _ := registry.Issue("run-2", "integration-b", 0)
 	if _, ok := registry.Lookup(first); ok {
 		t.Error("re-issuing should invalidate the previous token for that run")
 	}
@@ -1459,7 +1563,7 @@ func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			tok, err := registry.Issue("concurrent", "integration-c")
+			tok, err := registry.Issue("concurrent", "integration-c", 0)
 			if err == nil {
 				registry.Lookup(tok)
 				registry.Revoke(tok)
@@ -1542,7 +1646,7 @@ time.sleep(1.0)
 	}
 
 	done := func() bool {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: "parallel", Limit: 10})
+		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: runtimeID(t, d, "parallel"), Limit: 10})
 		if err != nil {
 			return false
 		}
@@ -1555,7 +1659,7 @@ time.sleep(1.0)
 		return finished == 4
 	}
 
-	peak := trackPeakConcurrency(d, "parallel", done, 90*time.Second)
+	peak := trackPeakConcurrency(d, runtimeID(t, d, "parallel"), done, 90*time.Second)
 	if peak > 2 {
 		t.Fatalf("--workers 2 allowed %d simultaneous runs", peak)
 	}
@@ -1804,7 +1908,7 @@ trigger:
 	startDaemon(t, d)
 
 	ctx := context.Background()
-	nextBefore, ok := d.sched.Next("existing")
+	nextBefore, ok := d.sched.Next(runtimeID(t, d, "existing"))
 	if !ok {
 		t.Fatal("the existing cron trigger has no next fire time")
 	}
@@ -1843,7 +1947,7 @@ trigger:
 
 	// The integration that did not change kept its schedule, which is the
 	// property a restart cannot offer.
-	nextAfter, ok := d.sched.Next("existing")
+	nextAfter, ok := d.sched.Next(runtimeID(t, d, "existing"))
 	if !ok {
 		t.Fatal("the existing cron trigger disappeared across a reload")
 	}
@@ -1948,7 +2052,7 @@ trigger:
 	}
 
 	// An invalid manifest must not keep its cron trigger.
-	if _, ok := d.sched.Spec("broken"); ok {
+	if _, ok := d.sched.Spec(runtimeID(t, d, "broken")); ok {
 		t.Error("an invalid integration should not have a cron trigger")
 	}
 }
@@ -2067,15 +2171,18 @@ trigger:
 	if len(result.Invalid) != 0 {
 		t.Errorf("invalid = %v after the fix, want none", result.Invalid)
 	}
-	if len(result.Changed) != 1 || result.Changed[0] != "fixed" {
-		t.Errorf("changed = %v, want [fixed]", result.Changed)
+	// A manifest that never registered had no identity to change: fixing it
+	// registers one, so the fix is reported as an addition rather than a
+	// change. Its unregistered placeholder is reported as removed.
+	if len(result.Added) != 1 || result.Added[0] != "fixed" {
+		t.Errorf("added = %v, want [fixed]", result.Added)
 	}
 
 	view, ok := d.GetIntegration("fixed")
 	if !ok || !view.Valid {
 		t.Fatalf("the fixed integration is still not valid: ok=%v view=%+v", ok, view)
 	}
-	if spec, ok := d.sched.Spec("fixed"); !ok || spec != "@every 4h" {
+	if spec, ok := d.sched.Spec(runtimeID(t, d, "fixed")); !ok || spec != "@every 4h" {
 		t.Errorf("cron spec = %q (registered=%v), want @every 4h", spec, ok)
 	}
 }

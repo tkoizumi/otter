@@ -91,6 +91,14 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdReload(ctx, g, commandArgs)
 	case "inspect":
 		return a.cmdInspect(ctx, g, commandArgs)
+	case "register":
+		return a.cmdRegister(ctx, g, commandArgs)
+	case "reset":
+		return a.cmdReset(ctx, g, commandArgs)
+	case "delete":
+		return a.cmdDelete(ctx, g, commandArgs)
+	case "move":
+		return a.cmdMove(ctx, g, commandArgs)
 	case "run":
 		return a.cmdRun(ctx, g, commandArgs)
 	case "runs":
@@ -103,6 +111,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdState(ctx, g, commandArgs)
 	case "validate":
 		return a.cmdValidate(commandArgs)
+	case "identity":
+		return a.cmdIdentity(ctx, commandArgs)
 	case "init":
 		// Scaffolds a workspace and one integration. Local: no daemon, no
 		// network, nothing but files the developer is expected to edit.
@@ -121,7 +131,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	case "deploy":
 		return a.cmdDeploy(ctx, g, commandArgs)
 	case "release":
-		return a.cmdRelease(ctx, commandArgs)
+		return a.cmdRelease(ctx, g, commandArgs)
 	case "prepare":
 		return a.cmdPrepare(ctx, commandArgs)
 	default:
@@ -1176,6 +1186,13 @@ Runtime:
   run [<integration>] [--no-wait] run it, wait, print the outcome and its output
   serve [flags]                   run the daemon with the daemon's own defaults
 
+Identity:
+  register [<path>|.]             give a source directory a durable identity
+  reset <integration>             retire its identity, mint a fresh one at the same path
+  delete <integration>            purge its state, history, tokens and releases
+  move <integration> <dest>       preserve its identity across a directory rename
+  identity migrate [--apply]      move a name-keyed workspace onto the identity registry
+
 Runs:
   runs [--integration I] [--status S] [--limit N]
   run-status <run-id>             show a run and its retry attempts
@@ -1195,6 +1212,8 @@ Python:
   release [--all] [<integration>|.]
                                   stage and activate an immutable release
   release --list <integration>    list staged releases
+  release --list --all            every integration that has a release, and every one that does not
+  release --list --all --prune    remove release directories with no registered identity (--apply to act)
   release --activate <digest> <integration>
                                   roll back to a staged release
 
@@ -1214,10 +1233,18 @@ address below .otter/, walking up from the working directory. A running daemon
 records its address there when it starts, so commands in a project reach the
 daemon serving that project -- including one on a non-default port.
 
-An integration is addressed by the name in its manifest, or by the filesystem
-path that holds that manifest: otter run . runs the integration in the working
-directory, otter run inside one does the same, and otter inspect . looks at it.
-The name is read from otter.yaml, so the directory name does not matter.
+An integration is addressed by the label in its manifest, by the filesystem path
+that holds that manifest, or by its durable identity as id:<id>: otter run .
+runs the integration in the working directory, otter run inside one does the
+same, and otter inspect . looks at it. A path is resolved through the registry,
+so the directory name does not matter. Labels need not be unique; when two
+integrations share one, the bare label is refused and the candidates are listed.
+
+State, run history, webhook tokens, releases and environments belong to the
+durable identity the runtime mints, not to the label, so renaming an
+integration keeps them and copying a directory does not inherit them. See
+docs/identity.md. The "otter identity migrate" command moves an older,
+name-keyed workspace onto the registry.
 
 A run executes the integration's active release rather than its source tree, so
 an edit is not live until otter release stages and activates a new one. Every
@@ -1252,7 +1279,8 @@ Examples:
 // is how `otter deploy` operates on a host that has no checkout.
 func needsDaemon(command string) bool {
 	switch command {
-	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state":
+	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state",
+		"register", "reset", "delete", "move":
 		return true
 	default:
 		return false

@@ -33,6 +33,33 @@ type Backend interface {
 	// GetIntegration returns one integration, including its webhook token.
 	GetIntegration(id string) (IntegrationView, bool)
 
+	// IntegrationGeneration reports the current identity generation of an
+	// integration, so a per-run token issued against an older generation can
+	// be refused at the point of mutation.
+	IntegrationGeneration(id string) (int64, bool)
+
+	// ResolveIntegration resolves a label, a path or an id to the integration
+	// it names. It is how the CLI learns the durable identity of a target
+	// without reading the registry itself.
+	ResolveIntegration(ref string) (IntegrationView, error)
+
+	// RegisterIntegration registers a source path explicitly, clearing any
+	// deletion suppression. It never adopts a supplied marker into existing
+	// state.
+	RegisterIntegration(ctx context.Context, path string) (IntegrationView, error)
+
+	// ResetIntegration retires an identity and mints a fresh one at the same
+	// path, preserving the old data for explicit deletion.
+	ResetIntegration(ctx context.Context, ref string) (ResetView, error)
+
+	// DeleteIntegration purges an identity's state, history, tokens, releases
+	// and owned environments. Source files are left in place. A retired or
+	// already-deleted identity is still a legitimate target when named by id.
+	DeleteIntegration(ctx context.Context, ref string) (DeletedView, error)
+
+	// MoveIntegration preserves an identity across a same-filesystem rename.
+	MoveIntegration(ctx context.Context, ref, destination string) (IntegrationView, error)
+
 	// Reload re-reads the integrations directory and applies what it finds to
 	// the running daemon, without stopping it. Executing runs and unchanged
 	// cron schedules are left alone.

@@ -397,3 +397,16 @@ values:
 - [ ] Backups of `otter.db` are access-controlled and encrypted at rest.
 - [ ] One daemon per trust boundary; untrusted integrations run in separate
       containers or VMs.
+
+## Integration identity
+
+State, run history, webhook tokens, releases and prepared environments belong to
+an integration's durable identity, which the runtime mints and records in a
+`.otter-id` marker inside the source directory. The marker is a claim, not a
+credential: write access to an integration directory already lets its holder
+change the code the runtime executes, so a forged marker is not an escalation.
+
+What identity does protect against is mistakes: copying a directory creates a
+new instance with empty state, and deleting and recreating one does not inherit
+the previous instance's data. It is not isolation from a hostile process running
+as the same user. See [identity.md](identity.md).

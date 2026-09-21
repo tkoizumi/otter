@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/tkoizumi/otter/internal/identity"
 )
 
 // Builder performs the local half of a deploy: cross-compiling the binaries and
@@ -155,6 +157,11 @@ func stageSkip(path string, d fs.DirEntry) bool {
 		return false
 	}
 	switch {
+	case name == identity.MarkerFileName || identity.IsMarkerTempName(name):
+		// The identity marker names a local instance. Shipping it would make
+		// the destination adopt this checkout's identity, and every later
+		// deploy would fight over it. The destination registers its own.
+		return true
 	case name == ".env" || strings.HasSuffix(name, ".env"):
 		return true // never ship secrets inside a synced tree
 	case strings.HasSuffix(name, ".graphql"):

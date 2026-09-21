@@ -302,6 +302,7 @@ unprepared release.
 
 Releases accumulate under `<data dir>/.releases`. Nothing removes them unless
 you pass `otter release --keep N`, so check `otter release --list <integration>`
+(or `otter release --list --all` for every integration and every gap)
 if the data directory grows. Retention is per integration and `--keep` applies
 to `--all` as well, so `otter release --all --keep 3` prunes a whole workspace
 in one command.
@@ -746,7 +747,7 @@ Typical causes:
 | Error | Fix |
 | --- | --- |
 | `name must match ^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$` | Lowercase it; remove leading/trailing separators. |
-| `duplicate integration name` | Two directories declare the same `name`. Rename one. |
+| `ambiguous integration` | Two integrations declare the same label. Use `id:<id>` or a path; see [identity.md](identity.md). |
 | `entrypoint "main.py" does not exist` | Fix the path or the filename; it is relative to the integration directory. |
 | `entrypoint escapes the integration directory` | Remove `../` or an absolute path. |
 | `unknown field "timeouts"` | Fix the typo; unknown fields are rejected. |

@@ -55,6 +55,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tkoizumi/otter/internal/identity"
 )
 
 // DirName is the releases root inside the data directory. It is dot-prefixed
@@ -63,6 +65,11 @@ const DirName = ".releases"
 
 // activeDirName holds the activation symlinks.
 const activeDirName = "active"
+
+// ActiveDirName is the activation directory inside the releases root. It is
+// exported so callers enumerating the releases root can tell it apart from an
+// integration directory.
+const ActiveDirName = activeDirName
 
 // ManifestFileName is the metadata file written inside a release.
 const ManifestFileName = "otter-release.json"
@@ -216,6 +223,31 @@ func (m Manager) Metadata(integration, digest string) (Metadata, error) {
 	return readMetadata(dir)
 }
 
+// DeleteAll removes every staged release belonging to one integration and its
+// activation pointer. It is used when an identity is deleted; releases of any
+// other integration are never touched, and removal is by identity directory
+// rather than a glob.
+func (m Manager) DeleteAll(integration string) error {
+	if err := validName(integration); err != nil {
+		return err
+	}
+	root, err := m.Root()
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(root, integration)); err != nil {
+		return fmt.Errorf("release: remove releases for %s: %w", integration, err)
+	}
+	active, err := m.ActivePath(integration)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(active); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("release: remove active pointer for %s: %w", integration, err)
+	}
+	return nil
+}
+
 // SourceDir resolves the directory one staged release's code lives in.
 func (m Manager) SourceDir(meta Metadata) (string, error) {
 	dir, err := m.Dir(meta.Integration, meta.Digest)
@@ -307,6 +339,12 @@ func skip(path string, d fs.DirEntry) bool {
 		return false
 	}
 	switch {
+	case name == identity.MarkerFileName || identity.IsMarkerTempName(name):
+		// The identity marker is instance metadata, not released code. Keeping
+		// it out of both the copy and the digest means identity churn never
+		// invalidates a release, and a snapshot never carries a claim to an
+		// identity it does not own.
+		return true
 	case name == ".env" || strings.HasSuffix(name, ".env"):
 		return true
 	case strings.HasSuffix(name, ".graphql"):

@@ -95,6 +95,28 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	}
 	m := entry.Manifest
 
+	// Identity fencing. A run was authorized against the identity generation
+	// current at submission; a reset, move, retirement or deletion bumps that
+	// generation precisely so this claim cannot execute stale code against
+	// state that now belongs to a different instance.
+	if !entry.Instance.Status.AcceptsWork() {
+		d.finishRun(run, m, runs.Finish{
+			Status:     runs.StatusCancelled,
+			Error:      fmt.Sprintf("integration identity is %s", entry.Instance.Status),
+			FinishedAt: time.Now().UTC(),
+		}, false)
+		return
+	}
+	if run.IntegrationGeneration != 0 && entry.Instance.Generation != run.IntegrationGeneration {
+		d.finishRun(run, m, runs.Finish{
+			Status: runs.StatusCancelled,
+			Error: fmt.Sprintf("integration identity changed (generation %d, run authorized for %d)",
+				entry.Instance.Generation, run.IntegrationGeneration),
+			FinishedAt: time.Now().UTC(),
+		}, false)
+		return
+	}
+
 	// A bound run executes its recorded snapshot, not the live source tree.
 	//
 	// The manifest is re-read from the snapshot rather than re-pointed at it:
@@ -153,7 +175,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	run.Status = runs.StatusRunning
 	run.StartedAt = &startedAt
 
-	token, err := d.runTokens.Issue(run.ID, run.IntegrationID)
+	token, err := d.runTokens.Issue(run.ID, run.IntegrationID, run.IntegrationGeneration)
 	if err != nil {
 		d.finishRun(run, m, runs.Finish{Status: runs.StatusFailed, Error: err.Error()}, false)
 		return
@@ -203,16 +225,18 @@ func (d *Daemon) executeRun(item *queue.Item) {
 
 	sink := newRunLogSink(d.logs, run.ID, d.log)
 	result := d.exec.Run(runCtx, &executor.Request{
-		Manifest:       m,
-		Executable:     interpreter,
-		Managed:        m.Python.Mode == "managed",
-		RunID:          run.ID,
-		TriggerType:    run.TriggerType,
-		APIURL:         d.cfg.ChildAPIURL(),
-		StateToken:     token,
-		ExtraEnv:       env,
-		Timeout:        m.TimeoutDuration(),
-		TerminateGrace: 5 * time.Second,
+		Manifest:        m,
+		IntegrationID:   run.IntegrationID,
+		IntegrationName: run.IntegrationName,
+		Executable:      interpreter,
+		Managed:         m.Python.Mode == "managed",
+		RunID:           run.ID,
+		TriggerType:     run.TriggerType,
+		APIURL:          d.cfg.ChildAPIURL(),
+		StateToken:      token,
+		ExtraEnv:        env,
+		Timeout:         m.TimeoutDuration(),
+		TerminateGrace:  5 * time.Second,
 	}, sink)
 	sink.Flush()
 
@@ -433,21 +457,23 @@ func (d *Daemon) scheduleRetry(ctx context.Context, previous *runs.Run, m *confi
 	parentID := previous.ID
 
 	next := &runs.Run{
-		ID:                uuid.NewString(),
-		IntegrationID:     previous.IntegrationID,
-		TriggerType:       previous.TriggerType,
-		Status:            runs.StatusRetrying,
-		Attempt:           previous.Attempt + 1,
-		ParentRunID:       &parentID,
-		CreatedAt:         now,
-		Metadata:          previous.Metadata,
-		PythonMode:        previous.PythonMode,
-		PythonVersion:     previous.PythonVersion,
-		EnvironmentDigest: previous.EnvironmentDigest,
-		PythonPolicy:      previous.PythonPolicy,
-		ReleaseDigest:     previous.ReleaseDigest,
-		ReleaseSourceDir:  previous.ReleaseSourceDir,
-		SDKVersion:        previous.SDKVersion,
+		ID:                    uuid.NewString(),
+		IntegrationID:         previous.IntegrationID,
+		IntegrationName:       previous.IntegrationName,
+		IntegrationGeneration: previous.IntegrationGeneration,
+		TriggerType:           previous.TriggerType,
+		Status:                runs.StatusRetrying,
+		Attempt:               previous.Attempt + 1,
+		ParentRunID:           &parentID,
+		CreatedAt:             now,
+		Metadata:              previous.Metadata,
+		PythonMode:            previous.PythonMode,
+		PythonVersion:         previous.PythonVersion,
+		EnvironmentDigest:     previous.EnvironmentDigest,
+		PythonPolicy:          previous.PythonPolicy,
+		ReleaseDigest:         previous.ReleaseDigest,
+		ReleaseSourceDir:      previous.ReleaseSourceDir,
+		SDKVersion:            previous.SDKVersion,
 	}
 	availableAt := now.Add(delay)
 

@@ -9,6 +9,7 @@ is a thin client for this same API, so anything `otter` can do you can do with
 - [Error responses](#error-responses)
 - [Health](#health)
 - [Integrations](#integrations)
+- [Identity and lifecycle](#identity-and-lifecycle)
 - [Runs](#runs)
 - [Run logs](#run-logs)
 - [Cancellation](#cancellation)
@@ -24,7 +25,8 @@ is a thin client for this same API, so anything `otter` can do you can do with
 - All timestamps are RFC 3339 UTC, e.g. `"2024-06-01T12:00:03Z"`.
 - Durations in responses are integers in **seconds** (`timeout_seconds`), because
   machine consumers prefer them to strings.
-- Ids: integration ids are the manifest `name`. Run ids look like
+- Ids: an integration id is the durable identity the runtime mints, not the
+  manifest label. Run ids look like
   `run_01HZY3QW8K2M4P6R8T0V2X4Z6B`.
 - An unknown path returns `404` with the standard error envelope; an unsupported
   method on a known path returns `405`.
@@ -395,6 +397,75 @@ otter run-status "$RUN_ID"
 Errors: `404 not_found`, `400 invalid_request` (the integration is invalid and
 cannot be run, or the body is not valid JSON), `403 forbidden` (a run state token
 was used), `503 unavailable`.
+
+## Identity and lifecycle
+
+An integration is addressed by its durable identity. The CLI resolves a label,
+a path or an explicit `id:` reference through the daemon, so it never reads the
+registry itself.
+
+### `GET /v1/integrations/resolve`
+
+Resolve a reference to the integration it names.
+
+| Parameter | Description |
+| --- | --- |
+| `ref` | A label, a filesystem path, or `id:<id>`. Required. |
+
+Returns the integration view. A reference that matches nothing is `404`; a label
+carried by more than one active integration is `409` with the candidate ids and
+paths in the message.
+
+```bash
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/resolve?ref=counter"
+```
+
+### `POST /v1/integrations`
+
+Register a source directory explicitly. Idempotent when the binding already
+matches; it clears a deletion suppression and mints a fresh identity.
+
+```json
+{"path": "/srv/otter/integrations/counter"}
+```
+
+Errors: `400 invalid_request` (the path has no valid manifest),
+`409 conflict` (the path is owned with a different marker; use reset).
+
+### `POST /v1/integrations/{id}/reset`
+
+Retire the identity and mint a fresh one at the same path. The old identity's
+data is kept for inspection or deletion, and its release is not reused.
+
+```json
+{"old_id": "counter", "new_id": "0195a7c2-...", "name": "counter", "path": "/srv/otter/integrations/counter"}
+```
+
+Errors: `400 invalid_request`, `404 not_found`.
+
+### `POST /v1/integrations/{id}/move`
+
+Preserve an identity across a same-filesystem directory rename.
+
+```json
+{"destination": "/srv/otter/integrations/counter-v2"}
+```
+
+Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (the destination
+already exists or is owned, the paths nest, or the identity is not active).
+
+### `DELETE /v1/integrations/{id}`
+
+Purge the identity's state, run history and logs, queue rows, webhook token and
+releases. Source files are left in place and the path is suppressed so a scan
+cannot silently re-register it. The identity row survives as a tombstone and is
+never reused.
+
+```json
+{"deleted": true, "integration": "counter"}
+```
+
+Errors: `400 invalid_request`, `404 not_found`.
 
 ## Runs
 

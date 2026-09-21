@@ -33,10 +33,11 @@ func (d *Daemon) ListIntegrations() []api.IntegrationView {
 	return out
 }
 
-// GetIntegration implements api.Backend.
-func (d *Daemon) GetIntegration(id string) (api.IntegrationView, bool) {
-	entry, ok := d.reg.get(id)
-	if !ok {
+// GetIntegration implements api.Backend. It accepts a reference -- an id, a
+// unique label, or a path -- and resolves it before building the view.
+func (d *Daemon) GetIntegration(ref string) (api.IntegrationView, bool) {
+	entry, err := d.resolveRef(ref)
+	if err != nil {
 		return api.IntegrationView{}, false
 	}
 	return d.integrationView(entry, true), true
@@ -46,17 +47,21 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 	it := entry.Integration
 
 	view := api.IntegrationView{
-		ID:       it.ID,
-		Name:     it.ID,
-		Path:     it.Dir,
-		Valid:    it.Valid,
-		Error:    it.Error,
-		Retry:    api.RetryView{Backoff: "none"},
-		Triggers: api.TriggerView{},
+		ID:         it.ID,
+		Name:       it.Name,
+		Path:       it.Dir,
+		Valid:      it.Valid,
+		Error:      it.Error,
+		Generation: entry.Instance.Generation,
+		Status:     string(entry.Instance.Status),
+		Retry:      api.RetryView{Backoff: "none"},
+		Triggers:   api.TriggerView{},
+	}
+	if view.Name == "" {
+		view.Name = it.ID
 	}
 
 	if m := entry.Manifest; m != nil {
-		view.Name = m.Name
 		view.Description = m.Description
 		view.Entrypoint = m.Entrypoint
 		view.PythonExecutable = m.Python.Executable
@@ -78,7 +83,9 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 			WebhookEnabled: m.WebhookEnabled(),
 		}
 		if m.WebhookEnabled() {
-			view.Triggers.WebhookURL = "/v1/hooks/" + m.Name
+			// The hook URL carries the durable identity, so renaming the
+			// label does not break an external caller's webhook.
+			view.Triggers.WebhookURL = "/v1/hooks/" + it.ID
 		}
 	}
 
@@ -100,19 +107,33 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 
 // SubmitRun implements api.Backend. The run record and its queue entry are
 // written in one transaction so a run can never exist without being queued.
-func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload api.TriggerPayload) (string, error) {
+func (d *Daemon) SubmitRun(ctx context.Context, ref string, payload api.TriggerPayload) (string, error) {
 	if d.draining.Load() {
 		return "", fmt.Errorf("otter is shutting down and is not accepting new runs: %w", api.ErrConflict)
 	}
 
-	entry, ok := d.reg.get(integrationID)
-	if !ok {
-		return "", fmt.Errorf("integration %q: %w", integrationID, api.ErrNotFound)
+	entry, err := d.resolveRef(ref)
+	if err != nil {
+		return "", err
 	}
+	label := entry.Integration.Name
+	if label == "" {
+		label = entry.Integration.ID
+	}
+	// An integration that is present but invalid is still listed and still
+	// named in the error; only the identity check below can make it unknown.
 	if !entry.Integration.Valid || entry.Manifest == nil {
 		return "", fmt.Errorf("integration %q cannot run: %s: %w",
-			integrationID, entry.Integration.Error, api.ErrInvalid)
+			label, entry.Integration.Error, api.ErrInvalid)
 	}
+	inst := entry.Instance
+	if inst.ID.IsZero() {
+		return "", fmt.Errorf("integration %q has no registry identity: %w", label, api.ErrNotFound)
+	}
+	if !inst.Status.AcceptsWork() {
+		return "", fmt.Errorf("integration %q is %s and cannot accept new runs: %w", label, inst.Status, api.ErrConflict)
+	}
+	integrationID := inst.ID.String()
 
 	triggerType := payload.Type
 	if triggerType == "" {
@@ -142,12 +163,12 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 		// the request is well formed and the integration exists, but nothing has
 		// been made live for it to run.
 		return "", fmt.Errorf("integration %s has no active release; run otter release %s before submitting runs: %w",
-			integrationID, integrationID, api.ErrConflict)
+			label, label, api.ErrConflict)
 	}
 	bound, err := config.LoadAndValidate(filepath.Join(released, config.ManifestFileName))
 	if err != nil {
 		return "", fmt.Errorf("integration %s: active release %s is invalid: %v; re-run otter release %s: %w",
-			integrationID, shortDigest(digest), err, integrationID, api.ErrConflict)
+			label, shortDigest(digest), err, label, api.ErrConflict)
 	}
 	pythonMode := bound.Python.Mode
 	if pythonMode == "" {
@@ -176,20 +197,22 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 		pythonVersion, environmentDigest, pythonPolicy = spec.Python, spec.Digest, spec.Policy
 	}
 	run := &runs.Run{
-		ID:                uuid.NewString(),
-		IntegrationID:     integrationID,
-		TriggerType:       triggerType,
-		Status:            runs.StatusQueued,
-		Attempt:           1,
-		CreatedAt:         now,
-		Metadata:          metadata,
-		PythonMode:        pythonMode,
-		PythonVersion:     pythonVersion,
-		EnvironmentDigest: environmentDigest,
-		PythonPolicy:      pythonPolicy,
-		ReleaseDigest:     releaseDigest,
-		ReleaseSourceDir:  releaseSourceDir,
-		SDKVersion:        sdk.Version,
+		ID:                    uuid.NewString(),
+		IntegrationID:         integrationID,
+		IntegrationName:       entry.Integration.Name,
+		IntegrationGeneration: inst.Generation,
+		TriggerType:           triggerType,
+		Status:                runs.StatusQueued,
+		Attempt:               1,
+		CreatedAt:             now,
+		Metadata:              metadata,
+		PythonMode:            pythonMode,
+		PythonVersion:         pythonVersion,
+		EnvironmentDigest:     environmentDigest,
+		PythonPolicy:          pythonPolicy,
+		ReleaseDigest:         releaseDigest,
+		ReleaseSourceDir:      releaseSourceDir,
+		SDKVersion:            sdk.Version,
 	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
@@ -203,7 +226,8 @@ func (d *Daemon) SubmitRun(ctx context.Context, integrationID string, payload ap
 	}
 
 	d.log.Info("run_queued",
-		"integration", integrationID,
+		"integration", entry.Integration.Name,
+		"id", integrationID,
 		"run_id", run.ID,
 		"trigger", triggerType)
 	d.appendOtterLog(run.ID, "run queued (trigger "+triggerType+")")
@@ -359,8 +383,29 @@ func normalizeNotFound(err error) error {
 	return err
 }
 
+// stateScope resolves a reference to the durable identity that namespaces
+// state. State is always stored under the identity, never the label: a
+// recreated integration must not read a previous one's values.
+func (d *Daemon) stateScope(ref string) (string, error) {
+	entry, err := d.resolveRef(ref)
+	if err != nil {
+		return "", err
+	}
+	if entry.Instance.ID.IsZero() {
+		return "", fmt.Errorf("integration %q: %w", ref, api.ErrNotFound)
+	}
+	if !entry.Instance.Status.AcceptsWork() {
+		return "", fmt.Errorf("integration %q is %s: %w", ref, entry.Instance.Status, api.ErrConflict)
+	}
+	return entry.Instance.ID.String(), nil
+}
+
 // GetState implements api.Backend.
-func (d *Daemon) GetState(ctx context.Context, integrationID, key string) (json.RawMessage, error) {
+func (d *Daemon) GetState(ctx context.Context, ref, key string) (json.RawMessage, error) {
+	integrationID, err := d.stateScope(ref)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.requireIntegration(integrationID); err != nil {
 		return nil, err
 	}
@@ -369,7 +414,11 @@ func (d *Daemon) GetState(ctx context.Context, integrationID, key string) (json.
 }
 
 // SetState implements api.Backend.
-func (d *Daemon) SetState(ctx context.Context, integrationID, key string, value json.RawMessage) (time.Time, error) {
+func (d *Daemon) SetState(ctx context.Context, ref, key string, value json.RawMessage) (time.Time, error) {
+	integrationID, err := d.stateScope(ref)
+	if err != nil {
+		return time.Time{}, err
+	}
 	if err := d.requireIntegration(integrationID); err != nil {
 		return time.Time{}, err
 	}
@@ -378,7 +427,11 @@ func (d *Daemon) SetState(ctx context.Context, integrationID, key string, value 
 }
 
 // DeleteState implements api.Backend.
-func (d *Daemon) DeleteState(ctx context.Context, integrationID, key string) (bool, error) {
+func (d *Daemon) DeleteState(ctx context.Context, ref, key string) (bool, error) {
+	integrationID, err := d.stateScope(ref)
+	if err != nil {
+		return false, err
+	}
 	if err := d.requireIntegration(integrationID); err != nil {
 		return false, err
 	}
@@ -387,7 +440,11 @@ func (d *Daemon) DeleteState(ctx context.Context, integrationID, key string) (bo
 }
 
 // AllState implements api.Backend.
-func (d *Daemon) AllState(ctx context.Context, integrationID string) (map[string]json.RawMessage, error) {
+func (d *Daemon) AllState(ctx context.Context, ref string) (map[string]json.RawMessage, error) {
+	integrationID, err := d.stateScope(ref)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.requireIntegration(integrationID); err != nil {
 		return nil, err
 	}
@@ -423,10 +480,12 @@ func (d *Daemon) ResolveRunToken(token string) (api.RunToken, bool) {
 }
 
 // WebhookTokenFor implements api.Backend. It returns false both for an unknown
-// integration and for one with the webhook trigger disabled.
-func (d *Daemon) WebhookTokenFor(integrationID string) (string, bool) {
-	entry, ok := d.reg.get(integrationID)
-	if !ok || entry.Manifest == nil || !entry.Manifest.WebhookEnabled() {
+// integration and for one with the webhook trigger disabled. The reference is
+// resolved like any other, so a hook URL that carries either the durable
+// identity or a still-unambiguous label keeps working.
+func (d *Daemon) WebhookTokenFor(ref string) (string, bool) {
+	entry, err := d.resolveRef(ref)
+	if err != nil || entry.Manifest == nil || !entry.Manifest.WebhookEnabled() {
 		return "", false
 	}
 	if entry.WebhookToken == "" {

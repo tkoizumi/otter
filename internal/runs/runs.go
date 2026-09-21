@@ -98,6 +98,13 @@ type Run struct {
 	ReleaseDigest    string `json:"release_digest,omitempty"`
 	ReleaseSourceDir string `json:"-"`
 	SDKVersion       string `json:"sdk_version,omitempty"`
+
+	// IntegrationName is the manifest label the run was submitted under, and
+	// IntegrationGeneration is the identity generation that authorized it.
+	// A generation mismatch after a reset, move, retirement or deletion is
+	// what fences a stale worker or state write.
+	IntegrationName       string `json:"integration_name,omitempty"`
+	IntegrationGeneration int64  `json:"integration_generation,omitempty"`
 }
 
 // Duration returns how long the run has been running, or ran for.
@@ -123,7 +130,8 @@ func (r *Run) ErrorString() string {
 const runColumns = `id, integration_id, trigger_type, status, attempt, parent_run_id,
 	created_at, started_at, finished_at, exit_code, error, metadata,
 	python_mode, python_version, environment_digest, python_policy,
-	release_digest, release_source_dir, sdk_version`
+	release_digest, release_source_dir, sdk_version,
+	integration_name, integration_generation`
 
 // Store provides access to run records.
 type Store struct {
@@ -154,7 +162,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		metadata = ""
 	}
 
-	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	args := []any{
 		r.ID, r.IntegrationID, r.TriggerType, string(r.Status), r.Attempt,
 		database.NullableString(deref(r.ParentRunID)),
@@ -165,6 +173,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		database.NullableString(deref(r.Error)),
 		metadata, r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy,
 		r.ReleaseDigest, r.ReleaseSourceDir, r.SDKVersion,
+		r.IntegrationName, r.IntegrationGeneration,
 	}
 
 	var err error
@@ -177,6 +186,82 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		return fmt.Errorf("runs: insert %s: %w", r.ID, err)
 	}
 	return nil
+}
+
+// DeleteByIntegration removes every durable trace of one integration's runs:
+// captured logs, queue rows and run records. It exists for `otter delete`,
+// which purges an identity's history deliberately, and returns how many run
+// records were removed.
+func (s *Store) DeleteByIntegration(ctx context.Context, integrationID string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM run_logs WHERE run_id IN (SELECT id FROM runs WHERE integration_id = ?)`,
+		integrationID); err != nil {
+		return 0, fmt.Errorf("runs: delete logs for %s: %w", integrationID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM run_queue WHERE integration_id = ?`, integrationID); err != nil {
+		return 0, fmt.Errorf("runs: delete queue rows for %s: %w", integrationID, err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE integration_id = ?`, integrationID)
+	if err != nil {
+		return 0, fmt.Errorf("runs: delete for %s: %w", integrationID, err)
+	}
+	removed, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// CancelPinnedToRelease cancels the queued and retrying attempts of one
+// integration that are bound to a single release digest, and removes them from
+// the queue.
+//
+// It exists for a quarantined release: an attempt submitted before the release
+// was disabled already recorded the snapshot it would execute, so removing the
+// activation pointer is not enough. Cancelling is the honest outcome -- the code
+// was staged from a source the operator rejected -- and the error says so.
+func (s *Store) CancelPinnedToRelease(ctx context.Context, integrationID, digest, reason string) (int, error) {
+	if digest == "" {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM run_queue WHERE run_id IN (
+		     SELECT id FROM runs
+		      WHERE integration_id = ? AND release_digest = ? AND status IN ('queued', 'retrying'))`,
+		integrationID, digest); err != nil {
+		return 0, fmt.Errorf("runs: unqueue quarantined attempts: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE runs SET status = 'cancelled', error = ?, finished_at = ?
+		  WHERE integration_id = ? AND release_digest = ? AND status IN ('queued', 'retrying')`,
+		reason, database.FormatTime(time.Now().UTC()), integrationID, digest)
+	if err != nil {
+		return 0, fmt.Errorf("runs: cancel quarantined attempts: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 // Get loads a single run.
@@ -409,12 +494,15 @@ func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
 		releaseDigest     string
 		releaseSourceDir  string
 		sdkVersion        string
+		integrationName   string
+		integrationGen    int64
 	)
 	if err := sc.Scan(
 		&r.ID, &r.IntegrationID, &r.TriggerType, &status, &r.Attempt,
 		&parent, &created, &started, &finished, &exitCode, &errMsg, &meta,
 		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
 		&releaseDigest, &releaseSourceDir, &sdkVersion,
+		&integrationName, &integrationGen,
 	); err != nil {
 		return nil, err
 	}
@@ -423,6 +511,7 @@ func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
 	r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy, r.SDKVersion =
 		pythonMode, pythonVersion, environmentDigest, pythonPolicy, sdkVersion
 	r.ReleaseDigest, r.ReleaseSourceDir = releaseDigest, releaseSourceDir
+	r.IntegrationName, r.IntegrationGeneration = integrationName, integrationGen
 	if parent.Valid {
 		v := parent.String
 		r.ParentRunID = &v

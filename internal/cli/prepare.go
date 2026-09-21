@@ -57,27 +57,35 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 	if code != 0 {
 		return code
 	}
+	// Environments are keyed by the durable identity, so resolve before
+	// preparing: preparing under a label would build an environment the
+	// runtime never looks for.
+	targets, code = a.mapTargetIdentities(ctx, integrationsRoot, dataDir, targets)
+	if code != 0 {
+		return code
+	}
 
 	manager := pyenv.Manager{DataDir: dataDir}
 	count := 0
 	for _, target := range targets {
+		label := target.Label()
 		manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
 		if err != nil {
-			fmt.Fprintf(a.Stderr, "otter: %s: %v\n", target.ID, err)
+			fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
 			return 1
 		}
 		if manifest.Python.Mode != "managed" {
 			if named {
-				fmt.Fprintf(a.Stderr, "otter: %s uses external Python; nothing to prepare\n", target.ID)
+				fmt.Fprintf(a.Stderr, "otter: %s uses external Python; nothing to prepare\n", label)
 			}
 			continue
 		}
 		ready, err := manager.Prepare(ctx, target.Dir, target.ID, *uv)
 		if err != nil {
-			fmt.Fprintf(a.Stderr, "otter: prepare %s: %v\n", target.ID, err)
+			fmt.Fprintf(a.Stderr, "otter: prepare %s: %v\n", label, err)
 			return 1
 		}
-		fmt.Fprintf(a.Stdout, "%s: Python %s, environment %s\n", target.ID, ready.Python, ready.Digest[:12])
+		fmt.Fprintf(a.Stdout, "%s: Python %s, environment %s\n", label, ready.Python, ready.Digest[:12])
 		count++
 	}
 	if !named && count == 0 {

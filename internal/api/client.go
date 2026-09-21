@@ -97,6 +97,66 @@ func (c *Client) GetIntegration(ctx context.Context, id string) (*IntegrationVie
 	return &out, nil
 }
 
+// ResolveIntegration resolves a label, a path or an id to the integration it
+// names. It is the only reference resolution the CLI performs for daemon
+// commands: the daemon owns the registry, so it owns the answer.
+func (c *Client) ResolveIntegration(ctx context.Context, ref string) (*IntegrationView, error) {
+	values := url.Values{}
+	values.Set("ref", ref)
+	var out IntegrationView
+	if err := c.get(ctx, "/v1/integrations/resolve", values, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RegisterIntegration registers a source path explicitly.
+func (c *Client) RegisterIntegration(ctx context.Context, path string) (*IntegrationView, error) {
+	body, err := json.Marshal(RegisterRequest{Path: path})
+	if err != nil {
+		return nil, err
+	}
+	var out IntegrationView
+	if err := c.do(ctx, http.MethodPost, "/v1/integrations", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResetIntegration retires an identity and mints a fresh one at the same path.
+func (c *Client) ResetIntegration(ctx context.Context, ref string) (*ResetView, error) {
+	var out ResetView
+	path := "/v1/integrations/" + url.PathEscape(ref) + "/reset"
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MoveIntegration preserves an identity across a daemon-performed rename.
+func (c *Client) MoveIntegration(ctx context.Context, ref, destination string) (*IntegrationView, error) {
+	body, err := json.Marshal(MoveRequest{Destination: destination})
+	if err != nil {
+		return nil, err
+	}
+	var out IntegrationView
+	path := "/v1/integrations/" + url.PathEscape(ref) + "/move"
+	if err := c.do(ctx, http.MethodPost, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteIntegration purges an identity's durable artifacts.
+func (c *Client) DeleteIntegration(ctx context.Context, ref string) (*DeletedView, error) {
+	var out DeletedView
+	path := "/v1/integrations/" + url.PathEscape(ref)
+	if err := c.do(ctx, http.MethodDelete, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Reload asks the daemon to re-read its integrations directory. The daemon
 // keeps running: this returns what changed, not a new process.
 func (c *Client) Reload(ctx context.Context) (*ReloadResult, error) {

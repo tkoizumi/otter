@@ -208,8 +208,11 @@ func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
 		"--integrations " + ShellQuote(target.IntegrationsDir()),
 		"--data " + ShellQuote(target.DataDir),
 		"--uv " + ShellQuote("/opt/otter/tools/uv/uv"),
-		ShellQuote("counter"),
-		ShellQuote("invoices"),
+		// Each integration is released by its destination path, so a failure
+		// is reported against the integration that caused it and identity
+		// resolution never mistakes a directory basename for a label.
+		ShellQuote(target.IntegrationsDir() + "/counter"),
+		ShellQuote(target.IntegrationsDir() + "/invoices"),
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("release script is missing %q\n---\n%s", want, script)
@@ -218,8 +221,8 @@ func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
 	if target.IntegrationsDir() != "/opt/otter/integrations" {
 		t.Errorf("IntegrationsDir = %q, want /opt/otter/integrations", target.IntegrationsDir())
 	}
-	// Each integration is released by name, so a failure is reported against
-	// the integration that caused it.
+	// Each integration is released separately, so a failure is reported
+	// against the integration that caused it.
 	if strings.Count(script, `"$CLI" release`) != 2 {
 		t.Errorf("release script does not release each integration separately:\n%s", script)
 	}

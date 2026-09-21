@@ -272,13 +272,33 @@ test -x "$CLI" || { echo "otter: missing $CLI" >&2; exit 1; }
 		if uvPath != "" {
 			command += " --uv " + ShellQuote(uvPath)
 		}
-		command += " " + ShellQuote(name)
+		// The destination path, not a bare basename. A basename is read as a
+		// label, so a directory whose name differs from the manifest's would
+		// resolve to the wrong integration -- or to none -- and an identity
+		// would be registered against the wrong tree.
+		command += " " + ShellQuote(t.IntegrationsDir()+"/"+name)
 
 		script += "echo " + ShellQuote("releasing "+name) + "\n" + command + "\n"
 	}
 	// Each release reported success above, and a successful release is already
 	// active; there is nothing further to switch.
 	return script
+}
+
+// BindingsScript prints the destination registry as JSON.
+//
+// It reads the registry rather than the API so it works when the runtime is
+// stopped, and it runs as the service user because the data directory is
+// owner-only. The integrations root is passed explicitly: the host has no
+// workspace marker of its own.
+func BindingsScript(t Target) string {
+	runAs := ""
+	if t.RunAsUser != "root" {
+		runAs = `runuser -u ` + ShellQuote(t.RunAsUser) + ` -- `
+	}
+	return runAs + ShellQuote(t.CLIPath()) + " identity list --json" +
+		" --data " + ShellQuote(t.DataDir) +
+		" --integrations " + ShellQuote(t.IntegrationsDir())
 }
 
 // DestroyScript removes the unit and, unless keepData, the data directory.

@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/identity"
 	"github.com/tkoizumi/otter/internal/release"
 )
 
@@ -67,7 +73,7 @@ func TestReleaseFromInsideTheIntegrationDirectory(t *testing.T) {
 	}
 	// It landed in the workspace's own data directory, not a cwd-relative one
 	// that no daemon reads.
-	if _, err := os.Stat(filepath.Join(root, stateDirName, "data", release.DirName, "counter")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, stateDirName, "data", release.DirName, idFor(t, dir))); err != nil {
 		t.Errorf("the release did not land in the workspace data directory: %v", err)
 	}
 
@@ -130,7 +136,7 @@ func TestReleaseActivateRollsBackToAStagedDigest(t *testing.T) {
 	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
 		t.Fatalf("first release exited %d: %s", code, stderr)
 	}
-	first, ok, err := manager.Active("counter")
+	first, ok, err := manager.Active(idFor(t, dir))
 	if err != nil || !ok {
 		t.Fatalf("no active release after releasing: %v", err)
 	}
@@ -141,7 +147,7 @@ func TestReleaseActivateRollsBackToAStagedDigest(t *testing.T) {
 	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
 		t.Fatalf("second release exited %d: %s", code, stderr)
 	}
-	second, _, err := manager.Active("counter")
+	second, _, err := manager.Active(idFor(t, dir))
 	if err != nil {
 		t.Fatalf("read active release: %v", err)
 	}
@@ -157,7 +163,7 @@ func TestReleaseActivateRollsBackToAStagedDigest(t *testing.T) {
 	if !strings.Contains(stdout, first.Digest[:12]) {
 		t.Errorf("output does not name the activated release:\n%s", stdout)
 	}
-	back, _, err := manager.Active("counter")
+	back, _, err := manager.Active(idFor(t, dir))
 	if err != nil {
 		t.Fatalf("read active release: %v", err)
 	}
@@ -240,9 +246,22 @@ func writeSharedIntegration(t *testing.T, dir, name, pythonPath string, sharedRe
 	return shared
 }
 
-// activeSource resolves the code directory of an integration's active release.
-func activeSource(t *testing.T, manager release.Manager, id string) (release.Metadata, string) {
+// idFor reads the durable identity the runtime assigned to an integration
+// directory. Releases and environments are keyed by it, not by the manifest
+// label, so a test that looks one up must ask the marker.
+func idFor(t *testing.T, dir string) string {
 	t.Helper()
+	id, err := identity.ReadMarker(dir)
+	if err != nil {
+		t.Fatalf("read identity marker in %s: %v", dir, err)
+	}
+	return id.String()
+}
+
+// activeSource resolves the code directory of an integration's active release.
+func activeSource(t *testing.T, manager release.Manager, dir string) (release.Metadata, string) {
+	t.Helper()
+	id := idFor(t, dir)
 	meta, ok, err := manager.Active(id)
 	if err != nil || !ok {
 		t.Fatalf("no active release for %s (ok=%v err=%v)", id, ok, err)
@@ -279,7 +298,7 @@ func TestReleaseFlatWorkspaceImportsSharedCode(t *testing.T) {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
-	meta, src := activeSource(t, manager, "demo")
+	meta, src := activeSource(t, manager, dir)
 	if meta.IntegrationPath != "demo" {
 		t.Errorf("IntegrationPath = %q, want demo", meta.IntegrationPath)
 	}
@@ -302,7 +321,7 @@ func TestReleaseCanonicalLayoutImportsSharedCode(t *testing.T) {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
-	meta, src := activeSource(t, manager, "demo")
+	meta, src := activeSource(t, manager, dir)
 	if meta.IntegrationPath != "integrations/demo" {
 		t.Errorf("IntegrationPath = %q, want integrations/demo", meta.IntegrationPath)
 	}
@@ -323,7 +342,7 @@ func TestReleaseGroupedLayoutImportsSharedCode(t *testing.T) {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
-	meta, src := activeSource(t, manager, "demo")
+	meta, src := activeSource(t, manager, dir)
 	if meta.IntegrationPath != "group/demo" {
 		t.Errorf("IntegrationPath = %q, want group/demo", meta.IntegrationPath)
 	}
@@ -344,7 +363,7 @@ func TestReleasePlacementUsesTheDirectoryNotTheName(t *testing.T) {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
-	meta, src := activeSource(t, manager, "other-name")
+	meta, src := activeSource(t, manager, dir)
 	if meta.IntegrationPath != "integrations/dir-name" {
 		t.Errorf("IntegrationPath = %q, want integrations/dir-name", meta.IntegrationPath)
 	}
@@ -365,7 +384,7 @@ func TestReleaseSourceOutsideTheDiscoveryRoot(t *testing.T) {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
-	meta, src := activeSource(t, manager, "demo")
+	meta, src := activeSource(t, manager, dir)
 	if meta.IntegrationPath != "other/demo" {
 		t.Errorf("IntegrationPath = %q, want other/demo", meta.IntegrationPath)
 	}
@@ -380,7 +399,7 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
 		t.Fatalf("first release exited %d: %s", code, stderr)
 	}
-	first, _, err := manager.Active("counter")
+	first, _, err := manager.Active(idFor(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +418,7 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 	} else if !strings.Contains(stderr, "outside the release") {
 		t.Errorf("staging failure does not explain itself:\n%s", stderr)
 	}
-	assertActive(t, manager, "counter", first.Digest)
+	assertActive(t, manager, idFor(t, dir), first.Digest)
 	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
 	}
@@ -417,17 +436,17 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 	} else if !strings.Contains(stderr, "absolute") {
 		t.Errorf("validation failure does not explain itself:\n%s", stderr)
 	}
-	assertActive(t, manager, "counter", first.Digest)
+	assertActive(t, manager, idFor(t, dir), first.Digest)
 
 	// (3) Activation fails: a release whose recorded placement escapes the
 	// release root is refused.
 	digest := strings.Repeat("d", 64)
-	corrupt := filepath.Join(root, stateDirName, "data", release.DirName, "counter", digest)
+	corrupt := filepath.Join(root, stateDirName, "data", release.DirName, idFor(t, dir), digest)
 	if err := os.MkdirAll(corrupt, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(release.Metadata{
-		Integration:     "counter",
+		Integration:     idFor(t, dir),
 		Digest:          digest,
 		IntegrationPath: "../escape",
 		Source:          dir,
@@ -443,7 +462,7 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 	} else if !strings.Contains(stderr, "escapes the release root") {
 		t.Errorf("activation failure does not explain itself:\n%s", stderr)
 	}
-	assertActive(t, manager, "counter", first.Digest)
+	assertActive(t, manager, idFor(t, dir), first.Digest)
 }
 
 // A rollback to a release whose snapshot manifest no longer resolves fails
@@ -455,7 +474,7 @@ func TestFailedActivatePreservesTheActiveRelease(t *testing.T) {
 	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
 		t.Fatalf("first release exited %d: %s", code, stderr)
 	}
-	first, _, err := manager.Active("counter")
+	first, _, err := manager.Active(idFor(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +484,7 @@ func TestFailedActivatePreservesTheActiveRelease(t *testing.T) {
 	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
 		t.Fatalf("second release exited %d: %s", code, stderr)
 	}
-	second, _, err := manager.Active("counter")
+	second, _, err := manager.Active(idFor(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,10 +495,10 @@ func TestFailedActivatePreservesTheActiveRelease(t *testing.T) {
 	} else if !strings.Contains(stdout, first.Digest[:12]) {
 		t.Errorf("rollback output does not name the release:\n%s", stdout)
 	}
-	assertActive(t, manager, "counter", first.Digest)
+	assertActive(t, manager, idFor(t, dir), first.Digest)
 
 	// Break the newer snapshot's manifest, then try to activate it.
-	_, secondSource := activeSourceFor(t, manager, "counter", second.Digest)
+	_, secondSource := activeSourceFor(t, manager, idFor(t, dir), second.Digest)
 	if err := os.Remove(filepath.Join(secondSource, config.ManifestFileName)); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +507,7 @@ func TestFailedActivatePreservesTheActiveRelease(t *testing.T) {
 	} else if !strings.Contains(stderr, "invalid") {
 		t.Errorf("refusal does not explain itself:\n%s", stderr)
 	}
-	assertActive(t, manager, "counter", first.Digest)
+	assertActive(t, manager, idFor(t, dir), first.Digest)
 }
 
 // A managed release whose environment was never prepared cannot be activated
@@ -500,14 +519,14 @@ func TestActivateRefusesAnUnpreparedManagedRelease(t *testing.T) {
 	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
 		t.Fatalf("first release exited %d: %s", code, stderr)
 	}
-	first, _, err := manager.Active("counter")
+	first, _, err := manager.Active(idFor(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Hand-build a managed snapshot with no prepared environment.
 	digest := strings.Repeat("e", 64)
-	source := filepath.Join(dataDir, release.DirName, "counter", digest, "integrations", "counter")
+	source := filepath.Join(dataDir, release.DirName, idFor(t, dir), digest, "integrations", "counter")
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +543,7 @@ func TestActivateRefusesAnUnpreparedManagedRelease(t *testing.T) {
 		}
 	}
 	meta := release.Metadata{
-		Integration:     "counter",
+		Integration:     idFor(t, dir),
 		Digest:          digest,
 		IntegrationPath: "integrations/counter",
 		Source:          dir,
@@ -542,7 +561,7 @@ func TestActivateRefusesAnUnpreparedManagedRelease(t *testing.T) {
 	} else if !strings.Contains(stderr, "otter prepare") {
 		t.Errorf("refusal does not name otter prepare:\n%s", stderr)
 	}
-	assertActive(t, manager, "counter", first.Digest)
+	assertActive(t, manager, idFor(t, dir), first.Digest)
 }
 
 func assertActive(t *testing.T, manager release.Manager, id, digest string) {
@@ -568,4 +587,247 @@ func activeSourceFor(t *testing.T, manager release.Manager, id, digest string) (
 		t.Fatal(err)
 	}
 	return meta, src
+}
+
+// Retention must not remove a snapshot a non-terminal run is bound to: the
+// attempt would fail because its own release was collected underneath it.
+func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := database.FormatTime(time.Now().UTC())
+	insert := func(id, status, digest string) {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO runs (id, integration_id, trigger_type, status, attempt, created_at, release_digest)
+			 VALUES (?, ?, 'manual', ?, 1, ?, ?)`,
+			id, "int-1", status, now, digest); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	insert("run-queued", "queued", strings.Repeat("a", 64))
+	insert("run-running", "running", strings.Repeat("b", 64))
+	insert("run-done", "succeeded", strings.Repeat("c", 64))
+
+	app := New("test", io.Discard, io.Discard)
+	pins := app.pinnedReleases(ctx, dataDir, "int-1")
+	if !pins[strings.Repeat("a", 64)] || !pins[strings.Repeat("b", 64)] {
+		t.Fatalf("non-terminal runs are not pinned: %+v", pins)
+	}
+	if pins[strings.Repeat("c", 64)] {
+		t.Fatalf("a finished run pinned its release: %+v", pins)
+	}
+
+	// A missing database is not fatal; it yields no pins.
+	if pins := app.pinnedReleases(ctx, filepath.Join(t.TempDir(), "nope"), "int-1"); len(pins) != 0 {
+		t.Fatalf("missing database produced pins: %+v", pins)
+	}
+}
+
+// The cross-integration view answers "what has a release, and what is missing
+// one?", which is the question behind a submission that refuses because an
+// integration was never released.
+func TestReleaseListAllReportsReleasesAndGaps(t *testing.T) {
+	root, _ := releaseWorkspace(t, "one")
+	two := filepath.Join(root, "two")
+	if err := os.MkdirAll(two, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeIntegrationFixture(t, two, "two", "print('two')\n")
+
+	// Release only one of them; registering "two" happens as a side effect of
+	// the reconcile the release performs.
+	if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+		t.Fatalf("release one exited %d: %s", code, stderr)
+	}
+
+	stdout, stderr, code := otterIn(t, root, "release", "--list", "--all")
+	if code != 0 {
+		t.Fatalf("release --list --all exited %d: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "INTEGRATION") || !strings.Contains(stdout, "ACTIVE") {
+		t.Fatalf("no table header:\n%s", stdout)
+	}
+
+	// "one" has an active release; "two" is registered with none, and says so.
+	var oneLine, twoLine string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "one ") {
+			oneLine = line
+		}
+		if strings.HasPrefix(line, "two ") {
+			twoLine = line
+		}
+	}
+	if !strings.Contains(oneLine, "active") || strings.Contains(oneLine, " -       0") {
+		t.Fatalf("one does not show an active release: %q", oneLine)
+	}
+	if !strings.Contains(twoLine, "active") {
+		t.Fatalf("two is not shown as a registered integration: %q", twoLine)
+	}
+	if !strings.Contains(twoLine, " 0 ") {
+		t.Fatalf("two is not shown as having no release: %q", twoLine)
+	}
+}
+
+// The machine-readable form is what a script or a deploy can consume.
+func TestReleaseListAllJSON(t *testing.T) {
+	root, _ := releaseWorkspace(t, "one")
+	if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+
+	stdout, stderr, code := otterIn(t, root, "--json", "release", "--list", "--all")
+	if code != 0 {
+		t.Fatalf("release --list --all --json exited %d: %s", code, stderr)
+	}
+	var rows []struct {
+		Name     string `json:"name"`
+		ID       string `json:"id"`
+		Active   string `json:"active"`
+		Releases int    `json:"releases"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("decode rows: %v\n%s", err, stdout)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want one", rows)
+	}
+	// The label is what a human reads; the id is the durable identity that
+	// releases are actually keyed by.
+	if rows[0].Name != "one" || rows[0].ID == "" || rows[0].ID == "one" ||
+		rows[0].Active == "" || rows[0].Releases != 1 {
+		t.Fatalf("row = %+v", rows[0])
+	}
+}
+
+// Orphan releases are the leftovers of an integration removed outside the
+// registry. Pruning them is explicit, previewed by default, and refuses to act
+// until the registry is bootstrapped, because with no registry every release
+// would look like an orphan.
+func TestReleasePruneRemovesOnlyUnregisteredReleases(t *testing.T) {
+	root, _ := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+
+	// Bootstrap the registry, then release the one registered integration.
+	if _, stderr, code := otterIn(t, root, "identity", "migrate", "--apply"); code != 0 {
+		t.Fatalf("migrate exited %d: %s", code, stderr)
+	}
+	if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
+
+	// A release directory with no identity behind it.
+	ghost := filepath.Join(dataDir, release.DirName, "ghost", strings.Repeat("f", 64))
+	if err := os.MkdirAll(ghost, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The default is a plan.
+	stdout, stderr, code := otterIn(t, root, "release", "--list", "--all", "--prune")
+	if code != 0 {
+		t.Fatalf("prune plan exited %d: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "would remove ghost") {
+		t.Fatalf("plan does not name the orphan:\n%s", stdout)
+	}
+	if _, err := os.Stat(ghost); err != nil {
+		t.Fatalf("a dry run removed the release: %v", err)
+	}
+
+	// Applying removes the orphan and nothing else.
+	stdout, stderr, code = otterIn(t, root, "release", "--list", "--all", "--prune", "--apply")
+	if code != 0 {
+		t.Fatalf("prune exited %d: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "removed ghost") {
+		t.Fatalf("apply did not report the removal:\n%s", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, release.DirName, "ghost")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the orphan release survived: %v", err)
+	}
+	// The registered integration is untouched. Its releases are keyed by its
+	// durable identity, not by its directory name.
+	keptID := idFor(t, filepath.Join(root, "one"))
+	if _, err := os.Stat(filepath.Join(dataDir, release.DirName, keptID)); err != nil {
+		t.Fatalf("prune removed a registered integration's releases: %v", err)
+	}
+}
+
+func TestReleasePruneRefusesBeforeBootstrap(t *testing.T) {
+	root, _ := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	ghost := filepath.Join(dataDir, release.DirName, "ghost", strings.Repeat("f", 64))
+	if err := os.MkdirAll(ghost, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := otterIn(t, root, "release", "--list", "--all", "--prune", "--apply")
+	if code == 0 {
+		t.Fatalf("prune acted on an unbootstrapped registry")
+	}
+	if !strings.Contains(stderr, "identity migrate") {
+		t.Fatalf("refusal does not explain what to run:\n%s", stderr)
+	}
+	if _, err := os.Stat(ghost); err != nil {
+		t.Fatalf("a refused prune removed the release: %v", err)
+	}
+}
+
+// A deleted identity with no releases left is a tombstone. The registry keeps
+// it so the id is never reused, but it is not a release and does not belong in
+// the release view; `otter identity list --all` is where it is shown.
+func TestReleaseListAllHidesTombstonesWithoutReleases(t *testing.T) {
+	root, _ := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	ctx := context.Background()
+
+	// Seed a deleted identity with nothing left of its own.
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := identity.NewStore(db.DB).CreateInstance(ctx, identity.Instance{
+		ID:               identity.MustParse("ghost-id"),
+		Name:             "ghost",
+		Status:           identity.StatusDeleted,
+		Generation:       2,
+		CreatedAt:        now,
+		RetiredAt:        &now,
+		RetirementReason: "deleted by operator",
+	}); err != nil {
+		t.Fatalf("seed tombstone: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	rows, err := collectReleases(ctx, release.Manager{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("collectReleases: %v", err)
+	}
+	for _, row := range rows {
+		if row.ID == "ghost-id" {
+			t.Fatalf("a tombstone is listed as a release: %+v", row)
+		}
+	}
+
+	// It is still recorded, and --all is how you see it.
+	stdout, stderr, code := otterIn(t, root, "identity", "list", "--all")
+	if code != 0 {
+		t.Fatalf("identity list --all exited %d: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "ghost-id") || !strings.Contains(stdout, "deleted") {
+		t.Fatalf("the tombstone is not reported by identity list --all:\n%s", stdout)
+	}
 }
