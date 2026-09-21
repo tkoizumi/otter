@@ -478,6 +478,51 @@ Example weekly maintenance:
 30 4 * * 0 root sqlite3 /var/lib/otter/otter.db "DELETE FROM run_logs WHERE id IN (SELECT l.id FROM run_logs l JOIN runs r ON r.id = l.run_id WHERE r.queued_at < datetime('now','-14 days'));" && sqlite3 /var/lib/otter/otter.db 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'
 ```
 
+## Reloading integrations
+
+The daemon reads the integrations directory when it starts. Adding or editing a
+manifest is picked up with `otter reload`, which re-reads the directory against
+the running daemon:
+
+```bash
+otter reload
+added        shopify-to-netsuite
+changed      shopify-to-erp
+no changes   2 integration(s)
+```
+
+Nothing is stopped. The process, the API listener, the worker pool and every
+executing run are left alone, and a cron trigger whose expression did not change
+keeps its next fire time. Only what the daemon knows about is replaced.
+
+That makes the ordinary "deploy an integration" loop restart-free:
+
+```bash
+# Drop the new integration into the integrations root, then:
+otter reload                    # the daemon can now see it
+otter release shopify-to-netsuite   # a run executes the active release
+otter run shopify-to-netsuite
+```
+
+Reload also covers edits to scheduling-relevant fields — `cron`, `concurrency`
+and `trigger.webhook` — and fixes a manifest that previously failed to validate.
+`reload` reports `invalid` for a manifest that is present but broken, which is
+the difference between "not there" and "there but broken": only the second is
+fixed by editing the file.
+
+Two things reload does not do:
+
+- **It does not release anything.** A newly visible integration has no active
+  release, so `otter run` answers `409` until `otter release` stages one.
+- **It does not cancel work for an integration that still exists.** Removing an
+  integration from the directory does end its *queued* runs, because they can
+  never execute; runs already executing are left to finish. The reload reports
+  how many were cancelled.
+
+Restarting is still the right answer for changing the runtime itself — a new
+binary, a new embedded SDK, or daemon-level configuration. See
+[Upgrades](#upgrades).
+
 ## Upgrades
 
 Otter is a single binary, so an upgrade is "replace the file and restart". Schema
@@ -709,8 +754,8 @@ Typical causes:
 | `version must be 1` | Add `version: 1`. |
 
 An invalid integration is logged (`"event":"integration_invalid"`) and reported
-by the API, and it never crashes the daemon. After fixing the manifest, restart
-the daemon to re-read it.
+by the API, and it never crashes the daemon. After fixing the manifest, run
+`otter reload` to re-read it — see [Reloading integrations](#reloading-integrations).
 
 ### Port already in use
 

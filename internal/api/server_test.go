@@ -42,6 +42,10 @@ type fakeBackend struct {
 
 	submitted []submittedRun
 	cancelled []string
+
+	reloads   int
+	reloadOut ReloadResult
+	reloadErr error
 }
 
 type submittedRun struct {
@@ -152,6 +156,16 @@ func (f *fakeBackend) GetIntegration(id string) (IntegrationView, bool) {
 	defer f.mu.Unlock()
 	v, ok := f.integrations[id]
 	return v, ok
+}
+
+func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reloads++
+	if f.reloadErr != nil {
+		return ReloadResult{}, f.reloadErr
+	}
+	return f.reloadOut, nil
 }
 
 func (f *fakeBackend) SubmitRun(_ context.Context, integrationID string, payload TriggerPayload) (string, error) {
@@ -1001,5 +1015,57 @@ func TestRequestBodyTooLarge(t *testing.T) {
 	wantStatus(t, r, http.StatusBadRequest)
 	if env := r.errorEnvelope(t); env.Error.Code != CodeInvalid {
 		t.Fatalf("error code = %q", env.Error.Code)
+	}
+}
+
+func TestReloadEndpointIsAdminOnlyAndReturnsTheResult(t *testing.T) {
+	b := newFakeBackend()
+	b.addIntegration("int-A", true, "")
+	b.runTokens["run-token"] = RunToken{RunID: "run-A", IntegrationID: "int-A"}
+	b.reloadOut = ReloadResult{
+		Added:         []string{"int-B"},
+		Total:         2,
+		Valid:         2,
+		RunsCancelled: 1,
+	}
+
+	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
+	defer srv.Close()
+
+	admin := map[string]string{"Authorization": "Bearer admin-secret"}
+
+	// A per-run token is authenticated but not an admin. Reload changes what
+	// the whole runtime can address, so it is behind the admin token.
+	forbidden := do(t, http.MethodPost, srv.URL+"/v1/reload", nil,
+		map[string]string{"Authorization": "Bearer run-token"})
+	wantStatus(t, forbidden, http.StatusForbidden)
+	if env := forbidden.errorEnvelope(t); env.Error.Code != CodeForbidden {
+		t.Errorf("error code = %q, want %q", env.Error.Code, CodeForbidden)
+	}
+
+	ok := do(t, http.MethodPost, srv.URL+"/v1/reload", nil, admin)
+	wantStatus(t, ok, http.StatusOK)
+
+	var got ReloadResult
+	ok.decode(t, &got)
+	if len(got.Added) != 1 || got.Added[0] != "int-B" {
+		t.Errorf("added = %v, want [int-B]", got.Added)
+	}
+	if got.RunsCancelled != 1 {
+		t.Errorf("runs_cancelled = %d, want 1", got.RunsCancelled)
+	}
+	if b.reloads != 1 {
+		t.Errorf("backend reloads = %d, want 1", b.reloads)
+	}
+
+	// A reload already in progress is a conflict, not a server fault.
+	b.mu.Lock()
+	b.reloadErr = ErrConflict
+	b.mu.Unlock()
+
+	conflict := do(t, http.MethodPost, srv.URL+"/v1/reload", nil, admin)
+	wantStatus(t, conflict, http.StatusConflict)
+	if env := conflict.errorEnvelope(t); env.Error.Code != CodeConflict {
+		t.Errorf("error code = %q, want %q", env.Error.Code, CodeConflict)
 	}
 }

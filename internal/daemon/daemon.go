@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,6 +126,10 @@ type Daemon struct {
 
 	runCtlMu sync.Mutex
 	runCtl   map[string]*runControl
+
+	// reloadMu serialises reloads. Two concurrent passes would race on cron
+	// registration and each report the other's work as a change.
+	reloadMu sync.Mutex
 
 	startedAt    time.Time
 	shutdownOnce sync.Once
@@ -253,9 +259,38 @@ func (d *Daemon) resolveSDKPath() (string, error) {
 // discover loads manifests, generates webhook tokens and registers cron
 // triggers. Invalid integrations are reported, never fatal.
 func (d *Daemon) discover(ctx context.Context) error {
+	items, tokens, err := d.loadIntegrations(ctx)
+	if err != nil {
+		return err
+	}
+
+	d.reg.load(items, tokens)
+	d.cap.setLimits(d.reg.limits())
+
+	valid, invalid := d.reg.counts()
+	d.log.Info("integrations_discovered",
+		"root", d.cfg.IntegrationsDir,
+		"total", len(items),
+		"valid", valid,
+		"invalid", invalid)
+
+	d.logIntegrations(items)
+	d.syncSchedules(items)
+
+	return nil
+}
+
+// loadIntegrations reads the integrations directory and resolves the webhook
+// token of every integration that accepts webhooks.
+//
+// It touches no shared state. That is what lets a reload do all of its slow
+// work -- walking the tree, parsing manifests, generating tokens -- before
+// taking any lock, so a large integrations directory is invisible to
+// everything already running.
+func (d *Daemon) loadIntegrations(ctx context.Context) ([]*config.Integration, map[string]string, error) {
 	items, err := config.Discover(d.cfg.IntegrationsDir)
 	if err != nil {
-		return fmt.Errorf("discover integrations: %w", err)
+		return nil, nil, fmt.Errorf("discover integrations: %w", err)
 	}
 
 	tokens := map[string]string{}
@@ -271,16 +306,11 @@ func (d *Daemon) discover(ctx context.Context) error {
 		tokens[it.ID] = token
 	}
 
-	d.reg.load(items, tokens)
-	d.cap.setLimits(d.reg.limits())
+	return items, tokens, nil
+}
 
-	valid, invalid := d.reg.counts()
-	d.log.Info("integrations_discovered",
-		"root", d.cfg.IntegrationsDir,
-		"total", len(items),
-		"valid", valid,
-		"invalid", invalid)
-
+// logIntegrations reports what discovery found, one integration at a time.
+func (d *Daemon) logIntegrations(items []*config.Integration) {
 	for _, it := range items {
 		if !it.Valid {
 			d.log.Warn("integration_invalid",
@@ -299,22 +329,219 @@ func (d *Daemon) discover(ctx context.Context) error {
 			"concurrency", m.Concurrency,
 			"max_attempts", m.MaxAttempts())
 	}
+}
 
+// syncSchedules makes the cron runner match items: it reconciles the trigger of
+// every integration that declares one and drops the triggers of integrations
+// that no longer do, or are no longer valid.
+//
+// Replace leaves an unchanged expression's entry exactly as it is, so an
+// integration that did not change keeps its next fire time across a reload.
+func (d *Daemon) syncSchedules(items []*config.Integration) {
+	want := map[string]string{}
 	for _, it := range items {
 		if !it.Valid || it.Manifest == nil {
 			continue
 		}
-		spec := it.Manifest.Cron()
-		if spec == "" {
-			continue
+		if spec := it.Manifest.Cron(); spec != "" {
+			want[it.ID] = spec
 		}
-		id := it.ID
-		if err := d.sched.Register(id, spec, func() { d.cronTick(id, spec) }); err != nil {
+	}
+
+	ids := make([]string, 0, len(want))
+	for id := range want {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		spec := want[id]
+		if err := d.sched.Replace(id, spec, d.cronJob(id, spec)); err != nil {
 			d.log.Error("cron_register_failed", err, "integration", id, "cron", spec)
 		}
 	}
 
-	return nil
+	stale := d.sched.IDs()
+	sort.Strings(stale)
+	for _, id := range stale {
+		if _, ok := want[id]; ok {
+			continue
+		}
+		d.sched.Unregister(id)
+		d.log.Info("cron_unregistered", "integration", id)
+	}
+}
+
+// cronJob returns the job registered for an integration's cron trigger. The
+// job does no work itself, so a slow integration never blocks the cron runner.
+func (d *Daemon) cronJob(integrationID, spec string) func() {
+	return func() { d.cronTick(integrationID, spec) }
+}
+
+// Reload re-reads the integrations directory and applies what it finds to the
+// running daemon.
+//
+// It is deliberately not a restart. The process, the API listener, the worker
+// pool and every executing child are left alone: only the registry, the
+// per-integration concurrency limits and the cron triggers are replaced. That
+// is what lets an integration be added without interrupting the ones already
+// running.
+//
+// Discovery and token resolution run before any shared state is touched, so
+// the swap is brief, and a failed walk leaves the previous registry exactly as
+// it was rather than half-applied.
+func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
+	// One reload at a time: two concurrent passes would race on cron
+	// registration and each report the other's work as a change.
+	if !d.reloadMu.TryLock() {
+		return api.ReloadResult{}, fmt.Errorf("a reload is already in progress: %w", api.ErrConflict)
+	}
+	defer d.reloadMu.Unlock()
+
+	items, tokens, err := d.loadIntegrations(ctx)
+	if err != nil {
+		return api.ReloadResult{}, err
+	}
+
+	before := d.reg.snapshot()
+	result := diffRegistry(before, items)
+
+	// Work belonging to an integration that is about to disappear can never
+	// run -- a worker refuses to claim it -- so it is ended here, with a reason
+	// that names the cause, before the swap that makes it unrunnable. Doing it
+	// first also closes the gap in which a worker could claim one and fail it
+	// with a less useful message.
+	cancelled, err := d.cancelRunsOfRemoved(ctx, result.Removed)
+	if err != nil {
+		d.log.Error("reload_cancel_removed_failed", err)
+	}
+	result.RunsCancelled = cancelled
+
+	// Discovery already succeeded, so nothing below can fail: the new set is
+	// applied whole.
+	d.reg.load(items, tokens)
+	d.cap.setLimits(d.reg.limits())
+	d.syncSchedules(items)
+
+	valid, invalid := d.reg.counts()
+	d.log.Info("integrations_reloaded",
+		"root", d.cfg.IntegrationsDir,
+		"total", len(items),
+		"valid", valid,
+		"invalid", invalid,
+		"added", len(result.Added),
+		"removed", len(result.Removed),
+		"changed", len(result.Changed),
+		"runs_cancelled", cancelled)
+
+	// An invalid manifest is worth naming on a reload for the same reason it is
+	// at startup: it is the difference between "not there" and "there but
+	// broken", and only one of those is fixed by editing the file.
+	for _, it := range items {
+		if !it.Valid {
+			d.log.Warn("integration_invalid",
+				"integration", it.ID,
+				"path", it.ManifestPath,
+				"error", it.Error)
+		}
+	}
+
+	return result, nil
+}
+
+// diffRegistry reports what a reload changed, relative to what the daemon knew
+// before it. Changed means the manifest itself differs, which is what an
+// operator who edited otter.yaml expects to see reported.
+func diffRegistry(before map[string]*registered, items []*config.Integration) api.ReloadResult {
+	result := api.ReloadResult{}
+	present := make(map[string]bool, len(items))
+
+	for _, it := range items {
+		present[it.ID] = true
+
+		old, existed := before[it.ID]
+		switch {
+		case !existed:
+			result.Added = append(result.Added, it.ID)
+		case old.Integration.Valid != it.Valid ||
+			old.Integration.Error != it.Error ||
+			!reflect.DeepEqual(old.Manifest, it.Manifest):
+			result.Changed = append(result.Changed, it.ID)
+		}
+
+		if !it.Valid {
+			result.Invalid = append(result.Invalid, it.ID)
+		}
+	}
+
+	for id := range before {
+		if !present[id] {
+			result.Removed = append(result.Removed, id)
+		}
+	}
+
+	sort.Strings(result.Added)
+	sort.Strings(result.Removed)
+	sort.Strings(result.Changed)
+	sort.Strings(result.Invalid)
+
+	result.Total = len(items)
+	result.Valid = result.Total - len(result.Invalid)
+	return result
+}
+
+// cancelRunsOfRemoved ends the queued and retrying runs of integrations that a
+// reload removed.
+//
+// Cancelled, rather than failed, is the honest status: an operator removed the
+// integration on purpose, and a failure alert for work they deliberately
+// discarded is noise. Runs that are already executing are left alone -- they no
+// longer depend on the registry, and interrupting them is exactly what reload
+// exists to avoid.
+func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int, error) {
+	if len(removed) == 0 {
+		return 0, nil
+	}
+
+	gone := make(map[string]bool, len(removed))
+	for _, id := range removed {
+		gone[id] = true
+	}
+
+	cancelled := 0
+	for _, status := range []runs.Status{runs.StatusQueued, runs.StatusRetrying} {
+		list, err := d.runs.ListByStatus(ctx, status, 10000)
+		if err != nil {
+			return cancelled, err
+		}
+
+		for _, run := range list {
+			if !gone[run.IntegrationID] {
+				continue
+			}
+			message := fmt.Sprintf("integration %s was removed from the integrations directory", run.IntegrationID)
+
+			if _, err := d.queue.Remove(ctx, run.ID); err != nil {
+				return cancelled, err
+			}
+			if err := d.runs.Finish(ctx, run.ID, runs.Finish{
+				Status:     runs.StatusCancelled,
+				Error:      message,
+				FinishedAt: time.Now().UTC(),
+			}); err != nil {
+				return cancelled, err
+			}
+
+			d.appendOtterLog(run.ID, "run cancelled: "+message)
+			d.log.Warn("run_cancelled",
+				"integration", run.IntegrationID,
+				"run_id", run.ID,
+				"reason", "integration_removed")
+			cancelled++
+		}
+	}
+
+	return cancelled, nil
 }
 
 // cronTick enqueues a run for a cron trigger. The job does no work itself, so

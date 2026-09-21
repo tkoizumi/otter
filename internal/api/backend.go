@@ -33,6 +33,11 @@ type Backend interface {
 	// GetIntegration returns one integration, including its webhook token.
 	GetIntegration(id string) (IntegrationView, bool)
 
+	// Reload re-reads the integrations directory and applies what it finds to
+	// the running daemon, without stopping it. Executing runs and unchanged
+	// cron schedules are left alone.
+	Reload(ctx context.Context) (ReloadResult, error)
+
 	// SubmitRun queues a new run and returns its run id.
 	SubmitRun(ctx context.Context, integrationID string, payload TriggerPayload) (string, error)
 

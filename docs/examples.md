@@ -701,8 +701,8 @@ Notes:
 - With `concurrency: 4`, four of these run at once and the rest queue. The hook
   still returns `202` immediately for every one of them.
 - The webhook token is per integration and is regenerated if you
-  `DELETE FROM webhook_tokens WHERE integration_id='order-events';` and restart.
-  Callers must be updated when you do.
+  `DELETE FROM webhook_tokens WHERE integration_id='order-events';` and run
+  `otter reload`. Callers must be updated when you do.
 
 ## Notes on the shipped examples
 

@@ -87,6 +87,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdStatus(ctx, g)
 	case "integrations":
 		return a.cmdIntegrations(ctx, g, commandArgs)
+	case "reload":
+		return a.cmdReload(ctx, g, commandArgs)
 	case "inspect":
 		return a.cmdInspect(ctx, g, commandArgs)
 	case "run":
@@ -1169,6 +1171,7 @@ Runtime:
   status                          show daemon health and run counts
   integrations [--all]            list integration names
   integrations --schedule         cron, next run and last outcome per integration
+  reload                          re-read the integrations directory; no restart
   inspect <integration>           show one integration in detail
   run [<integration>] [--no-wait] run it, wait, print the outcome and its output
   serve [flags]                   run the daemon with the daemon's own defaults
@@ -1231,6 +1234,7 @@ Examples:
   otter release --all             # release every integration in the workspace
   otter stop
   otter integrations
+  otter reload                    # after adding an integration: no restart
   otter logs $(otter run counter) --follow
   otter state get counter count
   otter prepare shopify-to-salesforce
@@ -1248,7 +1252,7 @@ Examples:
 // is how `otter deploy` operates on a host that has no checkout.
 func needsDaemon(command string) bool {
 	switch command {
-	case "status", "integrations", "inspect", "run", "runs", "run-status", "logs", "state":
+	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state":
 		return true
 	default:
 		return false

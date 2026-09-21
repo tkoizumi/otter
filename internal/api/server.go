@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Admin-only: these act on the whole runtime.
 	mux.Handle("GET /v1/integrations", s.admin(s.handleListIntegrations))
+	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
 	mux.Handle("POST /v1/integrations/{id}/runs", s.admin(s.handleSubmitRun))
 	mux.Handle("GET /v1/runs", s.admin(s.handleListRuns))
 	mux.Handle("POST /v1/runs/{id}/cancel", s.admin(s.handleCancelRun))
@@ -362,6 +363,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"integrations": s.backend.ListIntegrations()})
+}
+
+// handleReload re-reads the integrations directory against the running daemon.
+// It is admin-only because it changes what the whole runtime knows about, and
+// therefore what every other caller can address.
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	result, err := s.backend.Reload(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleGetIntegration(w http.ResponseWriter, r *http.Request) {

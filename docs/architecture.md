@@ -241,6 +241,31 @@ data directory.
 Data flow in one line: **trigger → enqueue run → atomic claim → spawn child
 process → capture logs → record terminal status → maybe enqueue retry.**
 
+### Reload
+
+The registry is read on startup and again on every `POST /v1/reload`. Reload is
+not a restart: the process, the API listener, the worker pool and every
+executing child are left alone. Only three things are replaced — the registry,
+the per-integration concurrency limits, and the cron triggers.
+
+Discovery and webhook-token resolution run *before* any shared state is touched,
+so walking a large integrations directory is invisible to everything already
+running, and a failed walk leaves the previous set intact rather than
+half-applied. `registry.load` then swaps the whole map under its write lock, so
+a reader sees either the old set or the new one and never a torn intermediate
+state.
+
+Cron is reconciled by *diff*: `Scheduler.Replace` returns early when an
+integration's expression is unchanged. That matters because the cron runner
+computes an entry's next fire time when the entry is added, so re-adding an
+unchanged schedule would move that time and could skip an occurrence. An
+integration that did not change therefore keeps its schedule across a reload,
+and the runner is never stopped.
+
+Reload is the unit tier; a restart is the host tier. Changing the binary, the
+embedded SDK or daemon-level configuration still replaces the process, because
+those are process-scoped — see [Graceful shutdown](#graceful-shutdown).
+
 ## Subsystems
 
 | Subsystem | Responsibility |

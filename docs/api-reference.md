@@ -87,6 +87,7 @@ from one integration cannot drive another.
 | `GET /health` | yes | yes (open on loopback) |
 | `GET /v1/integrations`, `GET /v1/runs` | yes | **no** (`403`) |
 | `POST /v1/integrations/{id}/runs`, `POST /v1/runs/{id}/cancel` | yes | **no** (`403`) |
+| `POST /v1/reload` | yes | **no** (`403`) |
 | `GET /v1/integrations/{id}` | any integration | only its own integration |
 | `GET /v1/runs/{id}`, `GET/POST /v1/runs/{id}/logs` | any run | only its own run |
 | `GET/PUT/DELETE /v1/integrations/{id}/state[/{key}]` | any integration | only its own integration |
@@ -304,6 +305,57 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp"
 webhook trigger is disabled.
 
 Errors: `404 not_found`.
+
+### `POST /v1/reload`
+
+Re-reads the integrations directory against the running daemon. This is the
+restart-free alternative to bouncing `otterd` after adding or editing an
+integration.
+
+No request body. Responses are `200` with a summary of what changed.
+
+| Field | Description |
+| --- | --- |
+| `added` | Integrations the daemon did not know about before. |
+| `removed` | Integrations that are no longer in the directory. |
+| `changed` | Known integrations whose manifest differs. |
+| `invalid` | Integrations present but not runnable. |
+| `total`, `valid` | Counts after the reload. |
+| `runs_cancelled` | Queued runs of removed integrations that were ended. |
+
+```bash
+curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/reload"
+```
+
+```json
+{
+  "added": ["shopify-to-netsuite"],
+  "removed": [],
+  "changed": ["shopify-to-erp"],
+  "invalid": [],
+  "total": 3,
+  "valid": 3,
+  "runs_cancelled": 0
+}
+```
+
+The daemon is not restarted. The API listener, the worker pool and every
+executing run are left alone, and a cron trigger whose expression did not change
+keeps its next fire time. Only the registry, the per-integration concurrency
+limits and the cron triggers are replaced.
+
+Discovery happens before any shared state is touched, so a slow walk of a large
+integrations directory is invisible to everything already running, and a failed
+walk leaves the previous set intact rather than half-applied.
+
+Reload does not stage a release: a newly visible integration still answers `409`
+from `POST /v1/integrations/{id}/runs` until `otter release` has run. Removing an
+integration ends its **queued** runs, counted in `runs_cancelled`; runs already
+executing are allowed to finish.
+
+Errors: `409 conflict` (a reload is already in progress), `403 forbidden` (the
+caller is not an admin), `500 internal_error` (the integrations directory could
+not be read).
 
 ### `POST /v1/integrations/{id}/runs`
 

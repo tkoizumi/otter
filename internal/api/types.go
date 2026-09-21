@@ -142,6 +142,26 @@ type CancelRunResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// ReloadResult reports what a reload changed.
+//
+// It is returned rather than only logged because an operator who edited one
+// manifest wants to see that one integration changed, not merely that the
+// whole directory was re-read.
+type ReloadResult struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+	Changed []string `json:"changed"`
+	Invalid []string `json:"invalid"`
+
+	// Total and Valid describe the integration set after the reload.
+	Total int `json:"total"`
+	Valid int `json:"valid"`
+
+	// RunsCancelled counts the queued runs of removed integrations that were
+	// ended, because a removed integration can never execute them.
+	RunsCancelled int `json:"runs_cancelled"`
+}
+
 // AppendLogRequest is the body of POST /v1/runs/{id}/logs.
 type AppendLogRequest struct {
 	Stream  string         `json:"stream"`

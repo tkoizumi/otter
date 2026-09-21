@@ -97,6 +97,16 @@ func (c *Client) GetIntegration(ctx context.Context, id string) (*IntegrationVie
 	return &out, nil
 }
 
+// Reload asks the daemon to re-read its integrations directory. The daemon
+// keeps running: this returns what changed, not a new process.
+func (c *Client) Reload(ctx context.Context) (*ReloadResult, error) {
+	var out ReloadResult
+	if err := c.do(ctx, http.MethodPost, "/v1/reload", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SubmitRun queues a run and returns its run id.
 func (c *Client) SubmitRun(ctx context.Context, integrationID string, body json.RawMessage) (string, error) {
 	path := "/v1/integrations/" + url.PathEscape(integrationID) + "/runs"

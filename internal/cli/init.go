@@ -149,8 +149,8 @@ func (a *App) cmdInit(args []string) int {
 	fmt.Fprintf(a.Stdout, "  otter stop\n")
 	if _, running := runningURL(serveDir(root, "")); running {
 		fmt.Fprintf(a.Stdout, "\nnote: a runtime is already serving this workspace; it discovered integrations\n")
-		fmt.Fprintf(a.Stdout, "note: when it started, so restart it (`otter stop && otter start --detach`) to pick\n")
-		fmt.Fprintf(a.Stdout, "note: this one up.\n")
+		fmt.Fprintf(a.Stdout, "note: when it started, so run `otter reload` to pick this one up without\n")
+		fmt.Fprintf(a.Stdout, "note: interrupting the integrations already running.\n")
 	}
 	return 0
 }

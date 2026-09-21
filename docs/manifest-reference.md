@@ -122,8 +122,10 @@ trigger:
 - Standard **5-field** cron: `minute hour day-of-month month day-of-week`. There
   is no seconds field. The usual descriptors (`@hourly`, `@daily`, `@weekly`,
   `@monthly`, `@yearly`, `@every 5m`) are accepted too.
-- Schedules are re-registered from manifests on every daemon start. Editing a
-  cron expression and restarting is the way to change a schedule.
+- Schedules are reconciled from manifests on every daemon start and on every
+  `otter reload`. Editing a cron expression and reloading is the way to change a
+  schedule — the daemon does not need to be restarted, and integrations whose
+  expression did not change keep their next fire time.
 - **Missed occurrences are not replayed.** If the daemon is offline from 12:00
   to 12:20 with a `*/5` schedule, the four missed ticks are gone. Design
   integrations to reconcile from a checkpoint (see `examples/customer-sync`)

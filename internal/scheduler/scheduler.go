@@ -1,7 +1,8 @@
 // Package scheduler registers cron triggers.
 //
-// Cron schedules come from integration manifests and are re-registered from
-// disk on every daemon start, so a restart never loses a future schedule.
+// Cron schedules come from integration manifests and are reconciled from disk
+// on every daemon start and on every reload, so a restart never loses a future
+// schedule and a reload never disturbs one whose expression did not change.
 // Occurrences missed while the daemon was down are deliberately not replayed.
 package scheduler
 
@@ -52,9 +53,16 @@ func Parse(spec string) (cron.Schedule, error) {
 	return parser.Parse(spec)
 }
 
-// Register adds a cron trigger for an integration. Registering the same
-// integration twice is an error: a manifest has exactly one cron expression.
-func (s *Scheduler) Register(integrationID, spec string, fn func()) error {
+// Replace makes an integration's cron trigger match spec: adding one when it
+// has none, leaving an unchanged one exactly as it is, or swapping a changed
+// one.
+//
+// Leaving an unchanged trigger alone is the point, not an optimisation. The
+// cron runner computes an entry's next fire time when the entry is added, so
+// re-adding an unchanged schedule would recompute it from the moment of the
+// call and can skip an occurrence that was about to fire. Reload calls Replace
+// for every integration on every pass, so this is the common path.
+func (s *Scheduler) Replace(integrationID, spec string, fn func()) error {
 	if spec == "" {
 		return fmt.Errorf("scheduler: empty cron expression for %s", integrationID)
 	}
@@ -65,8 +73,13 @@ func (s *Scheduler) Register(integrationID, spec string, fn func()) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.ids[integrationID]; exists {
-		return fmt.Errorf("scheduler: %s already has a cron trigger", integrationID)
+	if entryID, exists := s.ids[integrationID]; exists {
+		if s.specs[integrationID] == spec {
+			return nil
+		}
+		s.cron.Remove(entryID)
+		delete(s.ids, integrationID)
+		delete(s.specs, integrationID)
 	}
 
 	entryID, err := s.cron.AddFunc(spec, s.wrap(integrationID, fn))
@@ -77,6 +90,36 @@ func (s *Scheduler) Register(integrationID, spec string, fn func()) error {
 	s.ids[integrationID] = entryID
 	s.specs[integrationID] = spec
 	return nil
+}
+
+// Unregister drops an integration's cron trigger.
+//
+// Unregistering an integration that has none is not an error: a reload
+// reconciles the whole set against the manifests, and "already absent" is the
+// state it was trying to reach.
+func (s *Scheduler) Unregister(integrationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entryID, exists := s.ids[integrationID]
+	if !exists {
+		return
+	}
+	s.cron.Remove(entryID)
+	delete(s.ids, integrationID)
+	delete(s.specs, integrationID)
+}
+
+// IDs returns every integration that currently has a cron trigger.
+func (s *Scheduler) IDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]string, 0, len(s.ids))
+	for id := range s.ids {
+		out = append(out, id)
+	}
+	return out
 }
 
 // wrap recovers from panics so one bad job cannot take down the cron runner.

@@ -200,10 +200,10 @@ Rules and caveats:
   and proxy logs.
 - A wrong or missing token is `401`; hooks for integrations without the webhook
   trigger are `404`, so disabled hooks look nonexistent.
-- **Rotate a webhook token** by deleting its row and restarting:
+- **Rotate a webhook token** by deleting its row and reloading:
   `DELETE FROM webhook_tokens WHERE integration_id='order-events';` then
-  `systemctl restart otter`. The next start generates a fresh token; callers must
-  be updated.
+  `otter reload`. The reload generates a fresh token without restarting the
+  daemon; callers must be updated.
 - A webhook token only enqueues runs, but those runs execute code. Keep it out of
   client-side JavaScript and public repositories.
 - Hooks are unauthenticated-by-bearer but token-guarded; they are still a public

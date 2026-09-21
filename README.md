@@ -56,6 +56,12 @@ released, and an edit is not live until it is released again. `otter release`
 with no argument releases the integration in the working directory, and
 `otter release --all` covers a whole workspace.
 
+The daemon reads the integrations directory when it starts, so a new integration
+needs `otter reload` before it is visible. Reload re-reads the directory against
+the running daemon: the process is not restarted, executing runs are not
+interrupted, and a cron schedule that did not change keeps its next fire time.
+Release is still required afterwards, because a run executes the active release.
+
 An integration is a directory with an `otter.yaml` and a Python entrypoint, so
 `init` is a convenience rather than a requirement — see
 [What an integration looks like](#what-an-integration-looks-like).
@@ -409,6 +415,7 @@ synced 16 customers; checkpoint=25
 ```bash
 otter status                            # daemon health, queue depth, run counts
 otter integrations [--all]              # integration names (--all includes invalid)
+otter reload                            # re-read integrations; no restart, running work continues
 otter inspect <integration>             # full manifest view, triggers, recent runs
 otter run [<integration>] [--body <json>] # queue a manual run; prints the run id
 otter runs [--integration I] [--status S] [--limit N]

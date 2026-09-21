@@ -18,8 +18,9 @@ type registered struct {
 	WebhookToken string
 }
 
-// registry holds the discovered integrations. It is rebuilt from disk on
-// every daemon start; the manifests themselves are the source of truth.
+// registry holds the discovered integrations. It is rebuilt from disk on every
+// daemon start and on every reload; the manifests themselves are the source of
+// truth.
 type registry struct {
 	mu    sync.RWMutex
 	byID  map[string]*registered
@@ -54,6 +55,20 @@ func (r *registry) get(id string) (*registered, bool) {
 	defer r.mu.RUnlock()
 	entry, ok := r.byID[id]
 	return entry, ok
+}
+
+// snapshot returns the current contents keyed by integration id. A reload
+// takes one before loading so it can report what actually changed; the map is
+// a copy, so the caller can compare it without holding the lock.
+func (r *registry) snapshot() map[string]*registered {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make(map[string]*registered, len(r.byID))
+	for id, entry := range r.byID {
+		out[id] = entry
+	}
+	return out
 }
 
 func (r *registry) all() []*registered {

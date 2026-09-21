@@ -1772,3 +1772,325 @@ func TestRunExecutesTheActiveReleaseNotTheLiveTree(t *testing.T) {
 		t.Error("re-releasing produced the same digest, so the edit was not captured")
 	}
 }
+
+// -------------------------------------------------------------------- reload
+
+// minimalManifest is a runnable integration with no triggers, used as the
+// base of the reload tests. A per-test name keeps duplicate-name validation
+// from interfering.
+func minimalManifest(name string) string {
+	return `
+version: 1
+name: ` + name + `
+entrypoint: main.py
+timeout: 30
+`
+}
+
+const noopPython = `print("ok")`
+
+func TestReloadAddsAnIntegrationWithoutStoppingTheDaemon(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "existing", `
+version: 1
+name: existing
+entrypoint: main.py
+timeout: 30
+trigger:
+  cron: "@every 6h"
+`, noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+	startDaemon(t, d)
+
+	ctx := context.Background()
+	nextBefore, ok := d.sched.Next("existing")
+	if !ok {
+		t.Fatal("the existing cron trigger has no next fire time")
+	}
+
+	// A second integration appears while the daemon is serving.
+	writeIntegration(t, root, "fresh", minimalManifest("fresh"), noopPython)
+
+	if _, ok := d.GetIntegration("fresh"); ok {
+		t.Fatal("an integration added after startup should not be visible before a reload")
+	}
+
+	result, err := d.Reload(ctx)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if len(result.Added) != 1 || result.Added[0] != "fresh" {
+		t.Errorf("added = %v, want [fresh]", result.Added)
+	}
+	if len(result.Removed) != 0 || len(result.Changed) != 0 {
+		t.Errorf("removed = %v, changed = %v, want none", result.Removed, result.Changed)
+	}
+	if result.Total != 2 || result.Valid != 2 {
+		t.Errorf("total = %d valid = %d, want 2 and 2", result.Total, result.Valid)
+	}
+
+	view, ok := d.GetIntegration("fresh")
+	if !ok || !view.Valid {
+		t.Fatalf("fresh is not visible and valid after a reload: ok=%v view=%+v", ok, view)
+	}
+
+	// The daemon never restarted: the same API listener is still answering.
+	if _, err := api.NewClient("http://"+d.cfg.Listen, "").Health(ctx); err != nil {
+		t.Fatalf("the API stopped answering across a reload: %v", err)
+	}
+
+	// The integration that did not change kept its schedule, which is the
+	// property a restart cannot offer.
+	nextAfter, ok := d.sched.Next("existing")
+	if !ok {
+		t.Fatal("the existing cron trigger disappeared across a reload")
+	}
+	if !nextAfter.Equal(nextBefore) {
+		t.Errorf("next fire time moved from %s to %s: a reload must not disturb an unchanged schedule",
+			nextBefore, nextAfter)
+	}
+	if d.sched.Count() != 1 {
+		t.Errorf("registered cron triggers = %d, want 1", d.sched.Count())
+	}
+}
+
+func TestReloadMakesANewIntegrationRunnableWithoutRestart(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "existing", minimalManifest("existing"), noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+	startDaemon(t, d)
+	ctx := context.Background()
+
+	writeIntegration(t, root, "fresh", minimalManifest("fresh"), noopPython)
+
+	// Undiscovered: the daemon cannot address it at all.
+	if _, err := d.SubmitRun(ctx, "fresh", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("submitting an undiscovered integration = %v, want not found", err)
+	}
+
+	if _, err := d.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	// Discovered, but a run executes the active release, so reload makes it
+	// visible and release makes it live. The two steps stay separate.
+	if _, err := d.SubmitRun(ctx, "fresh", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("submitting an unreleased integration = %v, want conflict", err)
+	}
+
+	releaseAll(t, root, d.cfg.DataDir)
+
+	runID, err := d.SubmitRun(ctx, "fresh", api.TriggerPayload{Type: api.TriggerManual})
+	if err != nil {
+		t.Fatalf("submit after release: %v", err)
+	}
+	view := awaitTerminal(t, d, runID)
+	if view.Run.Status != runs.StatusSucceeded {
+		t.Fatalf("run status = %s (%s), want succeeded", view.Run.Status, view.Run.ErrorString())
+	}
+}
+
+func TestReloadReportsChangedAndInvalidManifests(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "kept", minimalManifest("kept"), noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+
+	// Edit the manifest of an integration the daemon already knows, and add a
+	// directory whose manifest cannot be used.
+	writeIntegration(t, root, "kept", `
+version: 1
+name: kept
+entrypoint: main.py
+timeout: 45
+trigger:
+  cron: "@every 3h"
+`, noopPython)
+
+	broken := filepath.Join(root, "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatalf("mkdir broken: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, config.ManifestFileName),
+		[]byte("version: 1\nname: broken\nentrypoint: main.py\ntrigger:\n  cron: \"not a cron\"\n"), 0o644); err != nil {
+		t.Fatalf("write broken manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "main.py"), []byte(noopPython), 0o644); err != nil {
+		t.Fatalf("write broken entrypoint: %v", err)
+	}
+
+	result, err := d.Reload(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if len(result.Changed) != 1 || result.Changed[0] != "kept" {
+		t.Errorf("changed = %v, want [kept]", result.Changed)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "broken" {
+		t.Errorf("added = %v, want [broken]", result.Added)
+	}
+	if len(result.Invalid) != 1 || result.Invalid[0] != "broken" {
+		t.Errorf("invalid = %v, want [broken]", result.Invalid)
+	}
+	if result.Total != 2 || result.Valid != 1 {
+		t.Errorf("total = %d valid = %d, want 2 and 1", result.Total, result.Valid)
+	}
+
+	// The broken integration is present but not runnable, which is the
+	// difference an operator needs: "not there" and "there but broken" are
+	// fixed by different actions.
+	if _, err := d.SubmitRun(context.Background(), "broken", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrInvalid) {
+		t.Errorf("submitting an invalid integration = %v, want invalid", err)
+	}
+
+	// An invalid manifest must not keep its cron trigger.
+	if _, ok := d.sched.Spec("broken"); ok {
+		t.Error("an invalid integration should not have a cron trigger")
+	}
+}
+
+func TestReloadCancelsQueuedRunsOfARemovedIntegration(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "doomed", minimalManifest("doomed"), noopPython)
+	writeIntegration(t, root, "kept", minimalManifest("kept"), noopPython)
+
+	// Not started: no worker claims the run, so it stays queued and is
+	// available to be cancelled by the reload.
+	d := newDaemon(t, root, "", nil, nil)
+	ctx := context.Background()
+
+	runID, err := d.SubmitRun(ctx, "doomed", api.TriggerPayload{Type: api.TriggerManual})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if run, err := d.runs.Get(ctx, runID); err != nil || run.Status != runs.StatusQueued {
+		t.Fatalf("run status = %v (err %v), want queued", run.Status, err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, "doomed")); err != nil {
+		t.Fatalf("remove integration: %v", err)
+	}
+
+	result, err := d.Reload(ctx)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != "doomed" {
+		t.Errorf("removed = %v, want [doomed]", result.Removed)
+	}
+	if result.RunsCancelled != 1 {
+		t.Errorf("runs cancelled = %d, want 1", result.RunsCancelled)
+	}
+
+	// The queued run can never execute now, so it is ended with a reason that
+	// names the cause rather than failing later without explanation.
+	run, err := d.runs.Get(ctx, runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != runs.StatusCancelled {
+		t.Errorf("run status = %s, want cancelled", run.Status)
+	}
+	if !strings.Contains(run.ErrorString(), "removed") {
+		t.Errorf("run error = %q, want it to name the removal", run.ErrorString())
+	}
+	if present, err := d.queue.Contains(ctx, runID); err != nil || present {
+		t.Errorf("the cancelled run is still queued (present=%v err=%v)", present, err)
+	}
+
+	// The integration that stayed was not touched.
+	if _, ok := d.GetIntegration("kept"); !ok {
+		t.Error("reload removed an integration that is still on disk")
+	}
+}
+
+func TestReloadOfAnUnchangedDirectoryReportsNothing(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "a", minimalManifest("a"), noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+
+	result, err := d.Reload(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if len(result.Added)+len(result.Removed)+len(result.Changed)+len(result.Invalid) != 0 {
+		t.Errorf("an unchanged reload reported changes: %+v", result)
+	}
+	if result.Total != 1 || result.Valid != 1 {
+		t.Errorf("total = %d valid = %d, want 1 and 1", result.Total, result.Valid)
+	}
+	if result.RunsCancelled != 0 {
+		t.Errorf("runs cancelled = %d, want 0", result.RunsCancelled)
+	}
+}
+
+// A manifest that failed to load is fixed by editing the file and reloading.
+// This is the case that used to require a restart.
+func TestReloadPicksUpAFixedManifest(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "fixed", `
+version: 1
+name: fixed
+entrypoint: main.py
+timeout: 30
+trigger:
+  cron: "not a cron"
+`, noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+	ctx := context.Background()
+
+	if view, ok := d.GetIntegration("fixed"); !ok || view.Valid {
+		t.Fatalf("the broken integration should be present and invalid: ok=%v valid=%v", ok, view.Valid)
+	}
+
+	writeIntegration(t, root, "fixed", `
+version: 1
+name: fixed
+entrypoint: main.py
+timeout: 30
+trigger:
+  cron: "@every 4h"
+`, noopPython)
+
+	result, err := d.Reload(ctx)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if len(result.Invalid) != 0 {
+		t.Errorf("invalid = %v after the fix, want none", result.Invalid)
+	}
+	if len(result.Changed) != 1 || result.Changed[0] != "fixed" {
+		t.Errorf("changed = %v, want [fixed]", result.Changed)
+	}
+
+	view, ok := d.GetIntegration("fixed")
+	if !ok || !view.Valid {
+		t.Fatalf("the fixed integration is still not valid: ok=%v view=%+v", ok, view)
+	}
+	if spec, ok := d.sched.Spec("fixed"); !ok || spec != "@every 4h" {
+		t.Errorf("cron spec = %q (registered=%v), want @every 4h", spec, ok)
+	}
+}
+
+func TestConcurrentReloadIsRejected(t *testing.T) {
+	root := t.TempDir()
+	writeIntegration(t, root, "a", minimalManifest("a"), noopPython)
+	d := newDaemon(t, root, "", nil, nil)
+
+	// Hold the reload gate, which is what a reload in flight does.
+	d.reloadMu.Lock()
+	_, err := d.Reload(context.Background())
+	d.reloadMu.Unlock()
+
+	if !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("a concurrent reload = %v, want a conflict", err)
+	}
+}
