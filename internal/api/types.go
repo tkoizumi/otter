@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
@@ -176,6 +177,16 @@ type SubmitRunResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// SubmitRunOptions carries submission settings that are not part of the trigger.
+//
+// They are deliberately not smuggled through the request body: that body is the
+// trigger JSON, recorded verbatim and handed to integration code, so mixing
+// runtime options into it would corrupt both.
+type SubmitRunOptions struct {
+	// Capture is the HTTP capture policy for the run. Empty means the default.
+	Capture inspection.Policy
+}
+
 // CancelRunResponse is returned when a cancellation is accepted.
 type CancelRunResponse struct {
 	RunID   string `json:"run_id"`
@@ -208,6 +219,21 @@ type AppendLogRequest struct {
 	Stream  string         `json:"stream"`
 	Message string         `json:"message"`
 	Fields  map[string]any `json:"fields,omitempty"`
+}
+
+// CaptureRequestsResponse is the body of GET /v1/runs/{id}/requests.
+//
+// The capture summary travels with the list because it is what tells a reader
+// whether an empty list means "no requests" or "nothing was recorded".
+type CaptureRequestsResponse struct {
+	Capture  *inspection.RunCapture       `json:"capture"`
+	Requests []inspection.ExchangeSummary `json:"requests"`
+}
+
+// CaptureRequestResponse is the body of GET /v1/runs/{id}/requests/{request_id}.
+type CaptureRequestResponse struct {
+	Capture *inspection.RunCapture `json:"capture"`
+	Request *inspection.Exchange   `json:"request"`
 }
 
 // ErrorResponse is the body of every error the API returns.

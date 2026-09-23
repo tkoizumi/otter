@@ -40,6 +40,9 @@ type fakeBackend struct {
 	queueDepth int
 	runCounts  map[string]int
 
+	// capture is the in-memory HTTP capture fake, defined in capture_test.go.
+	capture *fakeCapture
+
 	submitted []submittedRun
 	cancelled []string
 
@@ -66,6 +69,7 @@ func newFakeBackend() *fakeBackend {
 		logs:         map[string][]runs.LogEntry{},
 		state:        map[string]map[string]json.RawMessage{},
 		runCounts:    map[string]int{},
+		capture:      newFakeCapture(),
 	}
 }
 

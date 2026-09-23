@@ -156,6 +156,11 @@ func (d *Daemon) purgeInstance(ctx context.Context, inst identity.Instance) erro
 	if _, err := d.runs.DeleteByIntegration(ctx, id); err != nil {
 		return fmt.Errorf("delete runs for %s: %w", id, err)
 	}
+	if d.inspection != nil {
+		if _, err := d.inspection.DeleteForIntegration(ctx, id); err != nil {
+			return fmt.Errorf("delete capture for %s: %w", id, err)
+		}
+	}
 	if _, err := d.db.ExecContext(ctx, `DELETE FROM webhook_tokens WHERE integration_id = ?`, id); err != nil {
 		return fmt.Errorf("delete webhook token for %s: %w", id, err)
 	}

@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional, Tuple
 
+from . import _capture
+
 __all__ = ["Client", "OtterError", "encode_path_segment"]
 
 
@@ -113,8 +115,13 @@ class Client:
             if self.token:
                 request.add_header("Authorization", "Bearer %s" % self.token)
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    return int(response.status), _decode_body(response.read())
+                # Otter's own control traffic is never captured: recording the
+                # recorder would recurse, and the daemon API is not integration
+                # behaviour. The guard is thread-local, so it cannot hide a
+                # concurrent request the integration itself makes.
+                with _capture.suppressed():
+                    with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                        return int(response.status), _decode_body(response.read())
             except urllib.error.HTTPError as exc:
                 payload = _decode_body(exc.read())
                 if 500 <= int(exc.code) < 600 and attempt < self.max_attempts:

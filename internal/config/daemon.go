@@ -21,6 +21,11 @@ const (
 	DefaultLogFormat     = "json"
 	DefaultLogLevel      = "info"
 	maxDefaultWorkers    = 8
+
+	// DefaultCaptureRetention is how long captured HTTP payloads are kept. The
+	// per-run summary survives retention, so an expired recording is never
+	// mistaken for one that observed nothing.
+	DefaultCaptureRetention = 7 * 24 * time.Hour
 )
 
 // DaemonConfig is the runtime configuration of otterd. Values come from
@@ -34,6 +39,11 @@ type DaemonConfig struct {
 	LogFormat       string
 	LogLevel        string
 	ShutdownGrace   time.Duration
+
+	// CaptureRetention is how long HTTP capture payloads are retained. Zero
+	// disables automatic expiry, which is only sensible when something else
+	// prunes the database.
+	CaptureRetention time.Duration
 
 	// SDKPath overrides the directory prepended to the child process
 	// PYTHONPATH. When empty the daemon extracts its embedded Python SDK into
@@ -163,7 +173,9 @@ func DefaultDaemonConfig(version string) DaemonConfig {
 		LogFormat:       DefaultLogFormat,
 		LogLevel:        DefaultLogLevel,
 		ShutdownGrace:   DefaultShutdownGrace,
-		Version:         version,
+
+		CaptureRetention: DefaultCaptureRetention,
+		Version:          version,
 	}
 }
 
@@ -261,6 +273,7 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.LogFormat, "log-format", c.LogFormat, "daemon log format: json or pretty")
 	fs.StringVar(&c.LogLevel, "log-level", c.LogLevel, "daemon log level: debug, info, warn or error")
 	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running integrations may finish after SIGTERM before being terminated")
+	fs.DurationVar(&c.CaptureRetention, "capture-retention", c.CaptureRetention, "how long captured HTTP payloads are kept; the per-run summary survives (0 disables expiry)")
 	fs.StringVar(&c.SDKPath, "sdk-path", c.SDKPath, "directory prepended to the child PYTHONPATH (defaults to the embedded SDK extracted into the data directory)")
 	fs.StringVar(&c.Notify.URL, "notify-url", c.Notify.URL, "POST failed runs to this URL (empty disables notification)")
 	fs.StringVar(&c.Notify.Format, "notify-format", c.Notify.Format,
@@ -283,6 +296,9 @@ func (c *DaemonConfig) Validate() error {
 	}
 	if c.ShutdownGrace < 0 {
 		return fmt.Errorf("--shutdown-grace must not be negative")
+	}
+	if c.CaptureRetention < 0 {
+		return fmt.Errorf("--capture-retention must not be negative")
 	}
 
 	if c.Notify.Enabled() {

@@ -12,6 +12,7 @@ is a thin client for this same API, so anything `otter` can do you can do with
 - [Identity and lifecycle](#identity-and-lifecycle)
 - [Runs](#runs)
 - [Run logs](#run-logs)
+- [HTTP request inspection](#http-request-inspection)
 - [Cancellation](#cancellation)
 - [State](#state)
 - [Webhooks](#webhooks)
@@ -51,7 +52,7 @@ There are three credential types, with different audiences.
 | Credential | Header | Used by | Scope |
 | --- | --- | --- | --- |
 | Daemon API token | `Authorization: Bearer <token>` | CLI, operators, automation | The whole control-plane API. |
-| Run state token | `Authorization: Bearer <run token>` | Child Python processes (the SDK) | Only the state and log endpoints for **that run's** integration. |
+| Run state token | `Authorization: Bearer <run token>` | Child Python processes (the SDK) | The state, log and capture-ingestion endpoints for **that run's** integration and run. |
 | Webhook token | `X-Otter-Token: <token>` or `?token=<token>` | External systems calling a hook | Only `POST /v1/hooks/{integration}` for one integration. |
 
 ### Loopback vs non-loopback
@@ -92,6 +93,9 @@ from one integration cannot drive another.
 | `POST /v1/reload` | yes | **no** (`403`) |
 | `GET /v1/integrations/{id}` | any integration | only its own integration |
 | `GET /v1/runs/{id}`, `GET/POST /v1/runs/{id}/logs` | any run | only its own run |
+| `POST /v1/runs/{id}/requests/events` | any run | only its own run |
+| `GET /v1/runs/{id}/requests[/{request_id}]` | any run | **no** (`403`) |
+| `GET /v1/requests/{request_id}` | any run | **no** (`403`) |
 | `GET/PUT/DELETE /v1/integrations/{id}/state[/{key}]` | any integration | only its own integration |
 | `POST /v1/hooks/{integration}` | n/a — webhook token only | n/a |
 
@@ -124,7 +128,7 @@ Every error uses the same envelope:
 | `403` | `forbidden` | Valid credential without permission for the target (a run state token used for another integration or run, or any run token on a control-plane endpoint). |
 | `404` | `not_found` | Unknown path, unknown integration or run, unset state key, or a hook for an integration without a webhook trigger. |
 | `405` | *(empty body)* | Known path, unsupported method — the router answers this itself. |
-| `409` | `conflict` | Cancel on a run that is already terminal. |
+| `409` | `conflict` | Cancel on a run that is already terminal, or capture ingestion for a run with no capture configuration. |
 | `500` | `internal_error` | Unexpected server error; details are in the daemon log. |
 | `503` | `unavailable` | The daemon is shutting down and is not accepting new work. |
 
@@ -369,6 +373,7 @@ inline: `--workers` and the integration's `concurrency` still apply.
 | --- | --- | --- |
 | `id` | path | Integration `name`. |
 | `body` | JSON body, optional | `{"body": <any JSON>, "headers": {"X-Requested-By": "ops"}}` attached to the run's `metadata` and exposed as `ctx.trigger`. Omit it (or send `{}`) for a plain manual run. |
+| `capture` | query | HTTP capture level: `off`, `metadata` or `full`. Defaults to `metadata`. The option is a query parameter, not part of the trigger body, so the body stays byte-for-byte the trigger JSON. An unknown value is a `400`. |
 
 ```bash
 curl -s -X POST -H "$(auth)" -H 'Content-Type: application/json' \
@@ -637,6 +642,191 @@ Response: `201 Created`.
 Errors: `401 unauthorized`, `403 forbidden` (token does not belong to this run),
 `404 not_found`, `400 invalid_request` (non-object body, empty `message`, or an
 unknown `stream`).
+
+## HTTP request inspection
+
+A run's outgoing HTTP exchanges are recorded from inside the child and read back
+over these three endpoints. Capture levels, coverage, redaction, limits and
+retention are documented in [http-capture.md](http-capture.md); this section
+covers the API only. Capture is selected at submission with `?capture=` on
+`POST /v1/integrations/{id}/runs`.
+
+### `POST /v1/runs/{id}/requests/events`
+
+The running child submits a bounded batch of capture events here. Authenticate
+with the **run state token** from `OTTER_STATE_TOKEN`, or the daemon token. The
+run's integration identity is inferred from the run record, never from the
+caller, so a token scoped to one run cannot attribute traffic to another.
+Delivery is idempotent: a duplicate batch is reported, not double-counted, and a
+stale update cannot regress a finalized exchange.
+
+| Parameter | In | Description |
+| --- | --- | --- |
+| `id` | path | Run id. |
+| `body` | JSON body | A capture event batch carrying `schema_version`, `policy` and a bounded list of `events`. |
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $OTTER_STATE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d @capture-batch.json \
+  "$OTTER_API_URL/v1/runs/$OTTER_RUN_ID/requests/events"
+```
+
+`202 Accepted`, with a report of what the batch did:
+
+```json
+{
+  "accepted": 7,
+  "duplicates": 1,
+  "stale": 0,
+  "quota_rejected": 2,
+  "dropped_bytes": 4096,
+  "finalization": "complete"
+}
+```
+
+A quota rejection is **not** an error. It appears as `quota_rejected` in this
+body because capture is diagnostic: exceeding a limit drops capture rather than
+failing an integration. A malformed or oversized batch is `400 invalid_request`;
+a run with no capture configuration is `409 conflict`. The response never
+contains payloads or credentials.
+
+Errors: `400 invalid_request`, `401 unauthorized`, `403 forbidden` (token is not
+scoped to this run), `404 not_found`, `409 conflict`.
+
+### `GET /v1/runs/{id}/requests`
+
+List a run's request summaries, oldest first. Operator (admin) authorization:
+payload inspection is not part of a run token's narrow scope. The response
+carries the run's capture summary alongside the list and never includes
+payloads, so a caller can always tell an empty recording from an unavailable
+one.
+
+| Query parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `after_id` | integer | `0` | Return only requests with a database `id` greater than this cursor. Must be `>= 0`. |
+| `limit` | integer | `100` | Maximum summaries to return; must be a positive integer. |
+
+```bash
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/requests?after_id=0&limit=100"
+```
+
+```json
+{
+  "capture": {
+    "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
+    "state": "complete",
+    "policy": "full",
+    "coverage": "urllib",
+    "finalization": "complete",
+    "request_count": 2,
+    "completed_count": 2,
+    "failed_count": 0,
+    "incomplete_count": 0,
+    "dropped_events": 0,
+    "redaction_count": 3,
+    "payloads_expired": false
+  },
+  "requests": [
+    {
+      "id": 2,
+      "request_id": "87603b35e60c4dae9f57040b15e24ab3",
+      "phase": "completed",
+      "complete": true,
+      "method": "POST",
+      "url": "http://127.0.0.1:8791/records",
+      "status_code": 400,
+      "duration_total_ms": 1,
+      "occurred_at": "2026-09-22T21:42:17.501585Z",
+      "payloads": "full"
+    }
+  ]
+}
+```
+
+`state` is the capture state (`unavailable`, `off`, `pending`, `complete`,
+`incomplete` or `expired`), which is why the summary travels with the list.
+`payloads` is `metadata`, `partial` or `full`; an exchange whose process was
+killed is `incomplete`.
+
+Errors: `400 invalid_request` for a negative `after_id` or a non-positive
+`limit`, `403 forbidden` (a run token), `404 not_found`.
+
+### `GET /v1/runs/{id}/requests/{request_id}`
+
+One exchange, including its sanitized headers and bodies. Operator (admin)
+authorization, like the list. A `request_id` that belongs to a different run is
+`404`, not a cross-run read.
+
+| Parameter | In | Description |
+| --- | --- | --- |
+| `id` | path | Run id. |
+| `request_id` | path | The SDK-generated request id from the list. |
+
+```bash
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/requests/87603b35e60c4dae9f57040b15e24ab3"
+```
+
+```json
+{
+  "capture": {"run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "state": "complete", "policy": "full"},
+  "request": {
+    "request_id": "87603b35e60c4dae9f57040b15e24ab3",
+    "phase": "completed",
+    "complete": true,
+    "method": "POST",
+    "url": "http://127.0.0.1:8791/records",
+    "call_site": "main.py:27 in main",
+    "status_code": 400,
+    "duration_to_headers_ms": 1,
+    "duration_body_ms": 0,
+    "duration_total_ms": 1,
+    "payloads": "full",
+    "request_headers": [
+      {"name": "Content-type", "value": "application/json"},
+      {"name": "Authorization", "value": "REDACTED"}
+    ],
+    "request_body": {"state": "captured", "content_type": "application/json", "json": {"cursor": "cur-42"}},
+    "response_headers": [{"name": "Content-Type", "value": "application/json"}],
+    "response_body": {"state": "captured", "content_type": "application/json", "json": {"error": "cursor rejected"}, "redacted": true, "redacted_count": 1}
+  }
+}
+```
+
+Bodies are always sanitized before storage. A body that v1 cannot capture is
+reported as `"state": "omitted"` with a `reason`, never stored raw:
+`unsupported_content`, `stream_unsupported`, `oversized`, `incomplete`,
+`encoded`, `unparseable`, `redaction_failed`, `quota_exceeded`, `dropped` or
+`expired`. An empty body is `"state": "empty"`, which is distinct from an omitted
+one.
+
+Errors: `403 forbidden` (a run token), `404 not_found` (unknown run, or a
+`request_id` that belongs to another run).
+
+### `GET /v1/requests/{request_id}`
+
+One exchange addressed by request id alone, with the same body as the run-scoped
+read above. Operator (admin) authorization. The daemon resolves the owning run
+from the stored row; the id does not carry the run, and no prefix or other client
+convention is trusted.
+
+Because a request id is only unique within a run, an id that more than one run
+recorded is a conflict rather than an arbitrary match. The message names the
+candidate runs, so the caller can retry against the run-scoped endpoint.
+
+| Parameter | In | Description |
+| --- | --- | --- |
+| `request_id` | path | The SDK-generated request id from a run's list. |
+
+```bash
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/requests/87603b35e60c4dae9f57040b15e24ab3"
+```
+
+The response is identical in shape to `GET /v1/runs/{id}/requests/{request_id}`,
+including the `capture` summary for the resolved run.
+
+Errors: `403 forbidden` (a run token), `404 not_found` (unknown request id),
+`409 conflict` (the id is recorded by more than one run).
 
 ## Cancellation
 

@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "_comment": "Canonical redaction conformance corpus. Read by both internal/inspection (Go) and sdk/python/tests so the two implementations cannot drift. Every 'expect' is an exact result; 'redactions' is the number of secrets the implementation must report having removed.",
+  "urls": [
+    {
+      "name": "userinfo_and_sensitive_query",
+      "input": "https://user:s3cr3t@api.example.com/v1/items?access_token=abc123&page=2&page=3#section",
+      "expect": "https://api.example.com/v1/items?access_token=REDACTED&page=2&page=3",
+      "redactions": 2
+    },
+    {
+      "name": "repeated_parameters_preserved",
+      "input": "https://api.example.com/v1?tag=a&tag=b&api_key=xyz",
+      "expect": "https://api.example.com/v1?tag=a&tag=b&api_key=REDACTED",
+      "redactions": 1
+    },
+    {
+      "name": "non_sensitive_query_untouched",
+      "input": "https://api.example.com/v1?page=2&limit=10",
+      "expect": "https://api.example.com/v1?page=2&limit=10",
+      "redactions": 0
+    },
+    {
+      "name": "fragment_removed",
+      "input": "https://api.example.com/v1/items#frag",
+      "expect": "https://api.example.com/v1/items",
+      "redactions": 0
+    },
+    {
+      "name": "no_credentials",
+      "input": "https://api.example.com/v1/items",
+      "expect": "https://api.example.com/v1/items",
+      "redactions": 0
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "expect": "",
+      "redactions": 0
+    }
+  ],
+  "headers": [
+    {
+      "name": "authorization_redacted_others_kept",
+      "input": [["Authorization", "Bearer abc"], ["Accept", "application/json"]],
+      "expect": [["Authorization", "REDACTED"], ["Accept", "application/json"]],
+      "redactions": 1
+    },
+    {
+      "name": "case_insensitive_and_duplicates",
+      "input": [["cookie", "a=b"], ["X-Shopify-Access-Token", "shpat_x"], ["Content-Type", "application/json"]],
+      "expect": [["cookie", "REDACTED"], ["X-Shopify-Access-Token", "REDACTED"], ["Content-Type", "application/json"]],
+      "redactions": 2
+    },
+    {
+      "name": "duplicate_names_preserve_order",
+      "input": [["X-Tag", "a"], ["X-Tag", "b"]],
+      "expect": [["X-Tag", "a"], ["X-Tag", "b"]],
+      "redactions": 0
+    },
+    {
+      "name": "set_cookie_redacted",
+      "input": [["Set-Cookie", "sid=1; HttpOnly"], ["Content-Type", "application/json"]],
+      "expect": [["Set-Cookie", "REDACTED"], ["Content-Type", "application/json"]],
+      "redactions": 1
+    }
+  ],
+  "json": [
+    {
+      "name": "nested_credentials_in_objects_and_arrays",
+      "input": "{\"username\":\"u\",\"password\":\"p\",\"nested\":{\"access_token\":\"t\",\"ok\":1},\"items\":[{\"client_secret\":\"s\"},{\"keep\":\"v\"}]}",
+      "expect": "{\"username\":\"u\",\"password\":\"REDACTED\",\"nested\":{\"access_token\":\"REDACTED\",\"ok\":1},\"items\":[{\"client_secret\":\"REDACTED\"},{\"keep\":\"v\"}]}",
+      "redactions": 3
+    },
+    {
+      "name": "camel_and_screaming_case",
+      "input": "{\"AccessToken\":\"t\",\"API_KEY\":\"k\",\"page\":2}",
+      "expect": "{\"AccessToken\":\"REDACTED\",\"API_KEY\":\"REDACTED\",\"page\":2}",
+      "redactions": 2
+    },
+    {
+      "name": "array_of_scalars_preserved",
+      "input": "{\"tags\":[\"a\",\"b\"],\"secret\":\"s\"}",
+      "expect": "{\"tags\":[\"a\",\"b\"],\"secret\":\"REDACTED\"}",
+      "redactions": 1
+    },
+    {
+      "name": "key_order_preserved",
+      "input": "{\"b\":1,\"a\":{\"z\":2,\"y\":3}}",
+      "expect": "{\"b\":1,\"a\":{\"z\":2,\"y\":3}}",
+      "redactions": 0
+    },
+    {
+      "name": "number_literals_preserved",
+      "input": "{\"big\":12345678901234567890,\"f\":1.500,\"neg\":-0.0}",
+      "expect": "{\"big\":12345678901234567890,\"f\":1.500,\"neg\":-0.0}",
+      "redactions": 0
+    },
+    {
+      "name": "top_level_array",
+      "input": "[1,2,{\"password\":\"p\"}]",
+      "expect": "[1,2,{\"password\":\"REDACTED\"}]",
+      "redactions": 1
+    },
+    {
+      "name": "top_level_scalar",
+      "input": "\"plain\"",
+      "expect": "\"plain\"",
+      "redactions": 0
+    }
+  ],
+  "invalid_json": [
+    {"name": "truncated_object", "input": "{\"password\":\"p\""},
+    {"name": "trailing_garbage", "input": "{\"a\":1} extra"},
+    {"name": "not_json", "input": "password=p"},
+    {"name": "empty", "input": ""}
+  ],
+  "error_text": [
+    {
+      "name": "embedded_userinfo_and_query_token",
+      "input": "HTTPConnectionPool(host='api.example.com'): https://user:pw@api.example.com/x?access_token=abc failed",
+      "expect_contains": ["https://REDACTED@api.example.com", "access_token=REDACTED"],
+      "expect_not_contains": ["pw@", "access_token=abc"]
+    },
+    {
+      "name": "control_characters_removed",
+      "input": "boom\r\nsecond line\u0000end",
+      "expect_contains": ["boom", "second line", "end"],
+      "expect_not_contains": ["\r", "\n", "\u0000"]
+    }
+  ]
+}

@@ -23,6 +23,7 @@ import (
 
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
@@ -107,6 +108,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdRunStatus(ctx, g, commandArgs)
 	case "logs":
 		return a.cmdLogs(ctx, g, commandArgs)
+	case "requests":
+		return a.cmdRequests(ctx, g, commandArgs)
+	case "request":
+		return a.cmdRequest(ctx, g, commandArgs)
 	case "state":
 		return a.cmdState(ctx, g, commandArgs)
 	case "validate":
@@ -563,21 +568,29 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	body := fs.String("body", "", "JSON value recorded as the trigger body")
 	noWait := fs.Bool("no-wait", false, "queue the run and print its id without waiting")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the run and any retries to finish")
-	// Only --body and --timeout take a value; the rest are booleans, so the
-	// reorderer needs no reflection over the flag set.
+	capture := fs.String("capture", "", "HTTP capture policy: off, metadata or full (default metadata)")
+	// Only --body, --timeout and --capture take a value; the rest are booleans,
+	// so the reorderer needs no reflection over the flag set.
 	takesValue := func(arg string) bool {
 		name := strings.TrimLeft(arg, "-")
 		if i := strings.Index(name, "="); i >= 0 {
 			name = name[:i]
 		}
-		return name == "body" || name == "timeout" || name == "poll"
+		return name == "body" || name == "timeout" || name == "poll" || name == "capture"
 	}
 	args = flagsFirst(normalizeLongFlags(args), takesValue)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter run [integration] [--body <json>] [--no-wait]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter run [integration] [--body <json>] [--no-wait] [--capture <policy>]")
+		return 2
+	}
+
+	// Validate before submitting: a mistyped policy should not queue a run.
+	capturePolicy, err := inspection.ParsePolicy(*capture)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
 	}
 
@@ -603,7 +616,7 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	}
 
 	client := g.client()
-	rootID, err := client.SubmitRun(ctx, integration, payload)
+	rootID, err := client.SubmitRunWithOptions(ctx, integration, payload, capturePolicy.String())
 	if err != nil {
 		return a.fail(err)
 	}
@@ -1280,7 +1293,7 @@ Examples:
 func needsDaemon(command string) bool {
 	switch command {
 	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state",
-		"register", "reset", "delete", "move":
+		"register", "reset", "delete", "move", "requests", "request":
 		return true
 	default:
 		return false

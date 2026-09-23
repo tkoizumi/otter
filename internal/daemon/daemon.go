@@ -25,6 +25,7 @@ import (
 	"github.com/tkoizumi/otter/internal/datalock"
 	"github.com/tkoizumi/otter/internal/executor"
 	"github.com/tkoizumi/otter/internal/identity"
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
 	"github.com/tkoizumi/otter/internal/queue"
@@ -105,6 +106,11 @@ type Daemon struct {
 	queue *queue.Queue
 	state *state.Store
 
+	// inspection holds bounded HTTP capture: per-run summaries and request
+	// records. It is diagnostic, so nothing recorded through it may change what
+	// a run does.
+	inspection *inspection.Store
+
 	sched    *scheduler.Scheduler
 	exec     *executor.Executor
 	secrets  secrets.Provider
@@ -184,25 +190,26 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 
 	identStore := identity.NewStore(db.DB)
 	d := &Daemon{
-		cfg:       cfg,
-		owner:     owner,
-		log:       opts.Logger,
-		version:   opts.Version,
-		db:        db,
-		runs:      runs.NewStore(db.DB),
-		logs:      runs.NewLogStore(db.DB),
-		queue:     queue.New(db.DB),
-		state:     state.NewStore(db.DB),
-		sched:     scheduler.New(opts.Logger),
-		secrets:   provider,
-		reg:       newRegistry(),
-		cap:       newCapacity(cfg.Workers),
-		ident:     identity.NewService(identStore, cfg.IntegrationsDir),
-		runTokens: newRunTokenRegistry(),
-		stopCh:    make(chan struct{}),
-		wakeCh:    make(chan struct{}, 1),
-		runCtl:    map[string]*runControl{},
-		startedAt: time.Now().UTC(),
+		cfg:        cfg,
+		owner:      owner,
+		log:        opts.Logger,
+		version:    opts.Version,
+		db:         db,
+		runs:       runs.NewStore(db.DB),
+		logs:       runs.NewLogStore(db.DB),
+		queue:      queue.New(db.DB),
+		state:      state.NewStore(db.DB),
+		inspection: inspection.NewStore(db.DB, inspection.DefaultRedactor(), inspection.DefaultLimits()),
+		sched:      scheduler.New(opts.Logger),
+		secrets:    provider,
+		reg:        newRegistry(),
+		cap:        newCapacity(cfg.Workers),
+		ident:      identity.NewService(identStore, cfg.IntegrationsDir),
+		runTokens:  newRunTokenRegistry(),
+		stopCh:     make(chan struct{}),
+		wakeCh:     make(chan struct{}, 1),
+		runCtl:     map[string]*runControl{},
+		startedAt:  time.Now().UTC(),
 	}
 
 	if err := d.ensureIdentityBootstrap(ctx); err != nil {
@@ -245,9 +252,10 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	d.apiServer = api.NewServer(api.ServerConfig{
-		Listen:   cfg.Listen,
-		APIToken: cfg.APIToken,
-		OnReady:  opts.OnReady,
+		Listen:        cfg.Listen,
+		APIToken:      cfg.APIToken,
+		CaptureLimits: inspection.DefaultLimits(),
+		OnReady:       opts.OnReady,
 	}, d, opts.Logger)
 
 	keepOwner = true
@@ -722,6 +730,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.sched.Start()
 	d.startWorkers()
+	go d.runCaptureRetention(apiCtx)
 
 	d.log.Info("daemon_started",
 		"version", d.version,

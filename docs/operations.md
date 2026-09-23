@@ -479,6 +479,49 @@ Example weekly maintenance:
 30 4 * * 0 root sqlite3 /var/lib/otter/otter.db "DELETE FROM run_logs WHERE id IN (SELECT l.id FROM run_logs l JOIN runs r ON r.id = l.run_id WHERE r.queued_at < datetime('now','-14 days'));" && sqlite3 /var/lib/otter/otter.db 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'
 ```
 
+## Reading a run's HTTP requests
+
+When a run was submitted with HTTP capture enabled (the default is `metadata`;
+`otter run --capture full` also records headers and JSON bodies), its outgoing
+requests are stored in SQLite and read back with two commands:
+
+```sh
+otter requests <run-id>                  # list summaries; --limit and --after-id page it
+otter request <request-id>               # one exchange; the owning run is resolved from storage
+otter request <run-id> <request-id>      # one exchange, when the id needs disambiguating
+```
+
+`otter request` takes the request id on its own, so the run id is normally
+unnecessary. The two-argument form remains the escape hatch for an id that more
+than one run recorded: that case is reported as a conflict naming the runs rather
+than resolved arbitrarily.
+
+Both commands follow the `otter logs` convention: a terminal gets readable prose,
+a pipe gets JSON, and `--json` and `--pretty` override that. `otter requests`
+always prints the capture state first, because an empty list is ambiguous on its
+own — `complete` with zero requests means capture observed nothing, `off` means
+this run was not recorded, and `unavailable` means the run predates capture or
+was never configured for it. The list never loads bodies, so it is safe to run
+against a run with many exchanges.
+
+Capture is bounded by design: 256 KiB per body, 10 MiB and 1,000 request records
+per run. If a run hits those limits, capture is dropped rather than the run being
+failed, and the dropped counts appear in the capture summary.
+
+**Capture retention.** Captured payloads expire after seven days by default.
+Configure it with the daemon's `--capture-retention` flag:
+
+```bash
+otterd --capture-retention 168h     # the default: seven days
+otterd --capture-retention 0        # disable automatic expiry
+```
+
+Expiry removes payloads but keeps a small per-run summary, so an expired
+recording is still distinguishable from a run that observed nothing. The sweep
+runs hourly in bounded batches and does not require downtime. Like `run_logs`,
+capture data lives in `otter.db`; `--capture-retention 0` means the database
+keeps growing with payload data until you prune it yourself.
+
 ## Reloading integrations
 
 The daemon reads the integrations directory when it starts. Adding or editing a

@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/runs"
 	"github.com/tkoizumi/otter/internal/state"
@@ -35,6 +36,10 @@ type ServerConfig struct {
 	Listen   string
 	APIToken string
 
+	// CaptureLimits bounds HTTP capture ingestion. The zero value means
+	// inspection.DefaultLimits.
+	CaptureLimits inspection.Limits
+
 	// OnReady is called once the listener is bound, with the address the
 	// kernel actually chose -- which is not necessarily the configured one
 	// when it names port 0. A daemon that will be addressed by other
@@ -44,15 +49,20 @@ type ServerConfig struct {
 
 // Server serves the Otter HTTP API.
 type Server struct {
-	cfg     ServerConfig
-	backend Backend
-	logger  *logging.Logger
-	http    *http.Server
+	cfg           ServerConfig
+	backend       Backend
+	logger        *logging.Logger
+	http          *http.Server
+	captureLimits inspection.Limits
 }
 
 // NewServer wires the API routes.
 func NewServer(cfg ServerConfig, backend Backend, logger *logging.Logger) *Server {
-	s := &Server{cfg: cfg, backend: backend, logger: logger}
+	limits := cfg.CaptureLimits
+	if limits.MaxBodyBytes == 0 {
+		limits = inspection.DefaultLimits()
+	}
+	s := &Server{cfg: cfg, backend: backend, logger: logger, captureLimits: limits}
 	s.http = &http.Server{
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -88,6 +98,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runs/{id}", s.principal(s.handleGetRun))
 	mux.Handle("GET /v1/runs/{id}/logs", s.principal(s.handleGetLogs))
 	mux.Handle("POST /v1/runs/{id}/logs", s.principal(s.handleAppendLog))
+
+	// Capture ingestion is a child-reported diagnostic: a live run token may
+	// submit only its own run's events. Inspection reads are operator-only, so
+	// they follow the same admin rules as the other whole-runtime endpoints.
+	mux.Handle("POST /v1/runs/{id}/requests/events", s.principal(s.handleIngestCapture))
+	mux.Handle("GET /v1/runs/{id}/requests", s.admin(s.handleListCaptureRequests))
+	mux.Handle("GET /v1/runs/{id}/requests/{request_id}", s.admin(s.handleGetCaptureRequest))
+	mux.Handle("GET /v1/requests/{request_id}", s.admin(s.handleGetCaptureRequestByID))
 	mux.Handle("GET /v1/integrations/{id}/state", s.principal(s.handleGetAllState))
 	mux.Handle("GET /v1/integrations/{id}/state/{key}", s.principal(s.handleGetState))
 	mux.Handle("PUT /v1/integrations/{id}/state/{key}", s.principal(s.handleSetState))
@@ -507,7 +525,13 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		payload.Body = json.RawMessage(body)
 	}
 
-	runID, err := s.backend.SubmitRun(r.Context(), id, payload)
+	capture, err := inspection.ParsePolicy(r.URL.Query().Get("capture"))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+
+	runID, err := s.backend.SubmitRunWithOptions(r.Context(), id, payload, SubmitRunOptions{Capture: capture})
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -659,6 +683,124 @@ func (s *Server) handleAppendLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, map[string]any{"status": "recorded"})
+}
+
+// handleIngestCapture accepts one bounded batch of HTTP capture events from a
+// running child.
+//
+// A rejected batch is a 400: the submission is malformed and retrying it will
+// not help. A quota rejection is not an error at all -- it is diagnostic loss,
+// reported in the response body, because capture must never fail an integration.
+func (s *Server) handleIngestCapture(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if !principalFrom(r.Context()).allowsRun(runID) {
+		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this run")
+		return
+	}
+
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+
+	var batch inspection.EventBatch
+	if err := json.Unmarshal(body, &batch); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid,
+			"body must be a capture event batch with schema_version, policy and events")
+		return
+	}
+	if err := inspection.ValidateBatch(batch, s.captureLimits); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+
+	result, err := s.backend.IngestCaptureEvents(r.Context(), runID, batch)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, result)
+}
+
+// handleListCaptureRequests returns a run's request summaries. Operator-only:
+// payload inspection is not part of a run token's narrow scope.
+func (s *Server) handleListCaptureRequests(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+
+	afterID := int64(0)
+	if raw := r.URL.Query().Get("after_id"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid, "after_id must be a non-negative integer")
+			return
+		}
+		afterID = n
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid, "limit must be a positive integer")
+			return
+		}
+		limit = n
+	}
+
+	summary, err := s.backend.CaptureSummary(r.Context(), runID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	requests, err := s.backend.ListCaptureRequests(r.Context(), runID, afterID, limit)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if requests == nil {
+		requests = []inspection.ExchangeSummary{}
+	}
+	s.writeJSON(w, http.StatusOK, CaptureRequestsResponse{Capture: summary, Requests: requests})
+}
+
+// handleGetCaptureRequest returns one exchange with its sanitized payloads.
+func (s *Server) handleGetCaptureRequest(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	requestID := r.PathValue("request_id")
+
+	summary, err := s.backend.CaptureSummary(r.Context(), runID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	exchange, err := s.backend.GetCaptureRequest(r.Context(), runID, requestID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{Capture: summary, Request: exchange})
+}
+
+// handleGetCaptureRequestByID returns one exchange addressed by request id
+// alone, learning its run from storage.
+//
+// The id does not identify a run: uniqueness is enforced per run, so an id that
+// two runs recorded is answered with a conflict rather than an arbitrary match.
+// The caller can then retry naming the run.
+func (s *Server) handleGetCaptureRequestByID(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("request_id")
+
+	exchange, err := s.backend.GetCaptureRequestByID(r.Context(), requestID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	summary, err := s.backend.CaptureSummary(r.Context(), exchange.RunID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{Capture: summary, Request: exchange})
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
@@ -861,13 +1003,15 @@ func truncateUTF8(s string, limit int) string {
 // fail maps a backend error onto an HTTP response.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, ErrNotFound), errors.Is(err, runs.ErrNotFound), errors.Is(err, state.ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, runs.ErrNotFound), errors.Is(err, state.ErrNotFound),
+		errors.Is(err, inspection.ErrNotFound):
 		s.writeError(w, http.StatusNotFound, CodeNotFound, err.Error())
 	case errors.Is(err, ErrInvalid), errors.Is(err, state.ErrInvalidKey):
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
 	case errors.Is(err, state.ErrInvalidValue):
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
-	case errors.Is(err, ErrConflict):
+	case errors.Is(err, ErrConflict), errors.Is(err, inspection.ErrNotConfigured),
+		errors.Is(err, inspection.ErrAmbiguous):
 		s.writeError(w, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, ErrForbidden):
 		s.writeError(w, http.StatusForbidden, CodeForbidden, err.Error())

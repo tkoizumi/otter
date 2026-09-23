@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
@@ -65,8 +66,13 @@ type Backend interface {
 	// cron schedules are left alone.
 	Reload(ctx context.Context) (ReloadResult, error)
 
-	// SubmitRun queues a new run and returns its run id.
+	// SubmitRun queues a new run with default submission options and returns
+	// its run id.
 	SubmitRun(ctx context.Context, integrationID string, payload TriggerPayload) (string, error)
+
+	// SubmitRunWithOptions queues a new run with explicit options, such as the
+	// HTTP capture policy.
+	SubmitRunWithOptions(ctx context.Context, integrationID string, payload TriggerPayload, opts SubmitRunOptions) (string, error)
 
 	// CancelRun cancels a queued or running run.
 	CancelRun(ctx context.Context, runID string) error
@@ -82,6 +88,29 @@ type Backend interface {
 
 	// AppendRunLog appends a line of output, used by the Python SDK.
 	AppendRunLog(ctx context.Context, runID, stream, message string, fields map[string]any) error
+
+	// IngestCaptureEvents applies one batch of HTTP capture events submitted by a
+	// running child. The integration identity is inferred from the run record and
+	// never from the caller, so a run token cannot attribute traffic elsewhere.
+	IngestCaptureEvents(ctx context.Context, runID string, batch inspection.EventBatch) (*inspection.IngestResult, error)
+
+	// CaptureSummary returns a run's capture summary. A run that exists but has
+	// no recording yields a summary whose State is "unavailable" rather than an
+	// error, so a reader can tell "not recorded" apart from "recorded nothing".
+	CaptureSummary(ctx context.Context, runID string) (*inspection.RunCapture, error)
+
+	// ListCaptureRequests returns request summaries for a run, oldest first,
+	// without loading any payload.
+	ListCaptureRequests(ctx context.Context, runID string, afterID int64, limit int) ([]inspection.ExchangeSummary, error)
+
+	// GetCaptureRequest returns one request together with its sanitized payloads.
+	GetCaptureRequest(ctx context.Context, runID, requestID string) (*inspection.Exchange, error)
+
+	// GetCaptureRequestByID returns one request together with its sanitized
+	// payloads, resolving the owning run from storage rather than from the
+	// caller. It reports inspection.ErrAmbiguous when more than one run recorded
+	// the id, because the id alone does not identify a run.
+	GetCaptureRequestByID(ctx context.Context, requestID string) (*inspection.Exchange, error)
 
 	// GetState reads one state key.
 	GetState(ctx context.Context, integrationID, key string) (json.RawMessage, error)

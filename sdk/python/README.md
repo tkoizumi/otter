@@ -14,6 +14,7 @@ sdk/python/
 ├── otter/
 │   ├── __init__.py     # public exports: Context, run, OtterError, ...
 │   ├── _client.py      # internal HTTP client (urllib) + OtterError
+│   ├── _capture.py     # process-local urllib instrumentation and capture transport
 │   ├── context.py      # Context.from_environment()
 │   ├── state.py        # ctx.state
 │   ├── log.py          # ctx.log
@@ -36,6 +37,7 @@ The daemon sets these variables for every child process:
 | `OTTER_STATE_TOKEN`      | Per-run bearer token, scoped to this run/integration. |
 | `OTTER_TRIGGER_TYPE`     | `manual`, `cron` or `webhook`.                       |
 | `OTTER_INTEGRATION_DIR`  | Absolute path of the integration directory.          |
+| `OTTER_CAPTURE_POLICY`   | `off`, `metadata` or `full`; unset means capture is off. |
 
 The child's working directory is the integration directory. Ports are never
 hardcoded — always read `OTTER_API_URL`.
@@ -170,6 +172,25 @@ talks HTTP (via `urllib.request`). It offers `get_json`, `put_json`,
 * `OtterError` when transport keeps failing after all attempts.
 
 There are no third-party dependencies anywhere in the SDK.
+
+## HTTP capture
+
+When the daemon sets `OTTER_CAPTURE_POLICY` to `metadata` or `full`, the SDK
+installs process-local instrumentation for the standard library `urllib`
+transport before integration code is imported, so requests made at import time
+are covered too. With any other value — or no value at all — capture is off and
+nothing is installed.
+
+Capture is diagnostic and never changes integration behaviour: it does not alter
+a request's destination, suppress a write, or change an integration's return
+values, exceptions or exit status. A failure to record is dropped rather than
+raised. `metadata` records request summaries; `full` also records permitted
+headers and bounded, sanitized JSON bodies. Redaction runs before delivery.
+
+`urllib` is the only transport covered in this version. `requests`, `httpx`,
+custom openers that bypass `urllib.request.OpenerDirector.open`, subprocesses and
+raw sockets are not captured. [docs/http-capture.md](../../docs/http-capture.md)
+covers coverage, limits, retention and redaction in full.
 
 ## Tests
 

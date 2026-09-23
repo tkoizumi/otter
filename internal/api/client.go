@@ -167,9 +167,21 @@ func (c *Client) Reload(ctx context.Context) (*ReloadResult, error) {
 	return &out, nil
 }
 
-// SubmitRun queues a run and returns its run id.
+// SubmitRun queues a run with default submission options and returns its run id.
 func (c *Client) SubmitRun(ctx context.Context, integrationID string, body json.RawMessage) (string, error) {
+	return c.SubmitRunWithOptions(ctx, integrationID, body, "")
+}
+
+// SubmitRunWithOptions queues a run and returns its run id.
+//
+// capture is the HTTP capture policy for the run and travels as a query option
+// rather than in the body: the body is the trigger JSON, recorded and handed to
+// integration code verbatim. An empty value means the daemon's default.
+func (c *Client) SubmitRunWithOptions(ctx context.Context, integrationID string, body json.RawMessage, capture string) (string, error) {
 	path := "/v1/integrations/" + url.PathEscape(integrationID) + "/runs"
+	if capture != "" {
+		path += "?capture=" + url.QueryEscape(capture)
+	}
 
 	var payload []byte
 	if len(bytes.TrimSpace(body)) > 0 {
@@ -183,7 +195,54 @@ func (c *Client) SubmitRun(ctx context.Context, integrationID string, body json.
 	return out.RunID, nil
 }
 
-// CancelRun requests cancellation of a run.
+// ListCaptureRequests returns a run's captured HTTP exchanges.
+//
+// The list carries the capture summary and no payloads, so it is safe to render
+// without loading bodies, and an empty list can be told apart from a recording
+// that was never made.
+func (c *Client) ListCaptureRequests(ctx context.Context, runID string, afterID int64, limit int) (*CaptureRequestsResponse, error) {
+	values := url.Values{}
+	if afterID > 0 {
+		values.Set("after_id", strconv.FormatInt(afterID, 10))
+	}
+	if limit > 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/v1/runs/" + url.PathEscape(runID) + "/requests"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	var out CaptureRequestsResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetCaptureRequest returns one captured exchange with its sanitized payloads.
+func (c *Client) GetCaptureRequest(ctx context.Context, runID, requestID string) (*CaptureRequestResponse, error) {
+	path := "/v1/runs/" + url.PathEscape(runID) + "/requests/" + url.PathEscape(requestID)
+
+	var out CaptureRequestResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetCaptureRequestByID returns one captured exchange addressed by request id
+// alone. The daemon resolves the owning run from storage, so an id that more
+// than one run recorded is reported as a conflict rather than guessed.
+func (c *Client) GetCaptureRequestByID(ctx context.Context, requestID string) (*CaptureRequestResponse, error) {
+	path := "/v1/requests/" + url.PathEscape(requestID)
+
+	var out CaptureRequestResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
 func (c *Client) CancelRun(ctx context.Context, runID string) error {
 	return c.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/cancel", nil, nil)
 }

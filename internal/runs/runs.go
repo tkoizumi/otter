@@ -105,6 +105,12 @@ type Run struct {
 	// what fences a stale worker or state write.
 	IntegrationName       string `json:"integration_name,omitempty"`
 	IntegrationGeneration int64  `json:"integration_generation,omitempty"`
+
+	// CapturePolicy is the HTTP capture policy this run was submitted with. A
+	// retry inherits it from its parent. An empty value means the run predates
+	// capture, which is what lets a reader tell "not recorded" from "recorded
+	// nothing".
+	CapturePolicy string `json:"capture_policy,omitempty"`
 }
 
 // Duration returns how long the run has been running, or ran for.
@@ -131,7 +137,7 @@ const runColumns = `id, integration_id, trigger_type, status, attempt, parent_ru
 	created_at, started_at, finished_at, exit_code, error, metadata,
 	python_mode, python_version, environment_digest, python_policy,
 	release_digest, release_source_dir, sdk_version,
-	integration_name, integration_generation`
+	integration_name, integration_generation, capture_policy`
 
 // Store provides access to run records.
 type Store struct {
@@ -162,7 +168,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		metadata = ""
 	}
 
-	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	args := []any{
 		r.ID, r.IntegrationID, r.TriggerType, string(r.Status), r.Attempt,
 		database.NullableString(deref(r.ParentRunID)),
@@ -173,7 +179,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		database.NullableString(deref(r.Error)),
 		metadata, r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy,
 		r.ReleaseDigest, r.ReleaseSourceDir, r.SDKVersion,
-		r.IntegrationName, r.IntegrationGeneration,
+		r.IntegrationName, r.IntegrationGeneration, r.CapturePolicy,
 	}
 
 	var err error
@@ -496,13 +502,14 @@ func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
 		sdkVersion        string
 		integrationName   string
 		integrationGen    int64
+		capturePolicy     string
 	)
 	if err := sc.Scan(
 		&r.ID, &r.IntegrationID, &r.TriggerType, &status, &r.Attempt,
 		&parent, &created, &started, &finished, &exitCode, &errMsg, &meta,
 		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
 		&releaseDigest, &releaseSourceDir, &sdkVersion,
-		&integrationName, &integrationGen,
+		&integrationName, &integrationGen, &capturePolicy,
 	); err != nil {
 		return nil, err
 	}
@@ -512,6 +519,7 @@ func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
 		pythonMode, pythonVersion, environmentDigest, pythonPolicy, sdkVersion
 	r.ReleaseDigest, r.ReleaseSourceDir = releaseDigest, releaseSourceDir
 	r.IntegrationName, r.IntegrationGeneration = integrationName, integrationGen
+	r.CapturePolicy = capturePolicy
 	if parent.Valid {
 		v := parent.String
 		r.ParentRunID = &v

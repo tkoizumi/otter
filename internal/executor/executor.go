@@ -63,6 +63,11 @@ type Request struct {
 	ExtraEnv       map[string]string
 	Timeout        time.Duration
 	TerminateGrace time.Duration
+
+	// CapturePolicy is the resolved HTTP capture policy for the run: off,
+	// metadata or full. It is resolved once at submission and passed through
+	// unchanged, so a child cannot widen its own capture.
+	CapturePolicy string
 }
 
 // Result is the outcome of an execution.
@@ -321,6 +326,11 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 		// when they are mounted read-only.
 		"PYTHONDONTWRITEBYTECODE=1",
 	)
+	// Capture is off unless a policy is set, so a run that did not ask for it
+	// installs no instrumentation at all.
+	if req.CapturePolicy != "" {
+		inherited = append(inherited, "OTTER_CAPTURE_POLICY="+req.CapturePolicy)
+	}
 	if req.Managed {
 		inherited = append(inherited, "PYTHONNOUSERSITE=1")
 	}

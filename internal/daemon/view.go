@@ -13,6 +13,7 @@ import (
 
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/config"
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/pyenv"
 	"github.com/tkoizumi/otter/internal/release"
 	"github.com/tkoizumi/otter/internal/runs"
@@ -107,7 +108,14 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 
 // SubmitRun implements api.Backend. The run record and its queue entry are
 // written in one transaction so a run can never exist without being queued.
+// SubmitRun implements api.Backend with the default submission options: a
+// manual run still records metadata capture, like every other trigger.
 func (d *Daemon) SubmitRun(ctx context.Context, ref string, payload api.TriggerPayload) (string, error) {
+	return d.SubmitRunWithOptions(ctx, ref, payload, api.SubmitRunOptions{})
+}
+
+// SubmitRunWithOptions implements api.Backend.
+func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload api.TriggerPayload, opts api.SubmitRunOptions) (string, error) {
 	if d.draining.Load() {
 		return "", fmt.Errorf("otter is shutting down and is not accepting new runs: %w", api.ErrConflict)
 	}
@@ -138,6 +146,14 @@ func (d *Daemon) SubmitRun(ctx context.Context, ref string, payload api.TriggerP
 	triggerType := payload.Type
 	if triggerType == "" {
 		triggerType = api.TriggerManual
+	}
+
+	// The capture policy is resolved once, here, and then recorded on the run:
+	// the child is told the result and cannot widen it, and a retry inherits
+	// exactly what the operator asked for.
+	capturePolicy, err := inspection.ParsePolicy(opts.Capture.String())
+	if err != nil {
+		return "", fmt.Errorf("%v: %w", err, api.ErrInvalid)
 	}
 
 	metadata, err := encodeTriggerMetadata(payload, triggerType)
@@ -213,6 +229,7 @@ func (d *Daemon) SubmitRun(ctx context.Context, ref string, payload api.TriggerP
 		ReleaseDigest:         releaseDigest,
 		ReleaseSourceDir:      releaseSourceDir,
 		SDKVersion:            sdk.Version,
+		CapturePolicy:         capturePolicy.String(),
 	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
@@ -224,6 +241,10 @@ func (d *Daemon) SubmitRun(ctx context.Context, ref string, payload api.TriggerP
 	if err != nil {
 		return "", fmt.Errorf("queue run for %s: %w", integrationID, err)
 	}
+
+	// The summary is written before workers are woken, so a child can never
+	// submit capture for a run whose recording does not exist yet.
+	d.beginCapture(run.ID, integrationID, capturePolicy)
 
 	d.log.Info("run_queued",
 		"integration", entry.Integration.Name,

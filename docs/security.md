@@ -372,6 +372,52 @@ values:
   those are access-controlled too; they contain integration names, run ids, peer
   addresses and error strings.
 
+## HTTP request capture
+
+HTTP request inspection stores a run's outgoing requests and responses in
+`otter.db`, so capture data is subject to the same rule as any other stored data:
+it must not retain credentials. Recording is bounded and sanitized rather than a
+raw proxy log.
+
+**Redaction is mandatory and additive-only.** It runs in the SDK before delivery
+and again in the daemon before storage, so a bug in either side alone does not
+persist an unsanitized value. Mandatory rules cannot be weakened by the caller:
+
+- URL userinfo and fragments are removed, and sensitive query values are
+  redacted.
+- `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, common API-key
+  headers and configured header names are redacted case-insensitively.
+- Credential-shaped JSON field names — `password`, `secret`, `token`,
+  `access_token`, `refresh_token`, `api_key`, `client_secret` and similar — are
+  redacted recursively.
+- Exception text is sanitized and bounded rather than stored verbatim.
+
+Operator-configured query, header and JSON-field rules are additive: they can
+redact more, never less. Redaction and URL sanitizing also apply in `metadata`
+mode, even though `metadata` stores no headers or bodies.
+
+**`full` capture is opt-in.** Request summaries are the default; headers and
+bodies require `--capture full` (or `?capture=full`) for that run. Field-based
+redaction cannot discover every secret or personal value in arbitrary data, so
+retaining bodies is a deliberate choice, not a default.
+
+**Unsupported bodies are omitted, not stored raw.** Only bounded, valid UTF-8
+JSON is captured. Text, binary, form-encoded, content-encoded, oversized,
+unparseable and partially read bodies are omitted with a specific reason; a
+truncated JSON prefix is never stored. A stream or iterable request body is not
+read at all, because reading it would change what the request sends.
+
+**Capture observes live traffic.** It does not change a request's destination,
+suppress a write, or turn an integration into a dry run — it is not an
+interception proxy. Otter's own daemon API traffic is excluded so capture cannot
+recurse into its own delivery. Capture failures (queue pressure, delivery outage)
+never change an integration's return values, exceptions or exit status: a failed
+recording loses diagnostic data, it does not alter behaviour.
+
+Captured payloads expire after seven days by default. `--capture-retention 0`
+disables expiry, which keeps bodies in the database indefinitely; set the window
+to match how long the data may be retained.
+
 ## Hardening checklist
 
 - [ ] `otterd` runs as a dedicated, unprivileged system user (`otter`), never
@@ -394,6 +440,8 @@ values:
 - [ ] Remote access is via VPN or a TLS-terminating reverse proxy that exposes
       only `/v1/hooks/*` (and optionally `/health`) if hooks must be public.
 - [ ] `run_logs` retention is configured; the database file size is monitored.
+- [ ] HTTP capture retention is configured, and `full` capture is limited to runs
+      whose request and response bodies may be retained.
 - [ ] Backups of `otter.db` are access-controlled and encrypted at rest.
 - [ ] One daemon per trust boundary; untrusted integrations run in separate
       containers or VMs.

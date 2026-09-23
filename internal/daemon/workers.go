@@ -15,6 +15,7 @@ import (
 
 	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/executor"
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
 	"github.com/tkoizumi/otter/internal/pyenv"
@@ -237,8 +238,14 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		ExtraEnv:        env,
 		Timeout:         m.TimeoutDuration(),
 		TerminateGrace:  5 * time.Second,
+		CapturePolicy:   run.CapturePolicy,
 	}, sink)
 	sink.Flush()
+
+	// Capture is finalized from the child's actual fate, not from anything it
+	// claimed: a process killed by a signal never reports, and its recording must
+	// still be visible as incomplete rather than silently pending.
+	d.finalizeCapture(run.ID, result, ctl.getReason())
 
 	status, message, retryable := classifyOutcome(result, ctl.getReason(), m)
 	message = withFailureHint(message, status, sink.FailureHint())
@@ -474,6 +481,9 @@ func (d *Daemon) scheduleRetry(ctx context.Context, previous *runs.Run, m *confi
 		ReleaseDigest:         previous.ReleaseDigest,
 		ReleaseSourceDir:      previous.ReleaseSourceDir,
 		SDKVersion:            previous.SDKVersion,
+		// The capture policy belongs to the submission, not the attempt: a retry
+		// records exactly what the operator asked for, and owns its own requests.
+		CapturePolicy: previous.CapturePolicy,
 	}
 	availableAt := now.Add(delay)
 
@@ -485,6 +495,16 @@ func (d *Daemon) scheduleRetry(ctx context.Context, previous *runs.Run, m *confi
 	})
 	if err != nil {
 		return fmt.Errorf("schedule retry for %s: %w", previous.ID, err)
+	}
+
+	// Each attempt owns its own recording, created before the retry can be
+	// claimed so its child never submits capture for a missing summary. A retry
+	// of a run that predates capture keeps no recording at all: inventing one
+	// would report "incomplete" for a run that was never captured.
+	if next.CapturePolicy != "" {
+		if policy, err := inspection.ParsePolicy(next.CapturePolicy); err == nil {
+			d.beginCapture(next.ID, next.IntegrationID, policy)
+		}
 	}
 
 	d.log.Info("run_retry_scheduled",

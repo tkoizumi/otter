@@ -198,6 +198,15 @@ def _report_failure(ctx: Any, tb: str) -> None:
 
 def _exit_now(code: int) -> None:
     """Flush and exit with an exact status, bypassing the rest of shutdown."""
+    # os._exit skips atexit, so capture is delivered explicitly here. This is the
+    # only chance the failure path gets.
+    try:
+        from . import _capture
+
+        _capture.flush_before_exit()
+    except BaseException:
+        # Capture is diagnostic: it must never change how the process exits.
+        pass
     try:
         sys.stdout.flush()
     except Exception:

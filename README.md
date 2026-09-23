@@ -294,10 +294,13 @@ otter status                            # daemon health, queue depth, run counts
 otter integrations [--all]              # integration names (--all includes invalid)
 otter reload                            # re-read integrations; no restart, running work continues
 otter inspect <integration>             # full manifest view, triggers, recent runs
-otter run [<integration>] [--body <json>] # queue a manual run; prints the run id
+otter run [<integration>] [--body <json>] [--capture <policy>]  # queue a manual run; prints the run id
 otter runs [--integration I] [--status S] [--limit N]
 otter run-status <run-id>               # one run plus its retry attempts
 otter logs <run-id> [--follow]          # captured output
+otter requests <run-id>                 # captured outgoing HTTP requests
+otter request <request-id>              # one exchange; its run is resolved for you
+otter request <run-id> <request-id>     # one exchange, when the id needs disambiguating
 otter state get <integration> <key>
 otter state set <integration> <key> <json>
 otter state delete <integration> <key>
@@ -315,6 +318,12 @@ otter release --list --all               # every integration with a release, and
 otter release --list --all --prune --apply  # remove release data left by an unregistered integration
 otter release --activate <digest> <integration>  # roll back to a staged release
 ```
+
+`--capture` selects how much of a run's outgoing HTTP is recorded: `off`,
+`metadata` (the default) or `full`, which adds sanitized headers and bounded JSON
+bodies. `otter requests` and `otter request` read the recording back without any
+logging in the integration. See [docs/http-capture.md](docs/http-capture.md) for
+coverage, redaction, limits and retention.
 
 A run executes the integration's active release, so `otter release` is required
 before an integration can run at all -- external and managed Python alike. With
@@ -423,11 +432,15 @@ The daemon listens on `127.0.0.1:7337` by default.
 GET    /health
 GET    /v1/integrations
 GET    /v1/integrations/{id}
-POST   /v1/integrations/{id}/runs
+POST   /v1/integrations/{id}/runs   ?capture=off|metadata|full
 GET    /v1/runs                     ?integration_id=&status=&limit=&offset=
 GET    /v1/runs/{id}
 GET    /v1/runs/{id}/logs           ?after_id=&limit=
 POST   /v1/runs/{id}/logs
+POST   /v1/runs/{id}/requests/events
+GET    /v1/runs/{id}/requests       ?after_id=&limit=
+GET    /v1/runs/{id}/requests/{request_id}
+GET    /v1/requests/{request_id}
 POST   /v1/runs/{id}/cancel
 GET    /v1/integrations/{id}/state
 GET    /v1/integrations/{id}/state/{key}
@@ -602,6 +615,7 @@ platform published as `otter_<version>_<os>_<arch>.tar.gz` by
 | [docs/architecture.md](docs/architecture.md) | Subsystems, schema, run lifecycle, design rationale. |
 | [docs/manifest-reference.md](docs/manifest-reference.md) | Every `otter.yaml` field with defaults and validation rules. |
 | [docs/api-reference.md](docs/api-reference.md) | Every endpoint, credential type and error code. |
+| [docs/http-capture.md](docs/http-capture.md) | HTTP request inspection: capture levels, coverage, bodies, limits, retention, redaction. |
 | [docs/deploy.md](docs/deploy.md) | `otter deploy`: remote install over SSH, secrets, tunnels, upgrades, removal. |
 | [docs/managed-python.md](docs/managed-python.md) | Opt-in managed Python: pinned interpreter, locked dependencies, identity, preparation. |
 | [docs/identity.md](docs/identity.md) | Durable identities vs labels: markers, reference resolution, copy/move/reset/delete, migration. |
