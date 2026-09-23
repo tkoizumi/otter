@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tkoizumi/otter/internal/inspection"
 )
 
 // writeManifest writes body to dir/otter.yaml and returns the manifest path.
@@ -554,5 +556,50 @@ func TestMaxAttemptsSemantics(t *testing.T) {
 				t.Errorf("RetriesEnabled() = %v, want %v", got, tc.wantRetries)
 			}
 		})
+	}
+}
+
+// TestManifestCapture proves the integration-level opt-out: an omitted field
+// means "no opinion" (the deployment default applies), while an explicit value
+// — including off — is the integration's own decision.
+func TestManifestCapture(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, "main.py"))
+	base := "version: 1\nname: example\nentrypoint: main.py\n"
+
+	m, err := Load(writeManifest(t, dir, base))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := m.CapturePolicy(); ok {
+		t.Error("an omitted capture field must mean no opinion, not a policy")
+	}
+
+	for _, tc := range []struct {
+		value string
+		want  inspection.Policy
+	}{
+		{"full", inspection.PolicyFull},
+		{"metadata", inspection.PolicyMetadata},
+		{"off", inspection.PolicyOff},
+	} {
+		m, err := LoadAndValidate(writeManifest(t, dir, base+"capture: "+tc.value+"\n"))
+		if err != nil {
+			t.Fatalf("capture %q: LoadAndValidate() error = %v", tc.value, err)
+		}
+		got, ok := m.CapturePolicy()
+		if !ok {
+			t.Errorf("capture %q did not resolve to a policy", tc.value)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("capture %q resolved to %q, want %q", tc.value, got, tc.want)
+		}
+	}
+
+	// A typo is refused at validation rather than silently ignored, which would
+	// leave the integration on the deployment default without saying so.
+	if _, err := LoadAndValidate(writeManifest(t, dir, base+"capture: everything\n")); err == nil {
+		t.Error("an invalid capture policy was accepted")
 	}
 }

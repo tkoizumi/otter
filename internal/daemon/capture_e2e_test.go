@@ -221,7 +221,7 @@ env:
 
 // TestCaptureIsMetadataByDefault proves a normal run records summaries and never
 // payloads, so enabling capture does not quietly persist bodies everywhere.
-func TestCaptureIsMetadataByDefault(t *testing.T) {
+func TestCaptureMetadataStoresNoPayloads(t *testing.T) {
 	requirePython(t)
 
 	var origin *httptest.Server
@@ -282,6 +282,130 @@ with urllib.request.urlopen(os.environ["ORIGIN_URL"] + "/data") as response:
 	}
 	if len(detail.ResponseHeaders) != 0 {
 		t.Errorf("a metadata run must not store headers: %+v", detail.ResponseHeaders)
+	}
+}
+
+// TestCaptureDefaultsToFull is the point of the default: a run nobody
+// configured -- the shape of a cron trigger -- still records the payloads needed
+// to explain a failure after the fact. Nothing here passes --capture or a
+// SubmitRunOptions policy.
+func TestCaptureDefaultsToFull(t *testing.T) {
+	requirePython(t)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusBadRequest, map[string]any{
+			"error":        "cursor rejected",
+			"access_token": "origin-secret-value",
+		})
+	}))
+	defer origin.Close()
+
+	root := t.TempDir()
+	writeIntegration(t, root, "default-full-demo", fmt.Sprintf(`
+version: 1
+name: default-full-demo
+entrypoint: main.py
+timeout: 60
+retry:
+  attempts: 0
+env:
+  ORIGIN_URL: %s
+`, origin.URL), `
+import json
+import os
+import urllib.error
+import urllib.request
+
+request = urllib.request.Request(
+    os.environ["ORIGIN_URL"] + "/records",
+    data=json.dumps({"cursor": "cur-42"}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request) as response:
+        response.read()
+except urllib.error.HTTPError as exc:
+    raise RuntimeError("upstream rejected the batch: %s" % exc.read().decode("utf-8"))
+`)
+
+	d := newDaemon(t, root, "", nil, nil)
+	startDaemon(t, d)
+
+	// No options at all: this is exactly what a cron tick submits.
+	runID, err := d.SubmitRun(context.Background(), "default-full-demo",
+		api.TriggerPayload{Type: api.TriggerCron})
+	if err != nil {
+		t.Fatalf("submit run: %v", err)
+	}
+	view := awaitTerminal(t, d, runID)
+	if view.Run.CapturePolicy != string(inspection.PolicyFull) {
+		t.Fatalf("run capture policy = %q, want full", view.Run.CapturePolicy)
+	}
+
+	requests, err := d.ListCaptureRequests(context.Background(), runID, 0, 100)
+	if err != nil {
+		t.Fatalf("list requests: %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("listed %d requests, want 1", len(requests))
+	}
+	if got := requests[0].Completeness(); got != "full" {
+		t.Errorf("completeness = %q, want full", got)
+	}
+
+	detail, err := d.GetCaptureRequest(context.Background(), runID, requests[0].RequestID)
+	if err != nil {
+		t.Fatalf("get request: %v", err)
+	}
+	if detail.RequestBody == nil || detail.RequestBody.State != inspection.BodyCaptured {
+		t.Errorf("the default run stored no request body: %+v", detail.RequestBody)
+	}
+	if detail.ResponseBody == nil || detail.ResponseBody.State != inspection.BodyCaptured {
+		t.Errorf("the default run stored no response body: %+v", detail.ResponseBody)
+	}
+	// Defaulting to full must not mean defaulting to unredacted.
+	if got := string(detail.ResponseBody.JSON); strings.Contains(got, "origin-secret-value") {
+		t.Errorf("a secret reached stored capture: %s", got)
+	}
+}
+
+// TestManifestCaptureOffStopsRecording is the opt-out: the integration declares
+// that its payloads must not be stored, and the deployment-wide default does not
+// override that decision.
+func TestManifestCaptureOffStopsRecording(t *testing.T) {
+	requirePython(t)
+
+	root := t.TempDir()
+	writeIntegration(t, root, "capture-off-demo", `
+version: 1
+name: capture-off-demo
+entrypoint: main.py
+timeout: 60
+retry:
+  attempts: 0
+capture: off
+`, "print('nothing to capture')\n")
+
+	d := newDaemon(t, root, "", nil, nil)
+	startDaemon(t, d)
+
+	runID, err := d.SubmitRun(context.Background(), "capture-off-demo",
+		api.TriggerPayload{Type: api.TriggerCron})
+	if err != nil {
+		t.Fatalf("submit run: %v", err)
+	}
+	view := awaitTerminal(t, d, runID)
+	if view.Run.CapturePolicy != string(inspection.PolicyOff) {
+		t.Fatalf("run capture policy = %q, want off", view.Run.CapturePolicy)
+	}
+
+	summary, err := d.CaptureSummary(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("capture summary: %v", err)
+	}
+	if summary.State != inspection.CaptureOff {
+		t.Errorf("capture state = %q, want off", summary.State)
 	}
 }
 

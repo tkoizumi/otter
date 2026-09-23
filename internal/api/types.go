@@ -50,6 +50,11 @@ type IntegrationView struct {
 	Error            string            `json:"error,omitempty"`
 	NextRunAt        *time.Time        `json:"next_run_at,omitempty"`
 
+	// Capture is the HTTP capture policy a new run of this integration would
+	// use: the integration's declared policy, or the deployment default when the
+	// manifest does not declare one.
+	Capture string `json:"capture"`
+
 	// Generation is the identity generation, bumped whenever authority is
 	// revoked (reset, move, retirement, deletion). Status is the ownership
 	// lifecycle. Both belong to the identity, not to the label.

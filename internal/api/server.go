@@ -525,7 +525,10 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		payload.Body = json.RawMessage(body)
 	}
 
-	capture, err := inspection.ParsePolicy(r.URL.Query().Get("capture"))
+	// An absent ?capture= is not "the default": it leaves the choice to the
+	// integration's manifest and then the deployment default, which is resolved
+	// when the run is admitted. Only an explicit value is validated here.
+	capture, err := inspection.ParsePolicyOverride(r.URL.Query().Get("capture"))
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
 		return

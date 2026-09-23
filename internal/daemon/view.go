@@ -57,6 +57,7 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 		Status:     string(entry.Instance.Status),
 		Retry:      api.RetryView{Backoff: "none"},
 		Triggers:   api.TriggerView{},
+		Capture:    d.CapturePolicyFor(entry.Manifest).String(),
 	}
 	if view.Name == "" {
 		view.Name = it.ID
@@ -102,6 +103,40 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 	}
 
 	return view
+}
+
+// CapturePolicyFor is the policy a new run of an integration would use, ignoring
+// any per-run override. It is what `otter inspect` reports, so an operator can
+// see that payloads are being stored before a failure rather than after.
+func (d *Daemon) CapturePolicyFor(manifest *config.Manifest) inspection.Policy {
+	policy, err := d.resolveCapturePolicy("", manifest)
+	if err != nil {
+		return d.cfg.CaptureDefaultPolicy()
+	}
+	return policy
+}
+
+// resolveCapturePolicy applies the capture precedence: an explicit per-run
+// override, then the integration's declared policy, then the deployment
+// default.
+//
+// An empty override or declaration means "no opinion", not "off", so a run only
+// stops being captured when something explicitly says so. Every value that
+// reaches here is validated, which is what keeps a typo from silently widening
+// or disabling capture.
+func (d *Daemon) resolveCapturePolicy(override inspection.Policy, manifest *config.Manifest) (inspection.Policy, error) {
+	if override != "" {
+		if !override.Valid() {
+			return "", fmt.Errorf("invalid capture policy %q: use one of off, metadata, full", override)
+		}
+		return override, nil
+	}
+	if manifest != nil {
+		if policy, ok := manifest.CapturePolicy(); ok {
+			return policy, nil
+		}
+	}
+	return d.cfg.CaptureDefaultPolicy(), nil
 }
 
 // Runs -----------------------------------------------------------------------
@@ -150,8 +185,13 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 
 	// The capture policy is resolved once, here, and then recorded on the run:
 	// the child is told the result and cannot widen it, and a retry inherits
-	// exactly what the operator asked for.
-	capturePolicy, err := inspection.ParsePolicy(opts.Capture.String())
+	// exactly what the run was submitted with.
+	//
+	// The integration's own declaration is read from the LIVE manifest rather
+	// than the bound release. Capture is a diagnostic switch, not code: turning
+	// it off for a noisy or sensitive integration must take effect on the next
+	// reload, not wait for a new release.
+	capturePolicy, err := d.resolveCapturePolicy(opts.Capture, entry.Manifest)
 	if err != nil {
 		return "", fmt.Errorf("%v: %w", err, api.ErrInvalid)
 	}

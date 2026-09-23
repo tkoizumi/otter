@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/tkoizumi/otter/internal/identity"
+	"github.com/tkoizumi/otter/internal/inspection"
 )
 
 // ManifestFileName is the file Otter looks for when discovering integrations.
@@ -65,6 +66,12 @@ type Manifest struct {
 	Retry       RetryConfig       `yaml:"retry"`
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
+
+	// Capture is the integration's HTTP capture policy: off, metadata or full.
+	// It is optional, and an omitted field means the integration has no opinion
+	// rather than "off", so an omitted field inherits the deployment default
+	// while an explicit `capture: off` refuses to record anything.
+	Capture string `yaml:"capture"`
 
 	// Dir is the integration directory (the directory containing otter.yaml)
 	// and Path is the manifest path. Both are derived, not authored.
@@ -186,6 +193,21 @@ func (m *Manifest) WebhookEnabled() bool {
 // Cron returns the cron expression, if any.
 func (m *Manifest) Cron() string { return strings.TrimSpace(m.Trigger.Cron) }
 
+// CapturePolicy resolves the integration's declared capture policy. The bool is
+// false when the manifest does not declare one, in which case the deployment
+// default applies; it is true for an explicit policy, including `off`.
+//
+// An invalid value cannot reach here: Validate rejects it first. A manifest
+// that skipped validation therefore degrades to "no opinion" rather than
+// silently widening capture, which is the safe direction.
+func (m *Manifest) CapturePolicy() (inspection.Policy, bool) {
+	policy, err := inspection.ParsePolicyOverride(m.Capture)
+	if err != nil || policy == "" {
+		return "", false
+	}
+	return policy, true
+}
+
 // EntrypointPath is the absolute path of the Python entrypoint.
 func (m *Manifest) EntrypointPath() string {
 	return filepath.Join(m.Dir, filepath.FromSlash(m.Entrypoint))
@@ -223,6 +245,7 @@ type rawManifest struct {
 	Retry       rawRetryConfig    `yaml:"retry"`
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
+	Capture     string            `yaml:"capture"`
 }
 
 // rawRetryConfig is the presence-aware form of RetryConfig.
@@ -266,6 +289,7 @@ func Load(path string) (*Manifest, error) {
 		Trigger:     raw.Trigger,
 		Env:         raw.Env,
 		Secrets:     raw.Secrets,
+		Capture:     raw.Capture,
 		Retry: RetryConfig{
 			Backoff: raw.Retry.Backoff,
 		},
@@ -487,6 +511,10 @@ func (m *Manifest) Validate() error {
 	if m.Retry.InitialDelay > 0 && m.Retry.MaxDelay > 0 && m.Retry.MaxDelay < m.Retry.InitialDelay {
 		add("retry.max_delay (%s) must be greater than or equal to retry.initial_delay (%s)",
 			m.Retry.MaxDelay, m.Retry.InitialDelay)
+	}
+
+	if _, err := inspection.ParsePolicyOverride(m.Capture); err != nil {
+		add("%v", err)
 	}
 
 	if m.Cron() != "" {

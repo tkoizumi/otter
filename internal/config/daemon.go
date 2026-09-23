@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tkoizumi/otter/internal/inspection"
 )
 
 // Daemon defaults.
@@ -26,6 +28,10 @@ const (
 	// per-run summary survives retention, so an expired recording is never
 	// mistaken for one that observed nothing.
 	DefaultCaptureRetention = 7 * 24 * time.Hour
+
+	// DefaultCapturePolicy is what a run records when neither the run nor its
+	// integration chooses a policy.
+	DefaultCapturePolicy = inspection.PolicyFull
 )
 
 // DaemonConfig is the runtime configuration of otterd. Values come from
@@ -44,6 +50,19 @@ type DaemonConfig struct {
 	// disables automatic expiry, which is only sensible when something else
 	// prunes the database.
 	CaptureRetention time.Duration
+
+	// CaptureDefault is the capture policy for a run whose integration does not
+	// declare one. A per-run request overrides it, and a manifest `capture:`
+	// field overrides it for that integration. Empty means DefaultCapturePolicy.
+	CaptureDefault inspection.Policy
+
+	// CaptureRedactHeaders, CaptureRedactQuery and CaptureRedactFields extend
+	// the mandatory redaction rules with operator-supplied names. They can only
+	// add to the built-in rules, never weaken them: a client cannot opt out of
+	// redaction by submitting its own policy.
+	CaptureRedactHeaders []string
+	CaptureRedactQuery   []string
+	CaptureRedactFields  []string
 
 	// SDKPath overrides the directory prepended to the child process
 	// PYTHONPATH. When empty the daemon extracts its embedded Python SDK into
@@ -175,6 +194,7 @@ func DefaultDaemonConfig(version string) DaemonConfig {
 		ShutdownGrace:   DefaultShutdownGrace,
 
 		CaptureRetention: DefaultCaptureRetention,
+		CaptureDefault:   DefaultCapturePolicy,
 		Version:          version,
 	}
 }
@@ -229,6 +249,18 @@ func (c *DaemonConfig) ApplyEnv() error {
 	if v, ok := os.LookupEnv("OTTER_SDK_PATH"); ok && v != "" {
 		c.SDKPath = v
 	}
+	if v, ok := os.LookupEnv("OTTER_CAPTURE_DEFAULT"); ok && strings.TrimSpace(v) != "" {
+		c.CaptureDefault = inspection.Policy(strings.ToLower(strings.TrimSpace(v)))
+	}
+	if v, ok := os.LookupEnv("OTTER_CAPTURE_REDACT_HEADERS"); ok && strings.TrimSpace(v) != "" {
+		c.CaptureRedactHeaders = SplitList(v)
+	}
+	if v, ok := os.LookupEnv("OTTER_CAPTURE_REDACT_QUERY"); ok && strings.TrimSpace(v) != "" {
+		c.CaptureRedactQuery = SplitList(v)
+	}
+	if v, ok := os.LookupEnv("OTTER_CAPTURE_REDACT_FIELDS"); ok && strings.TrimSpace(v) != "" {
+		c.CaptureRedactFields = SplitList(v)
+	}
 	if v, ok := os.LookupEnv("OTTER_NOTIFY_URL"); ok && v != "" {
 		c.Notify.URL = v
 	}
@@ -274,6 +306,8 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.LogLevel, "log-level", c.LogLevel, "daemon log level: debug, info, warn or error")
 	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running integrations may finish after SIGTERM before being terminated")
 	fs.DurationVar(&c.CaptureRetention, "capture-retention", c.CaptureRetention, "how long captured HTTP payloads are kept; the per-run summary survives (0 disables expiry)")
+	fs.Var(policyFlag{target: &c.CaptureDefault}, "capture-default",
+		"HTTP capture policy for runs that do not choose one: "+policyNames())
 	fs.StringVar(&c.SDKPath, "sdk-path", c.SDKPath, "directory prepended to the child PYTHONPATH (defaults to the embedded SDK extracted into the data directory)")
 	fs.StringVar(&c.Notify.URL, "notify-url", c.Notify.URL, "POST failed runs to this URL (empty disables notification)")
 	fs.StringVar(&c.Notify.Format, "notify-format", c.Notify.Format,
@@ -299,6 +333,9 @@ func (c *DaemonConfig) Validate() error {
 	}
 	if c.CaptureRetention < 0 {
 		return fmt.Errorf("--capture-retention must not be negative")
+	}
+	if c.CaptureDefault != "" && !c.CaptureDefault.Valid() {
+		return fmt.Errorf("--capture-default must be one of off, metadata, full; got %q", c.CaptureDefault)
 	}
 
 	if c.Notify.Enabled() {
@@ -337,6 +374,46 @@ func (c *DaemonConfig) Validate() error {
 	}
 
 	return nil
+}
+
+// CaptureDefaultPolicy is the capture policy for a run whose integration does
+// not declare one. An unset field means the built-in default, so a configuration
+// built in code that predates the field still records something sensible rather
+// than silently capturing nothing.
+func (c DaemonConfig) CaptureDefaultPolicy() inspection.Policy {
+	if c.CaptureDefault.Valid() {
+		return c.CaptureDefault
+	}
+	return DefaultCapturePolicy
+}
+
+// policyFlag adapts a capture Policy to flag.Value, so --capture-default both
+// rejects a typo as it is parsed and reports the current value in help output.
+type policyFlag struct{ target *inspection.Policy }
+
+func (p policyFlag) String() string {
+	if p.target == nil {
+		return ""
+	}
+	return string(*p.target)
+}
+
+func (p policyFlag) Set(value string) error {
+	policy, err := inspection.ParsePolicy(value)
+	if err != nil {
+		return err
+	}
+	*p.target = policy
+	return nil
+}
+
+// policyNames lists the accepted capture levels for help text.
+func policyNames() string {
+	names := make([]string, 0, len(inspection.AllPolicies()))
+	for _, policy := range inspection.AllPolicies() {
+		names = append(names, string(policy))
+	}
+	return strings.Join(names, ", ")
 }
 
 // ListenIsLoopback reports whether the API is reachable only from this host.

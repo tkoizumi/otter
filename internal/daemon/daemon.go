@@ -190,26 +190,28 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 
 	identStore := identity.NewStore(db.DB)
 	d := &Daemon{
-		cfg:        cfg,
-		owner:      owner,
-		log:        opts.Logger,
-		version:    opts.Version,
-		db:         db,
-		runs:       runs.NewStore(db.DB),
-		logs:       runs.NewLogStore(db.DB),
-		queue:      queue.New(db.DB),
-		state:      state.NewStore(db.DB),
-		inspection: inspection.NewStore(db.DB, inspection.DefaultRedactor(), inspection.DefaultLimits()),
-		sched:      scheduler.New(opts.Logger),
-		secrets:    provider,
-		reg:        newRegistry(),
-		cap:        newCapacity(cfg.Workers),
-		ident:      identity.NewService(identStore, cfg.IntegrationsDir),
-		runTokens:  newRunTokenRegistry(),
-		stopCh:     make(chan struct{}),
-		wakeCh:     make(chan struct{}, 1),
-		runCtl:     map[string]*runControl{},
-		startedAt:  time.Now().UTC(),
+		cfg:     cfg,
+		owner:   owner,
+		log:     opts.Logger,
+		version: opts.Version,
+		db:      db,
+		runs:    runs.NewStore(db.DB),
+		logs:    runs.NewLogStore(db.DB),
+		queue:   queue.New(db.DB),
+		state:   state.NewStore(db.DB),
+		inspection: inspection.NewStore(db.DB,
+			inspection.NewRedactor(cfg.CaptureRedactHeaders, cfg.CaptureRedactQuery, cfg.CaptureRedactFields),
+			inspection.DefaultLimits()),
+		sched:     scheduler.New(opts.Logger),
+		secrets:   provider,
+		reg:       newRegistry(),
+		cap:       newCapacity(cfg.Workers),
+		ident:     identity.NewService(identStore, cfg.IntegrationsDir),
+		runTokens: newRunTokenRegistry(),
+		stopCh:    make(chan struct{}),
+		wakeCh:    make(chan struct{}, 1),
+		runCtl:    map[string]*runControl{},
+		startedAt: time.Now().UTC(),
 	}
 
 	if err := d.ensureIdentityBootstrap(ctx); err != nil {
@@ -224,6 +226,13 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	d.exec = executor.New(opts.Logger, sdkPath)
 	d.log.Info("sdk_ready", "path", sdkPath)
+
+	// Capture records payloads by default, so say so once at startup. An
+	// operator who did not expect bodies to be stored should learn it here
+	// rather than from the database.
+	d.log.Info("capture_configured",
+		"default_policy", cfg.CaptureDefaultPolicy().String(),
+		"retention", cfg.CaptureRetention.String())
 
 	if host, err := os.Hostname(); err == nil {
 		d.hostname = host

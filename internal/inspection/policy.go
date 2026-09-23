@@ -9,6 +9,7 @@ package inspection
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -24,15 +25,25 @@ const (
 	PolicyFull Policy = "full"
 )
 
-// DefaultPolicy is what an ordinary run records. Payload capture is opt-in
-// because bodies routinely carry credentials.
-const DefaultPolicy = PolicyMetadata
+// DefaultPolicy is what a run records when neither the run, its integration nor
+// the deployment asks for something else.
+//
+// Full is the default because the failure worth debugging is the one nobody
+// anticipated: an unattended cron run at 3am has no operator to have enabled
+// payload capture beforehand, and capture observes live traffic, so it cannot
+// be turned on retroactively. The cost of that choice is bounded and visible:
+// redaction runs before storage, bodies are capped, and the recording expires.
+// An integration that must not store payloads opts out with `capture: off` (or
+// `capture: metadata`) in its manifest, and an operator can lower the default
+// for a whole deployment with --capture-default.
+const DefaultPolicy = PolicyFull
 
 // AllPolicies lists every valid policy, for validation and help text.
 func AllPolicies() []Policy { return []Policy{PolicyOff, PolicyMetadata, PolicyFull} }
 
 // ParsePolicy resolves a caller-supplied capture level. An empty value means the
-// default, which is how `otter run` treats a missing --capture flag.
+// default, which is how a run that names no policy is resolved once the
+// integration and deployment defaults have been consulted.
 func ParsePolicy(s string) (Policy, error) {
 	if s == "" {
 		return DefaultPolicy, nil
@@ -42,6 +53,19 @@ func ParsePolicy(s string) (Policy, error) {
 		return "", fmt.Errorf("invalid capture policy %q: use one of off, metadata, full", s)
 	}
 	return p, nil
+}
+
+// ParsePolicyOverride resolves an optional, explicit override.
+//
+// Unlike ParsePolicy, an empty value is not the default: it means "no override
+// was given", which lets the caller fall through to the integration's declared
+// policy and then the deployment default. Only an explicit, non-empty value is
+// validated here, so a genuine typo is rejected while an omission is not.
+func ParsePolicyOverride(s string) (Policy, error) {
+	if strings.TrimSpace(s) == "" {
+		return "", nil
+	}
+	return ParsePolicy(s)
 }
 
 // Valid reports whether p is a known policy.

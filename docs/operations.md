@@ -481,9 +481,10 @@ Example weekly maintenance:
 
 ## Reading a run's HTTP requests
 
-When a run was submitted with HTTP capture enabled (the default is `metadata`;
-`otter run --capture full` also records headers and JSON bodies), its outgoing
-requests are stored in SQLite and read back with two commands:
+Otter records every run's outgoing HTTP by default — headers and sanitized JSON
+bodies included — so a failure can be explained after it happened rather than
+after someone has added logging. An integration opts down in its manifest, and a
+deployment can lower the default. The recording is read back with two commands:
 
 ```sh
 otter requests <run-id>                  # list summaries; --limit and --after-id page it
@@ -507,6 +508,35 @@ against a run with many exchanges.
 Capture is bounded by design: 256 KiB per body, 10 MiB and 1,000 request records
 per run. If a run hits those limits, capture is dropped rather than the run being
 failed, and the dropped counts appear in the capture summary.
+
+**Choosing what to record.** The per-run `--capture` flag wins, then the
+integration's own `capture:` field, then the daemon default:
+
+```bash
+otterd --capture-default metadata     # deployment-wide summaries only
+otterd --capture-default off          # record nothing at all
+```
+
+An integration that handles regulated or personal data should say so itself, so
+the decision travels with the code and survives a change to the deployment
+default:
+
+```yaml
+# otter.yaml
+capture: off        # or metadata; capture: full keeps payloads under a lower default
+```
+
+`otter inspect <integration>` prints the policy a new run would use, spelled out.
+The integration's declaration is read from the live manifest, so lowering it
+takes effect on `otter reload` without a new release.
+
+Redaction can be extended, never weakened, from the daemon environment:
+
+```bash
+OTTER_CAPTURE_REDACT_HEADERS="X-Tenant-Key,X-Trace-Id"
+OTTER_CAPTURE_REDACT_QUERY="session,access_key"
+OTTER_CAPTURE_REDACT_FIELDS="patient_id,ssn"
+```
 
 **Capture retention.** Captured payloads expire after seven days by default.
 Configure it with the daemon's `--capture-retention` flag:

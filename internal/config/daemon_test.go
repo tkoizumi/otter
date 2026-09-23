@@ -2,10 +2,13 @@ package config
 
 import (
 	"flag"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tkoizumi/otter/internal/inspection"
 )
 
 func TestDefaultDaemonConfig(t *testing.T) {
@@ -329,5 +332,82 @@ func TestNotifyFormat(t *testing.T) {
 	}
 	if (NotifyConfig{Format: FormatJSON}).IsChatFormat() {
 		t.Error("json should not be a chat format")
+	}
+}
+
+func TestCaptureDefaultPolicy(t *testing.T) {
+	// The shipped default records payloads, so an unattended scheduled run is
+	// diagnosable after it has already failed.
+	if got := DefaultDaemonConfig("test").CaptureDefaultPolicy(); got != inspection.PolicyFull {
+		t.Errorf("default capture policy = %q, want full", got)
+	}
+
+	// A configuration built in code that leaves the field unset still resolves
+	// to the built-in default rather than capturing nothing.
+	var zero DaemonConfig
+	if got := zero.CaptureDefaultPolicy(); got != DefaultCapturePolicy {
+		t.Errorf("unset capture policy = %q, want %q", got, DefaultCapturePolicy)
+	}
+
+	t.Setenv("OTTER_CAPTURE_DEFAULT", "metadata")
+	c := DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err != nil {
+		t.Fatalf("ApplyEnv() error = %v", err)
+	}
+	if got := c.CaptureDefaultPolicy(); got != inspection.PolicyMetadata {
+		t.Errorf("capture policy from env = %q, want metadata", got)
+	}
+
+	// A typo must stop the daemon rather than leave capture at a value nobody
+	// chose.
+	bad := DefaultDaemonConfig("test")
+	bad.CaptureDefault = "everything"
+	if err := bad.Validate(); err == nil {
+		t.Error("an invalid --capture-default was accepted")
+	}
+}
+
+func TestCaptureRedactListsFromEnv(t *testing.T) {
+	t.Setenv("OTTER_CAPTURE_REDACT_HEADERS", "X-Tenant-Key, X-Trace-Id")
+	t.Setenv("OTTER_CAPTURE_REDACT_QUERY", "session")
+	t.Setenv("OTTER_CAPTURE_REDACT_FIELDS", "patient_id, ssn")
+
+	c := DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err != nil {
+		t.Fatalf("ApplyEnv() error = %v", err)
+	}
+
+	want := func(name string, got, expected []string) {
+		t.Helper()
+		if strings.Join(got, ",") != strings.Join(expected, ",") {
+			t.Errorf("%s = %v, want %v", name, got, expected)
+		}
+	}
+	want("CaptureRedactHeaders", c.CaptureRedactHeaders, []string{"X-Tenant-Key", "X-Trace-Id"})
+	want("CaptureRedactQuery", c.CaptureRedactQuery, []string{"session"})
+	want("CaptureRedactFields", c.CaptureRedactFields, []string{"patient_id", "ssn"})
+}
+
+// The default capture policy must survive the flag parser, which is the path
+// `otter serve` and `otterd` use.
+func TestCaptureDefaultFlag(t *testing.T) {
+	c := DefaultDaemonConfig("test")
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	c.RegisterFlags(fs)
+	if err := fs.Parse([]string{"--capture-default", "off"}); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := c.CaptureDefaultPolicy(); got != inspection.PolicyOff {
+		t.Errorf("capture policy after flag = %q, want off", got)
+	}
+
+	// A typo is refused by the parser, so the daemon never starts on a policy
+	// nobody chose.
+	bad := DefaultDaemonConfig("test")
+	badFlags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	badFlags.SetOutput(io.Discard)
+	bad.RegisterFlags(badFlags)
+	if err := badFlags.Parse([]string{"--capture-default", "everything"}); err == nil {
+		t.Error("an invalid --capture-default was accepted by the flag parser")
 	}
 }

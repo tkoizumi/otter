@@ -319,11 +319,14 @@ otter release --list --all --prune --apply  # remove release data left by an unr
 otter release --activate <digest> <integration>  # roll back to a staged release
 ```
 
-`--capture` selects how much of a run's outgoing HTTP is recorded: `off`,
-`metadata` (the default) or `full`, which adds sanitized headers and bounded JSON
-bodies. `otter requests` and `otter request` read the recording back without any
-logging in the integration. See [docs/http-capture.md](docs/http-capture.md) for
-coverage, redaction, limits and retention.
+Runs record their outgoing HTTP by default -- sanitized headers and bounded JSON
+bodies included -- because capture observes live traffic and cannot be turned on
+after an unattended failure. An integration opts down in its own manifest
+(`capture: off` or `capture: metadata`), and `--capture-default` lowers the
+default for a whole deployment; `--capture` on `otter run` overrides one run.
+`otter requests` and `otter request` read the recording back without any logging
+in the integration. See [docs/http-capture.md](docs/http-capture.md) for
+precedence, coverage, redaction, limits and retention.
 
 A run executes the integration's active release, so `otter release` is required
 before an integration can run at all -- external and managed Python alike. With
@@ -388,6 +391,11 @@ otterd \
 | `--log-level` | `OTTER_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--shutdown-grace` | `OTTER_SHUTDOWN_GRACE` | `15s` | Time running integrations get on shutdown. |
 | `--sdk-path` | `OTTER_SDK_PATH` | *(embedded)* | Override the directory put on the child `PYTHONPATH`. |
+| `--capture-default` | `OTTER_CAPTURE_DEFAULT` | `full` | HTTP capture for runs that do not choose one: `off`, `metadata`, `full`. |
+| `--capture-retention` | — | `168h` | How long captured payloads are kept; `0` disables expiry. |
+| — | `OTTER_CAPTURE_REDACT_HEADERS` | *(none)* | Extra header names to redact, comma-separated. |
+| — | `OTTER_CAPTURE_REDACT_QUERY` | *(none)* | Extra query-parameter names to redact, comma-separated. |
+| — | `OTTER_CAPTURE_REDACT_FIELDS` | *(none)* | Extra JSON field names to redact, comma-separated. |
 
 The daemon logs structured JSON to stdout by default:
 

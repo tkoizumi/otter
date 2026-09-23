@@ -5,20 +5,26 @@ diagnosed without adding logging statements to integration code. `otter requests
 lists what a run sent, and `otter request` shows one exchange with its sanitized
 headers and bodies.
 
-Capture is configured per run. A normal run records request summaries; full
-payload capture is opt-in because bodies routinely carry credentials. Recording
-is diagnostic: it observes live traffic and never changes it.
+Capture is on by default. A run records headers and JSON bodies unless its
+integration or its deployment says otherwise, because the failure worth
+debugging is the unattended one: a cron run at 3am has no operator to have
+enabled payload capture beforehand, and capture observes live traffic, so it
+cannot be turned on after the fact. An integration that must not store payloads
+turns capture down in its own manifest, and an operator can lower the default for
+a whole deployment.
 
 ## Commands
 
 ```sh
-otter run . --capture full              # or --capture metadata / --capture off
+otter run . --capture off               # or --capture metadata / --capture full
 otter requests <run-id>                 # list; supports --limit and --after-id
 otter request <request-id>              # detail; the owning run is resolved for you
 otter request <run-id> <request-id>     # detail; use this to disambiguate
 ```
 
-`--capture` accepts `off`, `metadata` or `full` and defaults to `metadata`.
+`--capture` is an override for one run, not the way capture is normally turned
+on: a bare `otter run .` already records the integration's configured policy. It
+accepts `off`, `metadata` or `full`.
 Both inspection commands support `--json` (the global flag) and `--pretty`; when
 stdout is not a terminal they emit JSON automatically, following the existing
 `otter logs` convention. `--pretty` forces the human form even when the output is
@@ -85,15 +91,49 @@ from the last `id` of the previous page; when a page is full, the command prints
 the cursor to use next. The same data is available over HTTP — see the
 [API reference](api-reference.md#http-request-inspection).
 
+## Choosing what to record
+
+Precedence, highest first:
+
+1. `--capture` on `otter run`, or `?capture=` on a submission. One run only.
+2. `capture` in the integration's `otter.yaml`. Applies to every run of that
+   integration, including the cron and webhook triggers that cannot pass a flag.
+3. `--capture-default` on the daemon (or `OTTER_CAPTURE_DEFAULT`). Applies to
+   every integration that does not declare its own policy.
+4. `full`, the built-in default.
+
+```yaml
+# otter.yaml
+capture: off        # or metadata, or full
+```
+
+An omitted `capture` is not the same as `capture: off`: omitted means the
+integration has no opinion and the deployment default applies, while `off`
+refuses to record anything for that integration.
+
+The integration's declaration is read from its live manifest, not from the active
+release, so turning capture down takes effect on the next `otter reload` without
+waiting for `otter release`. `otter inspect <integration>` reports the policy a
+new run would use, spelled out, so payload storage is never silent:
+
+```
+capture:       full (request and response headers and JSON bodies are stored)
+```
+
+Cron and webhook runs use whatever the integration and deployment resolve to;
+they have no per-run flag of their own. A retry inherits the policy its parent
+run was submitted with, and each attempt owns its own recording.
+
 ## Capture levels
 
 | Level | Records | When it applies |
 | --- | --- | --- |
-| `off` | Nothing. No instrumentation is installed in the child process. | Explicit choice. |
-| `metadata` | Request summaries: method, sanitized URL, status, duration, transport-error class and call site. Never a header or a body. | The default for normal runs. |
-| `full` | Everything `metadata` records, plus permitted headers and bounded, sanitized JSON bodies. | Opt-in per run. |
+| `off` | Nothing. No instrumentation is installed in the child process. | Explicit choice by the integration or the deployment. |
+| `metadata` | Request summaries: method, sanitized URL, status, duration, transport-error class and call site. Never a header or a body. | Chosen by the integration or the deployment. |
+| `full` | Everything `metadata` records, plus permitted headers and bounded, sanitized JSON bodies. | The default. An integration or deployment can turn it down. |
 
-Cron and webhook runs use `metadata`. A retry inherits the policy its parent was
+Cron and webhook runs use the policy their integration and deployment resolve to.
+A retry inherits the policy its parent was
 submitted with, and each attempt owns its own recording, so an attempt's requests
 are never merged with its parent's.
 
@@ -148,6 +188,11 @@ reading it would change what the request sends.
 
 ## Limits and retention
 
+Capture is on by default, so the size of the recording is a deployment concern
+rather than an opt-in one. A frequently scheduled integration stores a payload
+for every run; shorten the window with `--capture-retention`, or have that
+integration choose `capture: metadata` when its bodies are not worth keeping.
+
 - 256 KiB buffered per request or response body.
 - 10 MiB persisted capture data per run, including serialized metadata.
 - 1,000 request records per run; header count and size, URL length, call-site
@@ -174,9 +219,14 @@ storage. The mandatory rules cannot be weakened by a caller.
   `access_token`, `refresh_token`, `api_key`, `client_secret` and similar — are
   redacted recursively.
 - Exception text is sanitized and bounded rather than stored verbatim.
+- Operators can add their own names with `OTTER_CAPTURE_REDACT_HEADERS`,
+  `OTTER_CAPTURE_REDACT_QUERY` and `OTTER_CAPTURE_REDACT_FIELDS`
+  (comma-separated). These only add to the mandatory rules; nothing a client
+  submits can weaken them.
 
 Field-based redaction does not discover every secret or personal value in
-arbitrary data. That is why `full` capture is opt-in, and why bodies are only
+arbitrary data. That is why an integration handling regulated or personal data
+should choose `capture: metadata` or `capture: off`, and why bodies are only
 stored when they can be safely processed. Redaction and URL sanitizing apply in
 `metadata` mode too, although `metadata` stores no headers or bodies.
 

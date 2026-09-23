@@ -257,7 +257,9 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	notifyURL := fs.String("notify-url", "", "POST failed runs to this URL")
 	notifyFormat := fs.String("notify-format", "", "notification body format")
 	notifyOn := fs.String("notify-on", "", "comma-separated terminal statuses that notify")
-	_ = []any{workers, apiToken, logFormat, logLevel, shutdownGrace, sdkPath, notifyURL, notifyFormat, notifyOn}
+	captureDefault := fs.String("capture-default", "", "HTTP capture policy for runs that do not choose one: off, metadata or full")
+	captureRetention := fs.Duration("capture-retention", 0, "how long captured HTTP payloads are kept (0 disables expiry)")
+	_ = []any{workers, apiToken, logFormat, logLevel, shutdownGrace, sdkPath, notifyURL, notifyFormat, notifyOn, captureDefault, captureRetention}
 
 	// Anything left over is forwarded verbatim, so a daemon flag added later
 	// works here before start knows about it.

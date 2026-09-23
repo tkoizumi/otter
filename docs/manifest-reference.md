@@ -64,6 +64,8 @@ env:
 secrets:
   - SHOPIFY_TOKEN
   - ERP_TOKEN
+
+capture: full
 ```
 
 ## Field reference
@@ -87,6 +89,7 @@ secrets:
 | `retry.max_delay` | string | no | `60s` | Upper bound on any single backoff delay. Go duration string. |
 | `env` | map[string]string | no | `{}` | Extra environment variables for the child process. Values may reference daemon environment variables with `${VAR}`. |
 | `secrets` | []string | no | `[]` | Names of environment variables read from the **daemon's** environment and injected into the child process. |
+| `capture` | string | no | unset (deployment default) | How much of this integration's outgoing HTTP is recorded: `off`, `metadata` or `full`. Unset means the integration has no opinion and the deployment default applies; `off` refuses to record anything. See [http-capture.md](http-capture.md). |
 
 Unknown fields are rejected rather than ignored, so a typo such as `timeouts:`
 fails validation immediately instead of silently taking the default.
@@ -281,6 +284,30 @@ the child process's environment just before execution.
 - Today there is no built-in secret backend; the `SecretProvider` interface in
   the codebase is the extension point for AWS Secrets Manager, Vault, 1Password
   or Castor Cloud later. See [security.md](security.md).
+
+## HTTP capture
+
+```yaml
+capture: off        # or metadata, or full
+```
+
+Otter records a run's outgoing HTTP so a failure can be explained without adding
+logging to the integration. `full`, which stores sanitized headers and bounded
+JSON bodies, is the default; the manifest is how an integration opts down.
+
+- `capture: off` records nothing at all and installs no instrumentation.
+- `capture: metadata` records request summaries — method, sanitized URL, status,
+  duration and call site — and never a header or body.
+- `capture: full` additionally records permitted headers and bounded, sanitized
+  JSON bodies. Set this explicitly when the integration must keep payloads even
+  if the deployment default is later lowered.
+- Omitting the field means "no opinion": the deployment's `--capture-default`
+  applies. That is different from `capture: off`.
+
+The declaration is read from the live manifest, so turning capture down takes
+effect after `otter reload`, without a new release. `otter inspect` shows the
+resolved policy. Capture observes live traffic and never changes a request; see
+[http-capture.md](http-capture.md) for coverage, redaction, limits and retention.
 
 ## Naming and uniqueness
 

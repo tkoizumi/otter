@@ -393,13 +393,28 @@ persist an unsanitized value. Mandatory rules cannot be weakened by the caller:
 - Exception text is sanitized and bounded rather than stored verbatim.
 
 Operator-configured query, header and JSON-field rules are additive: they can
-redact more, never less. Redaction and URL sanitizing also apply in `metadata`
-mode, even though `metadata` stores no headers or bodies.
+redact more, never less, and a client cannot weaken them. They are set with
+`OTTER_CAPTURE_REDACT_HEADERS`, `OTTER_CAPTURE_REDACT_QUERY` and
+`OTTER_CAPTURE_REDACT_FIELDS`. Redaction and URL sanitizing also apply in
+`metadata` mode, even though `metadata` stores no headers or bodies.
 
-**`full` capture is opt-in.** Request summaries are the default; headers and
-bodies require `--capture full` (or `?capture=full`) for that run. Field-based
-redaction cannot discover every secret or personal value in arbitrary data, so
-retaining bodies is a deliberate choice, not a default.
+**`full` capture is the default, and that is a deliberate trade.** Headers and
+bounded JSON bodies are stored for every run unless the integration or the
+deployment turns capture down. The reason is that capture observes live traffic
+and cannot be enabled after the fact, so an unattended failure would otherwise be
+undiagnosable. Field-based redaction cannot discover every secret or personal
+value in arbitrary data, so an integration whose bodies carry regulated data must
+opt down itself:
+
+- `capture: off` in `otter.yaml` records nothing and installs no instrumentation.
+- `capture: metadata` keeps the request summary — which request failed, with
+  which status, at which call site — without storing any header or body.
+- `--capture-default metadata|off` lowers the default for a whole deployment, for
+  every integration that does not declare its own policy.
+
+The integration's declaration is read from its live manifest, so lowering it
+takes effect on `otter reload` without waiting for a release, and `otter inspect`
+prints the resolved policy so payload storage is never silent.
 
 **Unsupported bodies are omitted, not stored raw.** Only bounded, valid UTF-8
 JSON is captured. Text, binary, form-encoded, content-encoded, oversized,
@@ -440,8 +455,9 @@ to match how long the data may be retained.
 - [ ] Remote access is via VPN or a TLS-terminating reverse proxy that exposes
       only `/v1/hooks/*` (and optionally `/health`) if hooks must be public.
 - [ ] `run_logs` retention is configured; the database file size is monitored.
-- [ ] HTTP capture retention is configured, and `full` capture is limited to runs
-      whose request and response bodies may be retained.
+- [ ] HTTP capture retention is configured, and every integration whose bodies
+      must not be retained declares `capture: metadata` or `capture: off` (or the
+      deployment sets `--capture-default`); `otter inspect` confirms the policy.
 - [ ] Backups of `otter.db` are access-controlled and encrypted at rest.
 - [ ] One daemon per trust boundary; untrusted integrations run in separate
       containers or VMs.

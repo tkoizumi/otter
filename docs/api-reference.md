@@ -373,7 +373,7 @@ inline: `--workers` and the integration's `concurrency` still apply.
 | --- | --- | --- |
 | `id` | path | Integration `name`. |
 | `body` | JSON body, optional | `{"body": <any JSON>, "headers": {"X-Requested-By": "ops"}}` attached to the run's `metadata` and exposed as `ctx.trigger`. Omit it (or send `{}`) for a plain manual run. |
-| `capture` | query | HTTP capture level: `off`, `metadata` or `full`. Defaults to `metadata`. The option is a query parameter, not part of the trigger body, so the body stays byte-for-byte the trigger JSON. An unknown value is a `400`. |
+| `capture` | query | HTTP capture level for this run: `off`, `metadata` or `full`. Omitting it is not the same as naming a level: the integration's `capture:` field applies, then the deployment's `--capture-default`, then the built-in default of `full`. The option is a query parameter, not part of the trigger body, so the body stays byte-for-byte the trigger JSON. An unknown value is a `400`. |
 
 ```bash
 curl -s -X POST -H "$(auth)" -H 'Content-Type: application/json' \
@@ -648,8 +648,10 @@ unknown `stream`).
 A run's outgoing HTTP exchanges are recorded from inside the child and read back
 over these three endpoints. Capture levels, coverage, redaction, limits and
 retention are documented in [http-capture.md](http-capture.md); this section
-covers the API only. Capture is selected at submission with `?capture=` on
-`POST /v1/integrations/{id}/runs`.
+covers the API only. A per-run level is selected at submission with `?capture=`
+on `POST /v1/integrations/{id}/runs`; when it is omitted, the integration's
+`capture:` field and then the deployment's `--capture-default` decide, and the
+shipped default is `full`.
 
 ### `POST /v1/runs/{id}/requests/events`
 

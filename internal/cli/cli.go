@@ -470,6 +470,7 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	}
 	fmt.Fprintf(a.Stdout, "timeout:       %ds\n", it.TimeoutSeconds)
 	fmt.Fprintf(a.Stdout, "concurrency:   %d\n", it.Concurrency)
+	fmt.Fprintf(a.Stdout, "capture:       %s\n", captureSummary(it.Capture))
 	fmt.Fprintf(a.Stdout, "retry:         attempts=%d (%d total) backoff=%s initial_delay=%s max_delay=%s\n",
 		it.Retry.Attempts, it.Retry.MaxAttempts, it.Retry.Backoff, it.Retry.InitialDelay, it.Retry.MaxDelay)
 	fmt.Fprintf(a.Stdout, "valid:         %t\n", it.Valid)
@@ -508,6 +509,23 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	}
 
 	return 0
+}
+
+// captureSummary spells out what a capture policy means for an integration, so
+// `otter inspect` answers "are payloads being stored for this one?" without the
+// reader having to know the policy names. Full is the default, which makes the
+// question worth answering explicitly.
+func captureSummary(policy string) string {
+	switch inspection.Policy(policy) {
+	case inspection.PolicyFull:
+		return "full (request and response headers and JSON bodies are stored)"
+	case inspection.PolicyMetadata:
+		return "metadata (request summaries only; no headers or bodies)"
+	case inspection.PolicyOff:
+		return "off (nothing is recorded)"
+	default:
+		return policy
+	}
 }
 
 // interactiveOutput decides whether `otter run` waits and prints a summary.
@@ -568,7 +586,7 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	body := fs.String("body", "", "JSON value recorded as the trigger body")
 	noWait := fs.Bool("no-wait", false, "queue the run and print its id without waiting")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the run and any retries to finish")
-	capture := fs.String("capture", "", "HTTP capture policy: off, metadata or full (default metadata)")
+	capture := fs.String("capture", "", "override this run's HTTP capture policy: off, metadata or full (default: the integration's policy)")
 	// Only --body, --timeout and --capture take a value; the rest are booleans,
 	// so the reorderer needs no reflection over the flag set.
 	takesValue := func(arg string) bool {
@@ -587,8 +605,11 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 
-	// Validate before submitting: a mistyped policy should not queue a run.
-	capturePolicy, err := inspection.ParsePolicy(*capture)
+	// Validate before submitting: a mistyped policy should not queue a run. An
+	// omitted flag is not a policy, though: it leaves the choice to the
+	// integration's manifest and then the deployment default, which only the
+	// daemon can resolve.
+	capturePolicy, err := inspection.ParsePolicyOverride(*capture)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
@@ -1197,6 +1218,7 @@ Runtime:
   reload                          re-read the integrations directory; no restart
   inspect <integration>           show one integration in detail
   run [<integration>] [--no-wait] run it, wait, print the outcome and its output
+  run --capture off|metadata|full override this run's HTTP capture policy
   serve [flags]                   run the daemon with the daemon's own defaults
 
 Identity:
@@ -1210,6 +1232,9 @@ Runs:
   runs [--integration I] [--status S] [--limit N]
   run-status <run-id>             show a run and its retry attempts
   logs <run-id> [--follow]        print captured output (JSONL when piped; --pretty to force prose)
+  requests <run-id>               list the outgoing HTTP a run recorded
+  request <request-id>            show one recorded exchange with its payloads
+  request <run-id> <request-id>   the same, when the id needs disambiguating
 
 State:
   state get <integration> <key>
