@@ -38,15 +38,42 @@ type Builder interface {
 	Cleanup()
 }
 
-// LocalBuilder builds with the local Go toolchain and stages files with plain
-// file copies. No Docker, no remote toolchain, no cgo: the SQLite driver is
-// pure Go, so a cross-compiled binary is the whole artifact.
+// BinarySource supplies the two executables for a target platform when they are
+// not compiled from source.
+//
+// It exists because a deploy target is a project, not necessarily a Go
+// checkout: a workspace that holds only Python integrations has no cmd/otterd
+// to build, and requiring a copy of the runtime repository to deploy would make
+// the split between the runtime and its integrations a fiction.
+type BinarySource interface {
+	// Binaries puts otterd and otter for goos/goarch into binDir.
+	Binaries(ctx context.Context, goos, goarch, binDir string) error
+}
+
+// Describer is implemented by a BinarySource that can explain, in one line,
+// where the executables will come from.
+//
+// The deploy plan uses it, because "whose code is about to run on my host?" is
+// a question a dry run should answer without building anything. Otherwise the
+// choice stays invisible until the step that acts on it.
+type Describer interface {
+	Describe(platform string) string
+}
+
+// LocalBuilder compiles with the local Go toolchain, or takes the binaries from
+// a BinarySource, and stages files with plain file copies. No Docker, no remote
+// toolchain, no cgo: the SQLite driver is pure Go, so a cross-compiled binary
+// is the whole artifact.
 type LocalBuilder struct {
 	// GoBinary is the go command to use. Defaults to "go" on PATH.
 	GoBinary string
 	// Stdout and Stderr receive build output.
 	Stdout io.Writer
 	Stderr io.Writer
+
+	// Binaries supplies the executables instead of compiling them. A nil
+	// Binaries means "compile from the project's Go source".
+	Binaries BinarySource
 
 	tmpDir string
 }
@@ -77,7 +104,8 @@ func (b *LocalBuilder) Cleanup() {
 	}
 }
 
-// Build cross-compiles otterd and otter into outDir/bin.
+// Build produces otterd and otter in outDir/bin, either from the configured
+// BinarySource or by compiling the project itself.
 //
 // The version is injected the same way the Makefile does it so that a deployed
 // binary reports the same version string as a local `make build`.
@@ -92,7 +120,59 @@ func (b *LocalBuilder) Build(ctx context.Context, cfg Config, outDir string) err
 		return fmt.Errorf("create %s: %w", binDir, err)
 	}
 
-	goBin := b.GoBinary
+	if b.Binaries != nil {
+		return b.Binaries.Binaries(ctx, goos, goarch, binDir)
+	}
+
+	// No source was configured, so the project is assumed to be the runtime
+	// checkout. The command line always names one (see binarySourceFor); this
+	// is the default a caller that builds a LocalBuilder by hand gets.
+	return compileBinaries(ctx, CompileSource{
+		Dir:      cfg.ProjectRoot,
+		Version:  cfg.Version,
+		GoBinary: b.GoBinary,
+		Stdout:   b.Stdout,
+		Stderr:   b.Stderr,
+	}, goos, goarch, binDir)
+}
+
+// CompileSource compiles the runtime from a Go checkout.
+//
+// It is a BinarySource so that "which checkout" and "which archive" are the
+// same kind of decision to the rest of the deploy. It exists because the
+// project being deployed is usually not the runtime's source tree: a Python
+// workspace has no cmd/otterd, while the person running the command may well
+// have a checkout next to it.
+type CompileSource struct {
+	// Dir is the checkout holding cmd/otterd and cmd/otter.
+	Dir string
+	// Version is written into both binaries, so the host reports what was
+	// actually built.
+	Version string
+	// GoBinary is the go command to use. Empty means "go" on PATH.
+	GoBinary string
+	// Stdout and Stderr receive the toolchain's output.
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+// Binaries compiles both executables for goos/goarch.
+func (c CompileSource) Binaries(ctx context.Context, goos, goarch, binDir string) error {
+	if _, err := os.Stat(filepath.Join(c.Dir, "cmd", "otterd")); err != nil {
+		return fmt.Errorf("%s is not an Otter checkout: no cmd/otterd in it", c.Dir)
+	}
+	fmt.Fprintf(writerOr(c.Stderr, io.Discard), "compiling otterd and otter from %s\n", c.Dir)
+	return compileBinaries(ctx, c, goos, goarch, binDir)
+}
+
+// Describe explains the source for the deploy plan.
+func (c CompileSource) Describe(string) string {
+	return "compile otterd and otter from " + c.Dir
+}
+
+// compileBinaries runs the two go builds.
+func compileBinaries(ctx context.Context, src CompileSource, goos, goarch, binDir string) error {
+	goBin := src.GoBinary
 	if goBin == "" {
 		goBin = "go"
 	}
@@ -104,45 +184,91 @@ func (b *LocalBuilder) Build(ctx context.Context, cfg Config, outDir string) err
 		args := []string{
 			"build",
 			"-trimpath",
-			"-ldflags", "-s -w -X main.version=" + cfg.Version,
+			"-ldflags", "-s -w -X main.version=" + src.Version,
 			"-o", filepath.Join(binDir, cmd.name),
 			cmd.pkg,
 		}
-		if err := b.runGo(ctx, cfg.RepoRoot, goos, goarch, args...); err != nil {
+		if err := runGoIn(ctx, src.Dir, goBin, goos, goarch, args, src.Stdout, src.Stderr); err != nil {
 			return fmt.Errorf("build %s for %s/%s: %w", cmd.name, goos, goarch, err)
 		}
 	}
 	return nil
 }
 
-// Stage copies the runtime tree into outDir: the shared Python library, every
-// integration, and nothing else.
+// writerOr returns w, or a discard sink when the caller supplied none.
+func writerOr(w io.Writer, fallback io.Writer) io.Writer {
+	if w == nil {
+		return fallback
+	}
+	return w
+}
+
+// Stage copies the runtime tree into outDir: every integration and the shared
+// trees those integrations declare, and nothing else.
 //
-// The result is the layout the host releases from: <remote>/integrations/<name>
-// with shared code at <remote>/lib. That is why deploy runs `otter release
-// --integrations <remote>/integrations`: the release base becomes <remote>, and
-// the snapshot can place the integration at integrations/<name> and the tree at
-// lib/python so the manifest's ../../lib keeps resolving.
+// The result is the layout the host releases from. An integration lands at
+// <remote>/integrations/<name>, and a shared tree lands at the relative depth
+// its manifest declares, measured from that same directory. A manifest saying
+// `../lib/python` therefore puts the tree at <remote>/integrations/lib/python
+// and one saying `../../lib/python` puts it at <remote>/lib/python. Either way
+// the declaration resolves verbatim on the host, because the placement rule
+// preserves the geometry rather than hardcoding one repository's shape.
 //
 // What is left out matters as much as what is included. Tests are not needed
 // to run an integration, and bytecode caches must never be shipped: a stale
 // .pyc compiled for a different Python would shadow the real module.
 func (b *LocalBuilder) Stage(cfg Config, outDir string) error {
-	libSrc := filepath.Join(cfg.RepoRoot, "lib")
-	if _, err := os.Stat(libSrc); err == nil {
-		if err := copyTree(libSrc, filepath.Join(outDir, "lib"), stageSkip); err != nil {
+	placed := map[string]string{}
+	for _, integ := range cfg.Integrations {
+		dst := filepath.Join(outDir, LocalIntegrationsDir, integ.Name)
+		if err := copyTree(integ.Dir, dst, stageSkip); err != nil {
 			return err
 		}
-	}
 
-	for _, name := range cfg.Integrations {
-		src := filepath.Join(cfg.IntegrationsPath, name)
-		dst := filepath.Join(outDir, LocalIntegrationsDir, name)
-		if err := copyTree(src, dst, stageSkip); err != nil {
-			return err
+		for _, tree := range integ.Trees {
+			rel, err := TreePlacement(integ, tree)
+			if err != nil {
+				return err
+			}
+			// Two integrations may legitimately share one library. Two
+			// different libraries claiming one path is a collision the host
+			// could not resolve, so it is refused here while both sources are
+			// still known.
+			if prev, ok := placed[rel]; ok {
+				if prev != tree {
+					return fmt.Errorf("two shared trees would land at %s: %s and %s", rel, prev, tree)
+				}
+				continue
+			}
+			placed[rel] = tree
+			if err := copyTree(tree, filepath.Join(outDir, filepath.FromSlash(rel)), stageSkip); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// TreePlacement is where one shared tree lands, relative to the remote install
+// root, for one integration.
+//
+// It is the same rule release.Plan applies on the host: preserve the relative
+// geometry between the integration and the code it imports, because that is
+// what a relative python.path depends on. The integration is placed at
+// integrations/<name>, so a declaration of ../lib/python becomes
+// integrations/lib/python while ../../lib/python becomes lib/python.
+func TreePlacement(integ Integration, tree string) (string, error) {
+	rel, err := filepath.Rel(integ.Dir, tree)
+	if err != nil {
+		return "", fmt.Errorf("place shared tree %s relative to %s: %w", tree, integ.Dir, err)
+	}
+	placed := filepath.ToSlash(filepath.Join(LocalIntegrationsDir, integ.Name, rel))
+	if placed == "." || placed == ".." || strings.HasPrefix(placed, "../") || strings.HasPrefix(placed, "/") {
+		return "", fmt.Errorf(
+			"shared tree %s cannot be placed from integration %s: %s escapes the install root",
+			tree, integ.Name, filepath.ToSlash(rel))
+	}
+	return placed, nil
 }
 
 // stageSkip reports whether a path inside a staged tree should be left out.
@@ -222,14 +348,17 @@ func (b *LocalBuilder) Revision(outDir string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil))[:16], nil
 }
 
-// runGo invokes the Go toolchain for the target platform.
+// runGoIn invokes the Go toolchain in workDir for the target platform.
 //
 // GOTOOLCHAIN=local is not optional here: the module declares a minimum Go
 // version, and without this the toolchain would try to download a newer one
 // mid-deploy on a machine that may have no network or no business fetching a
 // compiler. Failing with "go.mod requires go >= x" is the honest outcome.
-func (b *LocalBuilder) runGo(ctx context.Context, workDir, goos, goarch string, args ...string) error {
-	cmd := exec.CommandContext(ctx, b.GoBinary, args...)
+func runGoIn(ctx context.Context, workDir, goBin, goos, goarch string, args []string, stdout, stderr io.Writer) error {
+	if goBin == "" {
+		goBin = "go"
+	}
+	cmd := exec.CommandContext(ctx, goBin, args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"GOOS="+goos,
@@ -237,8 +366,8 @@ func (b *LocalBuilder) runGo(ctx context.Context, workDir, goos, goarch string, 
 		"CGO_ENABLED=0",
 		"GOTOOLCHAIN=local",
 	)
-	cmd.Stdout = b.Stdout
-	cmd.Stderr = b.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	return cmd.Run()
 }
 

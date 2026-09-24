@@ -18,17 +18,18 @@
 // relative declaration in the manifest resolves exactly as it does in the
 // checkout. For the canonical layout that means:
 //
-//	<data dir>/.releases/<integration>/<release-digest>/
+//	<data dir>/.releases/<identity>/<release-digest>/
 //	├── integrations/<integration>/     the snapshot
 //	├── lib/                            shared code, at the same relative depth
 //	└── otter-release.json              metadata, including the environment digest
 //
 // but the rule is the same for the other shapes a workspace can have: a flat
 // workspace places the integration at <name> and shared code beside it, and a
-// grouped workspace at group/<name> and group/lib/python. `otter deploy` is the
-// case that fixes the base's upper bound: it releases with
-// `--integrations <remote>/integrations` while shared code lives at
-// `<remote>/lib/python`, so the base is `<remote>`, not the discovery root.
+// grouped workspace at group/<name> and group/lib/python. `otter deploy` does
+// not change the rule: it stages each integration at
+// `<remote>/integrations/<name>` and every declared tree at the depth the
+// manifest names from there, so where the base falls follows from the manifest
+// rather than from a hardcoded layout.
 //
 // The activation links live at <data dir>/.releases/active/<integration>. They
 // sit outside the integrations tree on purpose: `otter deploy` rsyncs that tree
@@ -37,9 +38,10 @@
 //
 // Nothing has to be rewritten to activate a release: the manifest travels
 // verbatim and a manifest that works locally works in a release. The live
-// integrations tree keeps a symlink per managed integration pointing at the
-// active release, so discovery and every path-derived behaviour (the working
-// directory, the SDK's relative resolution, `otter inspect`) work unchanged.
+// integrations tree stays exactly as it was pushed -- discovery and every
+// path-derived behaviour (the working directory, the SDK's relative
+// resolution, `otter inspect`) keep using it -- while each run resolves the
+// digest to execute through the activation link of its own identity.
 // The releases root is dot-prefixed, which the existing discovery walk already
 // skips, so snapshots are never discovered as integrations themselves.
 package release

@@ -1187,7 +1187,11 @@ func (a *App) fail(err error) int {
 	if errors.As(err, &apiErr) {
 		if apiErr.IsUnauthorized() {
 			fmt.Fprintln(a.Stderr, "hint: set OTTER_API_TOKEN or pass --token")
-			fmt.Fprintln(a.Stderr, "hint: on the Otter host, the token is in "+EnvDir+"/*.env")
+			// Each workspace has its own daemon and its own token, so naming the
+			// directory would send an operator to a pile of files and leave them
+			// guessing which one this daemon reads.
+			fmt.Fprintln(a.Stderr, "hint: on the Otter host, each workspace's token is in "+
+				EnvDir+"/workspaces/<workspace>.env")
 		}
 		// The daemon answered, so it is running: the reachability hint would
 		// only misdirect. Its own message is the actionable one.

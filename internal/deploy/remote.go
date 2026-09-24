@@ -168,7 +168,10 @@ func (s *SSH) Open(ctx context.Context) error {
 // find, and discovering that as "bash: rsync: command not found" in the middle
 // of a sync is a poor way to learn it.
 func (s *SSH) requiredTools() []string {
-	tools := []string{"rsync", "systemctl", "install", "find", "chown", "ln", "getent", "groupadd", "useradd"}
+	// ss (iproute2) is how a new workspace finds a loopback port nothing is
+	// listening on. Without it a deploy could hand a workspace a port already
+	// in use, which surfaces later as an unexplained unhealthy daemon.
+	tools := []string{"rsync", "systemctl", "install", "find", "chown", "ln", "getent", "groupadd", "useradd", "ss"}
 	if !s.Target.LoginIsRoot() {
 		// Preparation runs as the service account, so a non-root login needs a
 		// way to drop privileges as well as to escalate.

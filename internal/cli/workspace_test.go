@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -301,4 +302,28 @@ func TestIntegrationsRootDefaultsToTheWorkspace(t *testing.T) {
 			t.Errorf("refusal does not explain itself:\n%s", errOut.String())
 		}
 	})
+}
+
+// A release on a deployed host passes --data explicitly and may be started from
+// a directory the service account cannot even stat (a non-login ssh command
+// starts in /root). The explicit value must win without consulting the working
+// directory, or the release fails before it can do anything.
+func TestExplicitDataNeedsNoWorkingDirectory(t *testing.T) {
+	original := workingDirForTest
+	workingDirForTest = func() (string, error) {
+		return "", errors.New("stat .: permission denied")
+	}
+	defer func() { workingDirForTest = original }()
+
+	var stderr bytes.Buffer
+	got, code := resolveWorkspaceData(&stderr, "/opt/otter/data", true)
+	if code != 0 || got != "/opt/otter/data" {
+		t.Errorf("resolveWorkspaceData = %q, %d (stderr %q); want the explicit directory",
+			got, code, stderr.String())
+	}
+
+	// Without one there is nothing to fall back to, so the failure stands.
+	if _, code := resolveWorkspaceData(&stderr, "", false); code == 0 {
+		t.Error("an unreadable working directory was accepted without --data")
+	}
 }

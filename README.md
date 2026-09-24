@@ -310,7 +310,7 @@ otter start [--detach]                  # this project's runtime, free port, env
 otter stop                              # stop the runtime serving this project
 otter serve                             # the daemon with the daemon's own flag defaults
 otter deploy --host <user@host>         # install or update a runtime over SSH
-otter deploy --status                   # what this checkout last deployed
+otter deploy --status                   # what this project last deployed
 otter prepare [<integration>]           # prepare opt-in managed Python environments
 otter release [<integration>|.] [--all] # stage and activate an immutable release
 otter release --list <integration>      # staged releases, newest first
@@ -338,9 +338,10 @@ it does not depend on the host's Python. See
 A release places the integration and every shared tree it imports relative to one
 base: the closest common ancestor of the integrations discovery root, the
 integration and each captured tree. That is what lets a manifest keep
-`python.path` verbatim -- including `otter deploy`, which releases with
-`--integrations /opt/otter/integrations` while shared code lives at
-`/opt/otter/lib/python`. The placement and each tree's destination name are part
+`python.path` verbatim -- including `otter deploy`, which stages each
+integration at `<remote>/integrations/<name>` and every declared tree at the
+relative depth the manifest names from there. The placement and each tree's
+destination name are part
 of the release digest, so a snapshot laid out differently is never reused; a
 release that cannot capture a declared tree (missing, absolute, or reachable
 only through an escaping symlink) is refused instead of shipped. Every
@@ -475,26 +476,52 @@ bodies, error codes and a curl walkthrough.
 already have, over SSH. No cloud API, no Docker registry, no infrastructure
 tooling — if you can `ssh` to it, you can deploy to it.
 
+Run it from your project. The nearest directory holding `.otter`, `.git` or
+`go.mod` is the project root, and it is scanned recursively for `otter.yaml`,
+so integrations may be nested and grouped however you like:
+
 ```bash
 otter deploy --host root@203.0.113.10     # install or update
-otter deploy --status                     # what this checkout last deployed
+otter deploy --host droplet --dry-run     # see the plan, change nothing
+otter deploy --status                     # what this project last deployed
 otter deploy --host droplet --destroy     # stop and remove it
 ```
 
-It detects the remote architecture, cross-compiles both binaries for it, syncs
-the integration tree, writes the systemd unit and the secrets files (over SSH
-stdin, never argv), restarts the service and waits for its health endpoint. Run
-it twice and the second run is a no-op; your data directory is never touched, so
-run history and sync watermarks survive every deploy. The API binds loopback, so
-you reach it through a tunnel rather than an open port:
+It detects the remote architecture, obtains both binaries for it — compiled from
+your source when the project is a Go checkout, otherwise fetched from the
+matching published release and verified against its checksums — syncs every
+discovered integration and the shared trees their manifests declare, writes the
+systemd unit and the secrets files (over SSH stdin, never argv), restarts the
+service and waits for its health endpoint. Run it twice and the second run is a
+no-op; your data directory is never touched, so run history and sync watermarks
+survive every deploy. The API binds loopback, so you reach it through a tunnel
+rather than an open port:
 
 ```bash
 ssh -N -L 7337:127.0.0.1:7337 droplet
 otter runs --limit 10
 ```
 
-[docs/deploy.md](docs/deploy.md) covers secrets, tokens, configuration,
-upgrades, backups and removal.
+`--source <checkout>` compiles from a runtime checkout, `--build` forces a
+compile from the project itself, and `--binaries <dir>` uses executables you
+supply (the offline path). To ship one integration and leave the rest of the
+host alone, pass `--integration <name>`.
+
+**One host holds many workspaces.** Each project you deploy gets its own
+directory under `/opt/otter/workspaces/<name>`, its own systemd unit, its own
+loopback port, its own API token and its own binaries, and a deploy only ever
+converges that one:
+
+```bash
+otter deploy --host droplet --status      # every workspace that host holds
+otter deploy --host droplet --destroy     # remove just this project's workspace
+```
+
+The workspace id lives in the committed `otter.deploy.yaml`, so a second machine
+or a fresh clone updates the same workspace instead of creating another one.
+
+[docs/deploy.md](docs/deploy.md) covers the project layout, where the binaries
+come from, secrets, tokens, configuration, upgrades, backups and removal.
 
 Cross-compile every supported platform into `./bin`:
 
@@ -502,7 +529,7 @@ Cross-compile every supported platform into `./bin`:
 make cross      # linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 in ./bin
 ```
 
-By hand, the runtime is one systemd unit:
+By hand, one workspace is one systemd unit:
 
 ```ini
 [Unit]
@@ -511,8 +538,12 @@ After=network.target
 
 [Service]
 User=otter
-EnvironmentFile=/etc/otter/shopify-to-salesforce.env
-ExecStart=/usr/local/bin/otterd --integrations /opt/otter/integrations --data /var/lib/otter
+WorkingDirectory=/opt/otter/workspaces/examples
+EnvironmentFile=-/etc/otter/workspaces/examples.env
+ExecStart=/opt/otter/workspaces/examples/bin/otterd \
+  --integrations /opt/otter/workspaces/examples/integrations \
+  --data /opt/otter/workspaces/examples/.otter/data \
+  --listen 127.0.0.1:7337
 Restart=always
 RestartSec=2
 

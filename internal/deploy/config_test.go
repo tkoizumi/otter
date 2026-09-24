@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,15 +86,18 @@ func TestMergeTargetPrecedence(t *testing.T) {
 	}
 }
 
-func TestApplyDefaultsDerivesDataDir(t *testing.T) {
-	target := Target{Host: "h", RemoteDir: "/srv/otter"}
+func TestApplyDefaultsDerivesWorkspaceLayout(t *testing.T) {
+	target := Target{Host: "h", RemoteDir: "/srv/otter", WorkspaceID: "abcdef12-0000-0000-0000-000000000000", WorkspaceSlug: "shop"}
 	target.ApplyDefaults()
 
-	if target.DataDir != "/srv/otter/data" {
-		t.Errorf("DataDir = %q, want /srv/otter/data", target.DataDir)
+	if want := "/srv/otter/workspaces/shop-abcdef12/.otter/data"; target.DataDir != want {
+		t.Errorf("DataDir = %q, want %q", target.DataDir, want)
 	}
-	if target.ServiceUnit() != "otterd.service" {
-		t.Errorf("ServiceUnit = %q, want otterd.service", target.ServiceUnit())
+	if want := "otterd-shop-abcdef12.service"; target.ServiceUnit() != want {
+		t.Errorf("ServiceUnit = %q, want %q", target.ServiceUnit(), want)
+	}
+	if target.Listen != "" {
+		t.Errorf("Listen = %q; a new workspace's port is chosen on the host", target.Listen)
 	}
 	if target.Platform != "" {
 		t.Errorf("ApplyDefaults invented a platform %q; it must stay empty for SSH detection", target.Platform)
@@ -239,7 +243,10 @@ func TestIntegrationFilter(t *testing.T) {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: "+name+"\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: "+name+"\nentrypoint: main.py\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -248,7 +255,7 @@ func TestIntegrationFilter(t *testing.T) {
 
 	load := func(t *testing.T, repo string, f *Flags) (Config, error) {
 		t.Helper()
-		return LoadConfig(repo, f, State{})
+		return LoadConfig(repo, f, HostDeploy{})
 	}
 
 	t.Run("no filter deploys everything", func(t *testing.T) {
@@ -271,7 +278,7 @@ func TestIntegrationFilter(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cfg.Integrations) != 1 || cfg.Integrations[0] != "beta" {
+		if len(cfg.Integrations) != 1 || cfg.Integrations[0].Name != "beta" {
 			t.Errorf("deployed %v, want just beta", cfg.Integrations)
 		}
 		if !cfg.Limited {
@@ -306,11 +313,14 @@ func TestPlatformIsNotCarriedBetweenHosts(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: one\nentrypoint: main.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	previous := State{
+	previous := HostDeploy{
 		Host:   "droplet-amd64",
 		Target: Target{Host: "droplet-amd64", Platform: "linux/amd64", RemoteDir: "/opt/otter"},
 	}
@@ -351,12 +361,15 @@ func TestExplicitPlatformWins(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: one\nentrypoint: main.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	flags := &Flags{Target: Target{Platform: "linux/arm64"}, set: map[string]bool{}}
-	previous := State{Host: "h", Target: Target{Host: "h", Platform: "linux/amd64"}}
+	previous := HostDeploy{Host: "h", Target: Target{Host: "h", Platform: "linux/amd64"}}
 	cfg, err := LoadConfig(repo, flags, previous)
 	if err != nil {
 		t.Fatal(err)
@@ -377,12 +390,15 @@ func TestDaemonEnvResolution(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: one\nentrypoint: main.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	// Absent: no daemon environment, and that is not an error.
-	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +411,7 @@ func TestDaemonEnvResolution(t *testing.T) {
 	if err := os.WriteFile(path, []byte("OTTER_NOTIFY_URL=https://example.test/hook\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	cfg, err = LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +424,7 @@ func TestDaemonEnvResolution(t *testing.T) {
 	if err := os.WriteFile(other, []byte("OTTER_NOTIFY_ON=failed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = LoadConfig(repo, &Flags{DaemonEnv: "daemon-production.env", set: map[string]bool{}}, State{})
+	cfg, err = LoadConfig(repo, &Flags{DaemonEnv: "daemon-production.env", set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,12 +445,15 @@ func TestDaemonIntegrationNameIsReserved(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: "+name+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: "+name+"\nentrypoint: main.py\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{}); err == nil {
+	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{}); err == nil {
 		t.Error("an integration named 'daemon' was accepted")
 	} else if !strings.Contains(err.Error(), "reserved") {
 		t.Errorf("error does not explain the reservation: %v", err)
@@ -444,7 +463,7 @@ func TestDaemonIntegrationNameIsReserved(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(repo, "integrations", "daemon")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{}); err != nil {
+	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{}); err != nil {
 		t.Errorf("a checkout without a 'daemon' integration should load: %v", err)
 	}
 }
@@ -462,23 +481,28 @@ func TestOnlyLayoutTravelsToADifferentHost(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: one\nentrypoint: main.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	previous := State{
+	previous := HostDeploy{
 		Host: "127.0.0.1",
 		Target: Target{
-			Host:         "127.0.0.1",
-			User:         "root",
-			Port:         2225,
-			IdentityFile: "container-key",
-			Platform:     "linux/arm64",
-			RemoteDir:    "/opt/otter",
-			ServiceName:  "otterd",
-			RunAsUser:    "otter",
-			DataDir:      "/opt/otter/data",
-			Listen:       "127.0.0.1:7337",
+			Host:          "127.0.0.1",
+			User:          "root",
+			Port:          2225,
+			IdentityFile:  "container-key",
+			Platform:      "linux/arm64",
+			RemoteDir:     "/opt/otter",
+			ServiceName:   "otterd",
+			RunAsUser:     "otter",
+			DataDir:       "/opt/otter/workspaces/other-99999999/.otter/data",
+			Listen:        "127.0.0.1:7338",
+			WorkspaceID:   "99999999-0000-0000-0000-000000000000",
+			WorkspaceSlug: "other",
 		},
 	}
 
@@ -499,12 +523,21 @@ func TestOnlyLayoutTravelsToADifferentHost(t *testing.T) {
 		t.Errorf("Platform = %q, want empty so it is detected again", cfg.Target.Platform)
 	}
 
-	// Layout should travel, so a redeploy lands in the same place.
+	// The install root travels, because that is the operator's choice.
 	if cfg.Target.RemoteDir != "/opt/otter" {
 		t.Errorf("RemoteDir = %q, want the recorded layout", cfg.Target.RemoteDir)
 	}
-	if cfg.Target.DataDir != "/opt/otter/data" {
-		t.Errorf("DataDir = %q, want the recorded layout", cfg.Target.DataDir)
+	// The workspace does not: it belongs to the host it was created on, so a
+	// different machine gets its own directory, unit and port rather than being
+	// handed one that may already be taken there.
+	if cfg.Target.WorkspaceID == previous.Target.WorkspaceID {
+		t.Error("the other host's workspace id was carried over")
+	}
+	if cfg.Target.Listen == previous.Target.Listen {
+		t.Errorf("Listen = %q was carried over; that port may be taken on the new host", cfg.Target.Listen)
+	}
+	if !strings.HasPrefix(cfg.Target.DataDir, "/opt/otter/workspaces/") {
+		t.Errorf("DataDir = %q is not inside the workspaces root", cfg.Target.DataDir)
 	}
 }
 
@@ -522,7 +555,10 @@ func TestSharedEnvResolution(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("name: one\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte("version: 1\nname: one\nentrypoint: main.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// A per-integration .env exists, and must not be picked up.
@@ -531,7 +567,7 @@ func TestSharedEnvResolution(t *testing.T) {
 	}
 
 	// Absent: no shared file, and that is not an error.
-	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +580,7 @@ func TestSharedEnvResolution(t *testing.T) {
 	if err := os.WriteFile(path, []byte("SHOPIFY_CLIENT_ID=shared\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = LoadConfig(repo, &Flags{set: map[string]bool{}}, State{})
+	cfg, err = LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +593,7 @@ func TestSharedEnvResolution(t *testing.T) {
 	if err := os.WriteFile(other, []byte("SHOPIFY_CLIENT_ID=prod\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = LoadConfig(repo, &Flags{EnvFile: "prod.env", set: map[string]bool{}}, State{})
+	cfg, err = LoadConfig(repo, &Flags{EnvFile: "prod.env", set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +610,10 @@ func TestMissingSecretsNamesEveryIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := Config{SharedEnv: shared, Integrations: []string{"alpha", "beta"}}
+	cfg := Config{SharedEnv: shared, Integrations: []Integration{
+		{Name: "alpha", Label: "alpha"},
+		{Name: "beta", Label: "beta"},
+	}}
 	missing := cfg.MissingSecrets(map[string][]string{
 		"alpha": {"SHOPIFY_CLIENT_ID", "SALESFORCE_CLIENT_SECRET"},
 		"beta":  {"SALESFORCE_CLIENT_SECRET"},
@@ -599,7 +638,7 @@ func TestMissingSecretsNamesEveryIntegration(t *testing.T) {
 // With no shared file, the report points at the file that is missing rather
 // than at a per-integration path that no longer exists.
 func TestMissingSecretsPointsAtTheSharedFile(t *testing.T) {
-	cfg := Config{Integrations: []string{"alpha"}}
+	cfg := Config{Integrations: []Integration{{Name: "alpha", Label: "alpha"}}}
 	missing := cfg.MissingSecrets(map[string][]string{"alpha": {"SHOPIFY_CLIENT_ID"}})
 
 	if len(missing) != 1 {
@@ -607,5 +646,63 @@ func TestMissingSecretsPointsAtTheSharedFile(t *testing.T) {
 	}
 	if !strings.Contains(missing[0], SharedEnvFileName) {
 		t.Errorf("entry does not name %s: %q", SharedEnvFileName, missing[0])
+	}
+}
+
+// A state file written before workspaces existed records the flat layout: unit
+// `otterd`, data at <remote>/data, port 7337. None of that may leak into the
+// workspace that replaces it -- the unit would collide with the old one and the
+// data directory would sit outside the workspace.
+func TestLegacyStateDoesNotLeakTheFlatLayout(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo, "integrations", "one")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"),
+		[]byte("version: 1\nname: one\nentrypoint: main.py\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := `{"host":"159.203.184.97","target":{"host":"159.203.184.97","user":"root",` +
+		`"port":22,"remote_dir":"/opt/otter","service_name":"otterd","run_as_user":"otter",` +
+		`"data_dir":"/opt/otter/data","listen":"127.0.0.1:7337","platform":"linux/amd64"}}`
+	var state State
+	if err := json.Unmarshal([]byte(legacy), &state); err != nil {
+		t.Fatal(err)
+	}
+	previous, ok, err := state.ForHost("159.203.184.97")
+	if err != nil || !ok {
+		t.Fatalf("legacy state was not readable: ok=%v err=%v", ok, err)
+	}
+
+	// A bare deploy: the host comes from the record, so the same-host carry
+	// applies -- which is exactly the path that used to leak the flat layout.
+	cfg, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Target.ServiceName == "otterd" {
+		t.Error("the legacy unit name was carried into the workspace")
+	}
+	if cfg.Target.DataDir == "/opt/otter/data" {
+		t.Error("the legacy data directory was carried into the workspace")
+	}
+	if !strings.HasPrefix(cfg.Target.DataDir, "/opt/otter/workspaces/") {
+		t.Errorf("DataDir = %q, want it inside the workspaces root", cfg.Target.DataDir)
+	}
+	if cfg.Target.Platform != "linux/amd64" {
+		t.Errorf("Platform = %q, want the host's detected platform carried", cfg.Target.Platform)
+	}
+	// A bare deploy must still know which machine it is for.
+	if cfg.Target.Host != "159.203.184.97" {
+		t.Errorf("Host = %q, want the recorded host carried for a bare deploy", cfg.Target.Host)
 	}
 }

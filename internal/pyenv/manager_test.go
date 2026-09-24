@@ -308,3 +308,47 @@ func TestUVPathFindsTheDeployLayout(t *testing.T) {
 		t.Errorf("UVPath = %q, want the nested vendored %q", got, nestedVendored)
 	}
 }
+
+// Where a vendored uv lives depends on where the data directory is, and both
+// sides of a deploy have to find the same binary: uv is part of the environment
+// identity, so a daemon that resolved it differently from the deploy would look
+// for an environment preparation never created.
+func TestUVCandidateFindsBothDeployLayouts(t *testing.T) {
+	write := func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("uv"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("install root with a data directory", func(t *testing.T) {
+		root := t.TempDir()
+		uv := filepath.Join(root, "tools", "uv", "uv")
+		write(t, uv)
+
+		got, ok := Manager{DataDir: filepath.Join(root, "data")}.uvCandidate()
+		if !ok || got != uv {
+			t.Errorf("uvCandidate = %q, %v; want %q", got, ok, uv)
+		}
+	})
+
+	t.Run("workspace with .otter/data", func(t *testing.T) {
+		ws := t.TempDir()
+		uv := filepath.Join(ws, "tools", "uv", "uv")
+		write(t, uv)
+
+		got, ok := Manager{DataDir: filepath.Join(ws, ".otter", "data")}.uvCandidate()
+		if !ok || got != uv {
+			t.Errorf("uvCandidate = %q, %v; want %q", got, ok, uv)
+		}
+	})
+
+	t.Run("nothing vendored", func(t *testing.T) {
+		if _, ok := (Manager{DataDir: t.TempDir()}).uvCandidate(); ok {
+			t.Error("uvCandidate invented a vendored uv")
+		}
+	})
+}

@@ -7,25 +7,32 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tkoizumi/otter/internal/config"
 )
 
 // Config is everything `otter deploy` needs to converge one host.
 type Config struct {
 	Target Target
 
-	// RepoRoot is the checkout that gets pushed: the binary, the shared
-	// library and every integration discovered under integrations/.
-	RepoRoot string
+	// ProjectRoot is the workspace being deployed: the nearest ancestor of the
+	// working directory carrying .otter, .git or go.mod. It is scanned
+	// recursively for integration manifests, and it is where otter.deploy.yaml,
+	// otter.env and .otter/ live.
+	//
+	// It is a project, not necessarily a Go checkout. A workspace that holds
+	// only Python integrations deploys from released binaries; one that
+	// contains cmd/otterd is compiled from source.
+	ProjectRoot string
 
-	// IntegrationsPath is the local integrations directory.
-	IntegrationsPath string
-
-	// Integrations is the ordered list of integration names to ship.
-	Integrations []string
+	// Integrations is the ordered list of integrations to ship, each with the
+	// local directory it lives in and the shared trees its manifest declares.
+	Integrations []Integration
 
 	// SharedEnv is the resolved environment file holding credentials that every
 	// integration may use. Empty means the checkout has none; the deploy
@@ -57,6 +64,38 @@ type Config struct {
 	Timeout time.Duration
 }
 
+// Integration is one integration to deploy, resolved from the workspace.
+//
+// It carries the two things staging needs and that a bare name cannot express:
+// where the integration lives locally, and which shared trees its manifest
+// imports. Deploy no longer assumes a single top-level integrations/ directory,
+// because a workspace is free to group integrations however it likes --
+// shopify_integrations/customer_sync is as valid as integrations/customer_sync.
+type Integration struct {
+	// Name is the directory name the integration is deployed under, inside
+	// <remote>/integrations. It is what the release command names.
+	Name string
+	// Label is the manifest's own `name:`, which is what the runtime registers
+	// and what an operator sees in `otter integrations`. It may differ from the
+	// directory name.
+	Label string
+	// Dir is the absolute local directory holding the manifest and its code.
+	Dir string
+	// Trees are the absolute local directories the manifest declares in
+	// python.path, in declaration order.
+	Trees []string
+}
+
+// IntegrationNames returns the deploy names in order, which is what the plan,
+// the release command and the recorded result all speak in.
+func (c Config) IntegrationNames() []string {
+	names := make([]string, 0, len(c.Integrations))
+	for _, integ := range c.Integrations {
+		names = append(names, integ.Name)
+	}
+	return names
+}
+
 // Flags holds the parsed command line. Defaults are layered so an explicit
 // flag always beats the config file, which beats the previous deploy.
 type Flags struct {
@@ -69,13 +108,28 @@ type Flags struct {
 	// Integration limits the deploy to one integration. Empty deploys all of
 	// them, which is the historical behavior.
 	Integration string
-	ConfigFor   string
-	UV          string
-	NoUV        bool
-	UVVersion   string
-	DryRun      bool
-	Verbose     bool
-	Timeout     time.Duration
+	// Workspace names the workspace on the host to deploy into. Empty uses the
+	// project's own: the recorded one, or a new workspace named after it.
+	Workspace string
+	ConfigFor string
+	UV        string
+	NoUV      bool
+	UVVersion string
+	DryRun    bool
+	Verbose   bool
+	Timeout   time.Duration
+
+	// Build forces a compile from Go source, refusing to fall back to released
+	// binaries. It is how a contributor deploying from the runtime checkout
+	// says "ship what I have, not what was tagged".
+	Build bool
+	// Source names the Go checkout to compile from, which is what makes a
+	// Python project deployable from a runtime checkout that lives elsewhere.
+	// Naming one implies building from source.
+	Source string
+	// Binaries names a local directory holding otterd and otter built for the
+	// target platform, which is the offline and air-gapped path.
+	Binaries string
 
 	// set records which flags the operator actually passed.
 	set map[string]bool
@@ -131,6 +185,11 @@ type deployFile struct {
 	DataDir     string `yaml:"data_dir"`
 	Listen      string `yaml:"listen"`
 	EnvFile     string `yaml:"env_file"`
+	// Workspace and Slug name the workspace this project owns on the host. They
+	// are committed so every checkout, machine and directory of the same
+	// project deploys into the same workspace instead of creating a new one.
+	Workspace string `yaml:"workspace"`
+	Slug      string `yaml:"slug"`
 }
 
 // RegisterFlags binds the deploy flags.
@@ -140,10 +199,11 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.IntVar(&f.Target.Port, "port", 0, "SSH port (default 22)")
 	fs.StringVar(&f.Target.IdentityFile, "identity", "", "private key to use for SSH")
 	fs.StringVar(&f.Target.RemoteDir, "remote-dir", "", "remote install root (default "+DefaultRemoteDir+")")
-	fs.StringVar(&f.Target.ServiceName, "service", "", "systemd unit name (default "+DefaultService+")")
+	fs.StringVar(&f.Target.ServiceName, "service", "", "systemd unit name (default "+DefaultServicePrefix+"-<workspace>)")
 	fs.StringVar(&f.Target.RunAsUser, "service-user", "", "service account owning the unit and data (default otter)")
-	fs.StringVar(&f.Target.DataDir, "data-dir", "", "remote data directory holding otter.db (default <remote-dir>/data)")
-	fs.StringVar(&f.Target.Listen, "listen", "", "remote API listen address (default "+DefaultListenAddr+")")
+	fs.StringVar(&f.Target.DataDir, "data-dir", "", "remote data directory holding otter.db (default <workspace>/.otter/data)")
+	fs.StringVar(&f.Target.Listen, "listen", "", "remote API listen address (default the first free port from "+DefaultListenAddr+")")
+	fs.StringVar(&f.Workspace, "workspace", "", "workspace on the host to deploy into (default: this project's own)")
 	fs.StringVar(&f.Target.Platform, "platform", "", "remote GOOS/GOARCH; detected over SSH when empty")
 	fs.BoolVar(&f.Target.RotateAPIToken, "rotate-token", false, "generate and install a fresh API token")
 	fs.StringVar(&f.Target.APIToken, "api-token", "", "use this API token instead of the stored or remote one")
@@ -154,6 +214,9 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.UV, "uv", "", "uv executable on the host for Python preparation (default the vendored copy)")
 	fs.BoolVar(&f.NoUV, "no-uv", false, "do not vendor uv; use one already present on the host")
 	fs.StringVar(&f.UVVersion, "uv-version", "", "uv release to vendor (default "+PinnedUVVersion+")")
+	fs.BoolVar(&f.Build, "build", false, "compile the runtime from Go source instead of using released binaries")
+	fs.StringVar(&f.Source, "source", "", "Otter Go checkout to compile from (implies --build)")
+	fs.StringVar(&f.Binaries, "binaries", "", "directory holding otterd and otter for the target platform (offline deploy)")
 	fs.BoolVar(&f.DryRun, "dry-run", false, "print what would change and touch nothing")
 	fs.BoolVar(&f.Verbose, "verbose", false, "stream every remote command")
 	fs.DurationVar(&f.Timeout, "timeout", 10*time.Minute, "overall timeout for the deploy")
@@ -170,9 +233,14 @@ func ParseDeployFlags(args []string, stderr io.Writer) (*Flags, error) {
 		fmt.Fprint(stderr, "Usage: otter deploy --host <user@host> [flags]\n")
 		fmt.Fprint(stderr, "\nConverges a remote Linux host onto a running Otter runtime over SSH.\n")
 		fmt.Fprint(stderr, "No cloud API is involved: if you can ssh to it, you can deploy to it.\n")
+		fmt.Fprint(stderr, "Run it from a project: the directory (or nearest ancestor) holding\n")
+		fmt.Fprint(stderr, ".otter, .git or go.mod is scanned recursively for otter.yaml, so\n")
+		fmt.Fprint(stderr, "integrations may be nested however you like.\n")
 		fmt.Fprint(stderr, "\nWhat it does, every time:\n")
 		fmt.Fprint(stderr, "  1. detect the remote platform over SSH\n")
-		fmt.Fprint(stderr, "  2. cross-compile otterd and otter for it\n")
+		fmt.Fprint(stderr, "  2. obtain otterd and otter for it -- compiled from source when this\n")
+		fmt.Fprint(stderr, "     project is a Go checkout, otherwise fetched from the matching release\n")
+		fmt.Fprint(stderr, "     (--build and --binaries override that choice)\n")
 		fmt.Fprint(stderr, "  3. rsync the binaries and the integration tree\n")
 		fmt.Fprint(stderr, "  4. write the systemd unit and the secrets files\n")
 		fmt.Fprint(stderr, "  5. restart the service and wait for its health endpoint\n")
@@ -201,22 +269,21 @@ func (f *Flags) Set(name string) bool { return f.set[name] }
 // config file, the previous successful deploy, then the command line. Reusing
 // the previous target is what makes a bare `otter deploy` after the first one
 // go to the same host, with the platform SSH already told us about.
-func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
+func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, error) {
 	cfg := Config{
-		RepoRoot:         repoRoot,
-		IntegrationsPath: repoRoot + "/" + LocalIntegrationsDir,
-		DryRun:           f.DryRun,
-		Verbose:          f.Verbose,
-		Timeout:          f.Timeout,
-		Target:           DefaultTarget(),
+		ProjectRoot: projectRoot,
+		DryRun:      f.DryRun,
+		Verbose:     f.Verbose,
+		Timeout:     f.Timeout,
+		Target:      DefaultTarget(),
 	}
 
 	// 1. The config file, if present. Committed, and holds no secrets.
 	path := f.ConfigFor
 	if path == "" {
-		path = repoRoot + "/" + ConfigFileName
+		path = projectRoot + "/" + ConfigFileName
 	}
-	fromFile, fileEnv, err := loadConfigFile(path)
+	fromFile, fileEnv, fromWorkspace, err := loadConfigFile(path)
 	if err != nil {
 		return cfg, err
 	}
@@ -225,7 +292,7 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	}
 	// A config file may point at a shared secrets file, but a flag still wins.
 	if f.EnvFile == "" && fileEnv != "" {
-		f.EnvFile = resolveRelative(repoRoot, fileEnv)
+		f.EnvFile = resolveRelative(projectRoot, fileEnv)
 	}
 
 	// 2. The previous deploy, so a bare `otter deploy` after the first one goes
@@ -238,24 +305,53 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	//    binary built for the wrong architecture. Each of those was hit while
 	//    testing against more than one host from a single checkout.
 	if previous.Host != "" {
-		carried := previous.Target
-		if !sameHost(previous, cfg.Target, f) {
-			carried = layoutOnly(carried)
+		carried := differentHostLayout(previous.Target)
+		if sameHost(previous, cfg.Target, f) {
+			// Same machine: everything about the last deploy to it travels,
+			// which is what lets a bare `otter deploy` repeat it without the
+			// operator retyping --host and the login user.
+			carried = sameHostLayout(previous.Target)
 		}
 		cfg.Target = mergeTarget(cfg.Target, carried)
 	}
 
 	// 3. Explicit flags.
 	cfg.Target = mergeTarget(cfg.Target, f.Target)
+
+	// 4. The workspace this project owns on the host.
+	//
+	//    Precedence mirrors everything else: an explicit --workspace, then the
+	//    committed otter.deploy.yaml (which is what makes a second machine or a
+	//    fresh clone land on the same workspace), then the host's recorded
+	//    workspace, then a new identity named after the project directory.
+	if f.Workspace != "" {
+		cfg.Target.WorkspaceSlug = SanitizeSlug(f.Workspace)
+		cfg.Target.WorkspaceNameOverride = ""
+	}
+	if fromWorkspace.ID != "" {
+		id := strings.TrimSpace(fromWorkspace.ID)
+		if id != cfg.Target.WorkspaceID {
+			// A committed id names a different workspace than this checkout last
+			// deployed to, so the recorded directory name no longer applies.
+			cfg.Target.WorkspaceNameOverride = ""
+		}
+		cfg.Target.WorkspaceID = id
+	}
+	if fromWorkspace.Slug != "" && f.Workspace == "" {
+		cfg.Target.WorkspaceSlug = SanitizeSlug(fromWorkspace.Slug)
+	}
+	if cfg.Target.WorkspaceSlug == "" {
+		cfg.Target.WorkspaceSlug = SanitizeSlug(filepath.Base(projectRoot))
+	}
 	cfg.Target.ApplyDefaults()
 
 	// 4. The daemon-wide environment file. It is optional: a deployment that
 	//    configures nothing beyond per-integration secrets does not need one.
 	daemonEnv := f.DaemonEnv
 	if daemonEnv == "" {
-		daemonEnv = filepath.Join(repoRoot, DaemonEnvFileName)
+		daemonEnv = filepath.Join(projectRoot, DaemonEnvFileName)
 	}
-	daemonEnv = resolveRelative(repoRoot, daemonEnv)
+	daemonEnv = resolveRelative(projectRoot, daemonEnv)
 	if _, err := os.Stat(daemonEnv); err == nil {
 		cfg.DaemonEnv = daemonEnv
 	}
@@ -265,9 +361,9 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	//    needs none, and a deployment with no credentials at all is legal.
 	sharedEnv := f.EnvFile
 	if sharedEnv == "" {
-		sharedEnv = filepath.Join(repoRoot, SharedEnvFileName)
+		sharedEnv = filepath.Join(projectRoot, SharedEnvFileName)
 	}
-	sharedEnv = resolveRelative(repoRoot, sharedEnv)
+	sharedEnv = resolveRelative(projectRoot, sharedEnv)
 	if _, err := os.Stat(sharedEnv); err == nil {
 		cfg.SharedEnv = sharedEnv
 	}
@@ -277,9 +373,10 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 	}
 
 	// The reservation applies to every integration being deployed, not only a
-	// filtered one.
-	for _, name := range cfg.Integrations {
-		if name == DaemonEnvIntegrationName {
+	// filtered one: a directory named `daemon` would be released to the same
+	// path the daemon-wide environment file occupies.
+	for _, integ := range cfg.Integrations {
+		if integ.Name == DaemonEnvIntegrationName {
 			return cfg, fmt.Errorf("integration name %q is reserved for the daemon-wide environment file; rename the integration",
 				DaemonEnvIntegrationName)
 		}
@@ -289,18 +386,18 @@ func LoadConfig(repoRoot string, f *Flags, previous State) (Config, error) {
 
 // loadConfigFile reads otter.deploy.yaml. A missing file is not an error: the
 // whole configuration can come from flags instead.
-func loadConfigFile(path string) (*Target, string, error) {
+func loadConfigFile(path string) (*Target, string, fileWorkspace, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, "", nil
+		return nil, "", fileWorkspace{}, nil
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("read deploy config %s: %w", path, err)
+		return nil, "", fileWorkspace{}, fmt.Errorf("read deploy config %s: %w", path, err)
 	}
 
 	var df deployFile
 	if err := yaml.Unmarshal(data, &df); err != nil {
-		return nil, "", fmt.Errorf("parse deploy config %s: %w", path, err)
+		return nil, "", fileWorkspace{}, fmt.Errorf("parse deploy config %s: %w", path, err)
 	}
 
 	return &Target{
@@ -313,7 +410,13 @@ func loadConfigFile(path string) (*Target, string, error) {
 		RunAsUser:    df.ServiceUser,
 		DataDir:      df.DataDir,
 		Listen:       df.Listen,
-	}, df.EnvFile, nil
+	}, df.EnvFile, fileWorkspace{ID: df.Workspace, Slug: df.Slug}, nil
+}
+
+// fileWorkspace is the workspace identity a committed config file names.
+type fileWorkspace struct {
+	ID   string
+	Slug string
 }
 
 func resolveRelative(root, path string) string {
@@ -323,29 +426,58 @@ func resolveRelative(root, path string) string {
 	return root + "/" + strings.TrimPrefix(path, "./")
 }
 
-// layoutOnly strips the fields that describe how to reach a specific machine,
-// keeping only the ones that describe how Otter is installed on it.
+// sameHostLayout is everything a deploy remembers about the machine it just
+// converged: how to reach it, the operator's layout choices, and which
+// workspace this project owns there.
 //
-// Where the runtime lives is a deployment decision and travels; how to log in
-// is a property of the host and does not.
-func layoutOnly(t Target) Target {
+// Deliberately not carried: ServiceName, DataDir and Listen. All three follow
+// from the workspace, and the workspace's own record on the host is the
+// authority on them. Carrying them is how a state file written before
+// workspaces existed would drag the old flat layout -- unit `otterd`, data at
+// <remote>/data -- into a workspace that must have neither.
+func sameHostLayout(t Target) Target {
+	return Target{
+		Host:                  t.Host,
+		User:                  t.User,
+		Port:                  t.Port,
+		IdentityFile:          t.IdentityFile,
+		RemoteDir:             t.RemoteDir,
+		RunAsUser:             t.RunAsUser,
+		Platform:              t.Platform,
+		WorkspaceID:           t.WorkspaceID,
+		WorkspaceSlug:         t.WorkspaceSlug,
+		WorkspaceNameOverride: t.WorkspaceNameOverride,
+	}
+}
+
+// differentHostLayout is what may travel to a *different* machine: the
+// operator's layout choices and nothing about how to reach the old host. The
+// workspace does not travel either -- a workspace is a directory, unit and port
+// that belong to the host it was created on.
+func differentHostLayout(t Target) Target {
 	return Target{
 		RemoteDir:   t.RemoteDir,
-		ServiceName: t.ServiceName,
 		RunAsUser:   t.RunAsUser,
-		DataDir:     t.DataDir,
-		Listen:      t.Listen,
+		WorkspaceID: NewWorkspaceID(),
 	}
 }
 
 // sameHost reports whether the previous deploy and the requested target are the
 // same machine. The requested host wins when the operator named one.
-func sameHost(previous State, requested Target, f *Flags) bool {
+func sameHost(previous HostDeploy, requested Target, f *Flags) bool {
 	host := requested.Host
 	if f.Target.Host != "" {
 		host = f.Target.Host
 	}
-	return host != "" && host == previous.Host
+	if host == "" {
+		// Nothing named a host, so the record in hand is the machine being
+		// deployed to. That is what makes a bare `otter deploy` repeat the last
+		// one instead of treating it as a new host.
+		return previous.Host != ""
+	}
+	// The login user is part of --host's spelling, not part of the machine:
+	// `--host root@1.2.3.4` and a stored `1.2.3.4` are the same host.
+	return hostOnly(host) == previous.Host
 }
 
 // mergeTarget overlays the fields that are set in over onto base.
@@ -380,6 +512,15 @@ func mergeTarget(base, over Target) Target {
 	if over.Platform != "" {
 		base.Platform = over.Platform
 	}
+	if over.WorkspaceID != "" {
+		base.WorkspaceID = over.WorkspaceID
+	}
+	if over.WorkspaceSlug != "" {
+		base.WorkspaceSlug = over.WorkspaceSlug
+	}
+	if over.WorkspaceNameOverride != "" {
+		base.WorkspaceNameOverride = over.WorkspaceNameOverride
+	}
 	if over.APIToken != "" {
 		base.APIToken = over.APIToken
 	}
@@ -389,39 +530,124 @@ func mergeTarget(base, over Target) Target {
 	return base
 }
 
-// resolveIntegrations finds the integrations to ship and the secrets file for
-// each. `--env-file` wins; otherwise an integration's own .env is used when it
-// exists. An integration with no secrets file is deployed anyway, with a
-// warning, because the daemon reports the missing variables far more clearly
-// than this command can.
+// resolveIntegrations discovers the integrations to ship.
+//
+// Discovery walks the whole project, exactly as the runtime does, so a deploy
+// ships what `otter start` would serve. The old rule -- one hardcoded
+// integrations/ directory at the repository root -- only ever matched this
+// repository's own layout, which is why a workspace that groups its
+// integrations any other way could not deploy at all.
+//
+// Shared code is not discovered separately: each manifest's python.path is the
+// authoritative list of what that integration imports, and every declared tree
+// is staged at the relative depth the declaration names.
 func (c *Config) resolveIntegrations(f *Flags) error {
-	names, err := c.Target.IntegrationNames(c.RepoRoot)
+	items, err := config.Discover(c.ProjectRoot)
 	if err != nil {
 		return err
 	}
-	if len(names) == 0 {
-		return fmt.Errorf("no integrations found under %s: nothing to deploy", c.IntegrationsPath)
+	if len(items) == 0 {
+		return fmt.Errorf("no %s found under %s: nothing to deploy",
+			config.ManifestFileName, c.ProjectRoot)
 	}
 
-	// A limited deploy names exactly one integration. It must exist locally:
-	// silently deploying nothing would look like success.
-	if want := strings.TrimSpace(f.Integration); want != "" {
-		found := false
-		for _, name := range names {
-			if name == want {
-				found = true
-				break
+	// A limited deploy names exactly one integration, by manifest label or by
+	// directory name. Selection happens before validation so that one broken
+	// manifest elsewhere in the project cannot block shipping a different,
+	// healthy integration.
+	want := strings.TrimSpace(f.Integration)
+	selected := items
+	if want != "" {
+		selected = nil
+		for _, item := range items {
+			if item.ID == want || filepath.Base(item.Dir) == want {
+				selected = append(selected, item)
 			}
 		}
-		if !found {
+		if len(selected) == 0 {
 			return fmt.Errorf("integration %q not found under %s (available: %s)",
-				want, c.IntegrationsPath, strings.Join(names, ", "))
+				want, c.ProjectRoot, strings.Join(discoveredNames(items), ", "))
 		}
-		names = []string{want}
-		c.Limited = true
+		if len(selected) > 1 {
+			var dirs []string
+			for _, item := range selected {
+				dirs = append(dirs, item.Dir)
+			}
+			return fmt.Errorf("integration %q is ambiguous: %s", want, strings.Join(dirs, ", "))
+		}
 	}
-	c.Integrations = names
+
+	var all []Integration
+	byName := map[string]string{}
+	for _, item := range selected {
+		if !item.Valid {
+			// Deploying with a broken manifest would push a tree the host
+			// cannot run. Stop and name the file instead.
+			return fmt.Errorf("%s: %s", item.Dir, item.Error)
+		}
+		integ, err := describeIntegration(item)
+		if err != nil {
+			return err
+		}
+		// Two directories with the same basename would collide on the host,
+		// which names integrations by directory. Report both paths rather than
+		// letting one silently overwrite the other.
+		if first, dup := byName[integ.Name]; dup {
+			return fmt.Errorf("two integrations are both named %q (%s and %s); rename one directory",
+				integ.Name, first, integ.Dir)
+		}
+		byName[integ.Name] = integ.Dir
+		all = append(all, integ)
+	}
+
+	c.Limited = want != ""
+	c.Integrations = all
 	return nil
+}
+
+// describeIntegration reads one discovered manifest into the facts staging
+// needs.
+func describeIntegration(item *config.Integration) (Integration, error) {
+	manifest := item.Manifest
+	if manifest == nil {
+		return Integration{}, fmt.Errorf("%s: manifest could not be loaded", item.Dir)
+	}
+	// A release can only carry a tree whose depth is expressed relative to the
+	// integration directory, so an absolute python.path is refused before
+	// anything is staged or pushed.
+	if err := manifest.ValidatePythonPathsForRelease(); err != nil {
+		return Integration{}, err
+	}
+
+	integ := Integration{
+		Name:  filepath.Base(item.Dir),
+		Label: item.Name,
+		Dir:   item.Dir,
+	}
+	for _, spec := range manifest.PythonPathEntries() {
+		info, err := os.Stat(spec.Resolved)
+		if err != nil {
+			return Integration{}, fmt.Errorf("python.path %q: shared directory %s does not exist",
+				spec.Declared, spec.Resolved)
+		}
+		if !info.IsDir() {
+			return Integration{}, fmt.Errorf("python.path %q: %s is not a directory",
+				spec.Declared, spec.Resolved)
+		}
+		integ.Trees = append(integ.Trees, spec.Resolved)
+	}
+	return integ, nil
+}
+
+// discoveredNames renders what is available for an error message, sorted so the
+// list is stable regardless of discovery order.
+func discoveredNames(items []*config.Integration) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.ID)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Validate checks the whole configuration before anything is built or sent.
@@ -429,11 +655,11 @@ func (c *Config) Validate() error {
 	if err := c.Target.Validate(); err != nil {
 		return err
 	}
-	if c.RepoRoot == "" {
-		return errors.New("repository root is unknown; run otter deploy from inside the checkout")
+	if c.ProjectRoot == "" {
+		return errors.New("project root is unknown; run otter deploy from inside the project")
 	}
-	if _, err := os.Stat(c.RepoRoot + "/go.mod"); err != nil {
-		return fmt.Errorf("no Go module at %s: otter deploy must run from an Otter checkout", c.RepoRoot)
+	if info, err := os.Stat(c.ProjectRoot); err != nil || !info.IsDir() {
+		return fmt.Errorf("project root %s is not a directory", c.ProjectRoot)
 	}
 	if c.Timeout <= 0 {
 		return errors.New("--timeout must be positive")
@@ -450,15 +676,15 @@ func (c *Config) MissingSecrets(required map[string][]string) []string {
 	neededBy := map[string][]string{}
 	var order []string
 
-	for _, name := range c.Integrations {
-		for _, key := range required[name] {
+	for _, integ := range c.Integrations {
+		for _, key := range required[integ.Name] {
 			if _, ok := os.LookupEnv(key); ok {
 				continue
 			}
 			if _, seen := neededBy[key]; !seen {
 				order = append(order, key)
 			}
-			neededBy[key] = append(neededBy[key], name)
+			neededBy[key] = append(neededBy[key], integ.Name)
 		}
 	}
 	if len(order) == 0 {
@@ -546,8 +772,8 @@ func LoadSecrets(path string) (map[string]string, error) {
 // provide.
 func (c *Config) RequiredSecrets() map[string][]string {
 	required := map[string][]string{}
-	for _, name := range c.Integrations {
-		path := c.IntegrationsPath + "/" + name + "/otter.yaml"
+	for _, integ := range c.Integrations {
+		path := filepath.Join(integ.Dir, config.ManifestFileName)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -558,7 +784,7 @@ func (c *Config) RequiredSecrets() map[string][]string {
 		if err := yaml.Unmarshal(data, &probe); err != nil {
 			continue
 		}
-		required[name] = probe.Secrets
+		required[integ.Name] = probe.Secrets
 	}
 	return required
 }

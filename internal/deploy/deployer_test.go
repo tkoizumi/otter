@@ -33,6 +33,9 @@ type fakeRunner struct {
 	// bindingsJSON is what the destination runtime answers `identity list
 	// --json` with, so a converge can record destination identities.
 	bindingsJSON string
+	// workspaceList is what the host answers the workspace-record scan with:
+	// JSON records, the marker, then the ports already listening.
+	workspaceList string
 }
 
 func (f *fakeRunner) RunStream(_ context.Context, command string, stdout, _ io.Writer) error {
@@ -83,6 +86,8 @@ func (f *fakeRunner) Output(ctx context.Context, command string) (string, error)
 		return `{"status":"ok","version":"test"}`, nil
 	case strings.Contains(command, "OTTER_API_TOKEN"):
 		return f.remoteToken, nil
+	case strings.Contains(command, workspacePortsMarker):
+		return f.workspaceList, nil
 	}
 	return "", nil
 }
@@ -208,20 +213,22 @@ func newTestDeployer(t *testing.T, runner *fakeRunner, builder *fakeBuilder) (*D
 	}
 
 	cfg := Config{
-		RepoRoot:         repo,
-		IntegrationsPath: filepath.Join(repo, LocalIntegrationsDir),
-		Integrations:     []string{"counter"},
-		SharedEnv:        sharedPath,
-		Version:          "v0.1.0-test",
-		Timeout:          30_000_000_000,
+		ProjectRoot: repo,
+		Integrations: []Integration{{
+			Name:  "counter",
+			Label: "counter",
+			Dir:   filepath.Join(repo, LocalIntegrationsDir, "counter"),
+		}},
+		SharedEnv: sharedPath,
+		Version:   "v0.1.0-test",
+		Timeout:   30_000_000_000,
 		Target: Target{
-			Host:        "droplet",
-			Port:        22,
-			RemoteDir:   "/opt/otter",
-			ServiceName: "otterd",
-			RunAsUser:   "otter",
-			DataDir:     "/opt/otter/data",
-			Listen:      "127.0.0.1:7337",
+			Host:          "droplet",
+			Port:          22,
+			RemoteDir:     "/opt/otter",
+			RunAsUser:     "otter",
+			WorkspaceID:   "11111111-2222-3333-4444-555555555555",
+			WorkspaceSlug: "counter",
 		},
 	}
 
@@ -435,10 +442,10 @@ func TestHealthCheckAgainstARealServer(t *testing.T) {
 	var stderr bytes.Buffer
 	deployer := &Deployer{
 		Config: Config{
-			RepoRoot: t.TempDir(),
-			Version:  "test",
-			Timeout:  5 * time.Second,
-			Target:   target,
+			ProjectRoot: t.TempDir(),
+			Version:     "test",
+			Timeout:     5 * time.Second,
+			Target:      target,
 		},
 		Runner: runner,
 		Stderr: &stderr,
@@ -473,7 +480,7 @@ func TestHealthCheckRetriesThenSucceeds(t *testing.T) {
 	runner.healthURL = server.URL + "/health"
 
 	deployer := &Deployer{
-		Config: Config{RepoRoot: t.TempDir(), Version: "test", Timeout: 10 * time.Second, Target: target},
+		Config: Config{ProjectRoot: t.TempDir(), Version: "test", Timeout: 10 * time.Second, Target: target},
 		Runner: runner,
 		Stderr: &bytes.Buffer{},
 	}
@@ -598,7 +605,15 @@ func TestExternalPythonIsReleasedWithoutPreparation(t *testing.T) {
 // whether preparation is needed.
 func mustWriteManifest(t *testing.T, cfg Config, name, mode string) {
 	t.Helper()
-	dir := filepath.Join(cfg.IntegrationsPath, name)
+	dir := ""
+	for _, integ := range cfg.Integrations {
+		if integ.Name == name {
+			dir = integ.Dir
+		}
+	}
+	if dir == "" {
+		t.Fatalf("no integration named %s in the test config", name)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -643,6 +658,40 @@ func TestLimitedDeployProtectsOtherIntegrations(t *testing.T) {
 	}
 }
 
+// A limited deploy of the classic layout carries shared code that lands outside
+// integrations/ (a manifest declaring ../../lib/python). --delete would remove
+// it, breaking every integration this deploy is not carrying, so each tree the
+// deploy does carry is protected by name too.
+func TestLimitedDeployProtectsSharedTreesOutsideIntegrations(t *testing.T) {
+	project := t.TempDir()
+	runner := &fakeRunner{healthy: true}
+	deployer := &Deployer{
+		Config: Config{
+			ProjectRoot: project,
+			Limited:     true,
+			Integrations: []Integration{{
+				Name:  "one",
+				Dir:   filepath.Join(project, "integrations", "one"),
+				Trees: []string{filepath.Join(project, "lib", "python")},
+			}},
+		},
+		Runner: runner,
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	}
+
+	if err := deployer.pushSources(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("pushSources: %v", err)
+	}
+	pushed := strings.Join(runner.pushed(), "\n")
+	if !strings.Contains(pushed, "protect /lib/***") {
+		t.Errorf("a limited deploy did not protect the shared library outside integrations/:\n%s", pushed)
+	}
+	if !strings.Contains(pushed, "protect /integrations/***") {
+		t.Errorf("a limited deploy did not protect the other integrations:\n%s", pushed)
+	}
+}
+
 // A converge records the identity the destination assigned to each
 // integration, so a later deploy can tell "same instance, new code" from "a
 // new instance" without guessing. Local and remote ids are independent, and
@@ -669,10 +718,11 @@ func TestRunRecordsDestinationBindings(t *testing.T) {
 
 	// It is persisted, which is what makes it usable by `deploy --status` and
 	// by the next deploy.
-	st, ok, err := deployer.Store.Load()
+	all, ok, err := deployer.Store.Load()
 	if err != nil || !ok {
 		t.Fatalf("load state: ok=%v err=%v", ok, err)
 	}
+	st := all.Deploys["droplet"]
 	if len(st.Bindings) != 1 || st.Bindings[0].ID != "remote-identity-1" {
 		t.Fatalf("stored bindings = %+v", st.Bindings)
 	}
@@ -685,9 +735,15 @@ func TestRunRecordsDestinationBindings(t *testing.T) {
 			bindingsCommand = record
 		}
 	}
-	if !strings.Contains(bindingsCommand, "'/opt/otter/data'") ||
-		!strings.Contains(bindingsCommand, "'/opt/otter/integrations'") {
+	target := deployer.Config.Target
+	if !strings.Contains(bindingsCommand, "'"+target.DataDir+"'") ||
+		!strings.Contains(bindingsCommand, "'"+target.IntegrationsDir()+"'") {
 		t.Fatalf("bindings command does not name the destination paths: %q", bindingsCommand)
+	}
+	// A name-only lookup would find another workspace's integration: the paths
+	// have to be this workspace's.
+	if !strings.Contains(bindingsCommand, "/workspaces/") {
+		t.Errorf("bindings command is not workspace-scoped: %q", bindingsCommand)
 	}
 }
 
@@ -703,5 +759,46 @@ func TestRunToleratesMissingDestinationBindings(t *testing.T) {
 	}
 	if len(result.Bindings) != 0 {
 		t.Fatalf("bindings = %+v, want none", result.Bindings)
+	}
+}
+
+// A workspace sits two levels inside the install root, and rsync creates its
+// destination but not the levels above it. So the layout has to exist before
+// the first push -- and ownership has to be claimed after it, because the push
+// writes as the login user and the daemon runs as the service account.
+func TestLayoutPrecedesPushAndOwnershipFollowsIt(t *testing.T) {
+	runner := &fakeRunner{healthy: true}
+	deployer, _, stderr := newTestDeployer(t, runner, newFakeBuilder(t))
+	if _, err := deployer.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v\n%s", err, stderr.String())
+	}
+
+	layout, ownership, firstPush, lastPush := -1, -1, -1, -1
+	for i, rec := range runner.records {
+		switch {
+		case strings.Contains(rec, `install -d -m 0755 -o "$RUN_AS" -g "$RUN_AS" "$WORKSPACE_DIR"`):
+			if layout < 0 {
+				layout = i
+			}
+		case strings.Contains(rec, "for dir in bin integrations lib tools; do"):
+			if ownership < 0 {
+				ownership = i
+			}
+		case strings.HasPrefix(rec, "push: "):
+			if firstPush < 0 {
+				firstPush = i
+			}
+			lastPush = i
+		}
+	}
+	if layout < 0 || ownership < 0 || firstPush < 0 {
+		t.Fatalf("steps missing (layout=%d ownership=%d push=%d):\n%s",
+			layout, ownership, firstPush, strings.Join(runner.records, "\n"))
+	}
+	if layout > firstPush {
+		t.Error("the workspace directory is created after the first push; rsync cannot create two missing levels")
+	}
+	if ownership < lastPush {
+		t.Error("ownership is claimed before the push finishes, so the pushed tree stays root-owned")
 	}
 }

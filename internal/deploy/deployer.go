@@ -33,6 +33,7 @@ type Result struct {
 	Integrations []string
 	Bindings     []Binding
 	RemoteDir    string
+	Workspace    string
 	APIURL       string
 	ServiceUnit  string
 	DryRun       bool
@@ -45,7 +46,19 @@ type Deployer struct {
 	Config  Config
 	Store   StateStore
 	Builder Builder
-	Runner  Runner
+	// Binaries is the source the builder will use, when it is known. It is
+	// only read to describe the build step in the plan; the builder owns the
+	// actual work.
+	Binaries BinarySource
+	Runner   Runner
+
+	// WorkspaceRequest is --workspace: an existing workspace on the host to
+	// deploy into. Empty uses the project's own.
+	WorkspaceRequest string
+	// WorkspaceCreated reports that this run created the workspace rather than
+	// adopting one, which is what decides whether a token is new to the
+	// operator.
+	WorkspaceCreated bool
 
 	// Stdout carries the machine-readable result. Progress goes to Stderr so
 	// that the result can be piped somewhere without being polluted.
@@ -92,14 +105,30 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 
 	// From here on the deployer's own config is the single source of truth:
-	// resolveToken mutates the target, and both the result and the state file
-	// are read back from it rather than from this local copy.
+	// resolveWorkspace and resolveToken mutate the target, and both the result
+	// and the state file are read back from it rather than from this local copy.
 	d.Config = cfg
 
 	if cfg.Target.Platform != defaultPlatform() {
 		d.step("platform", "building for %s; this machine is %s",
 			cfg.Target.Platform, defaultPlatform())
 	}
+
+	// Which workspace this deploy owns comes before the token and before any
+	// remote path is used: the token lives in the workspace's own environment
+	// file, and every other path derives from the workspace name.
+	state, hadPrevious, err := d.Store.Load()
+	if err != nil {
+		return nil, err
+	}
+	previous, _, err := state.ForHost(cfg.Target.Host)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.resolveWorkspace(ctx, previous); err != nil {
+		return nil, err
+	}
+	cfg = d.Config
 
 	// A dry run reports the plan before touching the token: generating,
 	// rotating or adopting one is a change, and a plan must be free of side
@@ -111,11 +140,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	// Reuse the token from the previous deploy, then the remote file, and only
 	// then invent one. Regenerating a token on every deploy would break any
 	// client the operator already has, which is a hostile default.
-	_, hadPrevious, err := d.Store.Load()
-	if err != nil {
-		return nil, err
-	}
-	reveal, err := d.resolveToken(ctx, hadPrevious)
+	reveal, err := d.resolveToken(ctx, !d.WorkspaceCreated)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +178,16 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
+	// --- prepare the host --------------------------------------------------
+	// The account and the directory layout come first. rsync creates its
+	// destination directory but not the levels above it, and a workspace sits
+	// two levels inside the install root, so /opt/otter/workspaces/<name> has
+	// to exist before the first file is sent.
+	d.step("prepare", "creating the service account and layout")
+	if err := d.Runner.RunScript(ctx, PrepareScript(cfg.Target)); err != nil {
+		return nil, d.hint(err)
+	}
+
 	// --- push --------------------------------------------------------------
 	d.step("sync", "pushing %d integration(s) and the shared library", len(cfg.Integrations))
 	if err := d.pushSources(ctx, outDir); err != nil {
@@ -169,12 +204,21 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		}
 	}
 
-	// --- prepare the host --------------------------------------------------
-	// Creates the service account and the directory layout. Every later step
-	// assumes both exist, so this runs before secrets, release and activation.
-	d.step("prepare", "creating the service account and layout")
-	if err := d.Runner.RunScript(ctx, PrepareScript(cfg.Target)); err != nil {
+	// --- ownership ---------------------------------------------------------
+	// The push wrote as the login user, so the daemon would not own its own
+	// tree without this, and the service account could not write the identity
+	// marker each integration needs.
+	d.step("prepare", "handing the workspace to %s", cfg.Target.RunAsUser)
+	if err := d.Runner.RunScript(ctx, ClaimOwnershipScript(cfg.Target)); err != nil {
 		return nil, d.hint(err)
+	}
+
+	// Record the workspace before anything else lands. A retry after a failed
+	// deploy then finds the same workspace and port instead of starting a
+	// second one beside it.
+	if err := d.Runner.RunScript(ctx, WriteWorkspaceRecordScript(cfg.Target,
+		RecordFor(cfg.Target, time.Now().UTC()))); err != nil {
+		return nil, fmt.Errorf("record workspace on %s: %w", cfg.Target, err)
 	}
 
 	// --- environment -------------------------------------------------------
@@ -205,7 +249,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 	if len(cfg.Integrations) > 0 {
 		d.step("release", "releasing %d integration(s)", len(cfg.Integrations))
-		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.Integrations, uvPath)); err != nil {
+		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.IntegrationNames(), uvPath)); err != nil {
 			return nil, fmt.Errorf("release integrations on %s: %w", cfg.Target, err)
 		}
 	} else {
@@ -239,7 +283,9 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 
 	// --- remember ----------------------------------------------------------
-	st := State{
+	// One record per host: a project may own a workspace on several machines,
+	// and this deploy only speaks for the one it just converged.
+	state.Put(HostDeploy{
 		Host:            cfg.Target.Host,
 		Target:          cfg.Target,
 		Version:         cfg.Version,
@@ -247,8 +293,8 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		SecretsRevision: envRevision,
 		DeployedAt:      time.Now().UTC(),
 		Bindings:        bindings,
-	}
-	if err := d.Store.Save(st, cfg.Target.APIToken); err != nil {
+	})
+	if err := d.Store.Save(state, cfg.Target.APIToken, cfg.Target.Host, cfg.Target.WorkspaceID); err != nil {
 		return nil, err
 	}
 
@@ -261,9 +307,10 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		FirstDeploy:  !hadPrevious,
 		APIToken:     cfg.Target.APIToken,
 		RevealToken:  reveal,
-		Integrations: cfg.Integrations,
+		Integrations: cfg.IntegrationNames(),
 		Bindings:     bindings,
 		RemoteDir:    cfg.Target.RemoteDir,
+		Workspace:    cfg.Target.WorkspaceName(),
 		APIURL:       cfg.Target.APIURL(),
 		ServiceUnit:  cfg.Target.ServiceUnit(),
 		Elapsed:      time.Since(started),
@@ -372,7 +419,7 @@ func (d *Deployer) resolveToken(ctx context.Context, hadPrevious bool) (reveal b
 
 	// 1. The token from this checkout's last deploy. It is already in the
 	//    operator's .otter/ directory, so there is nothing new to show them.
-	stored, err := d.Store.LoadToken()
+	stored, err := d.Store.LoadToken(target.Host, target.WorkspaceID)
 	if err != nil {
 		return false, err
 	}
@@ -424,8 +471,8 @@ func (d *Deployer) resolveToken(ctx context.Context, hadPrevious bool) (reveal b
 // readRemoteToken reads OTTER_API_TOKEN out of the installed env files. A
 // failure is not fatal: a host that has never been deployed simply has none.
 func (d *Deployer) readRemoteToken(ctx context.Context) (string, error) {
-	command := "grep -h '^OTTER_API_TOKEN=' " + ShellQuote(d.Config.Target.EnvDir()) +
-		"/*.env 2>/dev/null | head -n1 | cut -d= -f2- || true"
+	command := "grep -h '^OTTER_API_TOKEN=' " + ShellQuote(d.Config.Target.SharedEnvFilePath()) +
+		" 2>/dev/null | head -n1 | cut -d= -f2- || true"
 	out, err := d.Runner.Output(ctx, command)
 	if err != nil {
 		if d.Config.Verbose {
@@ -445,12 +492,12 @@ func (d *Deployer) readRemoteToken(ctx context.Context) (string, error) {
 // remove live data, and rsync would fail on the first non-empty directory it
 // could not unlink.
 func (d *Deployer) pushSources(ctx context.Context, outDir string) error {
-	excludes := []string{"bin", "tools", ".deploy", ".otter", "data"}
-	// Derived state is wherever the target says it is; the default data
-	// directory is not always the one in use.
-	if derived := strings.TrimPrefix(d.Config.Target.DataDir, d.Config.Target.RemoteDir+"/"); derived != d.Config.Target.DataDir && derived != "" {
-		excludes = append(excludes, derived)
-	}
+	// Everything derived rather than staged: the binaries and toolchain are
+	// pushed separately, and .otter holds this workspace's own state (SQLite,
+	// releases, prepared interpreters) plus the record written just before.
+	// The leading slash anchors the record pattern to the transfer root so an
+	// integration that happens to contain a workspace.json keeps it.
+	excludes := []string{"bin", "tools", StateDirName, "/" + WorkspaceRecordName}
 
 	args := make([]string, 0, len(excludes)*2+4)
 	for _, name := range excludes {
@@ -460,10 +507,41 @@ func (d *Deployer) pushSources(ctx context.Context, outDir string) error {
 	// every other integration directory from the host, taking deployed code
 	// with it, so the rest of the integrations tree is protected from deletion
 	// while still being skipped for transfer.
+	//
+	// A shared tree can land outside integrations/ -- a manifest whose
+	// python.path reaches above the integration root puts it there -- so each
+	// tree this deploy carries is protected by name as well. Otherwise
+	// deploying one integration would delete a library the others import.
 	if d.Config.Limited {
-		args = append(args, "--filter", "protect /integrations/***")
+		args = append(args, "--filter", "protect /"+LocalIntegrationsDir+"/***")
+		for _, rel := range d.stagedTreePaths() {
+			args = append(args, "--filter", "protect /"+strings.SplitN(rel, "/", 2)[0]+"/***")
+		}
 	}
-	return d.Runner.Push(ctx, outDir, d.Config.Target.RemoteDir, args...)
+	// The sweep is scoped to this workspace: --delete can no longer reach
+	// another workspace's tree, which is what makes several workspaces on one
+	// host safe.
+	return d.Runner.Push(ctx, outDir, d.Config.Target.WorkspaceDir(), args...)
+}
+
+// stagedTreePaths returns the remote-relative placement of every shared tree
+// this deploy carries. A tree that cannot be placed was already refused by
+// Stage, so a failure here is ignored rather than reported twice.
+func (d *Deployer) stagedTreePaths() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, integ := range d.Config.Integrations {
+		for _, tree := range integ.Trees {
+			rel, err := TreePlacement(integ, tree)
+			if err != nil || seen[rel] {
+				continue
+			}
+			seen[rel] = true
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // pushBinaries sends the two executables separately from the source tree, so
@@ -472,7 +550,7 @@ func (d *Deployer) pushSources(ctx context.Context, outDir string) error {
 // daemon's executable is never truncated underneath it.
 func (d *Deployer) pushBinaries(ctx context.Context, outDir string) error {
 	return d.Runner.Push(ctx, filepath.Join(outDir, "bin"),
-		d.Config.Target.RemoteDir+"/bin")
+		filepath.Join(d.Config.Target.WorkspaceDir(), "bin"))
 }
 
 // pushTools sends the vendored toolchain. It goes separately from the sources
@@ -480,7 +558,7 @@ func (d *Deployer) pushBinaries(ctx context.Context, outDir string) error {
 // it only exists for deployments that prepare environments.
 func (d *Deployer) pushTools(ctx context.Context, outDir string) error {
 	return d.Runner.Push(ctx, filepath.Join(outDir, "tools"),
-		d.Config.Target.RemoteDir+"/tools")
+		d.Config.Target.ToolsDir())
 }
 
 // writeDaemonEnv uploads the daemon-wide environment file, when the checkout
@@ -670,9 +748,13 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 	d.step("plan", "host:      %s", cfg.Target)
 	d.step("plan", "platform:  %s", cfg.Target.Platform)
 	d.step("plan", "version:   %s", cfg.Version)
-	d.step("plan", "install:   %s (unit %s)", cfg.Target.RemoteDir, cfg.Target.ServiceUnit())
+	d.step("plan", "workspace: %s on %s (unit %s)", cfg.Target.WorkspaceName(), cfg.Target, cfg.Target.ServiceUnit())
+	d.step("plan", "tree:      %s", cfg.Target.WorkspaceDir())
 	d.step("plan", "data:      %s (never written by a deploy)", cfg.Target.DataDir)
 	d.step("plan", "api:       %s (loopback; reach it with ssh -L)", cfg.Target.APIURL())
+	if src, ok := d.Binaries.(Describer); ok {
+		d.step("plan", "binaries:  would %s", src.Describe(cfg.Target.Platform))
+	}
 	if cfg.DaemonEnv != "" {
 		d.step("plan", "daemon:    %s -> %s", cfg.DaemonEnv, cfg.Target.DaemonEnvFilePath())
 	} else {
@@ -686,7 +768,7 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 	}
 	if len(cfg.Integrations) > 0 {
 		managed := d.managedIntegrations(cfg)
-		line := "release:   would stage and activate " + strings.Join(cfg.Integrations, ", ")
+		line := "release:   would stage and activate " + strings.Join(cfg.IntegrationNames(), ", ")
 		if len(managed) > 0 {
 			line += " (preparing managed Python for " + strings.Join(managed, ", ") + ")"
 		}
@@ -703,8 +785,9 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 		Platform:     cfg.Target.Platform,
 		Version:      cfg.Version,
 		Warnings:     missing,
-		Integrations: cfg.Integrations,
+		Integrations: cfg.IntegrationNames(),
 		RemoteDir:    cfg.Target.RemoteDir,
+		Workspace:    cfg.Target.WorkspaceName(),
 		APIURL:       cfg.Target.APIURL(),
 		ServiceUnit:  cfg.Target.ServiceUnit(),
 		DryRun:       true,
@@ -717,17 +800,17 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 // they are the same files that were just pushed.
 func (d *Deployer) managedIntegrations(cfg Config) []string {
 	var managed []string
-	for _, name := range cfg.Integrations {
-		if d.managesPython(cfg, name) {
-			managed = append(managed, name)
+	for _, integ := range cfg.Integrations {
+		if d.managesPython(integ) {
+			managed = append(managed, integ.Name)
 		}
 	}
 	return managed
 }
 
 // managesPython reports whether one integration uses managed Python.
-func (d *Deployer) managesPython(cfg Config, name string) bool {
-	path := filepath.Join(cfg.IntegrationsPath, name, "otter.yaml")
+func (d *Deployer) managesPython(integ Integration) bool {
+	path := filepath.Join(integ.Dir, "otter.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -744,13 +827,14 @@ func (d *Deployer) managesPython(cfg Config, name string) bool {
 }
 
 // uvPath returns the uv executable to use on the host. An explicit flag wins;
-// otherwise the vendored copy under the install root, which is where a deploy
-// puts it.
+// otherwise this workspace's vendored copy. uv is per workspace because its
+// version is part of every prepared environment's identity: sharing it would
+// let a deploy in one workspace invalidate another's environments.
 func (d *Deployer) uvPath(Config) string {
 	if d.UV != "" {
 		return d.UV
 	}
-	return filepath.Join(d.Config.Target.RemoteDir, "tools", "uv", "uv")
+	return filepath.Join(d.Config.Target.ToolsDir(), "uv", "uv")
 }
 
 // uvVersion is the uv release a deploy vendors.
@@ -770,13 +854,6 @@ func (d *Deployer) Destroy(ctx context.Context, keepData bool) error {
 		return err
 	}
 
-	if cfg.DryRun {
-		d.step("plan", "dry run: would remove %s, %s and %s (data %s)",
-			cfg.Target.ServiceUnit(), cfg.Target.RemoteDir, cfg.Target.EnvDir(),
-			map[bool]string{true: "kept", false: "DELETED"}[keepData])
-		return nil
-	}
-
 	if cfg.Target.Platform == "" {
 		platform, err := d.detectPlatform(ctx)
 		if err != nil {
@@ -784,6 +861,28 @@ func (d *Deployer) Destroy(ctx context.Context, keepData bool) error {
 		}
 		cfg.Target.Platform = platform
 		d.Config = cfg
+	}
+
+	// Which workspace is being removed is read from the host, so a destroy
+	// names one workspace and never the rest of them.
+	state, _, err := d.Store.Load()
+	if err != nil {
+		return err
+	}
+	previous, _, err := state.ForHost(cfg.Target.Host)
+	if err != nil {
+		return err
+	}
+	if err := d.resolveWorkspace(ctx, previous); err != nil {
+		return err
+	}
+	cfg = d.Config
+
+	if cfg.DryRun {
+		d.step("plan", "dry run: would remove workspace %s (%s), its unit %s and its secrets (data %s)",
+			cfg.Target.WorkspaceName(), cfg.Target.WorkspaceDir(), cfg.Target.ServiceUnit(),
+			map[bool]string{true: "kept", false: "DELETED"}[keepData])
+		return nil
 	}
 
 	d.step("destroy", "stopping and removing %s", cfg.Target.ServiceUnit())
@@ -795,10 +894,63 @@ func (d *Deployer) Destroy(ctx context.Context, keepData bool) error {
 	} else {
 		d.step("destroy", "deleted %s: the next deploy starts from an empty database", cfg.Target.DataDir)
 	}
-	if err := d.Store.Remove(); err != nil {
+	// Forget only the host that was just emptied; other hosts this project
+	// deploys to keep their records. When that was the last one there is
+	// nothing left to remember, so the state files go too.
+	state.Delete(cfg.Target.Host)
+	if len(state.Deploys) == 0 {
+		if err := d.Store.Remove(); err != nil {
+			return err
+		}
+		d.step("destroy", "removed local deploy state")
+		return nil
+	}
+	if err := d.Store.Save(state, "", "", ""); err != nil {
 		return err
 	}
-	d.step("destroy", "removed local deploy state")
+	d.step("destroy", "forgot %s in the local deploy state", cfg.Target.Host)
+	return nil
+}
+
+// resolveWorkspace decides which workspace on the host this deploy owns.
+//
+// It reads the host's workspace records and either adopts the one this project
+// already has -- by id, or the one --workspace named -- or takes the next free
+// loopback port for a new one. Nothing is written here, so a dry run reports
+// exactly the workspace it would create; the record itself is written once the
+// directory exists.
+func (d *Deployer) resolveWorkspace(ctx context.Context, previous HostDeploy) error {
+	target := d.Config.Target
+
+	out, err := d.Runner.Output(ctx, WorkspaceListScript(target))
+	if err != nil {
+		return fmt.Errorf("read the workspaces on %s: %w", target, err)
+	}
+	records, listening, err := ParseWorkspaceList(out)
+	if err != nil {
+		return err
+	}
+
+	resolved, created, err := SelectWorkspace(target, records, listening, d.WorkspaceRequest)
+	if err != nil {
+		return err
+	}
+	d.WorkspaceCreated = created
+	d.Config.Target = resolved
+
+	if !created {
+		d.step("workspace", "using %s on %s (%s)", resolved.WorkspaceName(), resolved, resolved.Listen)
+		return nil
+	}
+
+	d.step("workspace", "creating %s on %s (%s)", resolved.WorkspaceName(), resolved, resolved.Listen)
+	// Starting a second workspace is usually a forgotten identity rather than
+	// an intent: the project's id lives in otter.deploy.yaml so another machine
+	// or checkout lands on the same one.
+	if len(records) > 0 {
+		d.step("workspace", "hint: commit `workspace: %s` to %s to reuse this workspace from another checkout",
+			resolved.WorkspaceID, ConfigFileName)
+	}
 	return nil
 }
 

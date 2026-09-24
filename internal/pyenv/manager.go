@@ -228,10 +228,29 @@ func (m Manager) uvCandidate() (string, bool) {
 		return "", false
 	}
 
+	// A vendored uv is looked for in the data directory and in the directories
+	// that hold it, because where `tools/uv` sits depends on where the data
+	// directory is:
+	//
+	//	<install root>/data        + <install root>/tools/uv
+	//	<workspace>/.otter/data    + <workspace>/tools/uv
+	//
+	// The nearest one wins. Both spellings have to resolve to the same binary,
+	// because uv is part of the environment identity: a daemon and a deploy that
+	// disagreed about which uv they found would compute different digests for
+	// the same integration, and every run would look for an environment that
+	// preparation never created.
 	var dirs []string
 	dirs = append(dirs, filepath.Join(root, "tools", "uv"))
-	// The deploy layout: <install root>/data and <install root>/tools/uv.
-	dirs = append(dirs, filepath.Join(filepath.Dir(root), "tools", "uv"))
+	ancestor := root
+	for depth := 0; depth < 3; depth++ {
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break
+		}
+		ancestor = parent
+		dirs = append(dirs, filepath.Join(ancestor, "tools", "uv"))
+	}
 
 	for _, dir := range dirs {
 		for _, name := range []string{"uv", "uv.exe"} {

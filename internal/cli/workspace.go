@@ -89,6 +89,13 @@ func manifestByName(name string) (string, bool) {
 func resolveWorkspaceData(stderr io.Writer, requested string, explicit bool) (string, int) {
 	root, inProject, err := workspaceRoot()
 	if err != nil {
+		// An explicit directory needs no workspace. This is how a release runs
+		// on a host: the deployed daemon is served by a directory with no
+		// project marker, and the command may be started from a home directory
+		// the service account cannot even stat.
+		if explicit {
+			return requested, 0
+		}
 		fmt.Fprintf(stderr, "otter: cannot determine the working directory: %v\n", err)
 		return "", 1
 	}

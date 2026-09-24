@@ -110,7 +110,9 @@ func TestShellCommandPassesTheCommandAsAnArgument(t *testing.T) {
 }
 
 func TestValidateListenRefusesWildcard(t *testing.T) {
-	for _, listen := range []string{":7337", "0.0.0.0:7337", ""} {
+	// An empty listen address is legal: a new workspace's port is chosen on
+	// the host, where the ports already in use are known.
+	for _, listen := range []string{":7337", "0.0.0.0:7337", "0.0.0.0:0"} {
 		target := DefaultTarget()
 		target.Host = "example.com"
 		target.Listen = listen
