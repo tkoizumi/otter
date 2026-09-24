@@ -238,7 +238,7 @@ func (s *Store) Begin(ctx context.Context, settings CaptureSettings) error {
 	}
 	coverage := settings.Coverage
 	if coverage == "" && settings.Policy.Enabled() {
-		coverage = Coverage
+		coverage = CoverageFor(adapters)
 	}
 	encoded, err := json.Marshal(adapters)
 	if err != nil {
@@ -373,6 +373,15 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 		note = bound(cleanText(batch.Note), 512)
 	}
 
+	// The child is the only place that knows which optional adapters were
+	// importable, so its report is what makes coverage accurate. Merging keeps a
+	// later partial report from narrowing it.
+	adapters, adaptersChanged := mergeAdapters(capture.Adapters, batch.Adapters)
+	var adaptersUpdate []string
+	if adaptersChanged {
+		adaptersUpdate = adapters
+	}
+
 	if err := refreshCaptureTx(ctx, tx, runID, refreshUpdate{
 		redactionDelta: redactionDelta,
 		droppedEvents:  batch.DroppedEvents,
@@ -380,6 +389,7 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 		finalization:   finalization,
 		finalizedAt:    finalizedAt,
 		note:           note,
+		adapters:       adaptersUpdate,
 	}); err != nil {
 		return nil, err
 	}
@@ -981,6 +991,9 @@ type refreshUpdate struct {
 	finalization   Finalization
 	finalizedAt    *time.Time
 	note           string
+	// adapters, when non-nil, replaces the run's reported adapter set and the
+	// coverage derived from it. A nil value leaves both as they were.
+	adapters []string
 }
 
 // refreshCaptureTx recomputes the run summary from the rows that actually exist.
@@ -988,6 +1001,15 @@ type refreshUpdate struct {
 // stale update or a retried batch can never leave the summary disagreeing with
 // the records a reader can see.
 func refreshCaptureTx(ctx context.Context, tx *sql.Tx, runID string, update refreshUpdate) error {
+	var adaptersArg, coverageArg any
+	if update.adapters != nil {
+		encoded, err := json.Marshal(update.adapters)
+		if err != nil {
+			return fmt.Errorf("inspection: encode adapters for %s: %w", runID, err)
+		}
+		adaptersArg = string(encoded)
+		coverageArg = CoverageFor(update.adapters)
+	}
 	_, err := tx.ExecContext(ctx,
 		`UPDATE run_capture SET
 		   request_count    = (SELECT COUNT(*) FROM http_exchanges WHERE run_id = ?),
@@ -1005,7 +1027,9 @@ func refreshCaptureTx(ctx context.Context, tx *sql.Tx, runID string, update refr
 		   dropped_bytes    = MAX(dropped_bytes, ?),
 		   finalization     = ?,
 		   finalized_at     = ?,
-		   note             = ?
+		   note             = ?,
+		   adapters         = COALESCE(?, adapters),
+		   coverage         = COALESCE(?, coverage)
 		 WHERE run_id = ?`,
 		runID,
 		runID, string(PhaseCompleted),
@@ -1019,11 +1043,53 @@ func refreshCaptureTx(ctx context.Context, tx *sql.Tx, runID string, update refr
 		string(update.finalization),
 		database.FormatNullable(update.finalizedAt),
 		update.note,
+		adaptersArg,
+		coverageArg,
 		runID)
 	if err != nil {
 		return fmt.Errorf("inspection: refresh capture for %s: %w", runID, err)
 	}
 	return nil
+}
+
+// mergeAdapters unions the adapters a run has reported with what is already
+// recorded. Coverage can only widen: an adapter is installed for the life of the
+// process, so a later report that omits one is a partial report, not a
+// downgrade. It reports whether the stored value changes.
+func mergeAdapters(current, reported []string) ([]string, bool) {
+	if len(reported) == 0 {
+		return nil, false
+	}
+	present := make(map[string]bool, len(current)+len(reported))
+	for _, adapter := range current {
+		if ValidAdapter(adapter) {
+			present[adapter] = true
+		}
+	}
+	for _, adapter := range reported {
+		if ValidAdapter(adapter) {
+			present[adapter] = true
+		}
+	}
+	merged := make([]string, 0, len(present))
+	for _, adapter := range AllAdapters() {
+		if present[adapter] {
+			merged = append(merged, adapter)
+		}
+	}
+	if len(merged) == len(current) {
+		same := true
+		for i := range merged {
+			if merged[i] != current[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return nil, false
+		}
+	}
+	return merged, true
 }
 
 // nextFinalization keeps the worst outcome seen. A recording can be discovered

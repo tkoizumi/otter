@@ -325,8 +325,11 @@ after an unattended failure. An integration opts down in its own manifest
 (`capture: off` or `capture: metadata`), and `--capture-default` lowers the
 default for a whole deployment; `--capture` on `otter run` overrides one run.
 `otter requests` and `otter request` read the recording back without any logging
-in the integration. See [docs/http-capture.md](docs/http-capture.md) for
-precedence, coverage, redaction, limits and retention.
+in the integration. Capture covers `urllib` always, and `requests` and `httpx`
+(both sync and async) when the run's interpreter has them installed; each
+recording reports the adapters it actually had. See
+[docs/http-capture.md](docs/http-capture.md) for precedence, coverage, redaction,
+limits and retention.
 
 A run executes the integration's active release, so `otter release` is required
 before an integration can run at all -- external and managed Python alike. With

@@ -23,7 +23,9 @@ from typing import Any, List, Optional, Tuple
 
 from . import _capture
 
-__all__ = ["install", "uninstall"]
+__all__ = ["NAME", "install", "uninstall"]
+
+NAME = _capture.ADAPTER_URLLIB
 
 _install_lock = threading.Lock()
 _original_open: Any = None
@@ -38,7 +40,7 @@ _active_capture: Optional[Any] = None
 _depth = threading.local()
 
 
-def install(capture: _capture.Capture) -> None:
+def install(capture: _capture.Capture) -> bool:
     """Start capturing the standard library transport."""
     global _original_open, _active_capture
     with _install_lock:
@@ -46,6 +48,7 @@ def install(capture: _capture.Capture) -> None:
         if _original_open is None:
             _original_open = urllib.request.OpenerDirector.open
             urllib.request.OpenerDirector.open = _capturing_open
+    return True
 
 
 def uninstall() -> None:
@@ -183,34 +186,18 @@ def _safe_geturl(response: Any) -> str:
 
 
 def _observe(capture: _capture.Capture, record: Any, data: Any, eof: bool) -> None:
-    """Record bytes the application just consumed."""
-    if not data and not eof:
-        return
-    finish_now = False
-    with record.lock:
-        # A metadata recording never keeps payload bytes. Buffering them would
-        # retain exactly the data the policy promised not to store, so the bytes
-        # are counted and dropped rather than accumulated.
-        if data and record.policy == _capture.POLICY_FULL:
-            chunk = bytes(data)
-            if len(record.response_buffer) + len(chunk) > _capture.MAX_BODY_BYTES:
-                record.response_overflow = True
-            else:
-                record.response_buffer.extend(chunk)
-        if eof:
-            record.response_eof = True
-            finish_now = True
-    if finish_now:
-        capture.finish(record)
+    """Record bytes the application just consumed.
+
+    The implementation is shared with the other transport adapters so that a
+    metadata recording, an incomplete read and an over-limit body mean the same
+    thing whichever client produced the exchange.
+    """
+    _capture._observe(capture, record, data, eof)
 
 
 def _read_eof(amount: Any, data: Any) -> bool:
     """Report whether this read reached the end of the body."""
-    if amount is None or (isinstance(amount, int) and amount < 0):
-        return True
-    if isinstance(amount, int) and amount == 0:
-        return False
-    return not data
+    return _capture._read_eof(amount, data)
 
 
 class _CapturedResponse:

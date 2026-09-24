@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -92,6 +93,95 @@ func TestBeginIsIdempotentAndCaptureUnavailableWithoutIt(t *testing.T) {
 	if capture.SchemaVersion != SchemaVersion || capture.PolicyVersion != PolicyVersion {
 		t.Errorf("versions = %d/%d, want %d/%d",
 			capture.SchemaVersion, capture.PolicyVersion, SchemaVersion, PolicyVersion)
+	}
+}
+
+// The child is the only place that knows which optional adapters were
+// importable, so its report widens coverage; a later partial report must not
+// narrow it back, because an installed adapter stays installed.
+func TestIngestWidensAdapterCoverageAndNeverNarrowsIt(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, Limits{})
+	beginTestCapture(t, store, "run-1", PolicyFull)
+
+	// A fresh recording claims only the adapter every interpreter has.
+	initial, err := store.Capture(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if initial.Coverage != AdapterURLLib {
+		t.Errorf("initial coverage = %q, want %q", initial.Coverage, AdapterURLLib)
+	}
+
+	report := EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyFull,
+		Adapters:      []string{AdapterURLLib, AdapterHTTPX},
+		Events:        []RequestEvent{startedEvent("req-1", 1)},
+	}
+	if _, err := store.Ingest(ctx, "run-1", report); err != nil {
+		t.Fatalf("Ingest(adapter report): %v", err)
+	}
+
+	want := []string{AdapterURLLib, AdapterHTTPX}
+	capture, err := store.Capture(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if !reflect.DeepEqual(capture.Adapters, want) {
+		t.Errorf("adapters = %v, want %v", capture.Adapters, want)
+	}
+	if capture.Coverage != "urllib, httpx" {
+		t.Errorf("coverage = %q, want %q", capture.Coverage, "urllib, httpx")
+	}
+
+	// A later batch that mentions only urllib is a partial report, not a
+	// downgrade.
+	partial := EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyFull,
+		Adapters:      []string{AdapterURLLib},
+		Events:        []RequestEvent{completedEvent("req-1", 2, 200)},
+	}
+	if _, err := store.Ingest(ctx, "run-1", partial); err != nil {
+		t.Fatalf("Ingest(partial report): %v", err)
+	}
+	capture, err = store.Capture(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if !reflect.DeepEqual(capture.Adapters, want) {
+		t.Errorf("after a partial report adapters = %v, want %v", capture.Adapters, want)
+	}
+	if capture.Coverage != "urllib, httpx" {
+		t.Errorf("after a partial report coverage = %q, want %q", capture.Coverage, "urllib, httpx")
+	}
+}
+
+func TestMergeAdapters(t *testing.T) {
+	tests := []struct {
+		name        string
+		current     []string
+		reported    []string
+		want        []string
+		wantChanged bool
+	}{
+		{"no report leaves the set alone", []string{AdapterURLLib}, nil, nil, false},
+		{"same report changes nothing", []string{AdapterURLLib}, []string{AdapterURLLib}, nil, false},
+		{"report widens", []string{AdapterURLLib}, []string{AdapterRequests}, []string{AdapterURLLib, AdapterRequests}, true},
+		{"partial report cannot narrow", []string{AdapterURLLib, AdapterHTTPX}, []string{AdapterURLLib}, nil, false},
+		{"order is canonical", []string{AdapterURLLib}, []string{AdapterHTTPX, AdapterRequests}, []string{AdapterURLLib, AdapterRequests, AdapterHTTPX}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := mergeAdapters(tc.current, tc.reported)
+			if changed != tc.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, tc.wantChanged)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("adapters = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

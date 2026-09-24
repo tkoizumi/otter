@@ -14,7 +14,10 @@ sdk/python/
 ├── otter/
 │   ├── __init__.py     # public exports: Context, run, OtterError, ...
 │   ├── _client.py      # internal HTTP client (urllib) + OtterError
-│   ├── _capture.py     # process-local urllib instrumentation and capture transport
+│   ├── _capture.py     # bounded capture: redaction, queue, delivery
+│   ├── _urllib_capture.py  # urllib adapter
+│   ├── _requests_capture.py # requests adapter (when installed)
+│   ├── _httpx_capture.py   # httpx adapter, sync and async (when installed)
 │   ├── context.py      # Context.from_environment()
 │   ├── state.py        # ctx.state
 │   ├── log.py          # ctx.log
@@ -176,10 +179,15 @@ There are no third-party dependencies anywhere in the SDK.
 ## HTTP capture
 
 When the daemon sets `OTTER_CAPTURE_POLICY` to `metadata` or `full`, the SDK
-installs process-local instrumentation for the standard library `urllib`
-transport before integration code is imported, so requests made at import time
-are covered too. With any other value — or no value at all — capture is off and
-nothing is installed.
+installs process-local instrumentation before integration code is imported, so
+requests made at import time are covered too. With any other value — or no value
+at all — capture is off and nothing is installed.
+
+The standard library `urllib` transport is always instrumented. `requests` and
+`httpx` (both `Client` and `AsyncClient`) are instrumented as well when they are
+importable in the run's interpreter; an optional client that is not installed is
+never imported and never claimed. Each run reports the adapters it actually
+installed, which is what `otter requests` shows as coverage.
 
 Capture is diagnostic and never changes integration behaviour: it does not alter
 a request's destination, suppress a write, or change an integration's return
@@ -187,10 +195,11 @@ values, exceptions or exit status. A failure to record is dropped rather than
 raised. `metadata` records request summaries; `full` also records permitted
 headers and bounded, sanitized JSON bodies. Redaction runs before delivery.
 
-`urllib` is the only transport covered in this version. `requests`, `httpx`,
-custom openers that bypass `urllib.request.OpenerDirector.open`, subprocesses and
-raw sockets are not captured. [docs/http-capture.md](../../docs/http-capture.md)
-covers coverage, limits, retention and redaction in full.
+Reads that bypass the observed read path — `response.raw` in `requests`,
+`response.stream` in `httpx` — custom `urllib` openers, clients with no adapter,
+subprocesses and raw sockets are not captured.
+[docs/http-capture.md](../../docs/http-capture.md) covers coverage, limits,
+retention and redaction in full.
 
 ## Tests
 

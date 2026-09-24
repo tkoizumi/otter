@@ -46,6 +46,36 @@ func TestValidateBatchAcceptsASummaryOnlyBatch(t *testing.T) {
 	}
 }
 
+func TestValidateBatchAcceptsAdapterReports(t *testing.T) {
+	limits := DefaultLimits()
+	// An adapter report is a summary update in its own right: the child may
+	// have nothing to send yet but still knows what it instrumented.
+	batch := EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyFull,
+		Adapters:      []string{AdapterURLLib, AdapterHTTPX},
+	}
+	if err := ValidateBatch(batch, limits); err != nil {
+		t.Fatalf("an adapter report must be accepted: %v", err)
+	}
+}
+
+func TestValidateBatchRejectsUnknownAdapters(t *testing.T) {
+	limits := DefaultLimits()
+
+	unknown := validBatch(PolicyFull)
+	unknown.Adapters = []string{"carrier-pigeon"}
+	if err := ValidateBatch(unknown, limits); err == nil {
+		t.Fatal("an unknown adapter must be rejected")
+	}
+
+	tooMany := validBatch(PolicyFull)
+	tooMany.Adapters = []string{AdapterURLLib, AdapterRequests, AdapterHTTPX, AdapterURLLib}
+	if err := ValidateBatch(tooMany, limits); err == nil {
+		t.Fatal("reporting more adapters than exist must be rejected")
+	}
+}
+
 func TestValidateBatchRejectsBadSubmissions(t *testing.T) {
 	limits := DefaultLimits()
 	cases := []struct {

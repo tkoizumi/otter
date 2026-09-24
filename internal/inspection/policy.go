@@ -101,13 +101,56 @@ const (
 
 // Adapter and coverage names.
 const (
-	// AdapterURLLib is the only transport adapter this milestone implements.
+	// AdapterURLLib is the standard library transport. It is always installed,
+	// because urllib is part of every interpreter.
 	AdapterURLLib = "urllib"
-	// Coverage names what the installed adapters can actually observe. It is
-	// deliberately narrower than "all HTTP": custom overrides that bypass the
-	// base opener, subprocesses, requests, httpx and raw sockets are not covered.
-	Coverage = "urllib"
+	// AdapterRequests is the requests transport, installed only when requests is
+	// importable in the run's interpreter.
+	AdapterRequests = "requests"
+	// AdapterHTTPX is the httpx transport (sync and async), installed only when
+	// httpx is importable in the run's interpreter.
+	AdapterHTTPX = "httpx"
+	// Coverage is what a recording reports when only the always-installed
+	// adapter is known. The SDK widens it once it has installed the optional
+	// adapters. It is deliberately narrower than "all HTTP": subprocesses, raw
+	// sockets and transports with no adapter are never covered.
+	Coverage = AdapterURLLib
 )
+
+// AllAdapters lists every transport adapter the SDK can install, in the order
+// coverage reports them.
+func AllAdapters() []string {
+	return []string{AdapterURLLib, AdapterRequests, AdapterHTTPX}
+}
+
+// ValidAdapter reports whether name is an adapter this daemon knows.
+func ValidAdapter(name string) bool {
+	for _, adapter := range AllAdapters() {
+		if name == adapter {
+			return true
+		}
+	}
+	return false
+}
+
+// CoverageFor renders an adapter set as a recording's coverage string. Unknown
+// names are dropped rather than echoed, and the canonical order is used so two
+// recordings of the same adapters always read the same way.
+func CoverageFor(adapters []string) string {
+	present := make(map[string]bool, len(adapters))
+	for _, adapter := range adapters {
+		if ValidAdapter(adapter) {
+			present[adapter] = true
+		}
+	}
+	out := make([]string, 0, len(present))
+	for _, adapter := range AllAdapters() {
+		if present[adapter] {
+			out = append(out, adapter)
+		}
+	}
+	return strings.Join(out, ", ")
+}
 
 // Limits bounds capture so a diagnostic can never grow without bound. The same
 // values are enforced in the SDK and again on ingestion: the SDK keeps a run

@@ -377,7 +377,10 @@ values:
 HTTP request inspection stores a run's outgoing requests and responses in
 `otter.db`, so capture data is subject to the same rule as any other stored data:
 it must not retain credentials. Recording is bounded and sanitized rather than a
-raw proxy log.
+raw proxy log. The SDK instruments the standard library `urllib` transport plus
+`requests` and `httpx` when they are installed in the run's interpreter, and the
+recording names the adapters it actually had; no other client is covered, so a
+run is never presented as fully observed.
 
 **Redaction is mandatory and additive-only.** It runs in the SDK before delivery
 and again in the daemon before storage, so a bug in either side alone does not

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -657,5 +658,139 @@ func assertNoSecretInCapture(t *testing.T, d *Daemon) {
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate capture rows: %v", err)
+	}
+}
+
+// requirePythonModule skips a test when the run's interpreter cannot import a
+// module. The optional adapters need their client actually installed, and the
+// SDK must never depend on either one.
+func requirePythonModule(t *testing.T, module string) {
+	t.Helper()
+	requirePython(t)
+	cmd := exec.Command("python3", "-c", "import "+module)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("python3 cannot import %s; skipping adapter coverage test: %s",
+			module, strings.TrimSpace(string(out)))
+	}
+}
+
+// A third-party client must be recorded exactly like urllib, and the run's
+// coverage must name the adapter that made that possible. Without the adapter
+// report, an integration using requests or httpx would show "coverage: urllib"
+// next to an empty request list -- the most misleading answer capture can give.
+func TestCaptureCoversInstalledClientAdapters(t *testing.T) {
+	cases := []struct {
+		name   string
+		module string
+		source string
+	}{
+		{
+			name:   inspection.AdapterHTTPX,
+			module: "httpx",
+			source: `
+import os
+
+import httpx
+
+response = httpx.post(
+    os.environ["ORIGIN_URL"] + "/records",
+    json={"cursor": "cur-42", "access_token": "sentinel-secret"},
+)
+raise RuntimeError("upstream rejected the batch: %s" % response.json()["error"])
+`,
+		},
+		{
+			name:   inspection.AdapterRequests,
+			module: "requests",
+			source: `
+import os
+
+import requests
+
+response = requests.post(
+    os.environ["ORIGIN_URL"] + "/records",
+    json={"cursor": "cur-42", "access_token": "sentinel-secret"},
+)
+raise RuntimeError("upstream rejected the batch: %s" % response.json()["error"])
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requirePythonModule(t, tc.module)
+
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, http.StatusBadRequest, map[string]any{
+					"error":        "cursor rejected",
+					"access_token": "origin-secret-value",
+				})
+			}))
+			defer origin.Close()
+
+			root := t.TempDir()
+			writeIntegration(t, root, tc.name+"-demo", fmt.Sprintf(`
+version: 1
+name: %s-demo
+entrypoint: main.py
+timeout: 60
+retry:
+  attempts: 0
+env:
+  ORIGIN_URL: %s
+`, tc.name, origin.URL), tc.source)
+
+			d := newDaemon(t, root, "", nil, nil)
+			startDaemon(t, d)
+
+			runID, err := d.SubmitRun(context.Background(), tc.name+"-demo",
+				api.TriggerPayload{Type: api.TriggerManual})
+			if err != nil {
+				t.Fatalf("submit run: %v", err)
+			}
+			view := awaitTerminal(t, d, runID)
+			if view.Run.Status != runs.StatusFailed {
+				t.Fatalf("run status = %s, want failed", view.Run.Status)
+			}
+
+			summary, err := d.CaptureSummary(context.Background(), runID)
+			if err != nil {
+				t.Fatalf("capture summary: %v", err)
+			}
+			found := false
+			for _, adapter := range summary.Adapters {
+				if adapter == tc.name {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("adapters = %v, want %s among them", summary.Adapters, tc.name)
+			}
+			if !strings.Contains(summary.Coverage, tc.name) {
+				t.Errorf("coverage = %q, want it to name %s", summary.Coverage, tc.name)
+			}
+
+			requests, err := d.ListCaptureRequests(context.Background(), runID, 0, 100)
+			if err != nil {
+				t.Fatalf("list requests: %v", err)
+			}
+			if len(requests) != 1 {
+				t.Fatalf("listed %d requests, want 1", len(requests))
+			}
+			detail, err := d.GetCaptureRequest(context.Background(), runID, requests[0].RequestID)
+			if err != nil {
+				t.Fatalf("get request: %v", err)
+			}
+			if detail.RequestBody == nil || detail.RequestBody.State != inspection.BodyCaptured {
+				t.Fatalf("request body = %+v, want a captured body", detail.RequestBody)
+			}
+			if !strings.Contains(string(detail.RequestBody.JSON), `"access_token":"REDACTED"`) {
+				t.Errorf("request body was not redacted: %s", detail.RequestBody.JSON)
+			}
+			if detail.ResponseBody == nil || detail.ResponseBody.State != inspection.BodyCaptured {
+				t.Fatalf("response body = %+v, want a captured 400 body", detail.ResponseBody)
+			}
+			assertNoSecretInCapture(t, d)
+		})
 	}
 }

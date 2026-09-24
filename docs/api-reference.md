@@ -665,7 +665,12 @@ stale update cannot regress a finalized exchange.
 | Parameter | In | Description |
 | --- | --- | --- |
 | `id` | path | Run id. |
-| `body` | JSON body | A capture event batch carrying `schema_version`, `policy` and a bounded list of `events`. |
+| `body` | JSON body | A capture event batch carrying `schema_version`, `policy`, an optional `adapters` list and a bounded list of `events`. |
+
+The optional `adapters` list names the transport adapters the child actually
+installed (`urllib`, `requests`, `httpx`). The daemon merges it into the run's
+coverage, so a later partial report can never narrow what was covered. A batch
+may carry only an adapter report.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $OTTER_STATE_TOKEN" \
@@ -719,7 +724,8 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/requ
     "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
     "state": "complete",
     "policy": "full",
-    "coverage": "urllib",
+    "adapters": ["urllib", "httpx"],
+    "coverage": "urllib, httpx",
     "finalization": "complete",
     "request_count": 2,
     "completed_count": 2,
@@ -749,7 +755,9 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/requ
 `state` is the capture state (`unavailable`, `off`, `pending`, `complete`,
 `incomplete` or `expired`), which is why the summary travels with the list.
 `payloads` is `metadata`, `partial` or `full`; an exchange whose process was
-killed is `incomplete`.
+killed is `incomplete`. `adapters` lists the transports the child installed and
+`coverage` is the same set rendered for display, so a reader can tell whether an
+empty list means "nothing was sent" or "this client was not instrumented".
 
 Errors: `400 invalid_request` for a negative `after_id` or a non-positive
 `limit`, `403 forbidden` (a run token), `404 not_found`.

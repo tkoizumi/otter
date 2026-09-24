@@ -44,7 +44,7 @@ disabled, or the run was never recorded at all:
 capture: complete
   requests: 2 (2 completed, 0 failed, 0 incomplete)
   redacted: 3 values were removed before storage
-  coverage: urllib only; other clients and raw sockets are not captured
+  coverage: urllib, httpx (other clients and raw sockets are not captured)
 REQUEST ID                        METHOD  STATUS  DURATION  PAYLOADS  URL
 1a0d061cd2124c1c9d5abad3e7b41157  GET     200     6ms       full      http://127.0.0.1:8791/cursor
 87603b35e60c4dae9f57040b15e24ab3  POST    400     1ms       full      http://127.0.0.1:8791/records
@@ -154,22 +154,44 @@ disappearing.
 
 ## Coverage and its limits
 
-Coverage is the Python standard library `urllib` transport only. The SDK
-launcher installs the instrumentation before integration code is imported, so
-requests made at import time are covered. Coverage is always reported as
-`urllib`, never as "all HTTP".
+The SDK instruments the HTTP transports it can find in the run's own
+interpreter, and reports exactly which ones it installed:
 
-Not covered in this version:
+- `urllib` — always, because it is part of the standard library.
+- `requests` — when `requests` is importable in the run's interpreter. The seam
+  is `Session.send`, so `requests.get`, a reused `Session` and a prepared
+  request all funnel through it.
+- `httpx` — when `httpx` is importable, for both `Client` and `AsyncClient`, so
+  asynchronous integrations are covered too.
 
-- `requests` and `httpx`.
-- Custom openers that bypass `urllib.request.OpenerDirector.open`.
+The launcher installs the instrumentation before integration code is imported,
+so requests made at import time are covered. Coverage is reported per run from
+what the child actually installed — `urllib`, or `urllib, httpx`, and so on —
+never as "all HTTP". That distinction is why the coverage line matters: an empty
+request list under coverage that omits a client means that client was never
+instrumented, not that the run sent nothing with it. An optional client that is
+not installed is never claimed.
+
+Not covered:
+
+- `requests` reads that go straight to `response.raw`, and `httpx` reads that go
+  straight to `response.stream`, bypassing the read paths an adapter observes.
+- Custom `urllib` openers that bypass `urllib.request.OpenerDirector.open`.
+- Custom `requests` adapters that bypass `Session.send`, and HTTP clients with no
+  adapter at all.
 - Subprocesses.
 - Raw sockets.
 
-Redirects followed internally by urllib appear as an initial and final URL on one
-exchange, not as separate hops. Application-level retries appear as separate
+Redirects followed internally by a client appear as an initial and final URL on
+one exchange, not as separate hops. Application-level retries appear as separate
 exchanges. Otter's own daemon API traffic is excluded, so capture cannot recurse
 into its own delivery.
+
+One timing nuance: `httpx` reads a non-streamed body before `send` returns and
+does not expose a separate time-to-headers value, so for those requests the
+recorded time to headers is the time the call returned. A streamed `httpx`
+response, and every `requests` and `urllib` response, reports the real header
+time. Status, headers and bodies are unaffected either way.
 
 ## Bodies in v1
 

@@ -206,7 +206,7 @@ func (a *App) printCaptureState(capture *inspection.RunCapture) {
 		fmt.Fprintf(a.Stdout, "  redacted: %d values were removed before storage\n", capture.RedactionCount)
 	}
 	if capture.Coverage != "" {
-		fmt.Fprintf(a.Stdout, "  coverage: %s only; other clients and raw sockets are not captured\n",
+		fmt.Fprintf(a.Stdout, "  coverage: %s (other clients and raw sockets are not captured)\n",
 			capture.Coverage)
 	}
 }

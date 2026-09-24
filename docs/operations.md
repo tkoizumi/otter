@@ -502,8 +502,11 @@ a pipe gets JSON, and `--json` and `--pretty` override that. `otter requests`
 always prints the capture state first, because an empty list is ambiguous on its
 own — `complete` with zero requests means capture observed nothing, `off` means
 this run was not recorded, and `unavailable` means the run predates capture or
-was never configured for it. The list never loads bodies, so it is safe to run
-against a run with many exchanges.
+was never configured for it. It also prints the coverage the run had: `urllib`
+always, plus `requests` and `httpx` when the run's interpreter had them
+installed. An empty list under coverage that omits the client an integration
+uses means that client was not instrumented, not that nothing was sent. The list
+never loads bodies, so it is safe to run against a run with many exchanges.
 
 Capture is bounded by design: 256 KiB per body, 10 MiB and 1,000 request records
 per run. If a run hits those limits, capture is dropped rather than the run being

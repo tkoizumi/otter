@@ -209,6 +209,12 @@ type EventBatch struct {
 	Finalization Finalization `json:"finalization,omitempty"`
 	Note         string       `json:"note,omitempty"`
 
+	// Adapters is the set of transport adapters the SDK actually installed in
+	// the child process. It is optional and cumulative: the daemon takes the
+	// union across batches, so coverage describes what was instrumented rather
+	// than what the SDK can theoretically instrument.
+	Adapters []string `json:"adapters,omitempty"`
+
 	Events []RequestEvent `json:"events"`
 }
 
@@ -234,13 +240,23 @@ func ValidateBatch(batch EventBatch, limits Limits) error {
 	}
 	// A batch may carry only a summary update: the final flush of a run that
 	// observed nothing still has to say so, or "no calls" could not be told
-	// apart from "capture never reported".
+	// apart from "capture never reported". An adapter report counts as a
+	// summary update for the same reason.
 	if len(batch.Events) == 0 && batch.Finalization == "" &&
-		batch.DroppedEvents == 0 && batch.DroppedBytes == 0 {
+		batch.DroppedEvents == 0 && batch.DroppedBytes == 0 && len(batch.Adapters) == 0 {
 		return fmt.Errorf("batch contains no events and no capture summary update")
 	}
 	if batch.Finalization != "" && !ValidFinalization(batch.Finalization) {
 		return fmt.Errorf("invalid finalization %q", batch.Finalization)
+	}
+	if len(batch.Adapters) > len(AllAdapters()) {
+		return fmt.Errorf("batch reports %d capture adapters, but only %d exist",
+			len(batch.Adapters), len(AllAdapters()))
+	}
+	for _, adapter := range batch.Adapters {
+		if !ValidAdapter(adapter) {
+			return fmt.Errorf("unsupported capture adapter %q", adapter)
+		}
 	}
 	if batch.DroppedEvents < 0 || batch.DroppedBytes < 0 {
 		return fmt.Errorf("dropped counters must not be negative")

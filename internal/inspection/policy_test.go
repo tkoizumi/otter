@@ -58,3 +58,40 @@ func TestParsePolicyOverrideIsNotTheDefault(t *testing.T) {
 		t.Error("an empty override must not resolve to the default policy")
 	}
 }
+
+// Coverage must describe the adapters a run actually installed, in a stable
+// order, and must never echo a name this daemon does not know.
+func TestCoverageNamesOnlyKnownAdapters(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"none", nil, ""},
+		{"urllib only", []string{AdapterURLLib}, "urllib"},
+		{"canonical order", []string{AdapterHTTPX, AdapterURLLib}, "urllib, httpx"},
+		{"all adapters", []string{AdapterHTTPX, AdapterRequests, AdapterURLLib}, "urllib, requests, httpx"},
+		{"duplicates collapse", []string{AdapterURLLib, AdapterURLLib}, "urllib"},
+		{"unknown names are dropped", []string{"carrier-pigeon", AdapterRequests}, "requests"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CoverageFor(tc.in); got != tc.want {
+				t.Errorf("CoverageFor(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidAdapter(t *testing.T) {
+	for _, adapter := range AllAdapters() {
+		if !ValidAdapter(adapter) {
+			t.Errorf("ValidAdapter(%q) = false, want true", adapter)
+		}
+	}
+	for _, adapter := range []string{"", "urllib ", "URLLIB", "carrier-pigeon"} {
+		if ValidAdapter(adapter) {
+			t.Errorf("ValidAdapter(%q) = true, want false", adapter)
+		}
+	}
+}

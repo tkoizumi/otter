@@ -45,6 +45,9 @@ __all__ = [
     "POLICY_OFF",
     "POLICY_METADATA",
     "POLICY_FULL",
+    "ADAPTER_URLLIB",
+    "ADAPTER_REQUESTS",
+    "ADAPTER_HTTPX",
     "REDACTED",
 ]
 
@@ -57,6 +60,13 @@ POLICY_FULL = "full"
 
 #: Value that replaces anything the policy classifies as a credential.
 REDACTED = "REDACTED"
+
+# Adapter names. They match inspection.Adapter* in the daemon, and they are what
+# a recording reports as its coverage: only the transports actually installed in
+# this interpreter are claimed, never "all HTTP".
+ADAPTER_URLLIB = "urllib"
+ADAPTER_REQUESTS = "requests"
+ADAPTER_HTTPX = "httpx"
 
 # Limits. These mirror inspection.Limits: the SDK keeps a run from producing
 # unbounded work, and the daemon independently refuses anything larger.
@@ -383,9 +393,25 @@ def _strip_unparseable_url(raw: str) -> str:
 
 _INTERNAL_DIR = os.path.dirname(os.path.abspath(__file__))
 
+#: Directories belonging to an optional transport adapter (requests, httpx).
+#: Frames from these are skipped when naming a call site, so a recorded exchange
+#: points at the integration's code rather than at library internals.
+_adapter_frame_dirs: List[str] = []
+_adapter_frame_lock = threading.Lock()
+
+
+def register_internal_frames(*directories: str) -> None:
+    """Declare a library whose frames must never be named as a call site."""
+    with _adapter_frame_lock:
+        for directory in directories:
+            if directory:
+                absolute = os.path.abspath(directory)
+                if absolute not in _adapter_frame_dirs:
+                    _adapter_frame_dirs.append(absolute)
+
 
 def _call_site() -> str:
-    """Describe the nearest frame outside the SDK and the standard library."""
+    """Describe the nearest frame outside the SDK and any instrumented library."""
     try:
         frame = sys._getframe(2)
     except ValueError:  # pragma: no cover - no Python frame available
@@ -406,6 +432,9 @@ def _is_internal_frame(filename: str) -> bool:
     absolute = os.path.abspath(filename) if not os.path.isabs(filename) else filename
     if absolute.startswith(_INTERNAL_DIR):
         return True
+    for directory in _adapter_frame_dirs:
+        if absolute.startswith(directory):
+            return True
     lowered = filename.replace("\\", "/")
     return "/urllib/" in lowered or "/http/client" in lowered or lowered.endswith("http/client.py")
 
@@ -444,6 +473,44 @@ class _Record:
         self.lock = threading.Lock()
 
 
+# ---------------------------------------------------------- body observation
+
+def _observe(capture: "Capture", record: _Record, data: Any, eof: bool) -> None:
+    """Record bytes the application just consumed from a response body.
+
+    Shared by every transport adapter so that a metadata recording, an
+    incomplete read and an over-limit body are treated identically whichever
+    client produced them.
+    """
+    if not data and not eof:
+        return
+    finish_now = False
+    with record.lock:
+        # A metadata recording never keeps payload bytes. Buffering them would
+        # retain exactly the data the policy promised not to store, so the bytes
+        # are counted and dropped rather than accumulated.
+        if data and record.policy == POLICY_FULL:
+            chunk = bytes(data)
+            if len(record.response_buffer) + len(chunk) > MAX_BODY_BYTES:
+                record.response_overflow = True
+            else:
+                record.response_buffer.extend(chunk)
+        if eof:
+            record.response_eof = True
+            finish_now = True
+    if finish_now:
+        capture.finish(record)
+
+
+def _read_eof(amount: Any, data: Any) -> bool:
+    """Report whether this read reached the end of the body."""
+    if amount is None or (isinstance(amount, int) and amount < 0):
+        return True
+    if isinstance(amount, int) and amount == 0:
+        return False
+    return not data
+
+
 # ------------------------------------------------------------------ capture
 
 _STOP = object()
@@ -478,15 +545,28 @@ class Capture:
         self._shut_down = False
         self._lifecycle_lock = threading.Lock()
         self._installed = False
+        #: Names of the transport adapters actually installed in this process.
+        #: Reported to the daemon so coverage describes the recording rather
+        #: than what the SDK can theoretically instrument.
+        self.adapters: List[str] = []
         self._previous_sigterm: Any = None
 
     # -- lifecycle ------------------------------------------------------
 
     def start(self) -> None:
         """Install instrumentation and start the delivery worker."""
-        from . import _urllib_capture
+        from . import _httpx_capture, _requests_capture, _urllib_capture
 
-        _urllib_capture.install(self)
+        installed: List[str] = []
+        for adapter in (_urllib_capture, _requests_capture, _httpx_capture):
+            try:
+                if adapter.install(self):
+                    installed.append(adapter.NAME)
+            except BaseException:
+                # A transport adapter is optional. One that cannot install only
+                # narrows what is covered; it must never stop the integration.
+                continue
+        self.adapters = installed
         self._installed = True
         self._worker = threading.Thread(
             target=self._run_worker, name="otter-capture", daemon=True
@@ -526,9 +606,13 @@ class Capture:
     def _uninstall(self) -> None:
         if not self._installed:
             return
-        from . import _urllib_capture
+        from . import _httpx_capture, _requests_capture, _urllib_capture
 
-        _urllib_capture.uninstall()
+        for adapter in (_urllib_capture, _requests_capture, _httpx_capture):
+            try:
+                adapter.uninstall()
+            except BaseException:
+                continue
         self._installed = False
 
     def _install_signal_handler(self) -> None:
@@ -590,12 +674,23 @@ class Capture:
         }, redactions)
         return record
 
-    def note_response(self, record: _Record, status: Optional[int], headers: Any, final_url: str = "") -> None:
-        """Record that response headers arrived."""
+    def note_response(self, record: _Record, status: Optional[int], headers: Any, final_url: str = "",
+                      to_headers_seconds: Optional[float] = None) -> None:
+        """Record that response headers arrived.
+
+        ``to_headers_seconds`` lets an adapter that knows when the headers really
+        arrived -- requests records it on the response -- report the true split
+        between time to headers and body consumption, rather than the moment the
+        adapter happened to observe the response.
+        """
         with record.lock:
             if record.finished:
                 return
-            record.t_headers = time.monotonic()
+            now = time.monotonic()
+            if to_headers_seconds is None:
+                record.t_headers = now
+            else:
+                record.t_headers = min(now, record.t0 + max(0.0, float(to_headers_seconds)))
             record.status = status
             if final_url:
                 sanitized, redactions = self.redactor.sanitize_url(final_url)
@@ -678,11 +773,16 @@ class Capture:
     def _request_body_descriptor(self, data: Any) -> Optional[Dict[str, Any]]:
         if data is None:
             return None
-        if not isinstance(data, (bytes, bytearray)):
+        if isinstance(data, str):
+            # requests and httpx accept a str body; the bytes actually sent are
+            # its UTF-8 encoding, which is safe to inspect without consuming it.
+            raw = data.encode("utf-8")
+        elif isinstance(data, (bytes, bytearray)):
+            raw = bytes(data)
+        else:
             # A file-like or iterable body cannot be inspected without consuming
             # it, which would change what the request sends.
             return {"state": BODY_OMITTED, "reason": REASON_STREAM}
-        raw = bytes(data)
         if not raw:
             return {"state": BODY_EMPTY}
         if len(raw) > MAX_BODY_BYTES:
@@ -791,6 +891,7 @@ class Capture:
             "policy": self.policy,
             "events": events,
         }
+        self._attach_adapters(payload)
         return self._post(payload)
 
     def _deliver_summary(
@@ -805,7 +906,17 @@ class Capture:
         }
         if note:
             payload["note"] = _bound(_clean_text(note), 512)
+        self._attach_adapters(payload)
         self._post(payload)
+
+    def _attach_adapters(self, payload: Dict[str, Any]) -> None:
+        """Report the adapters actually installed, so coverage is not a guess.
+
+        Every batch carries the list: the daemon merges it, so even a run that
+        dies before its final flush has still told the daemon what was covered.
+        """
+        if self.adapters:
+            payload["adapters"] = list(self.adapters)
 
     def _post(self, payload: Dict[str, Any]) -> bool:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
