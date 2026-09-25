@@ -35,6 +35,19 @@ GO_DIRS := ./cmd ./internal ./sdk ./migrations
 # The Go SQLite driver is pure Go (modernc.org/sqlite); no cgo is required.
 export CGO_ENABLED = 0
 
+# Keep Go's caches inside the checkout.
+#
+# The defaults live under $HOME (~/Library/Caches/go-build and ~/go/pkg/mod),
+# which a sandboxed or read-only environment cannot write, so every build asks
+# for permission before it can do anything. Pointing them here also makes the
+# checkout self-contained: `make clean` can reclaim the space and moving the
+# directory moves the cache with it.
+#
+# export matters: Go reads these from the environment, not from make variables.
+# Both stay overridable, and .cache/ is already gitignored.
+export GOCACHE    ?= $(ROOT)/.cache/go-build
+export GOMODCACHE ?= $(ROOT)/.cache/gomod
+
 .DEFAULT_GOAL := help
 .PHONY: help build test test-go test-python smoke lint fmt tidy clean clean-pycache cross cross-build
 

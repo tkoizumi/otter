@@ -55,6 +55,11 @@ type TimelineExchange struct {
 	DurationMS *int64
 	CallSite   string
 	Payloads   string
+	// ErrorCode and ErrorMessage are the bounded reason an exchange failed. They
+	// are metadata: extracted from the sanitized response body at ingestion, so
+	// reading them never touches a payload column.
+	ErrorCode    string
+	ErrorMessage string
 }
 
 // Evidence identifies the extent of a run's retained exchanges without reading
@@ -84,7 +89,7 @@ func (s *Store) TimelineExchangeTx(ctx context.Context, tx *sql.Tx, runID string
 	//	(occurred_at, 1, id) > (cursor.At, cursor.Rank, cursor.ID)
 	query := `SELECT id, request_id, occurred_at, ingested_at, updated_at, phase, complete,
 	                 method, sanitized_url, status_code, transport_error_class, duration_total_ms,
-	                 call_site, payloads
+	                 call_site, payloads, response_error_code, response_error
 	            FROM http_exchanges
 	           WHERE run_id = ? AND (occurred_at > ?`
 	args := []any{runID, database.FormatTime(cursor.At)}
@@ -121,7 +126,7 @@ func (s *Store) TimelineExchangeTx(ctx context.Context, tx *sql.Tx, runID string
 		)
 		if err := rows.Scan(&item.ID, &item.RequestID, &occurred, &ingested, &updated,
 			&phase, &complete, &item.Method, &item.URL, &status, &item.Class,
-			&duration, &item.CallSite, &item.Payloads); err != nil {
+			&duration, &item.CallSite, &item.Payloads, &item.ErrorCode, &item.ErrorMessage); err != nil {
 			return nil, fmt.Errorf("inspection: scan timeline exchange for %s: %w", runID, err)
 		}
 		item.Phase = Phase(phase)

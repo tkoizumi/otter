@@ -44,17 +44,29 @@ make cross     # cross-compile for Linux and macOS
   scaffold this repository tests — which is why no example directories ship.
 - **`make cross`** proves the four release targets compile.
 
-Run a single package while iterating:
+Run a single package while iterating. Use `scripts/go`, not `go` directly:
 
 ```bash
-go test ./internal/daemon/ -run TestReload -v
-go test ./internal/identity/...
+scripts/go test ./internal/daemon/ -run TestReload -v
+scripts/go test ./internal/identity/...
 ```
+
+Go writes its build cache and module cache under `$HOME` by default, and an
+environment that permits writes only inside the checkout — a sandbox, a
+container, a read-only CI image — refuses them, so a bare `go` command fails
+partway through with a permission error that says nothing about the code. The
+Makefile exports both paths for `make` targets; `scripts/go` does the same for a
+single invocation, and passes its arguments through unchanged. Override
+`GOCACHE`/`GOMODCACHE` in the environment to opt out.
+
+Both caches live in `.cache/`, which is gitignored: `make clean` can reclaim the
+space, moving the checkout moves the cache with it, and deleting either is always
+safe — it only costs a slower first rebuild.
 
 The race detector is worth using on the concurrency-heavy packages:
 
 ```bash
-CGO_ENABLED=1 go test -race ./internal/daemon/ ./internal/api/ ./internal/identity/
+CGO_ENABLED=1 scripts/go test -race ./internal/daemon/ ./internal/api/ ./internal/identity/
 ```
 
 ## Where things live

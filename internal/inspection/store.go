@@ -142,6 +142,12 @@ type Exchange struct {
 	RequestBody     *BodyDescriptor `json:"request_body,omitempty"`
 	ResponseBody    *BodyDescriptor `json:"response_body,omitempty"`
 
+	// ErrorCode and ErrorMessage are a bounded, sanitized summary of why the
+	// exchange failed, derived from ResponseBody at ingestion. They exist so a
+	// metadata-only view can state the reason without reading a payload.
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+
 	// Payloads is metadata | partial | full: how much of this exchange's bodies
 	// is visible. It is maintained at write time so a list need not load bodies.
 	Payloads string `json:"payloads"`
@@ -326,7 +332,7 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 			continue
 		}
 
-		merged, isNew := mergeExchange(existing, event, capture, now)
+		merged, isNew := mergeExchange(existing, event, capture, now, s.redactor)
 		rowBytes := exchangeRowBytes(merged)
 
 		if isNew {
@@ -696,7 +702,8 @@ const exchangeColumns = `id, run_id, request_id, integration_id, producer_seq,
 	method, sanitized_url, initial_url, final_url, call_site,
 	status_code, transport_error, transport_error_class,
 	duration_to_headers_ms, duration_body_ms, duration_total_ms,
-	request_headers, response_headers, request_body, response_body, payloads`
+	request_headers, response_headers, request_body, response_body, payloads,
+	response_error_code, response_error`
 
 func scanCapture(sc interface{ Scan(...any) error }) (*RunCapture, error) {
 	var (
@@ -757,7 +764,8 @@ func scanExchange(sc interface{ Scan(...any) error }) (*Exchange, error) {
 		&e.Method, &e.URL, &e.InitialURL, &e.FinalURL, &e.CallSite,
 		&status, &e.TransportError, &e.TransportClass,
 		&toHeaders, &bodyMS, &totalMS,
-		&reqHeaders, &resHeaders, &reqBody, &resBody, &e.Payloads)
+		&reqHeaders, &resHeaders, &reqBody, &resBody, &e.Payloads,
+		&e.ErrorCode, &e.ErrorMessage)
 	if err != nil {
 		return nil, err
 	}
@@ -824,7 +832,7 @@ func loadExchangeTx(ctx context.Context, tx *sql.Tx, runID, requestID string) (*
 // mergeExchange combines an event into an existing exchange. Fields the event
 // does not mention are preserved, which is what makes the three-update lifecycle
 // (started, response, completed) work without the client resending everything.
-func mergeExchange(existing *Exchange, event RequestEvent, capture *RunCapture, now time.Time) (*Exchange, bool) {
+func mergeExchange(existing *Exchange, event RequestEvent, capture *RunCapture, now time.Time, redactor *Redactor) (*Exchange, bool) {
 	isNew := existing == nil
 	out := Exchange{}
 	if isNew {
@@ -895,6 +903,14 @@ func mergeExchange(existing *Exchange, event RequestEvent, capture *RunCapture, 
 	if event.ResponseBody != nil {
 		out.ResponseBody = event.ResponseBody
 	}
+	// The summary is taken from whatever response body is now current, so a
+	// completion event that arrives with the body sets it and an event without
+	// one leaves the previous summary alone. It is derived here rather than at
+	// read time so a metadata-only reader never touches a payload column.
+	if out.ResponseBody != nil {
+		summary := ExtractErrorSummary(out.ResponseBody, redactor)
+		out.ErrorCode, out.ErrorMessage = summary.Code, summary.Message
+	}
 
 	if event.Kind == EventCompleted {
 		out.Phase = PhaseFor(event)
@@ -930,14 +946,16 @@ func insertExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		    phase, complete, method, sanitized_url, initial_url, final_url, call_site,
 		    status_code, transport_error, transport_error_class,
 		    duration_to_headers_ms, duration_body_ms, duration_total_ms,
-		    request_headers, response_headers, request_body, response_body, payloads)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    request_headers, response_headers, request_body, response_body, payloads,
+		    response_error_code, response_error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.RunID, e.RequestID, e.IntegrationID, e.ProducerSeq,
 		database.FormatTime(e.OccurredAt), database.FormatTime(e.IngestedAt), database.FormatTime(e.UpdatedAt),
 		string(e.Phase), boolInt(e.Complete), e.Method, e.URL, e.InitialURL, e.FinalURL, e.CallSite,
 		database.NullableInt(e.StatusCode), e.TransportError, e.TransportClass,
 		nullableInt64(e.DurationToHeadersMS), nullableInt64(e.DurationBodyMS), nullableInt64(e.DurationTotalMS),
-		reqHeaders, resHeaders, reqBody, resBody, e.Payloads)
+		reqHeaders, resHeaders, reqBody, resBody, e.Payloads,
+		e.ErrorCode, e.ErrorMessage)
 	if err != nil {
 		return fmt.Errorf("inspection: insert exchange %s: %w", e.RequestID, err)
 	}
@@ -969,7 +987,8 @@ func updateExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		   final_url = ?, call_site = ?, status_code = ?, transport_error = ?,
 		   transport_error_class = ?, duration_to_headers_ms = ?, duration_body_ms = ?,
 		   duration_total_ms = ?, request_headers = ?, response_headers = ?,
-		   request_body = ?, response_body = ?, payloads = ?
+		   request_body = ?, response_body = ?, payloads = ?,
+		   response_error_code = ?, response_error = ?
 		 WHERE run_id = ? AND request_id = ?`,
 		e.IntegrationID, e.ProducerSeq, database.FormatTime(e.OccurredAt), database.FormatTime(e.UpdatedAt),
 		string(e.Phase), boolInt(e.Complete), e.Method, e.URL, e.InitialURL,
@@ -977,6 +996,7 @@ func updateExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		e.TransportClass, nullableInt64(e.DurationToHeadersMS), nullableInt64(e.DurationBodyMS),
 		nullableInt64(e.DurationTotalMS), reqHeaders, resHeaders,
 		reqBody, resBody, e.Payloads,
+		e.ErrorCode, e.ErrorMessage,
 		e.RunID, e.RequestID)
 	if err != nil {
 		return fmt.Errorf("inspection: update exchange %s: %w", e.RequestID, err)

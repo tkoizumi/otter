@@ -32,6 +32,13 @@ type App struct {
 	Stdout  io.Writer
 	Stderr  io.Writer
 	Version string
+
+	// traceWidthOverride, when set, is the column width the trace table is
+	// rendered for. It exists for terminals whose width cannot be read and for
+	// reproducible output in tests; zero means the default width.
+	traceWidthOverride int
+	// traceNoColor forces the human trace form to be plain even on a terminal.
+	traceNoColor bool
 }
 
 // New creates a CLI app writing to the given streams.

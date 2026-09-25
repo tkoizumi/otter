@@ -27,6 +27,14 @@ func TestTimelineReadBudgetLargeRun(t *testing.T) {
 	if testing.Short() {
 		t.Skip("performance gate skipped in short mode")
 	}
+	// Wall-clock ceilings are meaningless under the race detector, which adds an
+	// order of magnitude of instrumentation to every memory access. The point of
+	// the assertions is the shape of the cost, and `make` does not run the two
+	// together, but a contributor running `go test -race ./...` should not see a
+	// failure that says nothing about the code.
+	if raceEnabled {
+		t.Skip("performance gate skipped under the race detector")
+	}
 
 	const (
 		logRows    = 100_000

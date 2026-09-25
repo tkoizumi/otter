@@ -114,18 +114,83 @@ error: process exited with code 1
 retry context: otter run-status 3f2a91c4-...
 capture: complete; coverage: urllib, requests
 
-TIME          KIND       DETAIL
-12:00:00.010  lifecycle  run queued (trigger manual)
-12:00:00.026  lifecycle  run started (attempt 1 of 1, trigger manual)
-12:00:00.031  http       GET https://api.example.test/v2/cursor -> 200, 6ms
-                         main.py:12; completed; payloads: full
+TIME      KIND       DETAIL
+03:30:00  ·  lifecycle  run queued (trigger manual)
+03:30:00  ·  lifecycle  run started (attempt 1 of 1, trigger manual)
+03:30:00  ✓  http       POST api.example.test/v2/cursor -> 200, 6ms  [1]
+03:30:00  !  http       POST api.example.test/v2/records?access_token=REDACTED -> 400, 9ms  [2]
+03:30:00  ×  log        [stderr] RuntimeError: upstream rejected the batch
+03:30:00  ×  lifecycle  run failed (attempt 1, 41ms), exit code 1: process exited with code 1
+
+└1.  main.py:12; completed; payloads full
                          otter request 3f2a91c4-... 1a0d061cd2124c1c9d5abad3e7b41157
-12:00:00.044  http       POST https://api.example.test/v2/records?access_token=REDACTED -> 400, 9ms
-                         main.py:26; completed; payloads: full
+└2.  main.py:26; completed; payloads full
                          otter request 3f2a91c4-... 87603b35e60c4dae9f57040b15e24ab3
-12:00:00.046  log        [stderr] Traceback (most recent call last):
-12:00:00.047  lifecycle  run failed (process exited with code 1)
 ```
+
+An exchange occupies one row. Its call site and the command that opens its
+payloads are footnotes, keyed by the `[n]` at the end of the row: a long trace
+stays one line per event, and the detail is one column away rather than mixed
+into the table.
+
+A failed exchange also states **why** on the line beneath it, so diagnosing a
+rejected write does not require opening another command:
+
+```
+13:00:01  !   http       PATCH drive-energy-1561.my.salesforce.com/serv…c/10959404073281 -> 400, 129ms  [1]
+                         FIELD_INTEGRITY_EXCEPTION: There's a problem with this country, even though it
+                         may appear correct. Please select a country/territory from the list of valid
+                         countries.: Mailing Country
+```
+
+The reason is extracted at ingestion from the **already-sanitized** response
+body, reduced to a bounded machine-readable code (`FIELD_INTEGRITY_EXCEPTION`)
+and a bounded message, and stored as metadata. That is why a metadata-only view
+can show it without widening what it discloses: redaction has run, and no payload
+column is read at trace time. A long message wraps rather than being elided.
+
+Extraction is deliberately shallow and only recognises the common error shapes —
+an object at the root, a top-level array of them (Salesforce's answer to a
+rejected write), a nested `error` object, a list of field errors, or a bare
+string. An unrecognised body yields nothing rather than a guess, because putting
+unrelated content where a reader expects the reason is worse than staying quiet.
+
+Two absences are distinguishable. `no error message captured` means the exchange
+failed and no body was recorded to read a reason from — the normal result under
+`capture: metadata`. A plain status with nothing beneath it means the response
+carried a body but no recognisable error shape. When every exchange shares a phase and payload state, those are
+stated once above the footnotes instead of on every entry, so an exception
+(`incomplete`, `payloads partial` in a run that was otherwise `full`) is visible
+rather than lost in repetition. Every footnote prints a complete command; the
+request ids are aligned so the varying part is easy to scan.
+
+URLs are printed without the `https://` scheme, which is the common case and
+costs eight columns on every row. An `http://` URL keeps its scheme: plaintext
+HTTP is the one case where the scheme is worth noticing.
+
+The first column after the time is a status glyph marking that event's own
+outcome: `✓` ended well, `!` was rejected (4xx, or an exchange that never
+finished), `×` broke (5xx, a transport error, or the run's own bad ending), and
+`·` for narration and informational output. The glyph describes the event, never
+the run — a handled 400 inside a successful run is still marked `!` while the
+terminal line says `succeeded`.
+
+On a terminal the glyphs are colored — green `✓`, yellow `!`, red `×`, dim `·`
+— and that color is the only decoration the command applies. Escapes are written
+only when stdout is a terminal, so `otter trace | less`, a redirect to a file,
+and `--json` all receive plain text. `--no-color` forces plain output, and the
+`NO_COLOR` convention is honoured. Color is applied after each field is padded,
+never before, so an escape sequence cannot shift a column.
+
+A `log` line is shown exactly as it was stored, one row per event. An
+integration's `ctx.log` output therefore includes the JSON suffix the SDK
+appends, and a line long enough to exceed the terminal wraps.
+
+Splitting that suffix into `key=value` pairs was tried and reverted: it read
+worse, because a short field ended up stranded on a line of its own above a
+wrapped nested object, and the row that carried the message no longer carried its
+data. One event stays one row, which is what the timeline is for. `otter logs`
+still renders the compact form when a single line per log is what you want.
 
 The `KIND` column names the event kind, not the stream it was stored on. A
 `lifecycle` line is the runtime's own narration: queued, started, cancelled,

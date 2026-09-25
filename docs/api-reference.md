@@ -917,6 +917,12 @@ or `transport_error_class`, `duration_total_ms`, `phase`, `complete`, `payloads`
 `true`: the daemon recorded the exchange after the producer stamped it, so
 adjacent log lines are not evidence of causal order.
 
+`error_code` and `error_message` appear when a failed exchange's response body
+held a recognisable reason. They are a bounded, sanitized summary extracted from
+that body at ingestion — metadata, not a payload — so a reader learns why a call
+was rejected without fetching the exchange. Both are absent when no body was
+captured (`capture: metadata`) or when the body carried no error shape.
+
 - Events are ordered by `(at, source_rank, id)`, with `run_logs` ranked below
   `http_exchanges`. Events that share a timestamp therefore order
   deterministically, and a page boundary can neither lose nor repeat one.

@@ -1,0 +1,29 @@
+#!/bin/sh
+# Run the Go toolchain with its caches inside this checkout.
+#
+# Go writes to two locations outside a repository by default:
+#
+#   GOCACHE     ~/Library/Caches/go-build   (compiled package objects)
+#   GOMODCACHE  ~/go/pkg/mod                (dependency sources)
+#
+# A sandboxed, containerised or read-only environment that permits writes only
+# under the checkout denies those writes, and the failure is a permission error
+# in the middle of a build rather than anything about the code. The Makefile
+# exports both for `make` targets; this script does the same for a bare
+# `go` invocation, so there is one way to run the toolchain that always works.
+#
+#   scripts/go test ./internal/daemon/ -run TestReload -v
+#   scripts/go build ./...
+#   scripts/go vet ./internal/...
+#
+# Anything passed through is handed to go unchanged. Override either path with
+# GOCACHE/GOMODCACHE in the environment and this script leaves it alone.
+set -e
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+GOCACHE=${GOCACHE:-$root/.cache/go-build}
+GOMODCACHE=${GOMODCACHE:-$root/.cache/gomod}
+export GOCACHE GOMODCACHE
+
+exec go "$@"

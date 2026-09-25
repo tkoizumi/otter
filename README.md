@@ -358,15 +358,18 @@ error: process exited with code 1
 retry context: otter run-status 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
 capture: complete - 1 recorded request(s); coverage: urllib
 
-TIME          KIND       DETAIL
-12:00:00.000  lifecycle  run started (attempt 1 of 1, trigger manual)
-12:00:00.031  http       POST https://api.example.test/v2/records?access_token=REDACTED -> 400, 9ms
-                          main.py:26; completed; payloads: full
-                          otter request 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb 87603b35e60c4dae9f57040b15e24ab3
-12:00:00.040  log        [stderr] RuntimeError: upstream rejected the batch
-12:00:00.041  lifecycle  run failed (attempt 1, 41ms), exit code 1: process exited with code 1
+TIME      KIND       DETAIL
+03:30:00  ·  lifecycle  run queued (trigger manual)
+03:30:00  ·  lifecycle  run started (attempt 1 of 1, trigger manual)
+03:30:00  ✓  http       POST api.example.test/v2/cursor -> 200, 6ms  [1]
+03:30:00  !  http       POST api.example.test/v2/records?access_token=REDACTED -> 400, 9ms  [2]
+03:30:00  ×  log        [stderr] RuntimeError: upstream rejected the batch
+03:30:00  ×  lifecycle  run failed (attempt 1, 41ms), exit code 1: process exited with code 1
 
-$ ./bin/otter request 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb 87603b35e60c4dae9f57040b15e24ab3
+└1.  main.py:12; completed; payloads: full
+                         otter request 3f2a91c4-... 1a0d061cd2124c1c9d5abad3e7b41157
+└2.  main.py:26; completed; payloads: full
+                         otter request 3f2a91c4-... 87603b35e60c4dae9f57040b15e24ab3
 ```
 
 A run executes the integration's active release, so `otter release` is required

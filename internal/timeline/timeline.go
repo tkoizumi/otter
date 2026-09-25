@@ -259,19 +259,24 @@ type Event struct {
 // when the daemon recorded the exchange after the producer stamped it, which
 // means an adjacent log line is not evidence of a causal order.
 type HTTPEvent struct {
-	RequestID  string    `json:"request_id"`
-	Method     string    `json:"method,omitempty"`
-	URL        string    `json:"url,omitempty"`
-	StatusCode *int      `json:"status_code,omitempty"`
-	ErrorClass string    `json:"transport_error_class,omitempty"`
-	DurationMS *int64    `json:"duration_total_ms,omitempty"`
-	Phase      string    `json:"phase"`
-	Complete   bool      `json:"complete"`
-	Payloads   string    `json:"payloads,omitempty"`
-	CallSite   string    `json:"call_site,omitempty"`
-	IngestedAt time.Time `json:"ingested_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	Late       bool      `json:"late,omitempty"`
+	RequestID  string `json:"request_id"`
+	Method     string `json:"method,omitempty"`
+	URL        string `json:"url,omitempty"`
+	StatusCode *int   `json:"status_code,omitempty"`
+	ErrorClass string `json:"transport_error_class,omitempty"`
+	DurationMS *int64 `json:"duration_total_ms,omitempty"`
+	Phase      string `json:"phase"`
+	Complete   bool   `json:"complete"`
+	Payloads   string `json:"payloads,omitempty"`
+	CallSite   string `json:"call_site,omitempty"`
+	// ErrorCode and ErrorMessage state why a failed exchange failed, taken from
+	// the sanitized response body at ingestion. Present only when a body was
+	// captured and a recognised error shape was found.
+	ErrorCode    string    `json:"error_code,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	IngestedAt   time.Time `json:"ingested_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Late         bool      `json:"late,omitempty"`
 }
 
 // Page is one page of a run's timeline.
@@ -644,19 +649,21 @@ func httpEvent(runID string, exchange inspection.TimelineExchange) Event {
 		RunID:      runID,
 		positionAt: exchange.OccurredAt,
 		HTTP: &HTTPEvent{
-			RequestID:  exchange.RequestID,
-			Method:     exchange.Method,
-			URL:        exchange.URL,
-			StatusCode: exchange.StatusCode,
-			ErrorClass: exchange.Class,
-			DurationMS: exchange.DurationMS,
-			Phase:      string(exchange.Phase),
-			Complete:   exchange.Complete,
-			Payloads:   exchange.Payloads,
-			CallSite:   exchange.CallSite,
-			IngestedAt: exchange.IngestedAt,
-			UpdatedAt:  exchange.UpdatedAt,
-			Late:       !exchange.IngestedAt.IsZero() && exchange.IngestedAt.Before(exchange.OccurredAt),
+			RequestID:    exchange.RequestID,
+			Method:       exchange.Method,
+			URL:          exchange.URL,
+			StatusCode:   exchange.StatusCode,
+			ErrorClass:   exchange.Class,
+			DurationMS:   exchange.DurationMS,
+			Phase:        string(exchange.Phase),
+			Complete:     exchange.Complete,
+			Payloads:     exchange.Payloads,
+			CallSite:     exchange.CallSite,
+			ErrorCode:    exchange.ErrorCode,
+			ErrorMessage: exchange.ErrorMessage,
+			IngestedAt:   exchange.IngestedAt,
+			UpdatedAt:    exchange.UpdatedAt,
+			Late:         !exchange.IngestedAt.IsZero() && exchange.IngestedAt.Before(exchange.OccurredAt),
 		},
 	}
 }

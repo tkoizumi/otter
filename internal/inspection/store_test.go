@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -672,5 +673,89 @@ func TestFindByRequestIDSpansRunsAndReturnsEveryMatch(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Errorf("unknown id matched %d rows, want none", len(none))
+	}
+}
+
+// TestIngestStoresErrorSummary covers the path that makes the summary useful: the
+// reason a server gave is persisted as metadata at ingestion, from the sanitized
+// body, so a later metadata-only read never touches a payload column.
+func TestIngestStoresErrorSummary(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, Limits{})
+	beginTestCapture(t, store, "run-1", PolicyFull)
+
+	body := &BodyDescriptor{
+		State: BodyCaptured,
+		JSON: json.RawMessage(`[{"message": "There's a problem with this country.: Mailing Country",` +
+			`"errorCode": "FIELD_INTEGRITY_EXCEPTION","fields":["MailingCountry"]}]`),
+	}
+	status := 400
+	batch := EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyFull,
+		Events: []RequestEvent{
+			{Kind: EventStarted, RequestID: "req-1", ProducerSeq: 1, OccurredAt: time.Now().UTC(),
+				Method: "PATCH", URL: "https://example.test/Contact/1"},
+			{Kind: EventCompleted, RequestID: "req-1", ProducerSeq: 2, OccurredAt: time.Now().UTC(),
+				StatusCode: &status, ResponseBody: body},
+		},
+	}
+	if _, err := store.Ingest(ctx, "run-1", batch); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	exchange, err := store.Get(ctx, "run-1", "req-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if exchange.ErrorCode != "FIELD_INTEGRITY_EXCEPTION" {
+		t.Errorf("error code = %q, want FIELD_INTEGRITY_EXCEPTION", exchange.ErrorCode)
+	}
+	if !strings.Contains(exchange.ErrorMessage, "problem with this country") {
+		t.Errorf("error message = %q, want the server's reason", exchange.ErrorMessage)
+	}
+
+	// The summary has to be readable without a payload, which is the whole point.
+	var (
+		code    string
+		message string
+	)
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT response_error_code, response_error FROM http_exchanges WHERE run_id = ?`,
+		"run-1").Scan(&code, &message); err != nil {
+		t.Fatalf("read summary columns: %v", err)
+	}
+	if code != "FIELD_INTEGRITY_EXCEPTION" || message == "" {
+		t.Errorf("stored summary = %q / %q, want both populated", code, message)
+	}
+}
+
+// TestIngestWithoutBodyStoresNoSummary keeps the empty summary meaningful: a
+// response that carried no readable body must not leave a summary that reads as
+// if the server had explained itself.
+func TestIngestWithoutBodyStoresNoSummary(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, Limits{})
+	beginTestCapture(t, store, "run-1", PolicyMetadata)
+
+	status := 500
+	batch := EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyMetadata,
+		Events: []RequestEvent{{
+			Kind: EventCompleted, RequestID: "req-1", ProducerSeq: 1,
+			OccurredAt: time.Now().UTC(), StatusCode: &status,
+		}},
+	}
+	if _, err := store.Ingest(ctx, "run-1", batch); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	exchange, err := store.Get(ctx, "run-1", "req-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if exchange.ErrorCode != "" || exchange.ErrorMessage != "" {
+		t.Errorf("summary = %q / %q, want empty when no body was captured",
+			exchange.ErrorCode, exchange.ErrorMessage)
 	}
 }
