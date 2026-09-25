@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/timeline"
 )
 
 // DefaultBaseURL is where a locally running daemon listens.
@@ -243,6 +244,31 @@ func (c *Client) GetCaptureRequestByID(ctx context.Context, requestID string) (*
 	}
 	return &out, nil
 }
+
+// Timeline fetches one page of a finished run's merged timeline.
+//
+// The page carries its own context, capture summary and continuation cursor, so
+// a caller that receives no events still learns whether anything was recorded
+// and how to ask for the next page.
+func (c *Client) Timeline(ctx context.Context, req timeline.Request) (*timeline.Page, error) {
+	values := url.Values{}
+	if req.After != "" {
+		values.Set("after", req.After)
+	}
+	if req.Limit > 0 {
+		values.Set("limit", strconv.Itoa(req.Limit))
+	}
+	values.Set("include_http", strconv.FormatBool(req.IncludeHTTP))
+
+	path := "/v1/runs/" + url.PathEscape(req.RunID) + "/timeline?" + values.Encode()
+
+	var out timeline.Page
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) CancelRun(ctx context.Context, runID string) error {
 	return c.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/cancel", nil, nil)
 }

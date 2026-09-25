@@ -301,6 +301,7 @@ otter logs <run-id> [--follow]          # captured output
 otter requests <run-id>                 # captured outgoing HTTP requests
 otter request <request-id>              # one exchange; its run is resolved for you
 otter request <run-id> <request-id>     # one exchange, when the id needs disambiguating
+otter trace <run-id>                    # one finished attempt: context, output and HTTP in time order
 otter state get <integration> <key>
 otter state set <integration> <key> <json>
 otter state delete <integration> <key>
@@ -330,6 +331,43 @@ in the integration. Capture covers `urllib` always, and `requests` and `httpx`
 recording reports the adapters it actually had. See
 [docs/http-capture.md](docs/http-capture.md) for precedence, coverage, redaction,
 limits and retention.
+
+`otter logs` and `otter requests` each show one slice of an attempt, so reading
+a failure means holding two outputs side by side and matching timestamps by
+hand. `otter trace <run-id>` prints the merged view instead: the attempt's
+lifecycle lines, its captured stdout and stderr, and its HTTP exchanges in one
+chronological page. It covers a finished attempt only -- `--follow` is refused,
+and tracing a run that has not finished is refused with a status-specific hint
+instead -- and it exits 0 whenever the inspection succeeded, even when the run
+it describes failed. The order is approximate chronology rather than
+causality: an HTTP line is a summary placed at the exchange's first recorded
+occurrence, its status and duration are the latest retained values, and the
+timeline never names a request as the cause of the failure. HTTP lines carry no
+headers or bodies, so `otter request <run-id> <request-id>` is how you read the
+payloads of the exchange printed above it; `--limit` and `--after` page a long
+trace, `--json` prints the typed JSONL stream, and `--no-http` drops HTTP events
+while still reporting the capture state.
+
+A failed attempt reads as one page, with the payload command spelled out:
+
+```console
+$ ./bin/otter trace 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
+run: 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb   integration: orders-sync   status: failed   attempt: 1
+release: 8c1d4f0a9b3e   trigger: manual   parent: -
+error: process exited with code 1
+retry context: otter run-status 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
+capture: complete - 1 recorded request(s); coverage: urllib
+
+TIME          KIND       DETAIL
+12:00:00.000  lifecycle  run started (attempt 1 of 1, trigger manual)
+12:00:00.031  http       POST https://api.example.test/v2/records?access_token=REDACTED -> 400, 9ms
+                          main.py:26; completed; payloads: full
+                          otter request 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb 87603b35e60c4dae9f57040b15e24ab3
+12:00:00.040  log        [stderr] RuntimeError: upstream rejected the batch
+12:00:00.041  lifecycle  run failed (attempt 1, 41ms), exit code 1: process exited with code 1
+
+$ ./bin/otter request 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb 87603b35e60c4dae9f57040b15e24ab3
+```
 
 A run executes the integration's active release, so `otter release` is required
 before an integration can run at all -- external and managed Python alike. With

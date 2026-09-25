@@ -416,6 +416,7 @@ func (d *Daemon) AppendRunLog(ctx context.Context, runID, stream, message string
 		Timestamp: time.Now().UTC(),
 		Stream:    stream,
 		Message:   text,
+		Origin:    runs.OriginChild,
 	})
 }
 

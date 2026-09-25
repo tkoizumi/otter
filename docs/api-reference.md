@@ -95,6 +95,7 @@ from one integration cannot drive another.
 | `GET /v1/runs/{id}`, `GET/POST /v1/runs/{id}/logs` | any run | only its own run |
 | `POST /v1/runs/{id}/requests/events` | any run | only its own run |
 | `GET /v1/runs/{id}/requests[/{request_id}]` | any run | **no** (`403`) |
+| `GET /v1/runs/{id}/timeline` | any run | **no** (`403`) |
 | `GET /v1/requests/{request_id}` | any run | **no** (`403`) |
 | `GET/PUT/DELETE /v1/integrations/{id}/state[/{key}]` | any integration | only its own integration |
 | `POST /v1/hooks/{integration}` | n/a — webhook token only | n/a |
@@ -130,7 +131,7 @@ Every error uses the same envelope:
 | `405` | *(empty body)* | Known path, unsupported method — the router answers this itself. |
 | `409` | `conflict` | Cancel on a run that is already terminal, or capture ingestion for a run with no capture configuration. |
 | `500` | `internal_error` | Unexpected server error; details are in the daemon log. |
-| `503` | `unavailable` | The daemon is shutting down and is not accepting new work. |
+| `503` | `unavailable` | The daemon is shutting down and is not accepting new work, or a bounded timeline read did not finish in time (see `GET /v1/runs/{id}/timeline`). |
 
 Error `message` strings are for humans; branch on `code`. Note that the same
 `code` covers several conditions (there is one `not_found` for paths,
@@ -646,7 +647,7 @@ unknown `stream`).
 ## HTTP request inspection
 
 A run's outgoing HTTP exchanges are recorded from inside the child and read back
-over these three endpoints. Capture levels, coverage, redaction, limits and
+over these endpoints. Capture levels, coverage, redaction, limits and
 retention are documented in [http-capture.md](http-capture.md); this section
 covers the API only. A per-run level is selected at submission with `?capture=`
 on `POST /v1/integrations/{id}/runs`; when it is omitted, the integration's
@@ -837,6 +838,118 @@ including the `capture` summary for the resolved run.
 
 Errors: `403 forbidden` (a run token), `404 not_found` (unknown request id),
 `409 conflict` (the id is recorded by more than one run).
+
+### `GET /v1/runs/{id}/timeline`
+
+One chronological page of a **finished** attempt's merged timeline: its lifecycle
+lines, captured stdout/stderr and captured HTTP exchanges in one order. It is the
+API behind `otter trace`.
+
+Authorization is operator (admin) only, identical to
+`GET /v1/runs/{id}/requests`: a per-run token is rejected with `403` even for its
+own run, because the merged view exposes captured traffic.
+
+| Query parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `after` | string | unset | An opaque continuation cursor from a previous page's `next_cursor`. Decoded only after authorization, and bounded in length. |
+| `limit` | integer | `100` | Maximum **events** per page, excluding context and framing. Must be between `1` and `1000` inclusive. |
+| `include_http` | boolean | `true` | When `false`, HTTP exchange events are omitted. The capture summary is still returned, and the context records `include_http: false`. |
+
+```bash
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/timeline?limit=4"
+```
+
+```json
+{
+  "context": {
+    "schema_version": 1,
+    "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
+    "integration_id": "int_01HZY5M4N6P7Q8R9S0T1U2V3W4",
+    "integration_name": "shopify-to-erp",
+    "status": "failed",
+    "attempt": 1,
+    "trigger_type": "manual",
+    "error": "process exited with code 1",
+    "exit_code": 1,
+    "release_digest": "sha256:0f1e2d...",
+    "capture_policy": "full",
+    "created_at": "2026-01-01T11:59:52Z",
+    "started_at": "2026-01-01T11:59:52Z",
+    "finished_at": "2026-01-01T11:59:59Z",
+    "capture": {"run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "state": "complete", "policy": "full", "finalization": "complete", "request_count": 2},
+    "include_http": true
+  },
+  "events": [
+    {"kind": "lifecycle", "at": "2026-01-01T11:59:52Z",     "source": "run_logs",       "id": 1, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "stream": "otter",  "message": "run started (attempt 1 of 1, trigger manual)"},
+    {"kind": "log",       "at": "2026-01-01T11:59:52.400Z", "source": "run_logs",       "id": 2, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "stream": "otter",  "message": "sync starting {\"level\":\"info\",\"object\":\"Contact\"}"},
+    {"kind": "http",      "at": "2026-01-01T11:59:53.310Z", "source": "http_exchanges", "id": 1, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "http": {"request_id": "87603b35e60c4dae9f57040b15e24ab3", "method": "POST", "url": "http://127.0.0.1:8791/records", "status_code": 400, "duration_total_ms": 1, "phase": "completed", "complete": true, "payloads": "full", "call_site": "main.py:27 in main", "ingested_at": "2026-01-01T11:59:53.412Z", "updated_at": "2026-01-01T11:59:53.415Z"}},
+    {"kind": "log",       "at": "2026-01-01T11:59:55.142Z", "source": "run_logs",       "id": 3, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "stream": "stderr", "message": "urllib3: retrying request (attempt 1)"},
+    {"kind": "log",       "at": "2026-01-01T11:59:58.004Z", "source": "run_logs",       "id": 4, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "stream": "stdout", "message": "sync complete: 4242 records"}
+  ],
+  "has_more": true,
+  "next_cursor": "eyJ2IjoxLCJyIjoicnVuXzAxSFpZN1ExVzJF...",
+  "snapshot_at": "2026-01-01T12:00:01Z"
+}
+```
+
+`parent_run_id` is omitted when there is no parent, exactly as `started_at`,
+`finished_at` and `exit_code` are omitted when null and `error` when empty. The
+grammar of `capture` is the same summary object the request list returns, whose
+`state` is `unavailable`, `off`, `pending`, `complete`, `incomplete` or `expired`.
+
+Every event carries `kind`, `at`, `source`, `id` and `run_id`:
+
+| Kind | `source` | Additional fields |
+| --- | --- | --- |
+| `lifecycle` | `run_logs` | `stream` (`otter`) and `message`, the stored line verbatim. The runtime's own narration about the run. |
+| `log` | `run_logs` | `stream` and `message`. Everything the integration produced: `stdout`, `stderr`, and its `ctx.log` output. |
+| `http` | `http_exchanges` | `http`, the exchange summary. |
+
+The `otter` stream carries **both** `lifecycle` and `log` events. The runtime
+narrates a run's lifecycle there, and the SDK's structured logger writes the
+integration's own `ctx.log` calls to the same stream, so `kind` is decided by who
+wrote the line rather than by the stream. A `ctx.log` line is a `log`: it is the
+integration's output, carrying the fields the integration passed.
+
+An `http` object carries `request_id`, `method`, `url` (sanitized), `status_code`
+or `transport_error_class`, `duration_total_ms`, `phase`, `complete`, `payloads`,
+`call_site`, `ingested_at`, `updated_at`, and `late`, which appears only when
+`true`: the daemon recorded the exchange after the producer stamped it, so
+adjacent log lines are not evidence of causal order.
+
+- Events are ordered by `(at, source_rank, id)`, with `run_logs` ranked below
+  `http_exchanges`. Events that share a timestamp therefore order
+  deterministically, and a page boundary can neither lose nor repeat one.
+- No headers, request or response bodies, trigger payloads or raw run metadata
+  ever appear in this response. Payloads stay behind
+  `GET /v1/runs/{id}/requests/{request_id}`, deliberately: trigger storage is not
+  sanitized to the capture standard, so the merged view does not read it.
+- The HTTP event is a summary placed at the exchange's first recorded occurrence;
+  its status and duration are the latest retained values and were not necessarily
+  known at that timestamp. It is not a response event.
+- The ordering is approximate chronology, not causality.
+- `snapshot_at` is informational only and does not pin a snapshot; the cursor's
+  evidence revision is what guards a continuation.
+
+A run that does not exist is `404`. An attempt that has not finished (queued,
+running or retrying) is `409` with a message naming the status. A malformed,
+oversized or unknown-version cursor, a cursor for a different run, or one issued
+under a different `include_http` setting is `400`.
+
+Continuations are bound to the evidence they started from. If the evidence
+changed since the first page — a late log line, an updated exchange, retention
+removing payloads, or startup finalization of a pending recording — the
+continuation is `409` with a stable message telling the caller to restart without
+`after`. A daemon restart alone does not invalidate a cursor.
+
+If the read cannot finish within the daemon's internal budget (250ms, because the
+daemon runs SQLite on a single connection that executing runs also write to), the
+endpoint returns `503` with code `unavailable` and no partial page. Half a
+chronology is worse than a clear failure.
+
+Errors: `400 invalid_request`, `403 forbidden` (a run token), `404 not_found`,
+`409 conflict` (the attempt has not finished, or the evidence behind an `after`
+cursor changed), `503 unavailable`.
 
 ## Cancellation
 
@@ -1058,6 +1171,11 @@ TOKEN=$(curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/order-events" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["webhook_token"])')
 curl -s -X POST -H "X-Otter-Token: $TOKEN" -H 'Content-Type: application/json' \
   -d '{"order_id": 4242}' "$OTTER_API_URL/v1/hooks/order-events"
+
+# 9. After a failure, read its merged timeline — lifecycle, output and HTTP
+#    exchanges in one order. This is the API behind `otter trace`.
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/$RUN_ID/timeline?limit=200" \
+  | python3 -m json.tool
 ```
 
 The same actions through the CLI:

@@ -10,6 +10,7 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/executor"
 	"github.com/tkoizumi/otter/internal/inspection"
+	"github.com/tkoizumi/otter/internal/timeline"
 )
 
 // captureRetentionInterval is how often expired capture is pruned. It is
@@ -110,6 +111,20 @@ func (d *Daemon) GetCaptureRequestByID(ctx context.Context, requestID string) (*
 	}
 	return nil, fmt.Errorf("%w: request id %q appears in runs %s; pass the run id",
 		inspection.ErrAmbiguous, requestID, strings.Join(runIDs, ", "))
+}
+
+// TimelinePage implements api.Backend.
+//
+// It hands the page read the daemon's shared read budget rather than letting the
+// caller choose one: the timeline shares a single SQLite connection with every
+// executing run's log writes and capture ingestion, so the bound belongs next to
+// the code that knows about that contention.
+func (d *Daemon) TimelinePage(ctx context.Context, req timeline.Request) (*timeline.Page, error) {
+	if d.timeline == nil {
+		return nil, fmt.Errorf("the run timeline is not available: %w", api.ErrConflict)
+	}
+	req.Deadline = timeline.ReadBudget
+	return d.timeline.Page(ctx, req)
 }
 
 // beginCapture records the resolved capture policy for a run. It is called at

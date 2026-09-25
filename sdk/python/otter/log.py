@@ -22,6 +22,10 @@ from ._client import Client, encode_path_segment
 
 __all__ = ["Logger"]
 
+#: Marks a line as having come from the integration's logger rather than from the
+#: runtime's own narration, which shares the same log stream.
+_LOGGER_NAME = "otter"
+
 
 class Logger:
     """Thread-safe structured logger bound to a single run."""
@@ -65,6 +69,11 @@ class Logger:
         text = self._as_text(message)
         payload_fields = dict(fields)
         payload_fields["level"] = level
+        # The stream alone does not identify the writer: the daemon narrates a
+        # run's lifecycle on the same stream. This marker states that the line
+        # came from the integration's own logger, so a reader never has to guess
+        # from the payload's shape.
+        payload_fields["logger"] = _LOGGER_NAME
         path = "/v1/runs/%s/logs" % encode_path_segment(self._run_id)
         with self._lock:
             try:

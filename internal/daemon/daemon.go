@@ -33,6 +33,7 @@ import (
 	"github.com/tkoizumi/otter/internal/scheduler"
 	"github.com/tkoizumi/otter/internal/secrets"
 	"github.com/tkoizumi/otter/internal/state"
+	"github.com/tkoizumi/otter/internal/timeline"
 	"github.com/tkoizumi/otter/sdk"
 )
 
@@ -110,6 +111,11 @@ type Daemon struct {
 	// records. It is diagnostic, so nothing recorded through it may change what
 	// a run does.
 	inspection *inspection.Store
+
+	// timeline merges a finished run's logs and captured exchanges into one
+	// ordered view. It is read-only and shares the single database connection,
+	// so every read it performs is bounded by timeline.ReadBudget.
+	timeline *timeline.Reader
 
 	sched    *scheduler.Scheduler
 	exec     *executor.Executor
@@ -189,29 +195,33 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	identStore := identity.NewStore(db.DB)
+	runsStore := runs.NewStore(db.DB)
+	logsStore := runs.NewLogStore(db.DB)
+	inspectionStore := inspection.NewStore(db.DB,
+		inspection.NewRedactor(cfg.CaptureRedactHeaders, cfg.CaptureRedactQuery, cfg.CaptureRedactFields),
+		inspection.DefaultLimits())
 	d := &Daemon{
-		cfg:     cfg,
-		owner:   owner,
-		log:     opts.Logger,
-		version: opts.Version,
-		db:      db,
-		runs:    runs.NewStore(db.DB),
-		logs:    runs.NewLogStore(db.DB),
-		queue:   queue.New(db.DB),
-		state:   state.NewStore(db.DB),
-		inspection: inspection.NewStore(db.DB,
-			inspection.NewRedactor(cfg.CaptureRedactHeaders, cfg.CaptureRedactQuery, cfg.CaptureRedactFields),
-			inspection.DefaultLimits()),
-		sched:     scheduler.New(opts.Logger),
-		secrets:   provider,
-		reg:       newRegistry(),
-		cap:       newCapacity(cfg.Workers),
-		ident:     identity.NewService(identStore, cfg.IntegrationsDir),
-		runTokens: newRunTokenRegistry(),
-		stopCh:    make(chan struct{}),
-		wakeCh:    make(chan struct{}, 1),
-		runCtl:    map[string]*runControl{},
-		startedAt: time.Now().UTC(),
+		cfg:        cfg,
+		owner:      owner,
+		log:        opts.Logger,
+		version:    opts.Version,
+		db:         db,
+		runs:       runsStore,
+		logs:       logsStore,
+		queue:      queue.New(db.DB),
+		state:      state.NewStore(db.DB),
+		inspection: inspectionStore,
+		timeline:   timeline.NewReader(db, runsStore, logsStore, inspectionStore),
+		sched:      scheduler.New(opts.Logger),
+		secrets:    provider,
+		reg:        newRegistry(),
+		cap:        newCapacity(cfg.Workers),
+		ident:      identity.NewService(identStore, cfg.IntegrationsDir),
+		runTokens:  newRunTokenRegistry(),
+		stopCh:     make(chan struct{}),
+		wakeCh:     make(chan struct{}, 1),
+		runCtl:     map[string]*runControl{},
+		startedAt:  time.Now().UTC(),
 	}
 
 	if err := d.ensureIdentityBootstrap(ctx); err != nil {

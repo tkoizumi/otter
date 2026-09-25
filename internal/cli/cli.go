@@ -112,6 +112,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdRequests(ctx, g, commandArgs)
 	case "request":
 		return a.cmdRequest(ctx, g, commandArgs)
+	case "trace":
+		return a.cmdTrace(ctx, g, commandArgs)
 	case "state":
 		return a.cmdState(ctx, g, commandArgs)
 	case "validate":
@@ -797,7 +799,7 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 	fs.SetOutput(a.Stderr)
 	integration := fs.String("integration", "", "filter by integration")
 	status := fs.String("status", "", "filter by status")
-	limit := fs.Int("limit", 20, "maximum number of runs")
+	limit := fs.Int("limit", 100, "maximum number of runs")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -823,7 +825,28 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 		return 0
 	}
 	a.writeRunTable(list)
+	// A full page is the only signal that older runs were left out, so say so
+	// rather than letting the list look complete. The API accepts any limit up
+	// to 1000; beyond that it needs both a limit and an offset.
+	if len(list) == *limit {
+		fmt.Fprintf(a.Stderr, "otter: listed %d run(s); older runs may exist, use --limit %d\n",
+			len(list), runsListNextLimit(*limit))
+	}
 	return 0
+}
+
+// runsListNextLimit suggests a larger page without exceeding what the API
+// serves in one request, so the hint never names a limit that would be rejected.
+func runsListNextLimit(current int) int {
+	const maxLimit = 1000
+	if current >= maxLimit {
+		return maxLimit
+	}
+	next := current * 5
+	if next > maxLimit {
+		next = maxLimit
+	}
+	return next
 }
 
 func (a *App) writeRunTable(list []*runs.Run) {
@@ -1239,6 +1262,7 @@ Runs:
   requests <run-id>               list the outgoing HTTP a run recorded
   request <request-id>            show one recorded exchange with its payloads
   request <run-id> <request-id>   the same, when the id needs disambiguating
+  trace <run-id>                  one finished attempt's context, output and HTTP in time order
 
 State:
   state get <integration> <key>
@@ -1322,7 +1346,7 @@ Examples:
 func needsDaemon(command string) bool {
 	switch command {
 	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state",
-		"register", "reset", "delete", "move", "requests", "request":
+		"register", "reset", "delete", "move", "requests", "request", "trace":
 		return true
 	default:
 		return false

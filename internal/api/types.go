@@ -6,6 +6,7 @@ import (
 
 	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/timeline"
 )
 
 // Trigger types accepted by SubmitRun.
@@ -240,6 +241,15 @@ type CaptureRequestResponse struct {
 	Capture *inspection.RunCapture `json:"capture"`
 	Request *inspection.Exchange   `json:"request"`
 }
+
+// TimelineResponse is the body of GET /v1/runs/{id}/timeline.
+//
+// It is the timeline page as read. The page always carries its context, its
+// capture summary and its framing, so a caller that receives no events can still
+// tell "this run recorded nothing" apart from "this run was never recorded", and
+// can see how to ask for the rest. Events are metadata only -- no header, body or
+// trigger payload travels here.
+type TimelineResponse = timeline.Page
 
 // ErrorResponse is the body of every error the API returns.
 type ErrorResponse struct {

@@ -24,6 +24,7 @@ import (
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/runs"
 	"github.com/tkoizumi/otter/internal/state"
+	"github.com/tkoizumi/otter/internal/timeline"
 )
 
 const (
@@ -106,6 +107,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runs/{id}/requests", s.admin(s.handleListCaptureRequests))
 	mux.Handle("GET /v1/runs/{id}/requests/{request_id}", s.admin(s.handleGetCaptureRequest))
 	mux.Handle("GET /v1/requests/{request_id}", s.admin(s.handleGetCaptureRequestByID))
+	// The merged timeline exposes the same metadata the log and request reads
+	// already do, so it follows them: operator-only, never a run token.
+	mux.Handle("GET /v1/runs/{id}/timeline", s.admin(s.handleTimeline))
 	mux.Handle("GET /v1/integrations/{id}/state", s.principal(s.handleGetAllState))
 	mux.Handle("GET /v1/integrations/{id}/state/{key}", s.principal(s.handleGetState))
 	mux.Handle("PUT /v1/integrations/{id}/state/{key}", s.principal(s.handleSetState))
@@ -806,6 +810,50 @@ func (s *Server) handleGetCaptureRequestByID(w http.ResponseWriter, r *http.Requ
 	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{Capture: summary, Request: exchange})
 }
 
+// handleTimeline returns one page of a finished run's merged timeline.
+//
+// Operator-only, matching the request-list read: the merged view exposes the
+// same metadata, so it must not widen access to it. The read is bounded by the
+// backend's internal budget; a read that cannot finish answers 503 rather than a
+// partial page, because half a chronology is worse than a clear failure.
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+
+	query := r.URL.Query()
+	limit := timeline.DefaultLimit
+	if raw := query.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > timeline.MaxLimit {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid,
+				fmt.Sprintf("limit must be an integer between 1 and %d", timeline.MaxLimit))
+			return
+		}
+		limit = n
+	}
+
+	includeHTTP := true
+	if raw := query.Get("include_http"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid, "include_http must be true or false")
+			return
+		}
+		includeHTTP = value
+	}
+
+	page, err := s.backend.TimelinePage(r.Context(), timeline.Request{
+		RunID:       runID,
+		IncludeHTTP: includeHTTP,
+		After:       query.Get("after"),
+		Limit:       limit,
+	})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, page)
+}
+
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.backend.CancelRun(r.Context(), id); err != nil {
@@ -1007,17 +1055,21 @@ func truncateUTF8(s string, limit int) string {
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound), errors.Is(err, runs.ErrNotFound), errors.Is(err, state.ErrNotFound),
-		errors.Is(err, inspection.ErrNotFound):
+		errors.Is(err, inspection.ErrNotFound), errors.Is(err, timeline.ErrRunNotFound):
 		s.writeError(w, http.StatusNotFound, CodeNotFound, err.Error())
-	case errors.Is(err, ErrInvalid), errors.Is(err, state.ErrInvalidKey):
+	case errors.Is(err, ErrInvalid), errors.Is(err, state.ErrInvalidKey),
+		errors.Is(err, timeline.ErrCursorInvalid):
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
 	case errors.Is(err, state.ErrInvalidValue):
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
 	case errors.Is(err, ErrConflict), errors.Is(err, inspection.ErrNotConfigured),
-		errors.Is(err, inspection.ErrAmbiguous):
+		errors.Is(err, inspection.ErrAmbiguous), errors.Is(err, timeline.ErrRunNotTerminal),
+		errors.Is(err, timeline.ErrEvidenceChanged):
 		s.writeError(w, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, ErrForbidden):
 		s.writeError(w, http.StatusForbidden, CodeForbidden, err.Error())
+	case errors.Is(err, timeline.ErrReadDeadline):
+		s.writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
 	default:
 		s.logger.Error("api_request_failed", err, "method", r.Method, "path", r.URL.Path)
 		s.writeError(w, http.StatusInternalServerError, CodeInternal, err.Error())

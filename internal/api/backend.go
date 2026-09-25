@@ -8,6 +8,7 @@ import (
 
 	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/timeline"
 )
 
 // Sentinel errors a Backend returns so the API layer can choose a status
@@ -111,6 +112,11 @@ type Backend interface {
 	// caller. It reports inspection.ErrAmbiguous when more than one run recorded
 	// the id, because the id alone does not identify a run.
 	GetCaptureRequestByID(ctx context.Context, requestID string) (*inspection.Exchange, error)
+
+	// TimelinePage assembles one page of a finished run's merged timeline. It
+	// refuses an attempt that has not finished, so a reader is never handed a
+	// chronology that is still changing underneath it.
+	TimelinePage(ctx context.Context, req timeline.Request) (*timeline.Page, error)
 
 	// GetState reads one state key.
 	GetState(ctx context.Context, integrationID, key string) (json.RawMessage, error)

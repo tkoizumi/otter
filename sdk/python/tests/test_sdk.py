@@ -374,7 +374,9 @@ class LoggerTests(SDKTestCase):
             {
                 "stream": "otter",
                 "message": "Counter executed",
-                "fields": {"count": 1, "level": "info"},
+                # "logger" marks the line as the integration's own output: the
+                # runtime narrates the run's lifecycle on the same stream.
+                "fields": {"count": 1, "level": "info", "logger": "otter"},
             },
         )
 
@@ -386,6 +388,15 @@ class LoggerTests(SDKTestCase):
         self.ctx.log.error("e")
         levels = [entry["fields"]["level"] for entry in self.daemon.logs]
         self.assertEqual(levels, ["debug", "info", "warning", "warning", "error"])
+
+    def test_log_lines_are_marked_as_the_integrations_own(self):
+        # The runtime narrates a run's lifecycle on the same stream, so the line
+        # itself has to say which writer produced it.
+        self.ctx.log.info("sync starting", page_size=100)
+        entry = self.daemon.logs[-1]
+        self.assertEqual(entry["stream"], "otter")
+        self.assertEqual(entry["fields"]["logger"], "otter")
+        self.assertEqual(entry["fields"]["level"], "info")
 
     def test_falls_back_to_stderr_and_never_raises(self):
         self.daemon.fail_logs = True

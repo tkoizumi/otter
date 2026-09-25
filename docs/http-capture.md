@@ -91,6 +91,112 @@ from the last `id` of the previous page; when a page is full, the command prints
 the cursor to use next. The same data is available over HTTP — see the
 [API reference](api-reference.md#http-request-inspection).
 
+## The merged view: `otter trace`
+
+`otter requests` answers "what did this run send". It does not answer "what
+happened, in order". Answering that means reading `otter logs` for the lifecycle
+and the exception, then `otter requests` for the call, and relating the two by
+hand — two command outputs, two id spaces, two timestamp columns. `otter trace`
+does that join:
+
+```sh
+otter trace <run-id>                    # one finished attempt, oldest first
+otter trace <run-id> --limit 1000       # events per page (default 100, max 1000)
+otter trace <run-id> --after <cursor>   # the next page
+otter trace <run-id> --json             # typed JSONL
+otter trace <run-id> --no-http          # omit exchanges; capture state is still shown
+```
+
+```
+run: 3f2a91c4-...   integration: orders-sync   status: failed   attempt: 1
+release: 8c1d4f0a...   trigger: manual   parent: -
+error: process exited with code 1
+retry context: otter run-status 3f2a91c4-...
+capture: complete; coverage: urllib, requests
+
+TIME          KIND       DETAIL
+12:00:00.010  lifecycle  run queued (trigger manual)
+12:00:00.026  lifecycle  run started (attempt 1 of 1, trigger manual)
+12:00:00.031  http       GET https://api.example.test/v2/cursor -> 200, 6ms
+                         main.py:12; completed; payloads: full
+                         otter request 3f2a91c4-... 1a0d061cd2124c1c9d5abad3e7b41157
+12:00:00.044  http       POST https://api.example.test/v2/records?access_token=REDACTED -> 400, 9ms
+                         main.py:26; completed; payloads: full
+                         otter request 3f2a91c4-... 87603b35e60c4dae9f57040b15e24ab3
+12:00:00.046  log        [stderr] Traceback (most recent call last):
+12:00:00.047  lifecycle  run failed (process exited with code 1)
+```
+
+The `KIND` column names the event kind, not the stream it was stored on. A
+`lifecycle` line is the runtime's own narration: queued, started, cancelled,
+timed out, and the terminal summary. A `log` line is anything the integration
+produced — its `stdout`, its `stderr` (marked `[stderr]` in the detail column),
+and its `ctx.log` output. The `ctx.log` case matters because the SDK posts it to
+the same `otter` stream the runtime narrates on: the merged view distinguishes
+them by who wrote the line, so an integration's own message is never presented as
+runtime narration, and never labelled `otter`.
+
+The HTTP line is a summary, not an event pair. It sits at the exchange's first
+recorded occurrence, usually its start, and its status and duration are the
+latest retained values: they were not necessarily known at that timestamp. When
+the daemon recorded an exchange after the producer stamped it, the line is marked
+`(recorded after the fact)` — the neighbouring lines are then not evidence of
+what caused what.
+
+The trace prints the `otter request` command for each exchange, because the
+payloads stay there. Nothing in a trace carries a header, a body, or a trigger
+payload, and that is deliberate: trigger storage is not sanitized to the standard
+the capture contract requires.
+
+### A trace covers a finished attempt
+
+`otter trace` refuses an attempt that has not finished, with the next command to
+run instead. This is not a limitation to work around: while a run is executing,
+its events are still arriving, so there is no stable order to show. `--follow` is
+rejected as a usage error for the same reason.
+
+- `running` — use `otter logs <run-id> --follow` or `otter requests <run-id>`.
+- `retrying` — this is the next attempt waiting to execute, not the attempt that
+  failed. Nothing has been written to it yet, so following its logs shows
+  nothing. `otter run-status <run-id>` names the finished parent to trace.
+- `queued` — the attempt has not started; `otter run-status` and `otter status`
+  show the attempt and the queue.
+
+### Pages are not a snapshot
+
+A page is one read of evidence that can still move: a late lifecycle line, an
+exchange updated by in-flight capture delivery, retention removing payloads, or a
+daemon starting up and finalizing a pending recording. A continuation cursor is
+therefore bound to the evidence it started from. If that evidence changed, the
+continuation is refused rather than answered with a page that silently skips or
+repeats events:
+
+```
+otter: timeline evidence changed since the first page
+otter: the run's recorded evidence changed since that cursor; start over with
+       'otter trace <run-id>' (discard any pages already collected)
+```
+
+A daemon restart on its own does not invalidate a cursor. Only a change to the
+selected attempt's own evidence does.
+
+### What a trace says when there is nothing to show
+
+An empty trace is ambiguous unless the capture state is stated, so the header is
+always printed before the events, and it distinguishes the cases:
+
+- `complete` — capture was enabled and observed no outgoing HTTP.
+- `expired` — retention removed the recorded requests but kept the summary. If
+  the recording was *already* incomplete before expiry, the trace reports that
+  too, because the derived state alone would hide it.
+- `off` — capture was disabled for this run, so nothing was recorded.
+- `unavailable` — the run has no recording at all (it predates capture). It may
+  still have made requests.
+- `not finalized` — the attempt finished without its recording completing, which
+  is what a killed process leaves behind. This is not the same as the run still
+  executing.
+- `incomplete` — capture is known to have lost events.
+
 ## Choosing what to record
 
 Precedence, highest first:
@@ -262,3 +368,10 @@ stored when they can be safely processed. Redaction and URL sanitizing apply in
   says so explicitly.
 - Capture failures (queue pressure, delivery outage) never change an
   integration's return values, exceptions or exit status.
+- `otter trace` does not show state changes. `ctx.state.get`/`set`/`delete` are
+  not recorded as timeline events in this version, so a trace cannot yet answer
+  "what had the checkpoint moved to by this point". `otter state get` reads the
+  current value.
+- A trace is a record, not a diagnosis. It never labels a request as the cause of
+  a failure; the 400 in the example above is a fact on the timeline, not a
+  verdict about why the run failed.

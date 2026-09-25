@@ -16,6 +16,7 @@ import (
 
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/timeline"
 )
 
 // fakeBackend is an in-memory Backend that lets the real HTTP handler be
@@ -42,6 +43,11 @@ type fakeBackend struct {
 
 	// capture is the in-memory HTTP capture fake, defined in capture_test.go.
 	capture *fakeCapture
+
+	// timeline seam for the API contract tests, defined in timeline_test.go.
+	timelinePage     *timeline.Page
+	timelineErr      error
+	timelineRequests []timeline.Request
 
 	submitted []submittedRun
 	cancelled []string

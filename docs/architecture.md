@@ -17,6 +17,7 @@ the pieces fit together. It should take about ten minutes to read.
 - [Crash recovery](#crash-recovery)
 - [Graceful shutdown](#graceful-shutdown)
 - [Logging](#logging)
+- [Run timeline](#run-timeline)
 - [Why Go, why SQLite, why child processes](#why-go-why-sqlite-why-child-processes)
 - [What is deliberately NOT here](#what-is-deliberately-not-here)
 
@@ -617,6 +618,182 @@ Integration output is a separate concern: it is captured into the `run_logs`
 table and read back with `otter logs <run-id>` / `GET /v1/runs/{id}/logs`. That
 data grows without bound unless you prune it — see the retention example in
 [operations.md](operations.md).
+
+## Run timeline
+
+A run's evidence is stored in places that share no common view: the `runs` row
+(status, attempt, retry chain), `run_logs` (the daemon's own narration plus
+captured stdout/stderr), and `http_exchanges` (captured HTTP summaries). Each has
+its own reader, id space and timestamp column, so before the timeline the
+operator was the join — reading `otter logs` to learn *when* something broke,
+switching to `otter requests` to learn *what* went out, then aligning two
+unrelated sequences by eye.
+
+`otter trace <run-id>` and `GET /v1/runs/{id}/timeline` do that join. A trace is
+a **read-only merge of the two event stores for one finished attempt**, assembled
+in chronological order — not a new store. There is no new table, no new
+ingestion and no SDK change; the only schema change is two indexes. And because
+the timeline is a projection over data the daemon already keeps, it introduces no
+disclosure the log and request reads do not already make (see
+[the projection boundary](#the-projection-boundary)).
+
+A trace is defined only for a **finished** attempt. A running run has no terminal
+narration and its evidence is still moving, so asking for one is refused (`409`)
+rather than answered with a page that is already stale. A retry is a separate run
+id with a separate timeline; the chain is still read from `runs`. `include_http=false`
+(CLI `--no-http`) drops the HTTP half entirely, and the cursor remembers that
+setting so a continuation cannot silently change what a trace includes.
+
+### Why the timeline needs its own indexes
+
+Migration `0007_timeline_indexes.sql` adds `run_logs(run_id, timestamp, id)` and
+`http_exchanges(run_id, occurred_at, id)`. Both tables already had `(run_id,
+id)`, so the question is why a second index is needed. Because `id` is
+*assignment* order, not *chronological* order: log rows arrive in bursts as the
+child writes them, and capture events are ingested in batches, so neither id
+sequence follows the timestamp sequence. The old indexes answer "every row for
+this run" perfectly, but a page asks "the next N events after this timestamp",
+and with only `(run_id, id)` the only way to answer it is to read every row for
+the run and sort — which makes a trace cost as much as the run rather than as
+much as the page. The new indexes turn each page into a bounded ordered seek.
+They are additive: `(run_id, id)` is still what `?after_id=` streaming and the
+request list use.
+
+### Ordering across two independent sources
+
+Events are ordered by `(at, source_rank, id)`, with `run_logs = 0` and
+`http_exchanges = 1`. The rank exists because the two tables are sequenced
+independently: a bare timestamp leaves two events that share a millisecond
+ambiguous, and a bare id means nothing across two unrelated id spaces. A total
+order is not cosmetic. A page boundary can fall inside a group of events sharing
+a timestamp, and the cursor is all the next page has to go on; an ambiguous
+boundary could skip or repeat one of those events.
+
+The rank also decides what each source may return for a cursor. A source is read
+with the cursor's tuple as an exclusive lexicographic bound, so its rows must
+sort strictly after it. A source is queried at the cursor's own timestamp only
+when that source orders at or above the cursor's rank; a lower-ranked source at
+that instant has already been passed. So a cursor left on a log event still lets
+a same-instant HTTP row through (the HTTP row ranks above it and sorts after),
+while a cursor left on an HTTP event does not re-read same-instant log rows (they
+rank below it and were already emitted). Each source is asked for one row beyond
+the page, so the merge can tell a further page exists without reading either
+source to its end; the limit bounds the merged page, not each source.
+
+### The evidence revision and the continuation cursor
+
+Pages are not a database snapshot, even for a finished attempt. Late lifecycle
+lines can still land, capture ingestion can still be flushing, retention can
+delete rows and startup finalization can rewrite the capture summary. Any of
+those between two pages would make a continuation silently skip, duplicate or
+replace an event. So the cursor carries more than a position: it carries a digest
+of the evidence the first page was built from, and a continuation whose evidence
+no longer matches is refused (`409`) instead of returning a trace with a hole in
+it. The remedy — start the trace over — is explicit.
+
+The digest covers the run context a page displays (status, error, exit code and
+the rest of the header), the capture summary, and the extent of each source: for
+logs the pair `(MIN(id), MAX(id))` plus a present/absent flag, and for HTTP the
+same extent plus a digest over the retained exchange summaries. For logs the pair
+is chosen over a row count deliberately. It is two covering-index seeks, whereas
+`COUNT(*)` is O(rows) per page and would make the tenth page of a large run cost
+about ten times the first. The pair is also sufficient: it detects every mutation
+the log store can perform. An append raises `MAX(id)`, and all three deletion
+paths — `DeleteForRun`, `DeleteOlderThan` and the per-integration cascade —
+remove whole rows, so each changes `MIN(id)` or clears both. Log rows are never
+updated, and `run_logs.id` is `AUTOINCREMENT`, so a deleted id is never reused
+and cannot reappear below a raised `MAX`. An in-place edit, or a write to the
+database from outside the daemon, is outside what the revision claims to detect;
+the log store performs neither.
+
+The HTTP extent alone would be too weak, because an exchange row is *updated* in
+place as its response lands — phase, status, duration and completeness all
+change — so a metadata digest over the retained rows is folded in too. That
+digest never reads a header or body column: a payload-only change does not alter
+what a trace shows, and reading bodies to check evidence would turn a cheap
+continuation check into a payload read.
+
+### One connection, 250 ms
+
+The daemon runs SQLite on a single connection (`internal/database`: WAL,
+`busy_timeout(10000)`). One connection is what keeps the single-writer story
+simple and the queue free of lock tuning, but it also means a reader holds the
+*only* connection while it works. A timeline that took its time would stall the
+log writes and capture ingestion of every executing run. A page read is therefore
+bounded by an internal budget, `timeline.ReadBudget` (250 ms), covering the whole
+database read: acquiring the connection, computing the revision and running the
+page queries. A read that cannot finish returns `503` and no partial page,
+because half a chronology is worse than a clear failure.
+
+The 10 s busy timeout and the 250 ms budget are not the same knob. The busy
+timeout is the point at which a blocked driver call gives up — a failure mode,
+not the budget. The budget is the daemon's own admission bound, chosen so a
+diagnostic read cannot starve writes.
+
+The measured cost sits far inside it. On a local test fixture, a page over
+100,000 log rows plus 1,000 exchanges took roughly 22–30 ms for the first page, a
+continuation page and a 1,000-event page, and about 55 ms over 300,000 log rows.
+The useful result is the shape rather than the figure: the revision is two index
+seeks and the page is bounded by its limit, so tripling the run's rows does not
+triple the read. These are local test-fixture measurements, not production
+benchmarks.
+
+### The projection boundary
+
+The HTTP half of the timeline reads metadata columns only. It never reads a header
+or body column, and the revision digest excludes bodies, so a payload-only change
+cannot invalidate a cursor. Payloads stay behind `otter request <request-id>`,
+which the human form names on the exchange line.
+
+The run context is an explicit allowlisted projection (`runs.TimelineRun`) rather
+than the whole run record, because `runs.Run` carries `Metadata`, which holds the
+raw, unsanitized trigger body and headers as submitted. Those are not sanitized
+to the standard the request read holds itself to, so they must not travel through
+the timeline response or its cursor. A projection also means a field added to
+`Run` later cannot silently appear in a trace.
+
+### Where the code lives
+
+| Piece | Location |
+| --- | --- |
+| Event types, cursor, revision digest, merge assembly | `internal/timeline` |
+| Transaction-aware read projections | `internal/runs` (`TimelineRunTx`, `LogPageTx`, `LogEvidenceTx`) and `internal/inspection` (`TimelineExchangeTx`, `TimelineEvidenceTx`, `TimelineDigestTx`, `TimelineCaptureTx`) |
+| Daemon backend method | `internal/daemon/inspection_api.go` (`TimelinePage`) |
+| API route and client | `internal/api` (`GET /v1/runs/{id}/timeline`, `Client.Timeline`) |
+| CLI rendering | `internal/cli/trace.go` |
+
+The header, the revision and the page are read inside one transaction, so a page
+is internally consistent even though it is not a snapshot that later pages share.
+
+### What a trace shows
+
+A trace event is one of three kinds:
+
+- **lifecycle** — the runtime's own narration about the run: queued, started,
+  cancelled, timed out, and the terminal summary.
+- **log** — anything the integration produced: captured `stdout`, `stderr`, and
+  its `ctx.log` output.
+- **http** — a captured exchange summary placed at its `occurred_at`: method,
+  sanitized URL, status or transport-error class, duration, phase, payload
+  completeness, request id and call site. Never a payload.
+
+The first two both live in `run_logs`, and the `otter` stream carries both: the
+daemon narrates there, and the SDK's structured logger posts an integration's
+`ctx.log` lines there too. Classifying by stream alone therefore labelled an
+integration's own log line a lifecycle event, which is why `run_logs` records an
+`origin` (`daemon` or `child`) written at the call site
+(`migrations/0008_run_logs_origin.sql`). The kind is derived from that fact, not
+from the stream and not by parsing the message in normal operation. Rows written
+before the column existed fall back to `runs.LooksLikeDaemonNarration`, which
+recognises the fixed shapes of the narration and treats anything unrecognised as
+the integration's; that fallback is deliberately conservative, because
+presenting a child's output as runtime narration is the more misleading error.
+
+State mutations are **not** on the timeline in this version.
+`integration_state` keeps no history table, so there is nothing to place on a
+chronology; adding one is a separate feature with its own capture path. Until
+then a trace says nothing about state rather than implying a read or write
+happened at a time it did not record.
 
 ## Why Go, why SQLite, why child processes
 

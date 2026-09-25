@@ -534,6 +534,7 @@ func (d *Daemon) appendOtterLog(runID, message string) {
 		Timestamp: time.Now().UTC(),
 		Stream:    runs.StreamOtter,
 		Message:   message,
+		Origin:    runs.OriginDaemon,
 	})
 	if err != nil {
 		d.log.Error("run_log_write_failed", err, "run_id", runID)
@@ -567,6 +568,7 @@ func (s *runLogSink) Line(stream string, at time.Time, message string) {
 		Timestamp: at,
 		Stream:    stream,
 		Message:   message,
+		Origin:    runs.OriginChild,
 	})
 
 	if stream == runs.StreamStderr && strings.TrimSpace(message) != "" {
