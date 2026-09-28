@@ -448,10 +448,14 @@ func TestFallbackJournalIsAppliedOnRestart(t *testing.T) {
 	}
 }
 
-// TestUnreadableFallbackJournalDoesNotReRunRunningRuns pins the fail-closed
-// rule. Recovery cannot tell an interrupted child from one whose outcome is
-// recorded in a journal it cannot read, so it must leave the run alone rather
-// than risk executing a successful child twice.
+// TestUnreadableFallbackJournalDoesNotReRunRunningRuns pins the rule.
+// Recovery cannot tell an interrupted child from one whose outcome is recorded
+// in a journal it cannot read, so it must leave the run alone rather than risk
+// executing a successful child twice.
+//
+// The startup refusal this triggers on its own is pinned separately by
+// TestStartupFailClosedOnIncompleteRecovery; the override is what lets this
+// test observe the run state the hold protects.
 func TestUnreadableFallbackJournalDoesNotReRunRunningRuns(t *testing.T) {
 	root := t.TempDir()
 	writeIntegration(t, root, "job", retryableManifest, noopPython)
@@ -479,7 +483,9 @@ func TestUnreadableFallbackJournalDoesNotReRunRunningRuns(t *testing.T) {
 		t.Fatalf("occupy journal path: %v", err)
 	}
 
-	d := newDaemon(t, root, dataDir, nil, nil)
+	d := newDaemon(t, root, dataDir, nil, func(cfg *config.DaemonConfig) {
+		cfg.AllowIncompleteRecovery = true
+	})
 	ctx := context.Background()
 
 	run, err := d.runs.Get(ctx, "running-child")

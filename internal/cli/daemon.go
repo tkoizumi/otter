@@ -54,7 +54,7 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 		fmt.Fprintf(stderr, "\nEnvironment:\n")
 		fmt.Fprintf(stderr, "  OTTER_INTEGRATIONS_DIR OTTER_DATA_DIR OTTER_LISTEN OTTER_WORKERS\n")
 		fmt.Fprintf(stderr, "  OTTER_API_TOKEN OTTER_LOG_FORMAT OTTER_LOG_LEVEL OTTER_SHUTDOWN_GRACE\n")
-		fmt.Fprintf(stderr, "  OTTER_SDK_PATH\n")
+		fmt.Fprintf(stderr, "  OTTER_SDK_PATH OTTER_ALLOW_INCOMPLETE_RECOVERY\n")
 	}
 
 	if err := fs.Parse(args); err != nil {

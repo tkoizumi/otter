@@ -6,7 +6,43 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tkoizumi/otter/internal/config"
 )
+
+// A bool daemon flag must be forwarded as --name=value: the flag package reads
+// a bare --name as true and would leave the rendered value as a positional
+// argument the daemon rejects.
+func TestDaemonArgsForwardsBoolFlag(t *testing.T) {
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	workers := fs.Int("workers", 0, "")
+	recovery := fs.Bool("allow-incomplete-recovery", false, "")
+	_ = []any{workers, recovery}
+	if err := fs.Parse([]string{"--allow-incomplete-recovery", "--workers", "4"}); err != nil {
+		t.Fatalf("parse start flags: %v", err)
+	}
+
+	args := daemonArgs(fs, "/srv/integrations", "/var/lib/otter", "127.0.0.1:7337", nil)
+
+	cfg := config.DefaultDaemonConfig("test")
+	daemonFS := flag.NewFlagSet("otterd", flag.ContinueOnError)
+	cfg.RegisterFlags(daemonFS)
+	if err := daemonFS.Parse(args); err != nil {
+		t.Fatalf("daemon rejected forwarded args %v: %v", args, err)
+	}
+	if daemonFS.NArg() != 0 {
+		t.Fatalf("forwarded args left positional arguments: %v", daemonFS.Args())
+	}
+	if !cfg.AllowIncompleteRecovery {
+		t.Error("--allow-incomplete-recovery did not survive the handover")
+	}
+	if cfg.Workers != 4 {
+		t.Errorf("workers = %d, want 4", cfg.Workers)
+	}
+	if cfg.IntegrationsDir != "/srv/integrations" || cfg.DataDir != "/var/lib/otter" || cfg.Listen != "127.0.0.1:7337" {
+		t.Errorf("derived args wrong: %+v", cfg)
+	}
+}
 
 func TestDetectProjectRoot(t *testing.T) {
 	root := t.TempDir()

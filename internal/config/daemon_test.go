@@ -128,6 +128,51 @@ func TestFlagsOverrideEnv(t *testing.T) {
 	}
 }
 
+// The fail-closed default must hold unless an operator asks otherwise, and the
+// override must be reachable from both the environment and the flag.
+func TestAllowIncompleteRecovery(t *testing.T) {
+	if DefaultDaemonConfig("test").AllowIncompleteRecovery {
+		t.Fatal("AllowIncompleteRecovery defaults to on; startup is not fail-closed")
+	}
+
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"true", true},
+		{"1", true},
+		{"false", false},
+		{"0", false},
+	} {
+		t.Run("env="+tc.value, func(t *testing.T) {
+			t.Setenv("OTTER_ALLOW_INCOMPLETE_RECOVERY", tc.value)
+			c := DefaultDaemonConfig("test")
+			if err := c.ApplyEnv(); err != nil {
+				t.Fatal(err)
+			}
+			if c.AllowIncompleteRecovery != tc.want {
+				t.Errorf("AllowIncompleteRecovery = %v, want %v", c.AllowIncompleteRecovery, tc.want)
+			}
+		})
+	}
+
+	t.Setenv("OTTER_ALLOW_INCOMPLETE_RECOVERY", "maybe")
+	c := DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err == nil {
+		t.Error("a malformed override value was accepted")
+	}
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	flagged := DefaultDaemonConfig("test")
+	flagged.RegisterFlags(fs)
+	if err := fs.Parse([]string{"--allow-incomplete-recovery"}); err != nil {
+		t.Fatal(err)
+	}
+	if !flagged.AllowIncompleteRecovery {
+		t.Error("--allow-incomplete-recovery did not set the override")
+	}
+}
+
 func TestValidate(t *testing.T) {
 	valid := func() DaemonConfig {
 		c := DefaultDaemonConfig("test")

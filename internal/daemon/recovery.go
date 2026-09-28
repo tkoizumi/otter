@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,6 +26,12 @@ const crashMessage = "otter daemon restarted during execution"
 // journal: a run whose child actually finished may have been left running only
 // because its terminal write failed, and re-executing a successful child would
 // duplicate its external effects.
+//
+// Every failure to repair an interrupted run is collected and returned, not
+// only a failure of the initial read. A run that could not be terminalised is
+// exactly the stranded work this pass exists to prevent, so the caller treats
+// it as a reason to refuse startup. The pass itself continues over the
+// remaining runs: one unrepairable row must not hide the state of the others.
 func (d *Daemon) recoverRuns(ctx context.Context) error {
 	recorded, err := d.readFinishJournal()
 	if err != nil {
@@ -47,24 +54,38 @@ func (d *Daemon) recoverRuns(ctx context.Context) error {
 	d.log.Warn("recovering_interrupted_runs", "count", len(stale))
 
 	keep := map[string]finishRecord{}
+	var failed []error
 	for _, run := range stale {
 		rec, journalled := recorded[run.ID]
 		if !journalled {
-			d.recoverInterrupted(ctx, run)
+			if err := d.recoverInterrupted(ctx, run); err != nil {
+				failed = append(failed, err)
+			}
 			continue
 		}
-		if !d.applyFinishRecord(ctx, run, rec) {
+		consumed, err := d.applyFinishRecord(ctx, run, rec)
+		if err != nil {
+			failed = append(failed, err)
+		}
+		if !consumed {
 			// The record could not be consumed; keep it for the next restart.
 			keep[run.ID] = rec
 		}
 	}
-	return d.rewriteFinishJournal(keep)
+	// Rewrite the journal even when a run failed: a record that was applied
+	// must not be replayed by the next startup. A rewrite failure is itself a
+	// recovery failure, because it can leave an applied record behind.
+	if err := d.rewriteFinishJournal(keep); err != nil {
+		failed = append(failed, err)
+	}
+	return errors.Join(failed...)
 }
 
 // recoverInterrupted terminalises one run left `running` by a previous daemon
 // instance and, when the policy allows, creates its successor in the same
-// transaction as the terminal write.
-func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) {
+// transaction as the terminal write. A returned error means the run was not
+// repaired and remains `running`.
+func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) error {
 	entry, ok := d.reg.get(run.IntegrationID)
 	if !ok || entry.Manifest == nil {
 		d.log.Warn("recovery_no_manifest",
@@ -83,7 +104,7 @@ func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) {
 	}
 	if err := d.persistOutcome(ctx, run.ID, f, next); err != nil {
 		d.log.Error("recovery_finish_failed", err, "run_id", run.ID)
-		return
+		return fmt.Errorf("recover run %s: %w", run.ID, err)
 	}
 
 	d.appendOtterLog(run.ID, "marked failed: "+crashMessage)
@@ -95,15 +116,17 @@ func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) {
 	if next != nil {
 		d.scheduleSuccessor(run, next)
 	}
+	return nil
 }
 
 // applyFinishRecord applies an outcome the fallback journal recorded when its
 // transaction could not be written. The recorded status is honoured rather than
 // replaced by a crash failure: a child that already succeeded must not run
-// again. It reports whether the record was consumed.
-func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finishRecord) bool {
+// again. It reports whether the record was consumed, and an error when a
+// persisted outcome could not be written.
+func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finishRecord) (bool, error) {
 	if !rec.Status.Terminal() {
-		return false
+		return false, nil
 	}
 	f := runs.Finish{
 		Status:     rec.Status,
@@ -125,7 +148,7 @@ func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finis
 
 	if err := d.persistOutcome(ctx, run.ID, f, next); err != nil {
 		d.log.Error("recovery_outcome_apply_failed", err, "run_id", run.ID)
-		return false
+		return false, fmt.Errorf("apply recorded outcome for %s: %w", run.ID, err)
 	}
 
 	d.appendOtterLog(run.ID, "recorded outcome recovered: "+string(rec.Status))
@@ -138,7 +161,7 @@ func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finis
 	if next != nil {
 		d.scheduleSuccessor(run, next)
 	}
-	return true
+	return true, nil
 }
 
 // reconcileQueue repairs the one inconsistency a crash can leave behind: a run

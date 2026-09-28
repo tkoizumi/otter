@@ -262,7 +262,9 @@ concurrent runs (default: CPU cores, capped at 8).
 **Crash recovery.** On start, any run left in `running` by a previous daemon is
 marked `failed` with `otter daemon restarted during execution`, and a fresh
 attempt is enqueued when the retry policy allows. Queued runs stay queued.
-State, run history and logs survive.
+Recovery is fail-closed: if it or queue reconciliation cannot complete, the
+daemon refuses to start rather than serve with stranded work. State, run history
+and logs survive.
 
 **Graceful shutdown.** On `SIGTERM`/`SIGINT`, Otter stops the scheduler, stops
 claiming work, gives running integrations `--shutdown-grace` (default 15s) to
@@ -447,6 +449,7 @@ otterd \
 | `--log-format` | `OTTER_LOG_FORMAT` | `json` | `json` or `pretty`. |
 | `--log-level` | `OTTER_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--shutdown-grace` | `OTTER_SHUTDOWN_GRACE` | `15s` | Time running integrations get on shutdown. |
+| `--allow-incomplete-recovery` | `OTTER_ALLOW_INCOMPLETE_RECOVERY` | `false` | Start even when crash recovery or queue reconciliation fails; affected runs may stay stranded. |
 | `--sdk-path` | `OTTER_SDK_PATH` | *(embedded)* | Override the directory put on the child `PYTHONPATH`. |
 | `--capture-default` | `OTTER_CAPTURE_DEFAULT` | `full` | HTTP capture for runs that do not choose one: `off`, `metadata`, `full`. |
 | `--capture-retention` | — | `168h` | How long captured payloads are kept; `0` disables expiry. |

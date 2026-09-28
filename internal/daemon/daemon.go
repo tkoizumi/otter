@@ -276,12 +276,24 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	// Recover before any trigger can fire so an interrupted run is never
-	// executed twice.
+	// executed twice. A failure here or in reconciliation means interrupted
+	// work was not repaired: serving anyway would leave it non-terminal with
+	// no queue row, invisible to the worker pool until a later restart
+	// succeeds. Refuse to start unless the operator explicitly accepted that
+	// risk, and say so loudly when they did.
 	if err := d.recoverRuns(ctx); err != nil {
-		d.log.Error("recovery_failed", err)
+		if !cfg.AllowIncompleteRecovery {
+			_ = db.Close()
+			return nil, fmt.Errorf("startup recovery did not complete: %w; set --allow-incomplete-recovery (or OTTER_ALLOW_INCOMPLETE_RECOVERY) to start anyway and leave affected runs stranded", err)
+		}
+		d.log.Error("recovery_failed", err, "override", "allow-incomplete-recovery")
 	}
 	if err := d.reconcileQueue(ctx); err != nil {
-		d.log.Error("queue_reconcile_failed", err)
+		if !cfg.AllowIncompleteRecovery {
+			_ = db.Close()
+			return nil, fmt.Errorf("startup queue reconciliation did not complete: %w; set --allow-incomplete-recovery (or OTTER_ALLOW_INCOMPLETE_RECOVERY) to start anyway and leave orphaned runs unqueued", err)
+		}
+		d.log.Error("queue_reconcile_failed", err, "override", "allow-incomplete-recovery")
 	}
 
 	d.apiServer = api.NewServer(api.ServerConfig{

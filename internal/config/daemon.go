@@ -46,6 +46,15 @@ type DaemonConfig struct {
 	LogLevel        string
 	ShutdownGrace   time.Duration
 
+	// AllowIncompleteRecovery lets startup continue when crash recovery or
+	// queue reconciliation fails. It exists for one case: bringing a daemon up
+	// deliberately to inspect or repair a database that recovery cannot read.
+	// Leaving it false is the safe default. Continuing to serve after a failed
+	// recovery turns one transient error into permanently stranded runs --
+	// interrupted work stays `running` with no queue row and no terminal state,
+	// and nothing repairs it until a later restart succeeds.
+	AllowIncompleteRecovery bool
+
 	// CaptureRetention is how long HTTP capture payloads are retained. Zero
 	// disables automatic expiry, which is only sensible when something else
 	// prunes the database.
@@ -246,6 +255,13 @@ func (c *DaemonConfig) ApplyEnv() error {
 		}
 		c.ShutdownGrace = d
 	}
+	if v, ok := os.LookupEnv("OTTER_ALLOW_INCOMPLETE_RECOVERY"); ok && strings.TrimSpace(v) != "" {
+		allow, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("OTTER_ALLOW_INCOMPLETE_RECOVERY must be true or false, got %q", v)
+		}
+		c.AllowIncompleteRecovery = allow
+	}
 	if v, ok := os.LookupEnv("OTTER_SDK_PATH"); ok && v != "" {
 		c.SDKPath = v
 	}
@@ -305,6 +321,8 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.LogFormat, "log-format", c.LogFormat, "daemon log format: json or pretty")
 	fs.StringVar(&c.LogLevel, "log-level", c.LogLevel, "daemon log level: debug, info, warn or error")
 	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running integrations may finish after SIGTERM before being terminated")
+	fs.BoolVar(&c.AllowIncompleteRecovery, "allow-incomplete-recovery", c.AllowIncompleteRecovery,
+		"start even when crash recovery or queue reconciliation fails; affected runs may stay stranded")
 	fs.DurationVar(&c.CaptureRetention, "capture-retention", c.CaptureRetention, "how long captured HTTP payloads are kept; the per-run summary survives (0 disables expiry)")
 	fs.Var(policyFlag{target: &c.CaptureDefault}, "capture-default",
 		"HTTP capture policy for runs that do not choose one: "+policyNames())

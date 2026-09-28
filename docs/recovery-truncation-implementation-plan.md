@@ -1,9 +1,14 @@
 # Recovery truncation implementation plan
 
-Status: proposed. Date: 2026-09-28. Target release: `v0.1.19`. Task `OT-001`
-adjacent; tracked as defect 1 of the [v0.2.0 release plan](v0.2.0-release-plan.md).
+Status: implemented. Date: 2026-09-28. Target release: `v0.1.19`. Shipped in
+commit `ffb5940` ("Fix default limit of 50 runs for recovery"), including the
+`>50` regression test.
 
-No behaviour described here is implemented by writing this document.
+The fail-closed startup hold this document originally bundled with the read fix
+was deliberately deferred and is defect 6 of the
+[v0.2.0 release plan](v0.2.0-release-plan.md). That is the resolution of the
+scheduling conflict: `v0.1.19` carries the truncation fix only, and the startup
+policy lands in `v0.2.0`.
 
 ## The defect
 
@@ -227,8 +232,9 @@ passes before the change, it is not exercising the defect.
 **In scope.** The exhaustive read, the three callers, and the tests above.
 
 **Out of scope.** The atomic finish/retry transaction, child process lifetime,
-the fail-closed startup hold, and the fault matrix. Those are defects 4-6 and
-the `v0.2.0` deliverables.
+the fail-closed startup hold, and the fault matrix. Those are defects 4-6 of the
+[v0.2.0 release plan](v0.2.0-release-plan.md); the fail-closed hold (defect 6)
+lands in `v0.2.0`, not here.
 
 **Follow-ups.**
 
@@ -236,12 +242,13 @@ the `v0.2.0` deliverables.
   default, once the display callers are audited.
 - The same silent-default pattern should be checked anywhere else a limit is
   coerced; this plan addresses `runs` only.
-- `reconcileQueue` resets `available_at` to now (`recovery.go:87`), discarding
+- `reconcileQueue` resets `available_at` to now (`recovery.go:188`), discarding
   retry backoff. That is a separate defect and is not fixed here.
 
 ## Evidence status
 
-The defect and the affected call sites are **verified by reading the source at
-`v0.1.18`**. It has not been reproduced at runtime. The first deliverable is
-therefore the failing test, not the fix: a defect confirmed only by inspection
-can be misread, and the test is what converts this document's claim into a fact.
+The defect and the affected call sites were verified by reading the source at
+`v0.1.18`. It has since been reproduced and fixed: the `>50` recovery regression
+test (`TestCrashRecoveryHandlesMoreThanOneListingPage`), the pagination tests in
+`internal/runs`, and the reconciliation tests pass, so this document's claim is a
+runtime fact rather than an inspection.

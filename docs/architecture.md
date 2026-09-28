@@ -601,9 +601,18 @@ work:
    so the next run reconciles the gap.
 
 If the fallback journal exists but cannot be read, startup recovery stops rather
-than guess: a `running` run is left alone instead of being re-executed, and the
-failure is logged. A pending run is visible and repairable; a duplicated
-external effect is not.
+than guess: a `running` run is left alone instead of being re-executed. A pending
+run is visible and repairable; a duplicated external effect is not.
+
+Recovery is fail-closed. If recovery or queue reconciliation cannot complete —
+including a failure to persist the repaired state of an interrupted run — the
+daemon refuses to start rather than open for new work, because continuing would
+serve while accepted work sat stranded: a `running` row with no queue row, no
+terminal state and no retry successor, which nothing repairs until a later
+restart happens to succeed. `--allow-incomplete-recovery`
+(`OTTER_ALLOW_INCOMPLETE_RECOVERY`) starts anyway and logs the error at `error`
+level, for bringing a daemon up deliberately to inspect a database it cannot
+read.
 
 ### Child lifetime is platform-specific
 

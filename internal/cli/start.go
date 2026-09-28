@@ -259,7 +259,8 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	notifyOn := fs.String("notify-on", "", "comma-separated terminal statuses that notify")
 	captureDefault := fs.String("capture-default", "", "HTTP capture policy for runs that do not choose one: off, metadata or full")
 	captureRetention := fs.Duration("capture-retention", 0, "how long captured HTTP payloads are kept (0 disables expiry)")
-	_ = []any{workers, apiToken, logFormat, logLevel, shutdownGrace, sdkPath, notifyURL, notifyFormat, notifyOn, captureDefault, captureRetention}
+	allowIncompleteRecovery := fs.Bool("allow-incomplete-recovery", false, "start even when crash recovery or queue reconciliation fails")
+	_ = []any{workers, apiToken, logFormat, logLevel, shutdownGrace, sdkPath, notifyURL, notifyFormat, notifyOn, captureDefault, captureRetention, allowIncompleteRecovery}
 
 	// Anything left over is forwarded verbatim, so a daemon flag added later
 	// works here before start knows about it.
@@ -702,6 +703,14 @@ func daemonArgs(fs *flag.FlagSet, integrations, data, listen string, passthrough
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "integrations", "data", "listen", "detach":
+			return
+		}
+		// A bool flag must be forwarded as --name=value. The flag package
+		// reads a bare --name as true and leaves the next argument as a
+		// positional, so forwarding "--name true" would make the daemon
+		// reject "true" as an unexpected argument.
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			args = append(args, "--"+f.Name+"="+f.Value.String())
 			return
 		}
 		args = append(args, "--"+f.Name, f.Value.String())

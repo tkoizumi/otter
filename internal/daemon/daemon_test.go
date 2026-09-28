@@ -1140,6 +1140,181 @@ retry:
 	}
 }
 
+// startupConfig builds a daemon configuration for a test that calls New
+// directly, so a startup refusal can be asserted instead of turning fatal.
+func startupConfig(t *testing.T, root, dataDir string) config.DaemonConfig {
+	t.Helper()
+	cfg := config.DefaultDaemonConfig("test")
+	cfg.IntegrationsDir = root
+	cfg.DataDir = dataDir
+	cfg.Listen = freeAddr(t)
+	cfg.Workers = 4
+	cfg.LogLevel = "error"
+	return cfg
+}
+
+// closeUnstarted releases a daemon that New returned but Run never started.
+func closeUnstarted(t *testing.T, d *Daemon) {
+	t.Helper()
+	if err := d.db.Close(); err != nil {
+		t.Errorf("close database: %v", err)
+	}
+	if d.owner != nil {
+		_ = d.owner.Close()
+	}
+}
+
+// hasLogEvent reports whether a captured JSON log contains an event.
+func hasLogEvent(t *testing.T, output, event string) bool {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("parse log line %q: %v", line, err)
+		}
+		if record["event"] == event {
+			return true
+		}
+	}
+	return false
+}
+
+// withDataDir opens the daemon database at dataDir, runs migrations, and hands
+// it to fn. It is how a test plants the exact database state -- or the write
+// fault -- that startup recovery must react to.
+func withDataDir(t *testing.T, dataDir string, fn func(ctx context.Context, db *database.DB)) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open %s: %v", dataDir, err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close %s: %v", dataDir, err)
+		}
+	}()
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate %s: %v", dataDir, err)
+	}
+	fn(ctx, db)
+}
+
+// TestStartupFailClosedOnIncompleteRecovery is the regression test for the
+// fail-closed startup hold. Each case makes one startup repair impossible and
+// checks both halves of the contract: New refuses by default, and the override
+// starts only with a loud log.
+func TestStartupFailClosedOnIncompleteRecovery(t *testing.T) {
+	cases := []struct {
+		name    string
+		event   string
+		prepare func(t *testing.T, dataDir string)
+	}{
+		{
+			name:  "unreadable finish journal",
+			event: "recovery_failed",
+			prepare: func(t *testing.T, dataDir string) {
+				// A self-referential symlink makes the journal unopenable,
+				// standing in for the permission and I/O errors that have the
+				// same effect in production.
+				if err := os.Symlink(finishJournalName, filepath.Join(dataDir, finishJournalName)); err != nil {
+					t.Fatalf("symlink journal: %v", err)
+				}
+			},
+		},
+		{
+			name:  "unrepairable interrupted run",
+			event: "recovery_failed",
+			prepare: func(t *testing.T, dataDir string) {
+				withDataDir(t, dataDir, func(ctx context.Context, db *database.DB) {
+					if err := runs.NewStore(db.DB).Create(ctx, &runs.Run{
+						ID:            "stuck",
+						IntegrationID: "job",
+						TriggerType:   runs.TriggerManual,
+						Status:        runs.StatusRunning,
+						Attempt:       1,
+						CreatedAt:     time.Now().UTC(),
+					}); err != nil {
+						t.Fatalf("seed running run: %v", err)
+					}
+					if _, err := db.DB.ExecContext(ctx,
+						`CREATE TRIGGER block_run_finish BEFORE UPDATE ON runs
+						 BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+						t.Fatalf("create update trigger: %v", err)
+					}
+				})
+			},
+		},
+		{
+			name:  "orphaned queued run",
+			event: "queue_reconcile_failed",
+			prepare: func(t *testing.T, dataDir string) {
+				withDataDir(t, dataDir, func(ctx context.Context, db *database.DB) {
+					if err := runs.NewStore(db.DB).Create(ctx, &runs.Run{
+						ID:            "orphan",
+						IntegrationID: "job",
+						TriggerType:   runs.TriggerManual,
+						Status:        runs.StatusQueued,
+						Attempt:       1,
+						CreatedAt:     time.Now().UTC(),
+					}); err != nil {
+						t.Fatalf("seed queued run: %v", err)
+					}
+					if _, err := db.DB.ExecContext(ctx,
+						`CREATE TRIGGER block_queue_insert BEFORE INSERT ON run_queue
+						 BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+						t.Fatalf("create insert trigger: %v", err)
+					}
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+"/refuses", func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := t.TempDir()
+			tc.prepare(t, dataDir)
+
+			_, err := New(context.Background(), Options{
+				Config: startupConfig(t, root, dataDir),
+				Logger: testLogger(),
+			})
+			if err == nil {
+				t.Fatal("New started despite an incomplete startup repair")
+			}
+			if !strings.Contains(err.Error(), "allow-incomplete-recovery") {
+				t.Errorf("refusal = %q, want it to name the override", err)
+			}
+		})
+
+		t.Run(tc.name+"/override", func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := t.TempDir()
+			tc.prepare(t, dataDir)
+
+			var logs bytes.Buffer
+			cfg := startupConfig(t, root, dataDir)
+			cfg.AllowIncompleteRecovery = true
+			d, err := New(context.Background(), Options{
+				Config: cfg,
+				Logger: logging.New(&logs, logging.FormatJSON, logging.LevelDebug),
+			})
+			if err != nil {
+				t.Fatalf("override did not allow startup: %v", err)
+			}
+			closeUnstarted(t, d)
+
+			if !hasLogEvent(t, logs.String(), tc.event) {
+				t.Errorf("override start did not log %s:\n%s", tc.event, logs.String())
+			}
+		})
+	}
+}
+
 func TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed(t *testing.T) {
 	root := t.TempDir()
 	writeIntegration(t, root, "job", `

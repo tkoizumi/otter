@@ -94,6 +94,10 @@ OTTER_SHUTDOWN_GRACE=30s
 # <data dir>/sdk/python. The directory must exist and be writable by otter.
 #OTTER_SDK_PATH=/opt/otter/sdk/python
 
+# Fail-closed by default: startup refuses if crash recovery cannot complete.
+# Uncomment only to bring the daemon up anyway while diagnosing that.
+#OTTER_ALLOW_INCOMPLETE_RECOVERY=true
+
 # Integration secrets, referenced by name from otter.yaml `secrets:`.
 SHOPIFY_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxx
 ERP_TOKEN=erp_xxxxxxxxxxxxxxxxxxxx
@@ -728,6 +732,9 @@ Behavior worth expecting:
   prunes them, so a rollback to a pre-upgrade release still works. A deployment
   does this automatically; a local workspace needs `otter release --all` (or one
   `otter release` per integration) before runs resume executing current code.
+- **Startup can refuse to run.** If crash recovery or queue reconciliation
+  cannot complete, the daemon exits instead of serving with stranded work. See
+  [Daemon refuses to start after a crash](#daemon-refuses-to-start-after-a-crash).
 
 ## Capacity and concurrency tuning
 
@@ -989,6 +996,30 @@ systemctl show otter -p NRestarts
 Make integrations idempotent, or checkpoint with `ctx.state` so a repeated
 attempt resumes instead of starting over — persist a cursor in `ctx.state` and
 read it back at the start of the next run.
+
+### Daemon refuses to start after a crash
+
+**Symptom.** The daemon exits at startup with `startup recovery did not
+complete` or `startup queue reconciliation did not complete`, and the API never
+listens.
+
+This is fail-closed by design: the daemon could not repair interrupted or
+orphaned runs, and starting anyway would leave them stranded with no queue row
+and no terminal state. The log line carries the underlying database error; fix
+that first. A full disk, an unreadable data directory, and a locked or corrupt
+database are the common causes:
+
+```bash
+journalctl -u otter -n 50
+df -h /var/lib/otter
+sqlite3 /var/lib/otter/otter.db 'PRAGMA integrity_check;'
+```
+
+Only when you must bring the daemon up to inspect or repair a database it cannot
+read, start it once with `--allow-incomplete-recovery`
+(`OTTER_ALLOW_INCOMPLETE_RECOVERY=true`). It logs `recovery_failed` or
+`queue_reconcile_failed` at `error` level and serves; the affected runs stay
+non-terminal until a later restart recovers them successfully.
 
 ### Runs pile up in the queue
 
