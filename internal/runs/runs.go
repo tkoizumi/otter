@@ -566,17 +566,37 @@ type Finish struct {
 
 // Finish writes the terminal state of a run.
 func (s *Store) Finish(ctx context.Context, id string, f Finish) error {
+	return s.FinishTx(ctx, nil, id, f)
+}
+
+// FinishTx writes the terminal state of a run, optionally inside an existing
+// transaction. It is what lets a terminal write and the successor attempt it
+// implies be committed together, so a crash can never leave one without the
+// other.
+func (s *Store) FinishTx(ctx context.Context, tx *sql.Tx, id string, f Finish) error {
 	if !f.Status.Terminal() {
 		return fmt.Errorf("runs: finish %s: status %q is not terminal", id, f.Status)
 	}
 	if f.FinishedAt.IsZero() {
 		f.FinishedAt = time.Now().UTC()
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status = ?, finished_at = ?, exit_code = ?, error = ?
-		 WHERE id = ?`,
+
+	const q = `UPDATE runs SET status = ?, finished_at = ?, exit_code = ?, error = ?
+		 WHERE id = ?`
+	args := []any{
 		string(f.Status), database.FormatTime(f.FinishedAt),
-		database.NullableInt(f.ExitCode), database.NullableString(f.Error), id)
+		database.NullableInt(f.ExitCode), database.NullableString(f.Error), id,
+	}
+
+	var (
+		res sql.Result
+		err error
+	)
+	if tx != nil {
+		res, err = tx.ExecContext(ctx, q, args...)
+	} else {
+		res, err = s.db.ExecContext(ctx, q, args...)
+	}
 	if err != nil {
 		return fmt.Errorf("runs: finish %s: %w", id, err)
 	}

@@ -240,7 +240,8 @@ data directory.
 ```
 
 Data flow in one line: **trigger → enqueue run → atomic claim → spawn child
-process → capture logs → record terminal status → maybe enqueue retry.**
+process → capture logs → record the terminal status and any successor attempt in
+one transaction → notify.**
 
 ### Reload
 
@@ -501,8 +502,8 @@ The pieces that matter in practice:
   are executing. Default is the number of CPU cores, capped at 8.
 - **After a restart**, the queue is reloaded from `run_queue` while the capacity
   counters start empty. That is correct because no child processes survived the
-  restart: crash recovery has already marked every previously `running` run as
-  `failed`, so nothing is executing when the first worker reserves a slot.
+  restart: crash recovery has already terminalised every previously `running`
+  run, so nothing is executing when the first worker reserves a slot.
 - **Retry backoff** is implemented with `available_at`. A retry is enqueued
   immediately with a future `available_at`, so the claim query ignores it until
   the delay elapses. The timer needs no in-memory bookkeeping and survives a
@@ -569,16 +570,29 @@ an OOM kill is deterministic. On startup the daemon, before it starts claiming
 work:
 
 1. Runs schema migrations.
-2. Finds every run still in `running` from the previous process lifetime. Those
+2. Reads the finish fallback journal, if one exists. It is written only when a
+   child's outcome could not be committed to SQLite, and it holds the outcome
+   the attempt actually reached.
+3. Finds every run still in `running` from the previous process lifetime. Those
    child processes are gone (the daemon was their parent), so each is marked
-   `failed` with the error `otter daemon restarted during execution`.
-3. Enqueues a retry for each of those runs when the manifest's retry policy
-   permits it.
-4. Leaves `queued` runs queued — they simply get claimed by the new worker pool.
-5. Registers cron schedules from the manifests again. Occurrences that fell in
+   `failed` with the error `otter daemon restarted during execution` — unless
+   the fallback journal recorded an outcome for it, in which case the recorded
+   status is applied instead. A successful child is therefore never re-executed
+   because its terminal write failed.
+4. Creates the successor and its queue row in the same transaction as the
+   terminal status, so a crash can never leave a terminal failure whose retry is
+   missing. The successor is enqueued when the manifest's retry policy permits
+   it.
+5. Leaves `queued` runs queued — they simply get claimed by the new worker pool.
+6. Registers cron schedules from the manifests again. Occurrences that fell in
    the downtime window are **not** replayed. If a schedule needs catch-up
    semantics, model it as state (for example a `last_processed_at` checkpoint)
    so the next run reconciles the gap.
+
+If the fallback journal exists but cannot be read, startup recovery stops rather
+than guess: a `running` run is left alone instead of being re-executed, and the
+failure is logged. A pending run is visible and repairable; a duplicated
+external effect is not.
 
 Integration state, run history, logs and webhook tokens all survive restarts and
 reboots because they are rows in `otter.db`, not memory.

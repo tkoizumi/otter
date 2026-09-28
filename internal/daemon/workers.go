@@ -389,8 +389,37 @@ func describeExit(res *executor.Result) string {
 	}
 }
 
-// finishRun records the terminal state of an attempt and schedules a retry
-// when the policy allows one.
+// finishWriteAttempts bounds how many times one attempt's outcome is written
+// before the durable fallback takes over. A healthy SQLite write needs no
+// retry; the bound absorbs a transient fault without letting a permanent one
+// spin the worker.
+const (
+	finishWriteAttempts = 3
+	finishWriteBackoff  = 200 * time.Millisecond
+)
+
+// retryPlan is the successor attempt a terminal outcome creates. It is built
+// before any write, from the policy alone, so the retry decision is taken once
+// and cannot depend on a side effect.
+type retryPlan struct {
+	run         *runs.Run
+	availableAt time.Time
+	delay       time.Duration
+	maxAttempts int
+}
+
+// finishCommit is the commit step of the atomic finish transaction. It is a
+// variable so a test can inject a commit failure -- impossible to trigger
+// against a healthy SQLite file -- and prove that a terminal write and its
+// successor are all-or-nothing.
+var finishCommit = func(tx *sql.Tx) error { return tx.Commit() }
+
+// finishRun records the terminal state of an attempt and, when the policy
+// allows one, its successor attempt and queue row, in a single transaction.
+//
+// The whole outcome is decided before anything is written, so no side effect
+// can roll the decision back. Logging, notification and capture are
+// best-effort and run strictly after the durable write.
 func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, retryable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -398,18 +427,137 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	if f.FinishedAt.IsZero() {
 		f.FinishedAt = time.Now().UTC()
 	}
-	if err := d.runs.Finish(ctx, run.ID, f); err != nil {
-		d.log.Error("run_finish_failed", err, "run_id", run.ID, "status", string(f.Status))
-		return
+
+	willRetry := retryable && m != nil && retry.ShouldRetry(m.MaxAttempts(), run.Attempt)
+	var next *retryPlan
+	if willRetry {
+		next = d.planRetry(run, m)
 	}
-	run.Status = f.Status
-	run.FinishedAt = &f.FinishedAt
 
 	// The integration's own final log line. Read before this attempt's
 	// terminal lifecycle line is written, so it is the integration's summary
 	// (pages/fetched/written) rather than Otter's own narration.
 	detail := d.detailLine(ctx, run.ID)
 
+	if err := d.commitOutcome(ctx, run.ID, f, next); err != nil {
+		d.fallbackOutcome(run, f, next, err)
+		return
+	}
+
+	run.Status = f.Status
+	run.FinishedAt = &f.FinishedAt
+
+	d.reportOutcome(run, f, detail, retryable, next)
+}
+
+// commitOutcome persists the terminal state and its successor with a bounded
+// retry. A commit that reports failure may still have been applied -- SQLite
+// can fail after the write became durable -- so the recorded state is re-read
+// before retrying. That is what keeps an ambiguous commit from creating a
+// second successor.
+func (d *Daemon) commitOutcome(ctx context.Context, runID string, f runs.Finish, next *retryPlan) error {
+	var lastErr error
+	for attempt := 1; attempt <= finishWriteAttempts; attempt++ {
+		if err := d.persistOutcome(ctx, runID, f, next); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+		if d.outcomeRecorded(ctx, runID, f, next) {
+			return nil
+		}
+		if attempt == finishWriteAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return lastErr
+		case <-time.After(finishWriteBackoff):
+		}
+	}
+	return lastErr
+}
+
+// persistOutcome writes one attempt's terminal state and, when plan is not nil,
+// its successor attempt and queue row, in one transaction. Either the whole
+// outcome is durable or none of it is.
+func (d *Daemon) persistOutcome(ctx context.Context, runID string, f runs.Finish, plan *retryPlan) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("runs: finish %s: begin: %w", runID, err)
+	}
+	// Safe after Commit: Rollback returns ErrTxDone, which we ignore.
+	defer func() { _ = tx.Rollback() }()
+
+	if err := d.runs.FinishTx(ctx, tx, runID, f); err != nil {
+		return err
+	}
+	if plan != nil {
+		if err := d.runs.CreateTx(ctx, tx, plan.run); err != nil {
+			return err
+		}
+		if err := d.queue.EnqueueTx(ctx, tx, plan.run.ID, plan.run.IntegrationID, plan.availableAt); err != nil {
+			return err
+		}
+	}
+	if err := finishCommit(tx); err != nil {
+		return fmt.Errorf("runs: finish %s: commit: %w", runID, err)
+	}
+	return nil
+}
+
+// outcomeRecorded reports whether the outcome commitOutcome was trying to write
+// is already durable. It is how a commit that failed after its write landed is
+// told apart from one that rolled back.
+func (d *Daemon) outcomeRecorded(ctx context.Context, runID string, f runs.Finish, next *retryPlan) bool {
+	stored, err := d.runs.Get(ctx, runID)
+	if err != nil || stored.Status != f.Status {
+		return false
+	}
+	if next == nil {
+		return true
+	}
+	if _, err := d.runs.Get(ctx, next.run.ID); err != nil {
+		return false
+	}
+	queued, err := d.queue.Contains(ctx, next.run.ID)
+	return err == nil && queued
+}
+
+// fallbackOutcome is the explicit rule for a terminal write that could not be
+// persisted. Returning silently is forbidden: a run left `running` after a
+// successful child is re-executed by crash recovery, duplicating its external
+// effects. The outcome is recorded in a durable sidecar journal that recovery
+// applies instead of inventing a crash failure.
+func (d *Daemon) fallbackOutcome(run *runs.Run, f runs.Finish, next *retryPlan, cause error) {
+	d.log.Error("run_finish_failed", cause,
+		"run_id", run.ID,
+		"integration", run.IntegrationID,
+		"status", string(f.Status),
+		"action", "journalled")
+
+	rec := finishRecord{
+		RunID:      run.ID,
+		Status:     f.Status,
+		ExitCode:   f.ExitCode,
+		Error:      f.Error,
+		FinishedAt: f.FinishedAt,
+		Retry:      next != nil,
+		RecordedAt: time.Now().UTC(),
+	}
+	if err := d.appendFinishRecord(rec); err != nil {
+		// Nothing durable remains. A restart will treat the run as
+		// interrupted; say so unambiguously rather than let a log line imply
+		// the outcome was saved.
+		d.log.Error("run_finish_fallback_failed", err,
+			"run_id", run.ID, "status", string(f.Status))
+	}
+}
+
+// reportOutcome emits the best-effort side effects of an attempt whose outcome
+// is already durable. None of it runs before the write, and none of it may
+// change what was recorded.
+func (d *Daemon) reportOutcome(run *runs.Run, f runs.Finish, detail string, retryable bool, next *retryPlan) {
 	durationMS := run.Duration().Milliseconds()
 	fields := []any{
 		"integration", run.IntegrationID,
@@ -446,6 +594,11 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	}
 	d.appendOtterLog(run.ID, summary)
 
+	if next != nil {
+		d.scheduleSuccessor(run, next)
+		return
+	}
+
 	// Decide whether this attempt is the end of the road before notifying.
 	//
 	// An intermediate failure is not worth an alert: the retry policy exists
@@ -453,22 +606,42 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 	// three times would otherwise send three alerts. Alert fatigue is how a
 	// working notification becomes an ignored one, so the signal reported is
 	// "this run has given up", not "an attempt failed".
-	willRetry := retryable && m != nil && retry.ShouldRetry(m.MaxAttempts(), run.Attempt)
-	if !willRetry {
-		if retryable && m != nil {
-			d.log.Info("run_retries_exhausted",
-				"integration", run.IntegrationID, "run_id", run.ID, "attempts", run.Attempt)
+	if retryable {
+		d.log.Info("run_retries_exhausted",
+			"integration", run.IntegrationID, "run_id", run.ID, "attempts", run.Attempt)
+	}
+	d.notifyFailure(run, f, detail, durationMS)
+}
+
+// scheduleSuccessor performs the best-effort side effects of a retry whose run
+// record and queue row are already durable: its capture recording, the log
+// lines, and waking the workers.
+func (d *Daemon) scheduleSuccessor(previous *runs.Run, plan *retryPlan) {
+	next := plan.run
+
+	// Each attempt owns its own recording, created before the retry can be
+	// claimed so its child never submits capture for a missing summary. A retry
+	// of a run that predates capture keeps no recording at all: inventing one
+	// would report "incomplete" for a run that was never captured.
+	if next.CapturePolicy != "" {
+		if policy, err := inspection.ParsePolicy(next.CapturePolicy); err == nil {
+			d.beginCapture(next.ID, next.IntegrationID, policy)
 		}
-		d.notifyFailure(run, f, detail, durationMS)
-		return
 	}
 
-	if err := d.scheduleRetry(ctx, run, m); err != nil {
-		d.log.Error("run_retry_failed", err, "run_id", run.ID)
-		// The retry could not be scheduled, so this run is the last one after
-		// all. Report it rather than losing the failure entirely.
-		d.notifyFailure(run, f, detail, durationMS)
-	}
+	d.log.Info("run_retry_scheduled",
+		"integration", next.IntegrationID,
+		"run_id", next.ID,
+		"retry_of", previous.ID,
+		"attempt", next.Attempt,
+		"max_attempts", plan.maxAttempts,
+		"delay", plan.delay.String())
+
+	d.appendOtterLog(previous.ID,
+		fmt.Sprintf("retry %d of %d scheduled in %s as run %s",
+			next.Attempt, plan.maxAttempts, plan.delay, next.ID))
+
+	d.notifyWorkers()
 }
 
 // notifyFailure reports a terminal failure to the configured endpoint.
@@ -523,9 +696,10 @@ func (d *Daemon) detailLine(ctx context.Context, runID string) string {
 	return line
 }
 
-// scheduleRetry creates the next attempt as a new run record linked to the
-// attempt it retries, and enqueues it with the backoff delay applied.
-func (d *Daemon) scheduleRetry(ctx context.Context, previous *runs.Run, m *config.Manifest) error {
+// planRetry builds the successor attempt for a failed run from the manifest's
+// retry policy, without writing anything. The caller persists it together with
+// the terminal state in one transaction.
+func (d *Daemon) planRetry(previous *runs.Run, m *config.Manifest) *retryPlan {
 	delay := retry.Delay(m.Retry, previous.Attempt)
 	now := time.Now().UTC()
 	parentID := previous.ID
@@ -552,42 +726,12 @@ func (d *Daemon) scheduleRetry(ctx context.Context, previous *runs.Run, m *confi
 		// records exactly what the operator asked for, and owns its own requests.
 		CapturePolicy: previous.CapturePolicy,
 	}
-	availableAt := now.Add(delay)
-
-	err := d.db.Tx(ctx, func(tx *sql.Tx) error {
-		if err := d.runs.CreateTx(ctx, tx, next); err != nil {
-			return err
-		}
-		return d.queue.EnqueueTx(ctx, tx, next.ID, next.IntegrationID, availableAt)
-	})
-	if err != nil {
-		return fmt.Errorf("schedule retry for %s: %w", previous.ID, err)
+	return &retryPlan{
+		run:         next,
+		availableAt: now.Add(delay),
+		delay:       delay,
+		maxAttempts: m.MaxAttempts(),
 	}
-
-	// Each attempt owns its own recording, created before the retry can be
-	// claimed so its child never submits capture for a missing summary. A retry
-	// of a run that predates capture keeps no recording at all: inventing one
-	// would report "incomplete" for a run that was never captured.
-	if next.CapturePolicy != "" {
-		if policy, err := inspection.ParsePolicy(next.CapturePolicy); err == nil {
-			d.beginCapture(next.ID, next.IntegrationID, policy)
-		}
-	}
-
-	d.log.Info("run_retry_scheduled",
-		"integration", next.IntegrationID,
-		"run_id", next.ID,
-		"retry_of", previous.ID,
-		"attempt", next.Attempt,
-		"max_attempts", m.MaxAttempts(),
-		"delay", delay.String())
-
-	d.appendOtterLog(previous.ID,
-		fmt.Sprintf("retry %d of %d scheduled in %s as run %s",
-			next.Attempt, m.MaxAttempts(), delay, next.ID))
-
-	d.notifyWorkers()
-	return nil
 }
 
 // appendOtterLog writes a runtime lifecycle line into the same log stream as

@@ -207,6 +207,86 @@ func TestFinishRecordsOutcome(t *testing.T) {
 	}
 }
 
+// TestFinishTxJoinsTheCallersTransaction is the regression test for the
+// finish/retry split: the terminal write has to be able to participate in the
+// caller's transaction, so a run's outcome and the successor it implies are
+// committed together or not at all.
+func TestFinishTxJoinsTheCallersTransaction(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"rollback", "commit"} {
+		if err := store.Create(ctx, sampleRun(id, StatusRunning, 1)); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	// A transaction that fails after FinishTx must leave no trace of it.
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := store.FinishTx(ctx, tx, "rollback", Finish{Status: StatusFailed, Error: "boom"}); err != nil {
+		t.Fatalf("finish in transaction: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	rolled, err := store.Get(ctx, "rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolled.Status != StatusRunning || rolled.FinishedAt != nil {
+		t.Errorf("rolled-back run = %s (finished %v), want running with no finish",
+			rolled.Status, rolled.FinishedAt)
+	}
+
+	// The same call inside a committed transaction is durable.
+	tx, err = store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := store.FinishTx(ctx, tx, "commit", Finish{
+		Status: StatusTimedOut, Error: "slow", FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("finish in transaction: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	committed, err := store.Get(ctx, "commit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.Status != StatusTimedOut || committed.FinishedAt == nil {
+		t.Errorf("committed run = %s (finished %v), want timed_out with finished_at",
+			committed.Status, committed.FinishedAt)
+	}
+
+	// FinishTx validates exactly like Finish, inside or outside a transaction.
+	for _, status := range []Status{StatusRunning, StatusQueued} {
+		tx, err := store.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if err := store.FinishTx(ctx, tx, "commit", Finish{Status: status}); err == nil {
+			t.Errorf("finishing with the non-terminal status %q should fail", status)
+		}
+		_ = tx.Rollback()
+	}
+
+	tx, err = store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := store.FinishTx(ctx, tx, "missing", Finish{Status: StatusFailed}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("finishing a missing run in a transaction = %v, want ErrNotFound", err)
+	}
+	_ = tx.Rollback()
+}
+
 func TestChainFollowsRetryAttempts(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()
@@ -492,8 +572,9 @@ func TestLogStoreDeleteAndPrune(t *testing.T) {
 
 // guard against an accidental signature change in the stores.
 var (
-	_ func(context.Context, string) (*Run, error) = (&Store{}).Get
-	_ func(context.Context, *sql.Tx, *Run) error  = (&Store{}).CreateTx
+	_ func(context.Context, string) (*Run, error)          = (&Store{}).Get
+	_ func(context.Context, *sql.Tx, *Run) error           = (&Store{}).CreateTx
+	_ func(context.Context, *sql.Tx, string, Finish) error = (&Store{}).FinishTx
 )
 
 // TestListMatchesAnyIntegrationID covers the migrated-workspace case: the same
