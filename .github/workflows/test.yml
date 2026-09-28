@@ -31,6 +31,12 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      # The child-lifetime regression test (internal/executor/proc_linux_test.go)
+      # runs on this Linux runner and asserts that a child dies when its parent
+      # is SIGKILLed. macOS has no parent-death signal, so that guarantee is
+      # explicitly excluded there rather than tested; see
+      # docs/architecture.md#child-lifetime-is-platform-specific. The
+      # release-config job below still cross-compiles darwin.
       - run: go test ./...
 
   python:

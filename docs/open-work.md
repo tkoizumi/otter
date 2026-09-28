@@ -38,9 +38,10 @@ The bulk of `v0.2.0` is sequenced in
 [v0.2.0-release-plan.md](v0.2.0-release-plan.md). What appears here is only the
 work for that version that the release plan does not yet cover.
 
-| ID | Task | Kind | Evidence | Status |
-| --- | --- | --- | --- | --- |
-| OT-009 | State the macOS orphan-child limitation if it cannot be closed | doc | `Pdeathsig` is Linux-only; darwin/arm64 is a shipped target | open |
+None open. `OT-009` (state the macOS orphan-child limitation) closed with the
+child-lifetime fix: `Pdeathsig` on Linux, and the macOS exposure stated in
+[architecture.md](architecture.md#child-lifetime-is-platform-specific). The
+limitation is documented, not fixed; a macOS watchdog remains unscheduled.
 
 ### v0.3.0
 

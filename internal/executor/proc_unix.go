@@ -8,11 +8,11 @@ import (
 	"syscall"
 )
 
-// setProcessGroup puts the child in its own process group so that signals
-// reach any grandchildren it may spawn.
-func setProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-}
+// The group helpers below are shared by every Unix target. Launching the child
+// in its own process group (`setProcessGroup`) is the one part that is not:
+// Linux can additionally ask the kernel to signal the child when the daemon
+// dies, and Darwin cannot. That split lives in proc_linux.go, proc_darwin.go
+// and proc_unix_other.go.
 
 // terminateGroup sends SIGTERM to the child's process group.
 func terminateGroup(cmd *exec.Cmd) error {

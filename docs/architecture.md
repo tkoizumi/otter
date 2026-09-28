@@ -152,9 +152,14 @@ What survives what:
 | Event | Integration state | Run history & logs | Pending queue |
 | --- | --- | --- | --- |
 | Daemon restart (SIGTERM) | intact | intact | intact |
-| Daemon killed (SIGKILL) | intact | intact; the in-flight run is marked failed at next start and retried | intact |
+| Daemon killed (SIGKILL) | intact | intact; the in-flight run is marked failed at next start and retried † | intact |
 | Machine reboot | intact | intact | intact |
 | Power loss mid-write | consistent; the last few commits may be lost | same | same |
+
+† The SIGKILL row is the one platform-specific claim in this table. On Linux the
+in-flight child is killed by the parent-death signal, so nothing survives to
+overlap its retry; on macOS it is reparented and keeps running. See
+[Child lifetime is platform-specific](#child-lifetime-is-platform-specific).
 
 That last row is the documented trade-off of WAL with `synchronous=NORMAL`: the
 database is never *corrupted*, but the most recent commit is not guaranteed to
@@ -501,9 +506,12 @@ The pieces that matter in practice:
   goroutines, and the same capacity registry refuses reservations once `N` runs
   are executing. Default is the number of CPU cores, capped at 8.
 - **After a restart**, the queue is reloaded from `run_queue` while the capacity
-  counters start empty. That is correct because no child processes survived the
-  restart: crash recovery has already terminalised every previously `running`
-  run, so nothing is executing when the first worker reserves a slot.
+  counters start empty. On Linux that is correct because no child processes
+  survived the restart: the parent-death signal kills the in-flight child, and
+  crash recovery has already terminalised every previously `running` run, so
+  nothing is executing when the first worker reserves a slot. Darwin has no
+  such signal, so an orphan can still be running when its retry is claimed
+  (see [Child lifetime is platform-specific](#child-lifetime-is-platform-specific)).
 - **Retry backoff** is implemented with `available_at`. A retry is enqueued
   immediately with a future `available_at`, so the claim query ignores it until
   the delay elapses. The timer needs no in-memory bookkeeping and survives a
@@ -573,12 +581,15 @@ work:
 2. Reads the finish fallback journal, if one exists. It is written only when a
    child's outcome could not be committed to SQLite, and it holds the outcome
    the attempt actually reached.
-3. Finds every run still in `running` from the previous process lifetime. Those
-   child processes are gone (the daemon was their parent), so each is marked
-   `failed` with the error `otter daemon restarted during execution` — unless
-   the fallback journal recorded an outcome for it, in which case the recorded
-   status is applied instead. A successful child is therefore never re-executed
-   because its terminal write failed.
+3. Finds every run still in `running` from the previous process lifetime. The
+   attempt is terminalised as interrupted: it is marked `failed` with the error
+   `otter daemon restarted during execution` — unless the fallback journal
+   recorded an outcome for it, in which case the recorded status is applied
+   instead. A successful child is therefore never re-executed because its
+   terminal write failed. On Linux the child is already gone — it received
+   `SIGKILL` when the daemon died — so the retry cannot overlap it. On macOS it
+   may still be running; see
+   [Child lifetime is platform-specific](#child-lifetime-is-platform-specific).
 4. Creates the successor and its queue row in the same transaction as the
    terminal status, so a crash can never leave a terminal failure whose retry is
    missing. The successor is enqueued when the manifest's retry policy permits
@@ -593,6 +604,35 @@ If the fallback journal exists but cannot be read, startup recovery stops rather
 than guess: a `running` run is left alone instead of being re-executed, and the
 failure is logged. A pending run is visible and repairable; a duplicated
 external effect is not.
+
+### Child lifetime is platform-specific
+
+When the daemon dies abruptly — `kill -9`, an OOM kill, a panic — the fate of
+the in-flight child depends on the platform. This is the one guarantee in this
+document that is not uniform across supported platforms.
+
+- **Linux.** The child is launched with `Pdeathsig: SIGKILL`
+  (`internal/executor/proc_linux.go`), so the kernel kills it when the daemon's
+  parent thread exits. It cannot outlive the daemon beyond signal delivery, and
+  the retry startup schedules cannot overlap it. This covers the direct child
+  only: a grandchild the integration spawned is reparented, not signalled.
+- **macOS.** Darwin has no parent-death signal. `syscall.SysProcAttr` there has
+  no `Pdeathsig` field, and XNU offers no equivalent of Linux's
+  `PR_SET_PDEATHSIG` (`internal/executor/proc_darwin.go`). The child is
+  reparented and keeps running, while startup marks its run failed and retries
+  it, so an integration whose external effects are not idempotent can be
+  duplicated. Closing this needs a supervisor process or a death-watch pipe
+  inside the child; persisting the child's process group does not, because a
+  startup sweep is post-crash cleanup rather than prevention and cannot portably
+  distinguish a live child from a recycled pid.
+
+The graceful paths are platform-independent and cover the whole process group:
+timeout, cancellation and daemon shutdown send `SIGTERM`, wait out the grace
+period, then send `SIGKILL` to the group. Only an abrupt daemon death leaves an
+orphan, and only on macOS. The Linux half is asserted by
+`internal/executor/proc_linux_test.go`; macOS is deliberately excluded because
+the guarantee does not exist there. The limitation was tracked as `OT-009` and
+is stated here.
 
 Integration state, run history, logs and webhook tokens all survive restarts and
 reboots because they are rows in `otter.db`, not memory.
