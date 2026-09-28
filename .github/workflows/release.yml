@@ -96,13 +96,19 @@ jobs:
       # cask into <owner>/homebrew-tap, which the default GITHUB_TOKEN
       # cannot write to. Create a fine-grained PAT with contents:write on that
       # one repository and store it as HOMEBREW_TAP_TOKEN.
+      #
+      # The release body is curated, not generated: GoReleaser is handed
+      # docs/releases/<tag>.md and skips its commit-subject changelog. A tag
+      # with no notes file fails here, before anything is published, rather
+      # than publishing a list of "fix bug" subjects. CHANGELOG.md links to
+      # each file.
       - name: Publish the release and the Homebrew cask
         if: github.event_name == 'push'
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-notes docs/releases/${{ github.ref_name }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

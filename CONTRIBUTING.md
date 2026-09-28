@@ -143,6 +143,14 @@ test job, the smoke workflow, then GoReleaser on a tag. `.github/workflows/test.
 is the pull-request gate. Packaging carries the two binaries and the embedded
 SDK, and nothing else — no vendor code, no local artifacts, no runtime state.
 
+Release notes are curated, not generated. Before tagging, write
+`docs/releases/<version>.md` stating what changed for a user, not just which
+bugs were fixed — a minor release especially (semantics, upgrade notes,
+non-guarantees). The tag publishes that file as the GitHub release body
+(`release.yml` passes `--release-notes`); a tag with no notes file fails the
+release job before publishing anything, rather than shipping a commit-subject
+list. `CHANGELOG.md` links to each release's notes.
+
 ## What not to send
 
 - Vendor clients, mappings, credentials or a real integration.
