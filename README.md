@@ -711,6 +711,7 @@ platform published as `otter_<version>_<os>_<arch>.tar.gz` by
 | Document | Contents |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Subsystems, schema, run lifecycle, design rationale. |
+| [docs/runtime-contract.md](docs/runtime-contract.md) | Versioned runtime contract: attempt state machine, accepted-request promise, concurrency, retries, platforms, and the fault matrix behind each claim. |
 | [docs/manifest-reference.md](docs/manifest-reference.md) | Every `otter.yaml` field with defaults and validation rules. |
 | [docs/api-reference.md](docs/api-reference.md) | Every endpoint, credential type and error code. |
 | [docs/http-capture.md](docs/http-capture.md) | HTTP request inspection: capture levels, coverage, bodies, limits, retention, redaction. |

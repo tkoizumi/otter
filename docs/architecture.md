@@ -21,6 +21,13 @@ the pieces fit together. It should take about ten minutes to read.
 - [Why Go, why SQLite, why child processes](#why-go-why-sqlite-why-child-processes)
 - [What is deliberately NOT here](#what-is-deliberately-not-here)
 
+This document explains how the runtime is built and why. It is descriptive. The
+normative promises — the attempt state machine, what an accepted request
+guarantees, delivery and state-concurrency limits, and the platform-specific
+behavior — live in
+[runtime-contract.md](runtime-contract.md), where every guarantee is tied to a
+named fault-matrix scenario.
+
 ## In one paragraph
 
 `otterd` is a single Go binary. It scans a root directory for `otter.yaml`
@@ -399,6 +406,11 @@ chronological ordering and `available_at <= ?` comparisons work in SQL without
 any timezone ambiguity.
 
 ## Run lifecycle
+
+The normative transition table, including which transitions are legal and how
+each is proven, is in
+[runtime-contract.md](runtime-contract.md#1-the-attempt-state-machine). What
+follows is the shape of the lifecycle.
 
 ```
                        enqueue (cron | webhook | manual)
