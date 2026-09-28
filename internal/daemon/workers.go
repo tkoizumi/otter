@@ -30,6 +30,13 @@ import (
 // them fire on time.
 const workerIdlePoll = 500 * time.Millisecond
 
+// claimFailureBackoff is how long a claimed run waits before a worker may pick
+// it up again after its attempt could not start. Claim deletes the run_queue
+// row, so returning the run to the queue is what keeps it from being stranded
+// between restarts; the delay keeps a persistent database fault from spinning
+// the workers on the same row.
+const claimFailureBackoff = 5 * time.Second
+
 // startWorkers launches the worker pool. The pool size is the global
 // concurrency limit.
 func (d *Daemon) startWorkers() {
@@ -82,7 +89,27 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	run, err := d.runs.Get(loadCtx, item.RunID)
 	cancelLoad()
 	if err != nil {
+		// Classify before acting. The store distinguishes only "missing" from
+		// "failed to read", and the two need opposite treatment.
+		if errors.Is(err, runs.ErrNotFound) {
+			// The record is gone: there is nothing to execute, nothing to
+			// terminal (Finish would match no row) and nothing worth
+			// re-enqueueing, because every later claim could only fail to load
+			// it again. The run is already terminal by deletion; say so once
+			// rather than manufacture a poison queue row.
+			d.log.Warn("run_load_failed",
+				"error", err.Error(),
+				"run_id", item.RunID,
+				"integration", item.IntegrationID,
+				"action", "dropped")
+			return
+		}
+		// Anything else is a read fault with the record still waiting. Re-enqueue
+		// it with a backoff: preserving the attempt is the safer default, and a
+		// fault that turns out to be permanent is repaired by startup
+		// reconciliation rather than by dropping accepted work.
 		d.log.Error("run_load_failed", err, "run_id", item.RunID, "integration", item.IntegrationID)
+		d.requeueClaimed(item, "run_load_failed")
 		return
 	}
 
@@ -165,7 +192,11 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	startedAt := time.Now().UTC()
 	claimed, err := d.runs.MarkRunning(context.Background(), run.ID, startedAt)
 	if err != nil {
+		// The record was readable and is still waiting, so this is a transient
+		// database fault rather than a bad run. Return it to the queue instead
+		// of stranding it until the next restart.
 		d.log.Error("run_mark_running_failed", err, "run_id", run.ID)
+		d.requeueClaimed(item, "run_mark_running_failed")
 		return
 	}
 	if !claimed {
@@ -255,6 +286,42 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		Error:      message,
 		FinishedAt: result.FinishedAt,
 	}, retryable)
+}
+
+// requeueClaimed returns a claimed run to the queue after its attempt could not
+// be started.
+//
+// Claim deletes the run_queue row in the same transaction that reserves the
+// worker slot, so an attempt that returns without either executing or recording
+// a terminal state would sit as queued with no queue row until the next daemon
+// restart: accepted work, silently lost. Re-enqueueing with a backoff keeps the
+// run durable instead.
+//
+// It cannot cause a double execution. MarkRunning is still the gate that moves a
+// run from queued or retrying to running, and a run that already reached running
+// is refused by that transition rather than run a second time.
+//
+// A re-enqueue that itself fails is logged, not fatal: it leaves exactly the
+// inconsistency -- a waiting status with no queue row -- that reconcileQueue
+// repairs at the next startup.
+func (d *Daemon) requeueClaimed(item *queue.Item, cause string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	availableAt := time.Now().UTC().Add(claimFailureBackoff)
+	if err := d.queue.Enqueue(ctx, item.RunID, item.IntegrationID, availableAt); err != nil {
+		d.log.Error("run_requeue_failed", err,
+			"run_id", item.RunID,
+			"integration", item.IntegrationID,
+			"cause", cause)
+		return
+	}
+
+	d.log.Warn("run_requeued",
+		"run_id", item.RunID,
+		"integration", item.IntegrationID,
+		"cause", cause,
+		"retry_in", claimFailureBackoff.String())
 }
 
 // shortDigest abbreviates a digest for an error message, tolerating an empty
