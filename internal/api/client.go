@@ -148,6 +148,27 @@ func (c *Client) MoveIntegration(ctx context.Context, ref, destination string) (
 	return &out, nil
 }
 
+// PauseIntegration suspends an integration's autonomous triggers: cron stops
+// firing and the webhook refuses a trigger. Manual runs are unaffected.
+func (c *Client) PauseIntegration(ctx context.Context, ref string) (*PauseView, error) {
+	var out PauseView
+	path := "/v1/integrations/" + url.PathEscape(ref) + "/pause"
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResumeIntegration re-arms the triggers a pause suspended.
+func (c *Client) ResumeIntegration(ctx context.Context, ref string) (*PauseView, error) {
+	var out PauseView
+	path := "/v1/integrations/" + url.PathEscape(ref) + "/resume"
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // DeleteIntegration purges an identity's durable artifacts.
 func (c *Client) DeleteIntegration(ctx context.Context, ref string) (*DeletedView, error) {
 	var out DeletedView

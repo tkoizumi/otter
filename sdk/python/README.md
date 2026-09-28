@@ -136,10 +136,25 @@ Each call synchronously `POST`s to `/v1/runs/{run_id}/logs` with
 `stream`/`message`/`fields`, so the severity travels inside `fields` as
 `"level"`. Fields are merged with (and cannot override) the level.
 
-Logging never raises and never crashes an integration: if the request still
-fails after the client's retries, the record is written to stderr as one JSON
-line — `{"level": "info", "message": "...", "fields": {...}}`. The logger holds
-a lock, so it is safe to call from worker threads.
+Logging never raises and never crashes an integration. A field value JSON
+cannot represent (`pathlib.Path`, `datetime`, an arbitrary object) is rendered
+with `str()` rather than costing the record; state writes stay strict, so an
+unroundtrippable state value is still an error.
+
+If the record still cannot be delivered — the daemon refuses it or is
+unreachable, or the fields defeat JSON even with the `str()` fallback — it is
+written to stderr as one JSON line, and that line says why:
+
+```json
+{"level": "info", "message": "dir info:", "fields": {...},
+ "delivery_error": "log sink down (HTTP 500)"}
+```
+
+The `delivery_error` names the HTTP failure or the exception, so a degraded
+record is never mistaken for an ordinary one. If the fields themselves cannot be
+serialized at all, they are dropped and `fields_error` explains that instead of
+the record vanishing. The logger holds a lock, so it is safe to call from worker
+threads.
 
 ### `ctx.trigger` — how this run started
 

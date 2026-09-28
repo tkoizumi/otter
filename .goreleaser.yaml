@@ -55,7 +55,7 @@ builds:
 
 archives:
   # One tarball per platform holding both binaries. The name is what install.sh
-  # and the Homebrew formula look for, so it is a published interface:
+  # and the Homebrew cask look for, so it is a published interface:
   #   otter_<version>_<os>_<arch>.tar.gz
   - id: otter
     ids:
@@ -83,7 +83,7 @@ changelog:
       - "^Merge branch"
 
 # `brew install tkoizumi/tap/otter`, against the tap repository the release
-# workflow pushes the generated formula into. The formula installs the two
+# workflow pushes the generated cask into. The cask installs the two
 # prebuilt binaries rather than building from source: a Go toolchain on every
 # developer's machine is exactly the cost this release exists to remove.
 homebrew_casks:

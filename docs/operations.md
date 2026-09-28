@@ -277,8 +277,76 @@ then `tail -f /tmp/otter.log` from another terminal.
 **The run history** is the ground truth:
 
 ```sh
-otter runs --integration shopify-to-salesforce --limit 10
+otter runs shopify-to-salesforce --limit 10
 ```
+
+## Pausing one integration
+
+Sometimes the schedule is the problem: a vendor is down, a credential expired,
+or an integration is making a mess and needs to stop firing *now* without being
+torn down. Pausing is that control.
+
+```sh
+cd integrations/shopify-to-salesforce
+otter pause
+# paused: shopify-to-salesforce
+# cron and webhook will not fire; otter run still runs it on demand
+```
+
+With no argument the integration in the working directory is used, so `otter
+pause` and `otter pause .` are the same command, exactly like `otter run`. A
+name, a path or `id:<id>` works from anywhere.
+
+What a pause stops, and what it leaves alone:
+
+| Stops | Left alone |
+| --- | --- |
+| The cron trigger (unregistered, so the schedule view stops offering a next run) | The identity, the state, the run history and the logs |
+| Webhook triggers (`503`, not `404`) | The webhook token, the releases, the managed environment |
+| Nothing else | In-flight runs, already-queued runs, and a retry chain already admitted |
+
+An explicit `otter run` is **not** stopped. An operator asking for a run is not
+what the pause was about, and you often want to test the fix before resuming.
+
+```sh
+otter resume                     # re-arm; missed windows are not replayed
+otter integrations --schedule    # NEXT RUN shows "paused" for a paused one
+otter inspect                    # paused: since 2026-09-13 17:02:11
+```
+
+Resuming takes the cron expression from the live manifest and computes the next
+fire time from now. It does not replay the runs that were due while paused, and
+it does not need a reload or a restart.
+
+**Work already in flight.** A pause stops new admission; it deliberately does
+not reach into a run that is already executing, and it does not clear the queue.
+Both are ended deliberately:
+
+```sh
+otter runs shopify-to-salesforce --status queued
+otter cancel 0f9c1e2a-...        # never retried, whatever the manifest says
+```
+
+**Pause belongs to the identity, not the address.** `otter move` carries the
+pause to the new directory, because the identity moved with it. `otter reset`
+mints a fresh identity, and it starts enabled. Purging with `otter delete`
+removes the pause with everything else. The pause is durable: it survives
+`otter reload`, a daemon restart and a deploy, so an integration paused at 3am
+is still paused after the morning's `otter deploy`.
+
+**In scripts.** Pause and resume are idempotent: pausing an already-paused
+integration exits `0` and reports `changed: false`, so a deploy step can call it
+unconditionally.
+
+```sh
+otter pause shopify-to-salesforce --json   # {"paused":true,"changed":false,...}
+```
+
+There is deliberately **no** `enabled:` flag under `trigger:` in `otter.yaml`.
+A manifest is code: it is released, snapshotted and immutable for a run. An
+emergency pause is an operator decision about the runtime, not a code change,
+and a declarative flag would let the next `otter reload` silently undo it.
+Recurring blackout windows would be a scheduling feature, not this one.
 
 ## Managed Python
 
@@ -398,8 +466,10 @@ Two consequences worth knowing:
   with `…` rather than wrapping the line across the terminal several times. The
   JSON form always has the complete value.
 
-To pick a run to look at, `otter runs --limit 5` lists recent ones, and
-`otter runs --limit 1 --json | jq -r '.[0].id'` gives the newest run id.
+To pick a run to look at, `otter runs <integration> --limit 5` lists recent ones,
+and `otter runs <integration> --limit 1 --json | jq -r '.[0].id'` gives the
+newest run id. Add `--all` to search the whole workspace instead of one
+integration.
 
 ## Log rotation and run-log retention
 
@@ -634,7 +704,7 @@ After the restart:
 ```bash
 otter status
 otter integrations
-otter runs --limit 10
+otter runs --all --limit 10
 ```
 
 Behavior worth expecting:
@@ -698,8 +768,8 @@ Check the current picture:
 
 ```bash
 otter status                                    # queue depth + per-status run counts
-otter runs --status running                     # what is executing right now
-otter runs --status queued --limit 100          # what is waiting
+otter runs --all --status running               # what is executing right now
+otter runs --all --status queued --limit 100    # what is waiting
 curl -s http://127.0.0.1:7337/health | python3 -m json.tool
 ```
 
@@ -718,7 +788,7 @@ curl -fsS http://127.0.0.1:7337/health
 otter status >/dev/null && echo healthy || echo unhealthy
 
 # Are runs succeeding?
-otter runs --status failed --limit 5
+otter runs --all --status failed --limit 5
 ```
 
 ```json
@@ -926,8 +996,8 @@ read it back at the start of the next run.
 
 1. Is anything running?
    ```bash
-   otter runs --status running
-   otter runs --status queued --limit 20
+   otter runs --all --status running
+   otter runs --all --status queued --limit 20
    ```
 2. If `running` equals `--workers`, the daemon is saturated: raise workers (RAM
    permitting) or make runs faster.

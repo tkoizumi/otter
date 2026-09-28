@@ -21,6 +21,7 @@ import threading
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +30,7 @@ if SDK_ROOT not in sys.path:
     sys.path.insert(0, SDK_ROOT)
 
 from otter import Context, OtterError, run  # noqa: E402
-from otter._client import Client  # noqa: E402
+from otter._client import Client, encode_json  # noqa: E402
 from otter.log import Logger  # noqa: E402
 from otter.trigger import Trigger  # noqa: E402
 
@@ -276,8 +277,10 @@ class StateTests(SDKTestCase):
 
     def test_api_error_raises_ottererror(self):
         self.daemon.fail_state = True
-        with self.assertRaises(OtterError):
+        with self.assertRaises(OtterError) as caught:
             self.ctx.state.get("count")
+        # The daemon's own message is surfaced, not a bare status code.
+        self.assertIn("state store down (HTTP 500)", str(caught.exception))
         with self.assertRaises(OtterError):
             self.ctx.state.set("count", 1)
         with self.assertRaises(OtterError):
@@ -312,6 +315,16 @@ class ClientTests(SDKTestCase):
         client.retry_delays = (0, 0)
         with self.assertRaises(OtterError):
             client.get_json("/v1/runs/%s" % RUN_ID)
+
+    def test_encode_json_rejects_unserializable_values_by_default(self):
+        # State writes rely on this: a value the daemon cannot round-trip is
+        # reported, not silently stored as text.
+        with self.assertRaises(OtterError):
+            encode_json({"path": Path("/tmp/otter")})
+
+    def test_encode_json_renders_unserializable_values_when_asked(self):
+        encoded = encode_json({"path": Path("/tmp/otter")}, default=str)
+        self.assertEqual(json.loads(encoded), {"path": "/tmp/otter"})
 
 
 class TriggerTests(SDKTestCase):
@@ -398,6 +411,21 @@ class LoggerTests(SDKTestCase):
         self.assertEqual(entry["fields"]["logger"], "otter")
         self.assertEqual(entry["fields"]["level"], "info")
 
+    def test_unserializable_fields_are_rendered_not_dropped(self):
+        # A pathlib.Path (or a datetime, or any exotic object) must not cost the
+        # record: the value is rendered with str() and the line still reaches
+        # the daemon on the normal path, not the stderr fallback.
+        stream = io.StringIO()
+        logger = Logger(self.client, RUN_ID, fallback_stream=stream)
+        logger.info("dir info:", directory=Path("/tmp/otter"))
+        self.assertEqual(stream.getvalue(), "")
+        entry = self.daemon.logs[-1]
+        self.assertEqual(entry["message"], "dir info:")
+        self.assertEqual(
+            entry["fields"],
+            {"directory": "/tmp/otter", "level": "info", "logger": "otter"},
+        )
+
     def test_falls_back_to_stderr_and_never_raises(self):
         self.daemon.fail_logs = True
         stream = io.StringIO()
@@ -406,8 +434,36 @@ class LoggerTests(SDKTestCase):
         line = stream.getvalue().strip()
         self.assertEqual(
             json.loads(line),
-            {"level": "error", "message": "boom", "fields": {"code": 500}},
+            {
+                "level": "error",
+                "message": "boom",
+                # The fallback keeps the marker, so a reader can still tell the
+                # integration wrote this rather than the runtime.
+                "fields": {"code": 500, "level": "error", "logger": "otter"},
+                # ...and says why the record is here instead of in the daemon.
+                "delivery_error": "log sink down (HTTP 500)",
+            },
         )
+
+    def test_fallback_names_a_transport_failure(self):
+        # No daemon at all: the record still has to explain itself.
+        client = Client("http://127.0.0.1:%d" % free_port(), timeout=1.0)
+        client.retry_delays = (0, 0)
+        stream = io.StringIO()
+        Logger(client, RUN_ID, fallback_stream=stream).info("offline")
+        record = json.loads(stream.getvalue().strip())
+        self.assertEqual(record["message"], "offline")
+        self.assertIn("OtterError", record["delivery_error"])
+        self.assertIn("failed after", record["delivery_error"])
+
+    def test_fallback_names_a_serialization_failure(self):
+        # NaN survives default=str (json's default hook is not called for
+        # floats), so this is still a real way for a record to be degraded.
+        stream = io.StringIO()
+        logger = Logger(self.client, RUN_ID, fallback_stream=stream)
+        logger.info("weird", ratio=float("nan"))
+        record = json.loads(stream.getvalue().strip())
+        self.assertIn("not JSON-serializable", record["delivery_error"])
 
     def test_fallback_survives_unserializable_fields(self):
         self.daemon.fail_logs = True
@@ -415,6 +471,20 @@ class LoggerTests(SDKTestCase):
         logger = Logger(self.client, RUN_ID, fallback_stream=stream)
         logger.info("weird", thing=object())
         self.assertIn("weird", stream.getvalue())
+
+    def test_fallback_reports_fields_it_had_to_drop(self):
+        # A dict that contains itself defeats json.dumps even with the str()
+        # fallback. The line must still appear, and must still name the reason.
+        cyclic = {}
+        cyclic["self"] = cyclic
+        stream = io.StringIO()
+        logger = Logger(self.client, RUN_ID, fallback_stream=stream)
+        logger.info("cyclic", payload=cyclic)
+        record = json.loads(stream.getvalue().strip())
+        self.assertEqual(record["message"], "cyclic")
+        self.assertIn("Circular reference", record["delivery_error"])
+        self.assertNotIn("fields", record)
+        self.assertIn("Circular reference", record["fields_error"])
 
     def test_logging_never_raises_without_daemon(self):
         client = Client("http://127.0.0.1:%d" % free_port(), timeout=1.0)

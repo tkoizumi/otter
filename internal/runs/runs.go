@@ -286,11 +286,17 @@ func (s *Store) Get(ctx context.Context, id string) (*Run, error) {
 // Filter narrows a run listing.
 type Filter struct {
 	IntegrationID string
-	Status        Status
-	ParentRunID   string
-	Limit         int
-	Offset        int
-	Ascending     bool
+	// IntegrationIDs matches runs whose integration_id is any of the listed
+	// values. It exists because a run's integration_id is not stable across
+	// the identity migration: older rows were keyed by the manifest label,
+	// newer ones by the durable identity. A reference can only be answered by
+	// matching both spellings in one query.
+	IntegrationIDs []string
+	Status         Status
+	ParentRunID    string
+	Limit          int
+	Offset         int
+	Ascending      bool
 }
 
 // List returns runs matching the filter, newest first by default.
@@ -302,6 +308,14 @@ func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 	if f.IntegrationID != "" {
 		where = append(where, "integration_id = ?")
 		args = append(args, f.IntegrationID)
+	}
+	if len(f.IntegrationIDs) > 0 {
+		placeholders := make([]string, len(f.IntegrationIDs))
+		for i, id := range f.IntegrationIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		where = append(where, "integration_id IN ("+strings.Join(placeholders, ", ")+")")
 	}
 	if f.Status != "" {
 		where = append(where, "status = ?")

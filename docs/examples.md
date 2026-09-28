@@ -180,7 +180,7 @@ Run it manually once instead of waiting for the schedule:
 
 ```bash
 otter run nightly-orders
-otter runs --integration nightly-orders --limit 5
+otter runs nightly-orders --limit 5
 otter state get nightly-orders cursor
 ```
 

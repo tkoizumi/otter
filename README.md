@@ -293,9 +293,12 @@ shape, and `otter state get <integration> <key>` inspects one from the CLI.
 otter status                            # daemon health, queue depth, run counts
 otter integrations [--all]              # integration names (--all includes invalid)
 otter reload                            # re-read integrations; no restart, running work continues
+otter pause [<integration>|.]           # suspend cron and webhook; manual runs still work
+otter resume [<integration>|.]          # re-arm the triggers a pause suspended
 otter inspect <integration>             # full manifest view, triggers, recent runs
 otter run [<integration>] [--body <json>] [--capture <policy>]  # queue a manual run; prints the run id
-otter runs [--integration I] [--status S] [--limit N]
+otter runs [<integration>] [--all] [--status S] [--limit N]  # one integration, or --all
+otter cancel <run-id>                   # stop a queued or running run; never retried
 otter run-status <run-id>               # one run plus its retry attempts
 otter logs <run-id> [--follow]          # captured output
 otter requests <run-id>                 # captured outgoing HTTP requests
@@ -332,11 +335,19 @@ recording reports the adapters it actually had. See
 [docs/http-capture.md](docs/http-capture.md) for precedence, coverage, redaction,
 limits and retention.
 
+`otter runs` always names its scope: `<integration>` takes the same reference as
+every other integration verb (a manifest name, a directory, or `id:<id>`), and
+with no argument the integration in the working directory is used. A
+workspace-wide listing is asked for explicitly with `--all`, never inferred.
+
 `otter logs` and `otter requests` each show one slice of an attempt, so reading
 a failure means holding two outputs side by side and matching timestamps by
 hand. `otter trace <run-id>` prints the merged view instead: the attempt's
 lifecycle lines, its captured stdout and stderr, and its HTTP exchanges in one
-chronological page. It covers a finished attempt only -- `--follow` is refused,
+chronological page. Its header also states how long the attempt took in total,
+read from the run record rather than from the page's events: a page truncated by
+`--limit`, or a pruned log, cannot shorten that answer. It covers a finished
+attempt only -- `--follow` is refused,
 and tracing a run that has not finished is refused with a status-specific hint
 instead -- and it exits 0 whenever the inspection succeeded, even when the run
 it describes failed. The order is approximate chronology rather than
@@ -345,18 +356,19 @@ occurrence, its status and duration are the latest retained values, and the
 timeline never names a request as the cause of the failure. HTTP lines carry no
 headers or bodies, so `otter request <run-id> <request-id>` is how you read the
 payloads of the exchange printed above it; `--limit` and `--after` page a long
-trace, `--json` prints the typed JSONL stream, and `--no-http` drops HTTP events
-while still reporting the capture state.
+trace, `--json` prints the typed JSONL stream, and `--no-http` drops HTTP events.
+An empty page always explains itself, so a trace with no events distinguishes a
+run that produced nothing from a recording that was off, unavailable, expired,
+never finalized or incomplete.
 
 A failed attempt reads as one page, with the payload command spelled out:
 
 ```console
 $ ./bin/otter trace 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
-run: 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb   integration: orders-sync   status: failed   attempt: 1
-release: 8c1d4f0a9b3e   trigger: manual   parent: -
+integration: orders-sync   status: failed   attempt: 1
+release: 8c1d4f0a9b3e   trigger: manual   duration: 41ms
 error: process exited with code 1
 retry context: otter run-status 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
-capture: complete - 1 recorded request(s); coverage: urllib
 
 TIME      KIND       DETAIL
 03:30:00  ·  lifecycle  run queued (trigger manual)
@@ -543,7 +555,7 @@ rather than an open port:
 
 ```bash
 ssh -N -L 7337:127.0.0.1:7337 droplet
-otter runs --limit 10
+otter runs --all --limit 10
 ```
 
 `--source <checkout>` compiles from a runtime checkout, `--build` forces a

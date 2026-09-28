@@ -87,6 +87,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/integrations", s.admin(s.handleRegisterIntegration))
 	mux.Handle("POST /v1/integrations/{id}/reset", s.admin(s.handleResetIntegration))
 	mux.Handle("POST /v1/integrations/{id}/move", s.admin(s.handleMoveIntegration))
+	mux.Handle("POST /v1/integrations/{id}/pause", s.admin(s.handlePauseIntegration))
+	mux.Handle("POST /v1/integrations/{id}/resume", s.admin(s.handleResumeIntegration))
 	mux.Handle("DELETE /v1/integrations/{id}", s.admin(s.handleDeleteIntegration))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
 	mux.Handle("POST /v1/integrations/{id}/runs", s.admin(s.handleSubmitRun))
@@ -463,6 +465,30 @@ func (s *Server) handleMoveIntegration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view, err := s.backend.MoveIntegration(r.Context(), r.PathValue("id"), req.Destination)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handlePauseIntegration suspends an integration's autonomous triggers: cron
+// stops firing and the webhook refuses a trigger. Nothing is retired, so
+// `otter run` still runs it on demand.
+func (s *Server) handlePauseIntegration(w http.ResponseWriter, r *http.Request) {
+	s.setPaused(w, r, true)
+}
+
+// handleResumeIntegration re-arms the triggers a pause suspended.
+func (s *Server) handleResumeIntegration(w http.ResponseWriter, r *http.Request) {
+	s.setPaused(w, r, false)
+}
+
+// setPaused is the shared body of pause and resume. The only difference is the
+// direction, so the reference resolution and the response shape cannot drift
+// apart between them. Neither takes a request body.
+func (s *Server) setPaused(w http.ResponseWriter, r *http.Request, paused bool) {
+	view, err := s.backend.SetPaused(r.Context(), r.PathValue("id"), paused)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -1066,6 +1092,12 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, inspection.ErrAmbiguous), errors.Is(err, timeline.ErrRunNotTerminal),
 		errors.Is(err, timeline.ErrEvidenceChanged):
 		s.writeError(w, http.StatusConflict, CodeConflict, err.Error())
+	case errors.Is(err, ErrPaused):
+		// A paused integration is temporarily not accepting autonomous
+		// triggers. 503 is that statement: the route exists and the caller is
+		// authorized, but this integration is not taking work right now. No
+		// Retry-After is offered because a pause has no known end.
+		s.writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
 	case errors.Is(err, ErrForbidden):
 		s.writeError(w, http.StatusForbidden, CodeForbidden, err.Error())
 	case errors.Is(err, timeline.ErrReadDeadline):

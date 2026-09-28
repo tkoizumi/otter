@@ -454,6 +454,9 @@ print("count=%d" % count)
 	if len(view.Attempts) != 1 {
 		t.Errorf("expected exactly one attempt with retries disabled, got %d", len(view.Attempts))
 	}
+	if view.MaxAttempts != 1 {
+		t.Errorf("max attempts = %d, want 1 with retries disabled", view.MaxAttempts)
+	}
 
 	if got := string(getState(t, d, "counter", "count")); got != "1" {
 		t.Errorf("state count = %s, want 1", got)
@@ -525,6 +528,9 @@ print("recovered on attempt %d" % attempts)
 	}
 	if len(view.Attempts) != 3 {
 		t.Fatalf("expected 3 attempts, got %d", len(view.Attempts))
+	}
+	if view.MaxAttempts != 3 {
+		t.Errorf("max attempts = %d, want the manifest's 3", view.MaxAttempts)
 	}
 
 	for i, attempt := range view.Attempts {

@@ -39,6 +39,8 @@ func traceAPI(t *testing.T, respond func(w http.ResponseWriter, r *http.Request,
 func tracePage(runID string) *timeline.Page {
 	status := 400
 	duration := int64(9)
+	started := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	finished := time.Date(2026, 1, 1, 12, 0, 0, 41000000, time.UTC)
 	return &timeline.Page{
 		Context: timeline.Context{
 			SchemaVersion:   timeline.SchemaVersion,
@@ -50,6 +52,8 @@ func tracePage(runID string) *timeline.Page {
 			TriggerType:     "manual",
 			ReleaseDigest:   "8c1d4f0a9b3e",
 			IncludeHTTP:     true,
+			StartedAt:       &started,
+			FinishedAt:      &finished,
 			Capture: &inspection.RunCapture{
 				RunID: runID, State: inspection.CaptureComplete, Policy: inspection.PolicyFull,
 				RequestCount: 2, CompletedCount: 2, Coverage: "urllib",
@@ -139,14 +143,12 @@ func TestTraceHumanOutputShowsContextAndMergedEvents(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
 	for _, want := range []string{
-		"run: " + runID,
 		"integration: orders-sync",
 		"status: failed",
 		"release: 8c1d4f0a9b3e",
 		"trigger: manual",
+		"duration: 41ms",
 		"retry context: otter run-status " + runID,
-		"capture: complete",
-		"coverage: urllib",
 		"run started",
 		"POST api.example.test/v2/records",
 		"400",
@@ -160,6 +162,114 @@ func TestTraceHumanOutputShowsContextAndMergedEvents(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "otter request "+runID+" 87603b35e60c4dae9f57040b15e24ab3") {
 		t.Errorf("the exchange must name the command that shows its payloads:\n%s", stdout)
+	}
+}
+
+// TestTraceHeaderStatesTotalDuration pins the header's duration. A reader used
+// to have to subtract timestamps, or find the terminal lifecycle line, to learn
+// how long the attempt took; the run record answers it directly, and it is the
+// only answer that stays right when --limit truncated the page or the narration
+// is missing. The absolute timestamps stay in the JSON context, not the header.
+func TestTraceHeaderStatesTotalDuration(t *testing.T) {
+	t.Run("started and finished", func(t *testing.T) {
+		runID := "run-timed"
+		server := traceAPI(t, func(w http.ResponseWriter, r *http.Request, req *timeline.Request) {
+			page := tracePage(runID)
+			started := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			finished := time.Date(2026, 1, 1, 12, 2, 3, 500000000, time.UTC)
+			page.Context.StartedAt = &started
+			page.Context.FinishedAt = &finished
+			_ = json.NewEncoder(w).Encode(page)
+		})
+
+		code, stdout, stderr := runCLI(t, "--api", server.URL, "trace", runID, "--pretty")
+		if code != 0 {
+			t.Fatalf("exit = %d, stderr = %s", code, stderr)
+		}
+		if !strings.Contains(stdout, "duration: 2m3.5s") {
+			t.Errorf("the header must state the total attempt duration:\n%s", stdout)
+		}
+		if strings.Contains(stdout, "started:") || strings.Contains(stdout, "finished:") {
+			t.Errorf("the header spends lines on absolute timestamps that --json already carries:\n%s", stdout)
+		}
+	})
+
+	t.Run("never started", func(t *testing.T) {
+		runID := "run-queued"
+		server := traceAPI(t, func(w http.ResponseWriter, r *http.Request, req *timeline.Request) {
+			page := tracePage(runID)
+			finished := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			page.Context.StartedAt = nil
+			page.Context.FinishedAt = &finished
+			page.Context.Status = "cancelled"
+			page.Events = nil
+			_ = json.NewEncoder(w).Encode(page)
+		})
+
+		code, stdout, stderr := runCLI(t, "--api", server.URL, "trace", runID, "--pretty")
+		if code != 0 {
+			t.Fatalf("exit = %d, stderr = %s", code, stderr)
+		}
+		// A run cancelled while queued has no execution time. Reporting a
+		// duration measured from its creation would present queue wait as run
+		// time, so the header says what actually happened instead.
+		if !strings.Contains(stdout, "duration: unknown (the attempt never started)") {
+			t.Errorf("a run cancelled in the queue must not claim a run duration:\n%s", stdout)
+		}
+	})
+}
+
+// TestTraceHeaderStaysCompact guards the header against growing back into a wall
+// of text above the events: a first-try success has no retry chain to point at,
+// the release digest is shown by prefix, an absent field is omitted, no capture
+// line is carried, and no header line may wrap past the width the table itself
+// is rendered for.
+func TestTraceHeaderStaysCompact(t *testing.T) {
+	runID := "b8cd3371-ec4c-4401-880f-20e9284f8e98"
+	server := traceAPI(t, func(w http.ResponseWriter, r *http.Request, req *timeline.Request) {
+		page := tracePage(runID)
+		page.Context.IntegrationName = "counter"
+		page.Context.Status = "succeeded"
+		page.Context.ReleaseDigest = "a83b081b641026a0ddb1a4c0af9f6a2c5cdafc1e1437db60e232150ba8145095"
+		_ = json.NewEncoder(w).Encode(page)
+	})
+
+	code, stdout, stderr := runCLI(t, "--api", server.URL, "trace", runID, "--pretty")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+
+	if !strings.Contains(stdout, "release: a83b081b6410   ") {
+		t.Errorf("the release digest must be shown by its established prefix:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "a83b081b641026a0") {
+		t.Errorf("the full digest belongs in --json, not in the header:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "retry context:") {
+		t.Errorf("a first-try success has no retry chain to point at:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "parent:") {
+		t.Errorf("an absent parent must not occupy a field:\n%s", stdout)
+	}
+	// The capture state is no longer part of the header: it is framing, and the
+	// states that change how the events read are stated on an empty page.
+	if strings.Contains(stdout, "capture:") {
+		t.Errorf("the header must not carry a capture line:\n%s", stdout)
+	}
+	// The header ends at the blank line before the table; every line in it has to
+	// fit the width the table is rendered for, and none of them may repeat the run
+	// id the operator just typed.
+	for _, line := range strings.Split(stdout, "\n") {
+		if line == "" {
+			break
+		}
+		if strings.Contains(line, runID) {
+			t.Errorf("the header must not repeat the run id: %q", line)
+		}
+		if len([]rune(line)) > defaultTraceWidth {
+			t.Errorf("header line is %d columns, past the %d-column table width: %q",
+				len([]rune(line)), defaultTraceWidth, line)
+		}
 	}
 }
 
@@ -421,9 +531,6 @@ func TestTraceExcludedHTTPIsStated(t *testing.T) {
 	if !strings.Contains(stdout, "--no-http") {
 		t.Errorf("the trace must say that HTTP events were excluded by the operator:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "capture: complete") {
-		t.Errorf("the capture state must still be reported:\n%s", stdout)
-	}
 }
 
 // TestTraceExpiredCaptureKeepsLossFacts covers the collapse deriveState causes:
@@ -451,7 +558,8 @@ func TestTraceExpiredCaptureKeepsLossFacts(t *testing.T) {
 }
 
 // TestTracePendingCaptureIsNotDescribedAsRunning covers the wording: an attempt
-// can be finished while its recording never finalized.
+// can be finished while its recording never finalized. An empty page is where
+// the state is now stated, so that is what this drives.
 func TestTracePendingCaptureIsNotDescribedAsRunning(t *testing.T) {
 	server := traceAPI(t, func(w http.ResponseWriter, r *http.Request, req *timeline.Request) {
 		page := tracePage("run-1")
@@ -459,6 +567,7 @@ func TestTracePendingCaptureIsNotDescribedAsRunning(t *testing.T) {
 			RunID: "run-1", State: inspection.CapturePending, Policy: inspection.PolicyFull,
 			Finalization: inspection.FinalizationPending,
 		}
+		page.Events = []timeline.Event{}
 		_ = json.NewEncoder(w).Encode(page)
 	})
 

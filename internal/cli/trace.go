@@ -176,84 +176,100 @@ func (a *App) printTraceHeader(page *timeline.Page) {
 		name = ctx.IntegrationID
 	}
 
-	attempt := strconv.Itoa(ctx.Attempt)
-	if ctx.Attempt > 0 {
-		attempt = fmt.Sprintf("%d", ctx.Attempt)
-	}
-	fmt.Fprintf(a.Stdout, "run: %s   integration: %s   status: %s   attempt: %s\n",
-		escapeTerminal(ctx.RunID), escapeTerminal(name), escapeTerminal(ctx.Status), attempt)
+	// The run id is deliberately not repeated: the operator just named it on the
+	// command line. Where it is needed it is spelled out in full anyway -- the
+	// retry hint and the request footnotes are runnable commands -- and the JSON
+	// context always carries it.
+	fmt.Fprintf(a.Stdout, "integration: %s   status: %s   attempt: %d\n",
+		escapeTerminal(name), escapeTerminal(ctx.Status), ctx.Attempt)
 
-	parent := "-"
+	// The release digest is a 64-character hex string; printing it whole pushed
+	// everything else off the line for a value an operator compares by prefix.
+	// The JSON form keeps the full digest.
+	fmt.Fprintf(a.Stdout, "release: %s   trigger: %s", traceDigest(ctx.ReleaseDigest), orDash(ctx.TriggerType))
 	if ctx.ParentRunID != "" {
-		parent = escapeTerminal(ctx.ParentRunID)
+		fmt.Fprintf(a.Stdout, "   parent: %s", escapeTerminal(ctx.ParentRunID))
 	}
-	fmt.Fprintf(a.Stdout, "release: %s   trigger: %s   parent: %s\n",
-		orDash(ctx.ReleaseDigest), orDash(ctx.TriggerType), parent)
+	fmt.Fprintf(a.Stdout, "   duration: %s\n", traceDuration(ctx))
 
 	if ctx.Error != "" {
 		fmt.Fprintf(a.Stdout, "error: %s\n", escapeTerminal(ctx.Error))
 	}
-	fmt.Fprintf(a.Stdout, "retry context: otter run-status %s\n", escapeTerminal(ctx.RunID))
-
-	fmt.Fprintf(a.Stdout, "capture: %s\n", traceCaptureState(ctx.Capture, ctx.IncludeHTTP))
+	// The hint points at sibling attempts, so a first-try success has nothing to
+	// point at and the line would be pure noise on the most common trace.
+	if ctx.ParentRunID != "" || ctx.Attempt > 1 || ctx.Status != string(runs.StatusSucceeded) {
+		fmt.Fprintf(a.Stdout, "retry context: otter run-status %s\n", escapeTerminal(ctx.RunID))
+	}
 }
 
-// traceCaptureState explains the recording in one line. It never lets "no HTTP
-// events below" stand in for "nothing was recorded": expiry is called out, and an
-// expired recording still reports the incompleteness it had before retention,
-// which the derived state on its own would hide.
-func traceCaptureState(capture *inspection.RunCapture, includeHTTP bool) string {
-	if capture == nil {
-		return "unknown - the daemon returned no capture state"
+// traceDigest renders a release digest as the 12-character prefix the rest of
+// the CLI shows (see `otter release`), using the header's "-" for a run with no
+// release and escaping it like every other value on the line.
+func traceDigest(digest string) string {
+	if strings.TrimSpace(digest) == "" {
+		return "-"
 	}
+	return escapeTerminal(shortDigest(digest))
+}
 
-	var line string
-	switch capture.State {
-	case inspection.CaptureUnavailable:
-		line = "unavailable - this run has no recording. It may still have made requests."
-	case inspection.CaptureOff:
-		line = "off - capture was disabled for this run, so outgoing HTTP was not recorded"
-	case inspection.CaptureExpired:
-		line = fmt.Sprintf("expired - the recorded requests (%d) were removed by retention; the summary was kept",
-			capture.RequestCount)
-	case inspection.CapturePending:
-		// The attempt is finished but its recording is not: a run killed before
-		// it could finalize leaves this. Saying "the run is still executing"
-		// here would be wrong.
-		line = "not finalized - the recording never completed, so it may be missing requests"
-	case inspection.CaptureIncomplete:
-		line = "incomplete - some capture was lost; the list below is not the whole story"
+// traceDuration is the attempt's total time, taken from the run record rather
+// than from the events on this page.
+//
+// Events cannot answer it honestly: a page can be truncated by --limit, a
+// continuation covers only the rest, and the log is prunable, so
+// last-event-minus-first-event would understate exactly the long run a reader is
+// asking about. The terminal lifecycle line does carry an attempt duration, but
+// it is narration and can be missing; the run record is authoritative and always
+// present, which is also where `otter run-status` gets the duration it prints.
+func traceDuration(ctx timeline.Context) string {
+	switch {
+	case ctx.StartedAt != nil && ctx.FinishedAt != nil:
+		return ctx.FinishedAt.Sub(*ctx.StartedAt).Round(time.Millisecond).String()
+	case ctx.StartedAt == nil:
+		// A terminal attempt that never started: it was cancelled while queued,
+		// so its wall clock is queue wait, not run time, and saying so beats a
+		// duration that would read as execution.
+		return "unknown (the attempt never started)"
 	default:
-		if capture.RequestCount == 0 {
-			line = "complete - capture was enabled and observed no outgoing HTTP requests"
-		} else {
-			line = fmt.Sprintf("complete - %d recorded request(s)", capture.RequestCount)
-		}
+		return "unknown"
 	}
-
-	if capture.Coverage != "" {
-		line += "; coverage: " + escapeTerminal(capture.Coverage)
-	}
-	// Expiry supersedes the derived state, so the loss counters have to be
-	// reported alongside it or a reader would take "expired" for "was complete".
-	if capture.State == inspection.CaptureExpired && (capture.IncompleteCount > 0 || capture.DroppedEvents > 0) {
-		line += fmt.Sprintf("; before expiry: %d request(s) never completed, %d event(s) dropped",
-			capture.IncompleteCount, capture.DroppedEvents)
-	}
-	if !includeHTTP {
-		line += "\n           HTTP events were excluded by --no-http"
-	}
-	return line
 }
 
 // printTraceEmpty explains an empty page instead of printing an empty table.
+//
+// This is now the only place the capture state is stated, which matters because
+// an empty page is exactly where "nothing was retained" would otherwise be read
+// as a fact about the run. A recording removed by retention, one that never
+// finalized and one that lost events are not the same as a run that produced
+// nothing, so each says which it is.
 func (a *App) printTraceEmpty(page *timeline.Page, noHTTP bool) {
+	capture := page.Context.Capture
 	switch {
 	case noHTTP:
 		fmt.Fprintln(a.Stdout, "\nNo events to show; HTTP events were excluded by --no-http.")
-	case page.Context.Capture != nil && page.Context.Capture.State == inspection.CaptureUnavailable,
-		page.Context.Capture != nil && page.Context.Capture.State == inspection.CaptureOff:
+	case capture == nil:
 		fmt.Fprintln(a.Stdout, "\nNo events were retained for this run.")
+	case capture.State == inspection.CaptureUnavailable, capture.State == inspection.CaptureOff:
+		fmt.Fprintln(a.Stdout, "\nNo events were retained for this run.")
+	case capture.State == inspection.CaptureExpired:
+		line := fmt.Sprintf("\nNo events were retained for this run; its recording expired, removing %d request(s)",
+			capture.RequestCount)
+		if capture.IncompleteCount > 0 || capture.DroppedEvents > 0 {
+			// Expiry supersedes the derived state, so the loss counters have to
+			// be reported alongside it or a reader would take "expired" for
+			// "was complete".
+			line += fmt.Sprintf(", of which %d never completed and %d dropped",
+				capture.IncompleteCount, capture.DroppedEvents)
+		}
+		fmt.Fprintln(a.Stdout, line+".")
+	case capture.State == inspection.CapturePending:
+		// The attempt is finished but its recording is not: a run killed before
+		// it could finalize leaves this. "Still executing" would be wrong.
+		fmt.Fprintln(a.Stdout, "\nNo events were retained for this run; its recording was not finalized, "+
+			"so it may be missing requests.")
+	case capture.State == inspection.CaptureIncomplete:
+		fmt.Fprintln(a.Stdout, "\nNo events were retained for this run; some capture was lost, "+
+			"so this is not the whole story.")
 	default:
 		fmt.Fprintln(a.Stdout, "\nNo events were retained for this run (the run recorded no output and no requests).")
 	}

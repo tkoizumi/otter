@@ -12,21 +12,12 @@ caching and holds no local copy. Every call is one HTTP round trip.
 import re
 from typing import Any, Dict, Optional
 
-from ._client import Client, OtterError, encode_path_segment
+from ._client import Client, OtterError, describe_api_failure, encode_path_segment
 
 __all__ = ["State"]
 
 #: Keys are URL path segments; the daemon enforces the same pattern.
 _KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-
-
-def _describe_failure(status: int, body: Any) -> str:
-    """Extract a human readable message from an API error envelope."""
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return "%s (HTTP %s)" % (error["message"], status)
-    return "HTTP %s" % (status,)
 
 
 class State:
@@ -44,7 +35,7 @@ class State:
         if status == 404:
             return default
         if status >= 400:
-            raise OtterError("could not read state key %r: %s" % (key, _describe_failure(status, body)))
+            raise OtterError("could not read state key %r: %s" % (key, describe_api_failure(status, body)))
         return body
 
     def set(self, key: str, value: Any) -> Any:
@@ -55,7 +46,7 @@ class State:
         """
         status, body = self._client.put_json(self._key_path(key), value)
         if status >= 400:
-            raise OtterError("could not write state key %r: %s" % (key, _describe_failure(status, body)))
+            raise OtterError("could not write state key %r: %s" % (key, describe_api_failure(status, body)))
         if isinstance(body, dict) and "value" in body:
             return body["value"]
         return value
@@ -66,14 +57,14 @@ class State:
         if status == 404:
             return False
         if status >= 400:
-            raise OtterError("could not delete state key %r: %s" % (key, _describe_failure(status, body)))
+            raise OtterError("could not delete state key %r: %s" % (key, describe_api_failure(status, body)))
         return True
 
     def all(self) -> Dict[str, Any]:
         """Return every key/value pair for this integration as a dict."""
         status, body = self._client.get_json(self._base_path())
         if status >= 400:
-            raise OtterError("could not list integration state: %s" % _describe_failure(status, body))
+            raise OtterError("could not list integration state: %s" % describe_api_failure(status, body))
         if isinstance(body, dict) and isinstance(body.get("state"), dict):
             return dict(body["state"])
         return {}

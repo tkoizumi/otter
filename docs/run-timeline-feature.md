@@ -100,9 +100,9 @@ Conventions follow `otter logs` and `otter requests` exactly:
   `2` usage.
 
 A trace is never empty-but-silent. A run with no HTTP capture still renders its
-logs; a run with neither renders the capture state and says so, using the same
-vocabulary as `otter requests` (`off`, `unavailable`, `expired`, `pending`,
-`incomplete`).
+logs; a run with neither gets a sentence saying why nothing is shown, which
+distinguishes a recording that was off or unavailable from one that expired, was
+never finalized, or lost events.
 
 ## Event model
 
@@ -119,7 +119,16 @@ run_id      the owning run
 
 The page also carries a context header, which is framing rather than an event:
 run identity and name, status, error and exit code, attempt and parent run id,
-release digest, capture state, and the trigger **type** only.
+release digest, capture state, and the trigger **type** only. It also carries
+`created_at`, `started_at` and `finished_at`, which is what lets the human form
+state the attempt's total duration: that answer comes from the run record, not
+from the events, so a page truncated by `--limit` cannot shorten it.
+
+The human form prints the integration name, status, attempt, release prefix,
+trigger, parent (only when there is one) and duration. It does not repeat the run
+id, which the operator just supplied, and does not restate the capture state on a
+page that has events; both remain in the JSON context, and the id appears in the
+runnable follow-up commands when they are printed.
 
 Kind-specific payloads:
 
@@ -234,18 +243,22 @@ the merge still reads the existing tables.
 
 The feature inherits capture's honesty rules rather than inventing new ones:
 
-- Capture `off` or `unavailable` does not suppress the trace. The timeline shows
-  logs and lifecycle and states the capture situation in one line, because "no
-  HTTP shown" and "HTTP was not recorded" are different answers.
-- Capture `incomplete` or with dropped events is surfaced on the trace, so a
-  missing request is never read as a request that never happened.
+- Capture `off` or `unavailable` does not suppress the trace: logs and lifecycle
+  still render.
+- An **empty** trace states why it is empty, because "no HTTP shown" and "HTTP
+  was not recorded" are different answers. It distinguishes `off`/`unavailable`
+  (nothing was recorded), `expired` (retention removed the exchanges, with the
+  pre-expiry loss counters when there were any), a recording that was never
+  finalized, capture that is known to have lost events, and a complete recording
+  that observed nothing at all.
+- A page that has events does not restate the capture state. The run's capture
+  summary stays in the API response and `otter requests` prints it, including
+  adapter coverage exactly as before; other clients and raw sockets remain
+  uncaptured, and the trace must not imply otherwise.
 - `expired` says retention removed the recorded exchanges, so no HTTP lines
   appear; only the run's capture summary survives. The proposal's "keep the
   exchange metadata lines after payloads expire" is deferred (see
   [Deferred to later work](#deferred-to-later-work)).
-- A trace of a `urllib`/`requests`/`httpx` run states adapter coverage exactly as
-  `otter requests` does. Other clients and raw sockets remain uncaptured, and
-  the trace must not imply otherwise.
 
 ## What it is not
 

@@ -52,6 +52,9 @@ type fakeBackend struct {
 	submitted []submittedRun
 	cancelled []string
 
+	pauseCalls []pauseCall
+	pauseErr   error
+
 	reloads   int
 	reloadOut ReloadResult
 	reloadErr error
@@ -60,6 +63,12 @@ type fakeBackend struct {
 type submittedRun struct {
 	integrationID string
 	payload       TriggerPayload
+}
+
+// pauseCall records one pause or resume the handler forwarded to the backend.
+type pauseCall struct {
+	ref    string
+	paused bool
 }
 
 var _ Backend = (*fakeBackend)(nil)
@@ -214,6 +223,37 @@ func (f *fakeBackend) MoveIntegration(_ context.Context, ref, destination string
 	return IntegrationView{ID: ref, Name: ref, Path: destination, Valid: true}, nil
 }
 
+// SetPaused records the call and mirrors it into the integration's view, so a
+// handler test can read back the trigger state the API reported.
+func (f *fakeBackend) SetPaused(_ context.Context, ref string, paused bool) (PauseView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pauseErr != nil {
+		return PauseView{}, f.pauseErr
+	}
+	f.pauseCalls = append(f.pauseCalls, pauseCall{ref: ref, paused: paused})
+
+	view, ok := f.integrations[ref]
+	if !ok {
+		return PauseView{}, ErrNotFound
+	}
+	changed := view.Triggers.Paused != paused
+	view.Triggers.Paused = paused
+	f.integrations[ref] = view
+
+	out := PauseView{
+		IntegrationID: ref,
+		Name:          view.Name,
+		Paused:        paused,
+		Changed:       changed,
+	}
+	if paused {
+		at := time.Now().UTC()
+		out.Since = &at
+	}
+	return out, nil
+}
+
 func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -227,6 +267,16 @@ func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {
 func (f *fakeBackend) SubmitRun(_ context.Context, integrationID string, payload TriggerPayload) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	// The daemon refuses an autonomous trigger for a paused integration and
+	// admits a manual run regardless. The fake has to model that, because the
+	// API's status code -- 503 rather than 409 -- is chosen from it.
+	if view, ok := f.integrations[integrationID]; ok && view.Triggers.Paused {
+		if payload.Type != "" && payload.Type != TriggerManual {
+			return "", fmt.Errorf("integration %q is paused: %w", integrationID, ErrPaused)
+		}
+	}
+
 	f.submitted = append(f.submitted, submittedRun{integrationID: integrationID, payload: payload})
 	f.nextRun++
 	runID := fmt.Sprintf("submitted-%d", f.nextRun)
@@ -260,7 +310,9 @@ func (f *fakeBackend) GetRunDetail(_ context.Context, runID string) (*RunView, e
 		return nil, ErrNotFound
 	}
 	cp := *r
-	return &RunView{Run: &cp, RootRunID: cp.ID, LatestStatus: cp.Status, Attempts: []*runs.Run{&cp}}, nil
+	// MaxAttempts stands in for the manifest ceiling the daemon resolves; a
+	// non-zero value keeps the JSON round-trip of the field under test.
+	return &RunView{Run: &cp, RootRunID: cp.ID, LatestStatus: cp.Status, MaxAttempts: 3, Attempts: []*runs.Run{&cp}}, nil
 }
 
 func (f *fakeBackend) ListRuns(_ context.Context, filter runs.Filter) ([]*runs.Run, error) {

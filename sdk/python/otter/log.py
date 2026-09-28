@@ -8,9 +8,13 @@ Every call sends one synchronous JSON record to the daemon:
 The daemon's log endpoint accepts only ``stream``/``message``/``fields``, so the
 severity is carried inside ``fields`` under the ``level`` key.
 
-Logging is best effort by design: if the request keeps failing, the record is
-written to stderr as a single JSON line and the integration continues. A logging
-failure must never crash an integration.
+Logging is best effort by design: field values JSON cannot represent are
+rendered with ``str()`` rather than dropped. When a record still cannot be
+delivered it is written to stderr as a single JSON line carrying a
+``delivery_error`` that names the reason, and the integration continues. A
+logging failure must never crash an integration -- and must never be invisible
+either: a degraded record that looks like an ordinary one is worse than no
+record, because it is trusted.
 """
 
 import json
@@ -18,7 +22,7 @@ import sys
 import threading
 from typing import Any, Optional, TextIO
 
-from ._client import Client, encode_path_segment
+from ._client import Client, describe_api_failure, encode_path_segment
 
 __all__ = ["Logger"]
 
@@ -76,15 +80,34 @@ class Logger:
         payload_fields["logger"] = _LOGGER_NAME
         path = "/v1/runs/%s/logs" % encode_path_segment(self._run_id)
         with self._lock:
-            try:
-                status, _body = self._client.post_json(
-                    path, {"stream": "otter", "message": text, "fields": payload_fields}
-                )
-                if 200 <= status < 300:
-                    return
-            except Exception:  # never let logging break the integration
-                pass
-            self._write_fallback(level, text, fields)
+            reason = self._deliver(path, text, payload_fields)
+            if reason is None:
+                return
+            self._write_fallback(level, text, payload_fields, reason)
+
+    def _deliver(self, path: str, text: str, payload_fields: dict) -> Optional[str]:
+        """Send one record; return ``None`` on success, else why it was not sent.
+
+        Every failure is turned into a reason string rather than an exception,
+        because a log call must never break the integration. The reason is not
+        discarded: it is what tells the fallback reader that this record was
+        degraded, and why.
+        """
+        try:
+            # default=str: a log call must not be lost because a field is, say,
+            # a pathlib.Path or a datetime. The daemon stores JSON, so an
+            # unrepresentable value is rendered rather than rejected -- unlike
+            # state writes, which stay strict on purpose.
+            status, body = self._client.post_json(
+                path,
+                {"stream": "otter", "message": text, "fields": payload_fields},
+                default=str,
+            )
+        except Exception as exc:  # never let logging break the integration
+            return "%s: %s" % (type(exc).__name__, exc)
+        if 200 <= status < 300:
+            return None
+        return describe_api_failure(status, body)
 
     @staticmethod
     def _as_text(message: Any) -> str:
@@ -95,13 +118,37 @@ class Logger:
         except Exception:
             return repr(message)
 
-    def _write_fallback(self, level: str, message: str, fields: dict) -> None:
+    def _write_fallback(
+        self, level: str, message: str, payload_fields: dict, delivery_error: str
+    ) -> None:
+        # The fallback line is the record that could not be delivered, so it
+        # carries the same fields the request would have sent -- including the
+        # ``logger`` marker -- plus the reason delivery failed. Without that
+        # reason the line reads as an ordinary log with an odd shape, which is
+        # exactly how a degraded record goes unnoticed.
         try:
             stream = self._fallback_stream if self._fallback_stream is not None else sys.stderr
-            line = json.dumps(
-                {"level": level, "message": message, "fields": fields},
-                default=str,
-            )
+            record = {
+                "level": level,
+                "message": message,
+                "fields": payload_fields,
+                "delivery_error": delivery_error,
+            }
+            try:
+                line = json.dumps(record, default=str)
+            except Exception as exc:
+                # The fields themselves defeat json.dumps -- a dict that
+                # contains itself, a __str__ that raises. Report the record
+                # without them rather than letting the failure vanish: a log
+                # call must never leave no trace at all.
+                line = json.dumps(
+                    {
+                        "level": level,
+                        "message": message,
+                        "delivery_error": delivery_error,
+                        "fields_error": "%s: %s" % (type(exc).__name__, exc),
+                    }
+                )
             stream.write(line + "\n")
             stream.flush()
         except Exception:

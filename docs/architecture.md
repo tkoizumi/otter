@@ -333,7 +333,7 @@ One row per **attempt**. A retry is a new row, not a mutation of the old one.
 | `error` | TEXT | Failure reason for `failed`/`timed_out`/`cancelled`. |
 | `metadata` | TEXT | JSON blob carrying the trigger payload (`body`, `headers`), the effective `timeout_seconds` and the scheduled time for cron runs. |
 
-Indexes: `(integration_id, created_at DESC)` for `otter runs --integration`,
+Indexes: `(integration_id, created_at DESC)` for `otter runs <integration>`,
 `(status)` for status filters, `(parent_run_id)` for retry-chain walks,
 `(created_at DESC)` for the default newest-first listing.
 
@@ -451,6 +451,7 @@ Every attempt is visible through `GET /v1/runs/{id}`:
   "parent_run_id": "run_01HZY2",
   "attempt": 3,
   "latest_status": "retrying",
+  "max_attempts": 5,
   "attempts": [
     {"id": "run_01HZY1", "attempt": 1, "status": "failed",  "exit_code": 1},
     {"id": "run_01HZY2", "attempt": 2, "status": "failed",  "exit_code": 1},

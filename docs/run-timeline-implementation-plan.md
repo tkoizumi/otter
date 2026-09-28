@@ -97,19 +97,19 @@ otter trace <run-id> --no-http
   its `run queued` lifecycle line, but there is no execution output yet. This
   submission behavior does not apply to attempts created by `scheduleRetry`.
   Do not wait or start a polling loop.
-- A header and capture explanation always appear, even with no events. Distinguish
-  no retained events from capture disabled, unavailable, expired, or incomplete.
-- `--no-http` omits exchange queries and events, but still reports capture state
-  and explicitly says HTTP events were excluded by the operator.
+- A header always appears, even with no events. An empty page explains why it is
+  empty, distinguishing no retained events from capture disabled, unavailable,
+  expired, never finalized, or incomplete.
+- `--no-http` omits exchange queries and events; an empty page says so explicitly,
+  so the empty timeline is not read as a run that made no requests.
 
 Human output should make these facts easy to scan:
 
 ```text
-run: <run-id>   integration: example   status: failed   attempt: 1
-release: <digest>   trigger: manual   parent: -
+integration: example   status: failed   attempt: 1
+release: <digest-prefix>   trigger: manual   duration: <total attempt duration>
 error: <recorded run error>
 retry context: otter run-status <run-id>
-capture: complete; coverage: urllib, httpx
 
 TIME          KIND       DETAIL
 12:00:00.000  lifecycle  run queued

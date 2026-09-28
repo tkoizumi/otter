@@ -494,3 +494,49 @@ var (
 	_ func(context.Context, string) (*Run, error) = (&Store{}).Get
 	_ func(context.Context, *sql.Tx, *Run) error  = (&Store{}).CreateTx
 )
+
+// TestListMatchesAnyIntegrationID covers the migrated-workspace case: the same
+// integration appears under a durable identity in newer rows and under the
+// label in older ones, and a reference has to match both spellings at once.
+func TestListMatchesAnyIntegrationID(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	modern := sampleRun("run-modern", StatusSucceeded, 1)
+	modern.IntegrationID = "986d91e8-dde4-45be-b298-c9332c220498"
+	modern.IntegrationName = "counter"
+	legacy := sampleRun("run-legacy", StatusSucceeded, 1)
+	legacy.IntegrationID = "counter"
+	unrelated := sampleRun("run-other", StatusSucceeded, 1)
+	unrelated.IntegrationID = "other"
+	for _, run := range []*Run{modern, legacy, unrelated} {
+		if err := store.Create(ctx, run); err != nil {
+			t.Fatalf("create %s: %v", run.ID, err)
+		}
+	}
+
+	both, err := store.List(ctx, Filter{
+		IntegrationIDs: []string{modern.IntegrationID, "counter"},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(both) != 2 {
+		t.Fatalf("matched %d runs, want the modern and legacy rows", len(both))
+	}
+	for _, run := range both {
+		if run.ID == unrelated.ID {
+			t.Errorf("an unrelated integration matched: %s", run.ID)
+		}
+	}
+
+	// The single-value filter stays exact: it is what internal callers use with
+	// a durable id, and it must not broaden to a label.
+	exact, err := store.List(ctx, Filter{IntegrationID: "counter"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(exact) != 1 || exact[0].ID != legacy.ID {
+		t.Fatalf("exact filter matched %+v, want only the legacy row", exact)
+	}
+}

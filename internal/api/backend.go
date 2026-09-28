@@ -18,6 +18,13 @@ var (
 	ErrInvalid   = errors.New("invalid request")
 	ErrConflict  = errors.New("conflict")
 	ErrForbidden = errors.New("forbidden")
+
+	// ErrPaused refuses an autonomous trigger -- cron or webhook -- for an
+	// integration the operator paused. It is deliberately separate from
+	// ErrConflict so the API can answer "temporarily not accepting triggers"
+	// rather than "the request contradicts the integration's state". A manual
+	// run is never refused with this error.
+	ErrPaused = errors.New("paused")
 )
 
 // Backend is everything the HTTP API needs from the daemon. Keeping it as an
@@ -61,6 +68,11 @@ type Backend interface {
 
 	// MoveIntegration preserves an identity across a same-filesystem rename.
 	MoveIntegration(ctx context.Context, ref, destination string) (IntegrationView, error)
+
+	// SetPaused suspends or re-arms an integration's autonomous triggers. It
+	// accepts a reference, so `otter pause` works from the integration's own
+	// directory. Manual runs are unaffected in both directions.
+	SetPaused(ctx context.Context, ref string, paused bool) (PauseView, error)
 
 	// Reload re-reads the integrations directory and applies what it finds to
 	// the running daemon, without stopping it. Executing runs and unchanged

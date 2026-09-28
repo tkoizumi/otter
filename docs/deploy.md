@@ -99,7 +99,7 @@ otter deploy --host root@203.0.113.10 --dry-run
 # Reach the remote API through a tunnel, exactly like a local daemon.
 ssh -N -L 7337:127.0.0.1:7337 root@203.0.113.10 &
 otter integrations
-otter runs --limit 10
+otter runs --all --limit 10
 ```
 
 ## Host requirements
@@ -445,7 +445,7 @@ renew. Reach it with a tunnel:
 ssh -N -L 7337:127.0.0.1:7337 droplet    # foreground, Ctrl-C to stop
 export OTTER_API_TOKEN=$(python3 -c 'import json;print(json.load(open(".otter/state.secret.json"))["api_token"])')
 otter integrations
-otter runs --limit 10
+otter runs --all --limit 10
 otter logs $(otter run customer_sync) --follow
 ```
 

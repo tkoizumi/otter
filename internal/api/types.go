@@ -81,6 +81,26 @@ type TriggerView struct {
 	// WebhookToken is only populated on the single-integration endpoint, so
 	// that listing integrations never spills credentials.
 	WebhookToken string `json:"webhook_token,omitempty"`
+
+	// Paused suspends every autonomous trigger of this integration: cron stops
+	// firing and the webhook refuses a trigger. Manual runs are unaffected, so
+	// a paused integration can still be run on demand. PausedAt answers "since
+	// when".
+	Paused   bool       `json:"paused"`
+	PausedAt *time.Time `json:"paused_at,omitempty"`
+}
+
+// PauseView reports an integration's trigger state after a pause or resume.
+//
+// Changed distinguishes a fresh transition from a repeat, which is what lets a
+// deploy script call pause unconditionally and still tell whether it did
+// anything.
+type PauseView struct {
+	IntegrationID string     `json:"integration_id"`
+	Name          string     `json:"name,omitempty"`
+	Paused        bool       `json:"paused"`
+	Changed       bool       `json:"changed"`
+	Since         *time.Time `json:"since,omitempty"`
 }
 
 // ResetView reports the identity change a reset performed. The old identity is
@@ -119,6 +139,14 @@ type RunView struct {
 	RootRunID    string      `json:"root_run_id"`
 	LatestStatus runs.Status `json:"latest_status"`
 	Attempts     []*runs.Run `json:"attempts"`
+
+	// MaxAttempts is the retry ceiling the integration's manifest currently
+	// allows, including the first attempt. It is 0 when the integration is no
+	// longer registered, so a caller watching a failed chain can tell "the
+	// policy has given up" (the newest attempt is at the ceiling) apart from
+	// "a retry is still coming" -- a distinction the statuses alone cannot make
+	// until the successor attempt exists.
+	MaxAttempts int `json:"max_attempts,omitempty"`
 }
 
 // HealthResponse is returned by GET /health.

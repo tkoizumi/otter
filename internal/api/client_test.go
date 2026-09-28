@@ -147,6 +147,11 @@ func TestClientRoundTrip(t *testing.T) {
 		if len(view.Attempts) != 1 {
 			t.Fatalf("attempts = %+v", view.Attempts)
 		}
+		// `otter run` decides whether a failed chain can still be retried from
+		// this, so it has to survive the wire.
+		if view.MaxAttempts != 3 {
+			t.Fatalf("max attempts = %d, want 3", view.MaxAttempts)
+		}
 	})
 
 	t.Run("get logs", func(t *testing.T) {

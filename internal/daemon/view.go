@@ -98,6 +98,19 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 		}
 	}
 
+	// A paused integration is unarmed, so it has no next run. Saying so
+	// explicitly is what keeps "paused" from reading as "not yet due" or
+	// "silently not firing".
+	if d.paused != nil {
+		if state := d.paused.Get(it.ID); state.Paused {
+			view.Triggers.Paused = true
+			if !state.Since.IsZero() {
+				at := state.Since
+				view.Triggers.PausedAt = &at
+			}
+		}
+	}
+
 	if includeWebhookToken && entry.WebhookToken != "" {
 		view.Triggers.WebhookToken = entry.WebhookToken
 	}
@@ -181,6 +194,19 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 	triggerType := payload.Type
 	if triggerType == "" {
 		triggerType = api.TriggerManual
+	}
+
+	// A pause suspends autonomous admission only. Cron and webhook triggers are
+	// refused -- here, at the one place every trigger becomes a run, so no path
+	// can slip past -- while a manual run is allowed through: an operator
+	// asking for a run is not the thing that was paused.
+	//
+	// A retry never reaches this point. It is created by the worker from the
+	// attempt it retries, so pausing stops new work without stranding a chain
+	// that was already admitted.
+	if triggerType != api.TriggerManual && d.paused.Paused(integrationID) {
+		return "", fmt.Errorf("integration %q is paused; resume it with otter resume %q: %w",
+			label, label, api.ErrPaused)
 	}
 
 	// The capture policy is resolved once, here, and then recorded on the run:
@@ -381,11 +407,45 @@ func (d *Daemon) GetRunDetail(ctx context.Context, runID string) (*api.RunView, 
 		RootRunID:    root.ID,
 		LatestStatus: latest,
 		Attempts:     attempts,
+		MaxAttempts:  d.maxAttemptsFor(target.IntegrationID),
 	}, nil
 }
 
+// maxAttemptsFor reports the retry ceiling the integration's manifest currently
+// allows, or 0 when the integration is no longer registered. Run history
+// outlives the registration (and a release can change the policy), so a missing
+// manifest degrades to "unknown" rather than inventing a ceiling for a chain
+// that has already run.
+func (d *Daemon) maxAttemptsFor(integrationID string) int {
+	entry, ok := d.reg.get(integrationID)
+	if !ok || entry.Manifest == nil {
+		return 0
+	}
+	return entry.Manifest.MaxAttempts()
+}
+
 // ListRuns implements api.Backend.
+//
+// A filter that names an integration is a reference, not a raw key: the
+// operator types a label (`otter runs counter`), the CLI's positional form, and
+// the durable identity a run records is a UUID. Resolving here is what makes
+// both the CLI and `GET /v1/runs?integration_id=counter` mean the one
+// integration instead of silently matching nothing. Legacy rows, keyed by the
+// label before identities existed, are matched alongside the identity so a
+// migrated workspace does not lose its history.
 func (d *Daemon) ListRuns(ctx context.Context, f runs.Filter) ([]*runs.Run, error) {
+	if f.IntegrationID != "" {
+		entry, err := d.resolveRef(f.IntegrationID)
+		if err != nil {
+			return nil, err
+		}
+		ids := []string{entry.Integration.ID}
+		if name := entry.Integration.Name; name != "" && name != entry.Integration.ID {
+			ids = append(ids, name)
+		}
+		f.IntegrationIDs = ids
+		f.IntegrationID = ""
+	}
 	return d.runs.List(ctx, f)
 }
 

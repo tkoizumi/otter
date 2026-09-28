@@ -164,6 +164,9 @@ func (d *Daemon) purgeInstance(ctx context.Context, inst identity.Instance) erro
 	if _, err := d.db.ExecContext(ctx, `DELETE FROM webhook_tokens WHERE integration_id = ?`, id); err != nil {
 		return fmt.Errorf("delete webhook token for %s: %w", id, err)
 	}
+	if err := d.paused.Delete(ctx, id); err != nil {
+		return err
+	}
 	if err := (release.Manager{DataDir: d.cfg.DataDir}).DeleteAll(id); err != nil {
 		return err
 	}

@@ -120,7 +120,9 @@ func TestWaitForRunFollowsRetriesToTheEnd(t *testing.T) {
 			step = timeline[calls]
 		}
 		calls++
-		fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":"failed","latest_status":%q,"attempts":%s}`,
+		// max_attempts 3 with attempt 1 failed: the policy can still retry, so
+		// the wait must keep watching rather than call the chain exhausted.
+		fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":"failed","latest_status":%q,"max_attempts":3,"attempts":%s}`,
 			step.status, step.attempts)
 	}))
 	defer server.Close()
@@ -135,6 +137,106 @@ func TestWaitForRunFollowsRetriesToTheEnd(t *testing.T) {
 	}
 	if calls < 3 {
 		t.Errorf("returned after %d poll(s); it must keep going while an attempt is retrying", calls)
+	}
+}
+
+// A timeout is retried just like a failure, so the wait has to follow it into
+// the next attempt instead of reporting the timeout while the retry is coming.
+func TestWaitForRunFollowsATimeoutIntoItsRetry(t *testing.T) {
+	timeline := []struct {
+		status   string
+		attempts string
+	}{
+		{"timed_out", `[{"id":"root-run","status":"timed_out","attempt":1}]`},
+		{"running", `[{"id":"root-run","status":"timed_out","attempt":1},{"id":"retry-run","status":"running","attempt":2}]`},
+		{"succeeded", `[{"id":"root-run","status":"timed_out","attempt":1},{"id":"retry-run","status":"succeeded","attempt":2}]`},
+	}
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		step := timeline[len(timeline)-1]
+		if calls < len(timeline) {
+			step = timeline[calls]
+		}
+		calls++
+		fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":"timed_out","latest_status":%q,"max_attempts":2,"attempts":%s}`,
+			step.status, step.attempts)
+	}))
+	defer server.Close()
+
+	app := New("test", io.Discard, io.Discard)
+	view, err := app.waitForRun(context.Background(), api.NewClient(server.URL, ""), "root-run", 5*time.Second)
+	if err != nil {
+		t.Fatalf("waitForRun: %v", err)
+	}
+	if view.LatestStatus != runs.StatusSucceeded {
+		t.Errorf("settled on %q, want succeeded", view.LatestStatus)
+	}
+	if calls < 3 {
+		t.Errorf("returned after %d poll(s); a timeout with attempts left is not the end of the chain", calls)
+	}
+}
+
+// A failure or timeout the manifest cannot retry is the end of the chain on the
+// first view. Without this, `otter run` spends retryGrace watching a chain that
+// will never move -- which is every run of an integration with retries disabled.
+func TestWaitForRunSettlesWhenRetriesAreExhausted(t *testing.T) {
+	for _, status := range []runs.Status{runs.StatusFailed, runs.StatusTimedOut} {
+		t.Run(string(status), func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				calls++
+				fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":%q,"attempt":1,"latest_status":%q,"max_attempts":1,"attempts":[{"id":"root-run","status":%q,"attempt":1}]}`,
+					status, status, status)
+			}))
+			defer server.Close()
+
+			app := New("test", io.Discard, io.Discard)
+			start := time.Now()
+			view, err := app.waitForRun(context.Background(), api.NewClient(server.URL, ""), "root-run", 30*time.Second)
+			if err != nil {
+				t.Fatalf("waitForRun: %v", err)
+			}
+			if view.LatestStatus != status {
+				t.Errorf("settled on %q, want %s", view.LatestStatus, status)
+			}
+			if calls != 1 {
+				t.Errorf("polled %d time(s); an exhausted chain must settle on the first view", calls)
+			}
+			if elapsed := time.Since(start); elapsed > retryGrace/2 {
+				t.Errorf("took %s; an exhausted chain must not spend the %s grace", elapsed, retryGrace)
+			}
+		})
+	}
+}
+
+// When the daemon cannot report the ceiling (an integration that has been
+// removed, or an older daemon), the grace is still what bounds the wait: a
+// failed chain is watched briefly in case a retry appears.
+func TestWaitForRunFallsBackToTheGraceWithoutACeiling(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		calls++
+		fmt.Fprint(w, `{"id":"root-run","integration_id":"x","status":"failed","attempt":2,"latest_status":"failed","attempts":[{"id":"root-run","status":"failed","attempt":2}]}`)
+	}))
+	defer server.Close()
+
+	app := New("test", io.Discard, io.Discard)
+	start := time.Now()
+	view, err := app.waitForRun(context.Background(), api.NewClient(server.URL, ""), "root-run", 30*time.Second)
+	if err != nil {
+		t.Fatalf("waitForRun: %v", err)
+	}
+	if view.LatestStatus != runs.StatusFailed {
+		t.Errorf("settled on %q, want failed", view.LatestStatus)
+	}
+	if elapsed := time.Since(start); elapsed < retryGrace {
+		t.Errorf("returned after %s; an unknown ceiling must be watched for the %s grace", elapsed, retryGrace)
+	}
+	if calls < 2 {
+		t.Errorf("polled %d time(s); the grace must be spent polling, not sleeping", calls)
 	}
 }
 
@@ -233,4 +335,48 @@ func TestCmdRunPrintsTheIDItQueued(t *testing.T) {
 		t.Errorf("the id was printed after the status:\n%s", got)
 	}
 	_ = logPath
+}
+
+// A failed run whose manifest cannot retry has to come back as soon as the
+// daemon reports it: a 321ms failure that leaves the terminal silent for the
+// grace is the bug this pins end to end, through cmdRun.
+func TestCmdRunDoesNotLingerOnAnExhaustedFailure(t *testing.T) {
+	id := "0d1f2e3a-4b5c-4d6e-8f90-a1b2c3d4e5f6"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/runs"):
+			fmt.Fprintf(w, `{"run_id":%q,"status":"queued"}`, id)
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			fmt.Fprint(w, `{"logs":[{"id":1,"run_id":"x","stream":"otter","message":"run failed (attempt 1 of 1, 321ms), exit code 1"}]}`)
+		default:
+			// A single allowed attempt, already failed: the chain is over.
+			fmt.Fprintf(w, `{"id":%q,"status":"failed","attempt":1,"latest_status":"failed","max_attempts":1,"attempts":[{"id":%q,"status":"failed","attempt":1}]}`, id, id)
+		}
+	}))
+	defer server.Close()
+
+	original := interactiveOutput
+	interactiveOutput = func(io.Writer) bool { return true }
+	defer func() { interactiveOutput = original }()
+
+	var out, errOut bytes.Buffer
+	app := New("test", &out, &errOut)
+	start := time.Now()
+	code := app.cmdRun(context.Background(), globals{api: server.URL}, []string{"demo"})
+	elapsed := time.Since(start)
+
+	if code != 1 {
+		t.Fatalf("exit %d, want 1 for a failed run; stderr: %s", code, errOut.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "status: failed") {
+		t.Errorf("no failure status line:\n%s", got)
+	}
+	if !strings.Contains(got, "run failed (attempt 1 of 1") {
+		t.Errorf("the run's output is missing:\n%s", got)
+	}
+	if elapsed > retryGrace/2 {
+		t.Errorf("took %s; an exhausted failure must not spend the %s grace", elapsed, retryGrace)
+	}
 }

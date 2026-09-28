@@ -104,15 +104,14 @@ otter trace <run-id>                    # one finished attempt, oldest first
 otter trace <run-id> --limit 1000       # events per page (default 100, max 1000)
 otter trace <run-id> --after <cursor>   # the next page
 otter trace <run-id> --json             # typed JSONL
-otter trace <run-id> --no-http          # omit exchanges; capture state is still shown
+otter trace <run-id> --no-http          # omit exchanges from the timeline
 ```
 
 ```
-run: 3f2a91c4-...   integration: orders-sync   status: failed   attempt: 1
-release: 8c1d4f0a...   trigger: manual   parent: -
+integration: orders-sync   status: failed   attempt: 1
+release: 8c1d4f0a...   trigger: manual   duration: 41ms
 error: process exited with code 1
 retry context: otter run-status 3f2a91c4-...
-capture: complete; coverage: urllib, requests
 
 TIME      KIND       DETAIL
 03:30:00  ·  lifecycle  run queued (trigger manual)
@@ -247,20 +246,25 @@ selected attempt's own evidence does.
 
 ### What a trace says when there is nothing to show
 
-An empty trace is ambiguous unless the capture state is stated, so the header is
-always printed before the events, and it distinguishes the cases:
+An empty trace is ambiguous unless the recording's state is stated, so an empty
+page explains itself instead of printing an empty table, and it distinguishes the
+cases:
 
-- `complete` — capture was enabled and observed no outgoing HTTP.
+- a complete recording that observed nothing — the run recorded no output and no
+  requests.
 - `expired` — retention removed the recorded requests but kept the summary. If
-  the recording was *already* incomplete before expiry, the trace reports that
-  too, because the derived state alone would hide it.
-- `off` — capture was disabled for this run, so nothing was recorded.
-- `unavailable` — the run has no recording at all (it predates capture). It may
-  still have made requests.
+  the recording was *already* incomplete before expiry, the loss counters are
+  reported too, because the derived state alone would hide them.
+- `off` or `unavailable` — nothing was recorded at all, so the run may still have
+  made requests.
 - `not finalized` — the attempt finished without its recording completing, which
   is what a killed process leaves behind. This is not the same as the run still
   executing.
-- `incomplete` — capture is known to have lost events.
+- incomplete capture — capture is known to have lost events.
+
+A page that has events does not restate the recording's state: the capture
+summary is still in the API response and `otter requests` still prints it, but
+the trace leaves the header to the run's own context.
 
 ## Choosing what to record
 
@@ -338,10 +342,10 @@ interpreter, and reports exactly which ones it installed:
 The launcher installs the instrumentation before integration code is imported,
 so requests made at import time are covered. Coverage is reported per run from
 what the child actually installed — `urllib`, or `urllib, httpx`, and so on —
-never as "all HTTP". That distinction is why the coverage line matters: an empty
-request list under coverage that omits a client means that client was never
-instrumented, not that the run sent nothing with it. An optional client that is
-not installed is never claimed.
+never as "all HTTP". That distinction is why the coverage line `otter requests`
+prints matters: an empty request list under coverage that omits a client means
+that client was never instrumented, not that the run sent nothing with it. An
+optional client that is not installed is never claimed.
 
 Not covered:
 

@@ -97,6 +97,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdIntegrations(ctx, g, commandArgs)
 	case "reload":
 		return a.cmdReload(ctx, g, commandArgs)
+	case "pause":
+		return a.cmdPauseResume(ctx, g, commandArgs, true)
+	case "resume":
+		return a.cmdPauseResume(ctx, g, commandArgs, false)
 	case "inspect":
 		return a.cmdInspect(ctx, g, commandArgs)
 	case "register":
@@ -111,6 +115,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdRun(ctx, g, commandArgs)
 	case "runs":
 		return a.cmdRuns(ctx, g, commandArgs)
+	case "cancel":
+		return a.cmdCancel(ctx, g, commandArgs)
 	case "run-status":
 		return a.cmdRunStatus(ctx, g, commandArgs)
 	case "logs":
@@ -414,7 +420,13 @@ func (a *App) printSchedule(ctx context.Context, g globals, list []api.Integrati
 		shown++
 
 		next, in := "-", "-"
-		if it.NextRunAt != nil {
+		switch {
+		case it.Triggers.Paused:
+			// A paused integration has no next run. Naming the pause here is
+			// what keeps a blank column from reading as "not yet due" or as an
+			// integration that silently stopped firing.
+			next = "paused"
+		case it.NextRunAt != nil:
 			next = it.NextRunAt.Local().Format("2006-01-02 15:04:05")
 			in = it.NextRunAt.Sub(now).Round(time.Second).String()
 		}
@@ -444,13 +456,20 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter inspect <integration>")
+	if fs.NArg() > 1 {
+		fmt.Fprintln(a.Stderr, "otter: usage: otter inspect [integration]")
 		return 2
+	}
+	// No argument means "the integration I am standing in", the same default
+	// `otter run` and `otter release` use, so `otter inspect .` is only needed
+	// when you are somewhere else.
+	ref := "."
+	if fs.NArg() == 1 {
+		ref = fs.Arg(0)
 	}
 	// Accept a directory or manifest too, so `otter inspect .` shows the
 	// integration the working directory holds.
-	id, err := resolveIntegrationRef(fs.Arg(0))
+	id, err := resolveIntegrationRef(ref)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
@@ -492,6 +511,11 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	}
 	if it.NextRunAt != nil {
 		fmt.Fprintf(a.Stdout, "next run:      %s\n", it.NextRunAt.Format(time.RFC3339))
+	}
+	if it.Triggers.Paused {
+		// A paused integration has no next run, so this line is what tells the
+		// reader that the missing schedule is deliberate.
+		fmt.Fprintf(a.Stdout, "paused:        %s\n", pausedSummary(it.Triggers))
 	}
 	if it.Triggers.WebhookEnabled {
 		fmt.Fprintf(a.Stdout, "webhook:       enabled\n")
@@ -749,7 +773,16 @@ func (a *App) waitForRun(ctx context.Context, client *api.Client, rootID string,
 			lastAttempt = attempt
 			lastProgress = time.Now()
 		}
-		if view.LatestStatus == runs.StatusFailed && time.Since(lastProgress) > retryGrace {
+
+		// A failure or timeout the manifest can no longer retry is the end of
+		// the chain. Deciding this from the ceiling rather than from the clock
+		// is what keeps `otter run` from spending the grace below on every
+		// failure of an integration that never retries -- the common case.
+		if retriesExhausted(view) {
+			return view, nil
+		}
+
+		if retryableStatus(view.LatestStatus) && time.Since(lastProgress) > retryGrace {
 			return view, nil
 		}
 
@@ -764,30 +797,65 @@ func (a *App) waitForRun(ctx context.Context, client *api.Client, rootID string,
 	}
 }
 
-// retryGrace bounds how long a failed chain is watched for a scheduled retry.
-// The retry is queued before its delay elapses, so a short grace is enough to
-// see that one exists; for a backoff longer than this, `otter run-status` and
-// the run history remain the way to follow it, rather than leaving the command
-// blocked on someone else's retry policy.
-const retryGrace = 15 * time.Second
+// retryGrace bounds how long a failed chain is watched for a retry the daemon
+// has not recorded yet.
+//
+// The next attempt's record is written as soon as the failure is, and only its
+// queue entry carries the backoff (see scheduleRetry), so this covers a couple
+// of database writes rather than someone else's retry policy. It is the
+// fallback for the cases retriesExhausted cannot decide: a daemon that does not
+// report the ceiling (an older one, or an integration that has since been
+// removed) and a retry that was meant to be scheduled but failed.
+const retryGrace = 2 * time.Second
 
-// settled reports whether a retry chain has reached its final answer. A failed
-// latest attempt is deliberately not settled: the daemon queues the next
-// attempt before the previous one's failure is visible, so `failed` can be a
-// pause rather than an end.
+// retriesExhausted reports whether the newest attempt ended in a status no
+// retry can follow, because it already used the integration's last allowed
+// attempt. A failed or timed-out chain with attempts left is deliberately not
+// exhausted: the daemon queues the next attempt a moment after the terminal
+// status becomes visible, so the grace above still applies there. MaxAttempts is
+// 0 when the daemon could not resolve the integration's manifest, which also
+// leaves the decision to the grace.
+func retriesExhausted(view *api.RunView) bool {
+	if !retryableStatus(view.LatestStatus) || view.MaxAttempts <= 0 {
+		return false
+	}
+	attempt := latestAttempt(view)
+	return attempt != nil && attempt.Attempt >= view.MaxAttempts
+}
+
+// retryableStatus reports whether a terminal status may still be followed by a
+// retry. A success is done and an operator cancel is never retried, but the
+// daemon retries both failures and timeouts (see classifyOutcome).
+func retryableStatus(status runs.Status) bool {
+	return status == runs.StatusFailed || status == runs.StatusTimedOut
+}
+
+// settled reports whether a retry chain has reached its final answer. Only a
+// success or an operator cancel is final on its own: a failure or a timeout can
+// be a pause before the next attempt, which the daemon records a moment later,
+// so those are settled by retriesExhausted or by the grace instead.
 func settled(view *api.RunView) bool {
 	switch view.LatestStatus {
-	case runs.StatusSucceeded, runs.StatusCancelled, runs.StatusTimedOut:
+	case runs.StatusSucceeded, runs.StatusCancelled:
 		return true
 	}
 	return false
 }
 
+// latestAttempt is the newest attempt in the chain, or the run itself when the
+// daemon reported no chain.
+func latestAttempt(view *api.RunView) *runs.Run {
+	if len(view.Attempts) > 0 {
+		return view.Attempts[len(view.Attempts)-1]
+	}
+	return view.Run
+}
+
 // latestAttemptID identifies the newest attempt in the chain, which is how the
 // wait notices that a retry has begun.
 func latestAttemptID(view *api.RunView) string {
-	if len(view.Attempts) > 0 {
-		return view.Attempts[len(view.Attempts)-1].ID
+	if attempt := latestAttempt(view); attempt != nil {
+		return attempt.ID
 	}
 	return view.ID
 }
@@ -804,10 +872,45 @@ func runExitCode(view *api.RunView) int {
 func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	integration := fs.String("integration", "", "filter by integration")
+	fs.Usage = func() {
+		fmt.Fprintln(a.Stderr, "Usage: otter runs [<integration>] [--all] [--status <status>] [--limit <n>]")
+		fmt.Fprintln(a.Stderr)
+		fmt.Fprintln(a.Stderr, "Lists the runs of one integration. With no argument the integration in the")
+		fmt.Fprintln(a.Stderr, "working directory is used; --all lists every integration instead.")
+	}
+	// --integration predates the positional argument and is kept so existing
+	// scripts keep working. It now resolves the same references the positional
+	// form does, rather than being the only way in.
+	integration := fs.String("integration", "", "integration to list (deprecated: pass it positionally)")
+	all := fs.Bool("all", false, "list runs of every integration")
 	status := fs.String("status", "", "filter by status")
 	limit := fs.Int("limit", 100, "maximum number of runs")
+	takesValue := func(arg string) bool {
+		name := strings.TrimLeft(arg, "-")
+		if i := strings.Index(name, "="); i >= 0 {
+			name = name[:i]
+		}
+		return name == "integration" || name == "status" || name == "limit"
+	}
+	args = flagsFirst(normalizeLongFlags(args), takesValue)
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(a.Stderr, "otter: usage: otter runs [<integration>] [--all] [--status <status>] [--limit <n>]")
+		return 2
+	}
+
+	ref := *integration
+	if fs.NArg() == 1 {
+		if ref != "" && ref != fs.Arg(0) {
+			fmt.Fprintf(a.Stderr, "otter: %q and --integration %q name different integrations\n", fs.Arg(0), ref)
+			return 2
+		}
+		ref = fs.Arg(0)
+	}
+	if *all && ref != "" {
+		fmt.Fprintln(a.Stderr, "otter: --all lists every integration; do not also name one")
 		return 2
 	}
 	if *status != "" && !runs.Status(*status).Valid() {
@@ -815,8 +918,35 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 
+	// The scope is deliberately explicit: a workspace-wide listing is asked
+	// for with --all, never inferred. Anything else names one integration, and
+	// no name at all means the one in the working directory -- the same
+	// default `otter run`, `otter inspect` and `otter pause` use.
+	scope := ""
+	if !*all {
+		explicit := ref != ""
+		if !explicit {
+			ref = "."
+		}
+		// A path reference is resolved against the working directory here, so
+		// `otter runs .` means the directory the operator is standing in and
+		// not the daemon's. A bare label or id: is passed through to the
+		// daemon, which is where reference resolution lives.
+		id, _, err := resolveIntegrationRefDir(ref)
+		if err != nil {
+			if !explicit {
+				fmt.Fprintf(a.Stderr, "otter: no integration here: no %s in this directory\n", config.ManifestFileName)
+				fmt.Fprintln(a.Stderr, "otter: name one (otter runs <integration>) or list every integration (otter runs --all)")
+				return 2
+			}
+			fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+			return 2
+		}
+		scope = id
+	}
+
 	list, err := g.client().ListRuns(ctx, api.RunsQuery{
-		IntegrationID: *integration,
+		IntegrationID: scope,
 		Status:        *status,
 		Limit:         *limit,
 	})
@@ -828,7 +958,11 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 		return a.printJSON(list)
 	}
 	if len(list) == 0 {
-		fmt.Fprintln(a.Stdout, "no runs")
+		if scope == "" {
+			fmt.Fprintln(a.Stdout, "no runs")
+		} else {
+			fmt.Fprintf(a.Stdout, "no runs for %s\n", scope)
+		}
 		return 0
 	}
 	a.writeRunTable(list)
@@ -865,10 +999,23 @@ func (a *App) writeRunTable(list []*runs.Run) {
 			started = r.StartedAt.Format("2006-01-02T15:04:05Z")
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-			r.ID, r.IntegrationID, r.TriggerType, r.Status, r.Attempt, started,
+			r.ID, integrationDisplayName(r), r.TriggerType, r.Status, r.Attempt, started,
 			r.Duration().Round(time.Millisecond))
 	}
 	_ = tw.Flush()
+}
+
+// integrationDisplayName is the label a run was submitted under, which is what
+// an operator typed and can type again. integration_id is the durable identity
+// and is a UUID on any workspace that has been migrated, so showing it in a
+// table answers a question nobody asked. Rows written before identities
+// existed carry no name; their id is the label, so the fallback is right for
+// both spellings.
+func integrationDisplayName(r *runs.Run) string {
+	if r.IntegrationName != "" {
+		return r.IntegrationName
+	}
+	return r.IntegrationID
 }
 
 func (a *App) cmdRunStatus(ctx context.Context, g globals, args []string) int {
@@ -893,7 +1040,7 @@ func (a *App) cmdRunStatus(ctx context.Context, g globals, args []string) int {
 
 	r := view.Run
 	fmt.Fprintf(a.Stdout, "run id:        %s\n", r.ID)
-	fmt.Fprintf(a.Stdout, "integration:   %s\n", r.IntegrationID)
+	fmt.Fprintf(a.Stdout, "integration:   %s\n", integrationDisplayName(r))
 	fmt.Fprintf(a.Stdout, "trigger:       %s\n", r.TriggerType)
 	fmt.Fprintf(a.Stdout, "status:        %s\n", r.Status)
 	fmt.Fprintf(a.Stdout, "attempt:       %d\n", r.Attempt)
@@ -1250,7 +1397,9 @@ Runtime:
   integrations [--all]            list integration names
   integrations --schedule         cron, next run and last outcome per integration
   reload                          re-read the integrations directory; no restart
-  inspect <integration>           show one integration in detail
+  pause [<integration>|.]         suspend cron and webhook; manual runs still work
+  resume [<integration>|.]        re-arm the triggers a pause suspended
+  inspect [<integration>|.]       show one integration in detail
   run [<integration>] [--no-wait] run it, wait, print the outcome and its output
   run --capture off|metadata|full override this run's HTTP capture policy
   serve [flags]                   run the daemon with the daemon's own defaults
@@ -1263,7 +1412,10 @@ Identity:
   identity migrate [--apply]      move a name-keyed workspace onto the identity registry
 
 Runs:
-  runs [--integration I] [--status S] [--limit N]
+  runs [<integration>]            runs for that integration; no argument means this directory
+  runs --all [--status S] [--limit N]
+                                  runs for every integration in the workspace
+  cancel <run-id>                 stop a queued or running run; it is never retried
   run-status <run-id>             show a run and its retry attempts
   logs <run-id> [--follow]        print captured output (JSONL when piped; --pretty to force prose)
   requests <run-id>               list the outgoing HTTP a run recorded
@@ -1329,6 +1481,8 @@ Examples:
   otter start                     # in a project: free port, env files loaded
   otter start --detach            # same, in the background
   otter run counter
+  otter runs counter              # that integration's history
+  otter runs --all --status failed
   otter run                       # the integration in the working directory
   otter release                   # release the integration in this directory
   otter release --all             # release every integration in the workspace
@@ -1353,7 +1507,7 @@ Examples:
 func needsDaemon(command string) bool {
 	switch command {
 	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state",
-		"register", "reset", "delete", "move", "requests", "request", "trace":
+		"register", "reset", "delete", "move", "requests", "request", "trace", "pause", "resume", "cancel":
 		return true
 	default:
 		return false

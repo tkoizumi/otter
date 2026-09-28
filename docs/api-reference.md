@@ -131,7 +131,7 @@ Every error uses the same envelope:
 | `405` | *(empty body)* | Known path, unsupported method — the router answers this itself. |
 | `409` | `conflict` | Cancel on a run that is already terminal, or capture ingestion for a run with no capture configuration. |
 | `500` | `internal_error` | Unexpected server error; details are in the daemon log. |
-| `503` | `unavailable` | The daemon is shutting down and is not accepting new work, or a bounded timeline read did not finish in time (see `GET /v1/runs/{id}/timeline`). |
+| `503` | `unavailable` | The daemon is shutting down and is not accepting new work, an autonomous trigger arrived for a paused integration, or a bounded timeline read did not finish in time (see `GET /v1/runs/{id}/timeline`). |
 
 Error `message` strings are for humans; branch on `code`. Note that the same
 `code` covers several conditions (there is one `not_found` for paths,
@@ -311,6 +311,10 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp"
 `secrets` returns names only, never values. `webhook_token` is absent when the
 webhook trigger is disabled.
 
+A paused integration adds `triggers.paused` and `triggers.paused_at`, and omits
+`next_run_at`: a paused integration has no next fire time. See
+`POST /v1/integrations/{id}/pause`.
+
 Errors: `404 not_found`.
 
 ### `POST /v1/reload`
@@ -392,8 +396,14 @@ The response is deliberately minimal — enough to track the run, nothing more.
 }
 ```
 
-Fetch `GET /v1/runs/{run_id}` for the full record. `otter run <integration>`
-prints only the `run_id`, which makes it scriptable:
+Fetch `GET /v1/runs/{run_id}` for the full record. On a terminal, `otter run
+<integration>` waits for the whole retry chain to settle, then prints
+`status: <status>` and the run's own output, exiting non-zero when the run
+failed. A failed or timed-out attempt ends the chain once it has used the
+integration's last allowed attempt (`max_attempts` below); until then the
+command keeps watching for the retry. When stdout is not a terminal, or with
+`--no-wait` or `--json`, the command prints only the `run_id`, which makes it
+scriptable:
 
 ```bash
 RUN_ID=$(otter run shopify-to-erp)
@@ -460,6 +470,48 @@ Preserve an identity across a same-filesystem directory rename.
 Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (the destination
 already exists or is owned, the paths nest, or the identity is not active).
 
+### `POST /v1/integrations/{id}/pause`
+
+Suspend an integration's autonomous triggers. Cron stops firing and the webhook
+refuses a trigger; the identity, state, run history, webhook token and releases
+are untouched, and a manual run through `POST /v1/integrations/{id}/runs` still
+works. No request body.
+
+```json
+{
+  "integration_id": "0195a7c2-...",
+  "name": "shopify-to-erp",
+  "paused": true,
+  "changed": true,
+  "since": "2024-06-01T12:30:00Z"
+}
+```
+
+Pausing is idempotent: repeating it answers `200` with `changed: false`.
+
+Errors: `404 not_found`, `409 conflict` (the identity is retired or deleted and
+accepts no work at all).
+
+### `POST /v1/integrations/{id}/resume`
+
+Re-arm the triggers a pause suspended. The cron expression is taken from the
+live manifest and the next fire time is computed from now; runs that were
+missed while paused are **not** replayed. No request body.
+
+```json
+{
+  "integration_id": "0195a7c2-...",
+  "name": "shopify-to-erp",
+  "paused": false,
+  "changed": true
+}
+```
+
+Resuming an integration that was not paused is a successful no-op with
+`changed: false`.
+
+Errors: `404 not_found`, `409 conflict`.
+
 ### `DELETE /v1/integrations/{id}`
 
 Purge the identity's state, run history and logs, queue rows, webhook token and
@@ -481,7 +533,7 @@ List runs, newest first.
 
 | Query parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `integration_id` | string | unset | Filter to one integration. |
+| `integration_id` | string | unset | Filter to one integration. Accepts a manifest label, a source path, or `id:<id>` -- resolved to the durable identity -- as well as the identity itself. An unknown reference is a `404`. |
 | `status` | string | unset | One of `queued`, `running`, `succeeded`, `failed`, `retrying`, `cancelled`, `timed_out`. An unknown value is a `400`. |
 | `parent_run_id` | string | unset | Return the attempts that retry a given run — the rest of a retry chain. |
 | `limit` | integer | `50` | Maximum rows to return; must be a positive integer. |
@@ -496,7 +548,8 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs?integration_id=shopify-to-erp&statu
   "runs": [
     {
       "id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
-      "integration_id": "shopify-to-erp",
+      "integration_id": "0195a7c2-4f3b-7d21-9c88-1e2f3a4b5c6d",
+      "integration_name": "shopify-to-erp",
       "trigger_type": "cron",
       "status": "failed",
       "attempt": 1,
@@ -518,7 +571,7 @@ the scheduled time live inside `metadata`. A run that has not started yet has
 `started_at: null` and `exit_code: null`.
 
 Errors: `400 invalid_request` for an unknown `status` value or a non-numeric
-`limit`.
+`limit`; `404 not_found` when `integration_id` names no integration.
 
 ### `GET /v1/runs/{id}`
 
@@ -548,6 +601,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0"
   "metadata": {"type": "cron", "timeout_seconds": 300, "scheduled_at": "2024-06-01T12:35:00Z"},
   "root_run_id": "run_01HZY6AAA111",
   "latest_status": "retrying",
+  "max_attempts": 3,
   "attempts": [
     {"id": "run_01HZY6AAA111", "attempt": 1, "status": "failed",   "exit_code": 1, "created_at": "2024-06-01T12:30:00Z", "started_at": "2024-06-01T12:30:00Z", "finished_at": "2024-06-01T12:30:07Z", "error": "process exited with code 1"},
     {"id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "attempt": 2, "status": "retrying", "exit_code": 1, "created_at": "2024-06-01T12:35:02Z", "started_at": "2024-06-01T12:35:02Z", "finished_at": "2024-06-01T12:35:09Z", "error": "process exited with code 1"}
@@ -564,6 +618,13 @@ Field notes:
   this endpoint only, not in the list response.
 - `latest_status` is the status of the newest attempt in the chain, which is what
   you usually want to display for `root_run_id`.
+- `max_attempts` is the retry ceiling the integration's manifest currently
+  allows, including the first attempt (`retry.attempts: 0` means `1`). It is
+  **omitted** when the integration is no longer registered, because there is no
+  manifest left to resolve it from. A client watching a chain can use it to tell
+  a failure that has given up (`latest_status` is `failed` and the newest
+  attempt's `attempt` is already at the ceiling) from one whose retry has not
+  been recorded yet.
 - `attempts` covers the entire chain, oldest first, including the run itself.
   Each element is a full run record, so it carries `metadata` too.
 - `exit_code` is `null` while queued/running; when a process is killed by a
@@ -981,7 +1042,7 @@ curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O
 Ctrl-C on a foreground `otterd` (or `systemctl stop`) cancels
 nothing — it triggers graceful shutdown instead, which waits for running
 integrations and only then terminates them. Use this endpoint when you want a
-specific run to stop now.
+specific run to stop now, or `otter cancel <run-id>` from the CLI.
 
 Errors: `404 not_found`, `409 conflict` (the run is already `succeeded`,
 `failed`, `cancelled` or `timed_out`), `403 forbidden`.
@@ -1131,6 +1192,7 @@ Errors:
 | --- | --- | --- |
 | `401` | `unauthorized` | Missing or wrong `X-Otter-Token` / `token`. |
 | `404` | `not_found` | Unknown integration, or its webhook trigger is disabled (deliberately identical, so the endpoint cannot enumerate integrations). |
+| `503` | `unavailable` | The integration is paused. The caller already holds a valid token, so naming the pause leaks nothing; `404` here would look like a configuration error. Resume with `otter resume` to accept triggers again. |
 | `403` | `forbidden` | A daemon or run token was used on the hook route. |
 | `400` | `invalid_request` | Empty integration path segment. |
 | `500` | `internal_error` | The run could not be enqueued. |
@@ -1191,7 +1253,7 @@ otter status
 otter integrations
 otter inspect shopify-to-erp
 otter run shopify-to-erp
-otter runs --integration shopify-to-erp --status failed --limit 20
+otter runs shopify-to-erp --status failed --limit 20
 otter run-status <run-id>
 otter logs <run-id> --follow
 otter state get shopify-to-erp cursor

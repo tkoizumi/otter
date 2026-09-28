@@ -5,7 +5,7 @@ name: release
 #   test    the same suite a pull request runs, so a tag cannot publish a
 #           binary that does not pass its own tests
 #   release cross-compile, checksum, publish the GitHub release, and push the
-#           generated Homebrew formula to the tap
+#           generated Homebrew cask to the tap
 #
 # A tag is the only trigger. Nothing here runs on a branch, because the point
 # of the workflow is that a published version corresponds to exactly one commit
@@ -93,10 +93,10 @@ jobs:
           path: dist/*.tar.gz
 
       # Publishing needs the tap token: GoReleaser commits the generated
-      # formula into <owner>/homebrew-tap, which the default GITHUB_TOKEN
+      # cask into <owner>/homebrew-tap, which the default GITHUB_TOKEN
       # cannot write to. Create a fine-grained PAT with contents:write on that
       # one repository and store it as HOMEBREW_TAP_TOKEN.
-      - name: Publish the release and the Homebrew formula
+      - name: Publish the release and the Homebrew cask
         if: github.event_name == 'push'
         uses: goreleaser/goreleaser-action@v6
         with:

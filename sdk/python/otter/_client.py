@@ -19,11 +19,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from . import _capture
 
-__all__ = ["Client", "OtterError", "encode_path_segment"]
+__all__ = ["Client", "OtterError", "describe_api_failure", "encode_path_segment"]
 
 
 class OtterError(Exception):
@@ -38,6 +38,20 @@ class OtterError(Exception):
 def encode_path_segment(value: Any) -> str:
     """Percent-encode ``value`` so it can be used as a single URL path segment."""
     return urllib.parse.quote(str(value), safe="")
+
+
+def describe_api_failure(status: int, body: Any) -> str:
+    """Extract a human readable message from an API error envelope.
+
+    Shared by every caller that has to explain a non-2xx response -- state
+    errors to the integration author, log delivery failures to the run's
+    records -- so the same response never reads two different ways.
+    """
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return "%s (HTTP %s)" % (error["message"], status)
+    return "HTTP %s" % (status,)
 
 
 def _decode_body(raw: Optional[bytes]) -> Any:
@@ -92,9 +106,16 @@ class Client:
         """``PUT path`` with ``value`` serialized as the JSON body."""
         return self.request("PUT", path, encode_json(value))
 
-    def post_json(self, path: str, payload: Any) -> Tuple[int, Any]:
-        """``POST path`` with ``payload`` serialized as the JSON body."""
-        return self.request("POST", path, encode_json(payload))
+    def post_json(
+        self, path: str, payload: Any, default: Optional[Callable[[Any], Any]] = None
+    ) -> Tuple[int, Any]:
+        """``POST path`` with ``payload`` serialized as the JSON body.
+
+        ``default`` is forwarded to :func:`encode_json`: pass ``str`` when an
+        unserializable value should be coerced rather than rejected, as the
+        structured logger does.
+        """
+        return self.request("POST", path, encode_json(payload, default=default))
 
     def delete_json(self, path: str) -> Tuple[int, Any]:
         """``DELETE path``; returns ``(status, parsed_body)``."""
@@ -145,13 +166,21 @@ class Client:
             time.sleep(delay)
 
 
-def encode_json(value: Any) -> bytes:
+def encode_json(value: Any, default: Optional[Callable[[Any], Any]] = None) -> bytes:
     """Serialize ``value`` to compact UTF-8 JSON bytes.
 
     Raises :class:`OtterError` when the value is not JSON-serializable
     (``NaN``/``Infinity`` are rejected too, since they are not valid JSON).
+
+    ``default`` is passed straight to :func:`json.dumps`. Callers that must not
+    fail on an exotic value -- notably the structured logger, where a lost
+    record is worse than a coerced one -- pass ``str`` to render it instead.
+    State writes deliberately stay strict: a value the daemon cannot round-trip
+    should be reported, not silently stored as text.
     """
     try:
-        return json.dumps(value, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        return json.dumps(
+            value, allow_nan=False, separators=(",", ":"), default=default
+        ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise OtterError("value is not JSON-serializable: %s" % (exc,))

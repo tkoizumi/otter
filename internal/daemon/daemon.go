@@ -28,6 +28,7 @@ import (
 	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
+	"github.com/tkoizumi/otter/internal/pause"
 	"github.com/tkoizumi/otter/internal/queue"
 	"github.com/tkoizumi/otter/internal/runs"
 	"github.com/tkoizumi/otter/internal/scheduler"
@@ -106,6 +107,11 @@ type Daemon struct {
 	logs  *runs.LogStore
 	queue *queue.Queue
 	state *state.Store
+
+	// paused is the operator's per-integration trigger pause. Pausing stops
+	// cron and webhook admission without retiring anything, so it is keyed by
+	// durable identity rather than by label or path.
+	paused *pause.Store
 
 	// inspection holds bounded HTTP capture: per-run summaries and request
 	// records. It is diagnostic, so nothing recorded through it may change what
@@ -200,6 +206,13 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	inspectionStore := inspection.NewStore(db.DB,
 		inspection.NewRedactor(cfg.CaptureRedactHeaders, cfg.CaptureRedactQuery, cfg.CaptureRedactFields),
 		inspection.DefaultLimits())
+	// The pause table is read once here and mirrored in memory, so a cron tick
+	// can ask whether it may fire without a database read.
+	pauseStore, err := pause.NewStore(ctx, db.DB)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	d := &Daemon{
 		cfg:        cfg,
 		owner:      owner,
@@ -210,6 +223,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		logs:       logsStore,
 		queue:      queue.New(db.DB),
 		state:      state.NewStore(db.DB),
+		paused:     pauseStore,
 		inspection: inspectionStore,
 		timeline:   timeline.NewReader(db, runsStore, logsStore, inspectionStore),
 		sched:      scheduler.New(opts.Logger),
@@ -472,7 +486,11 @@ func (d *Daemon) logIntegrations(items []*config.Integration) {
 
 // syncSchedules makes the cron runner match items: it reconciles the trigger of
 // every integration that declares one and drops the triggers of integrations
-// that no longer do, or are no longer valid.
+// that no longer do, are no longer valid, or are paused.
+//
+// A paused integration is deliberately absent from `want`, so the same pass
+// that forgets a removed integration also leaves a paused one unarmed -- and
+// keeps it unarmed across a reload and a restart.
 //
 // Replace leaves an unchanged expression's entry exactly as it is, so an
 // integration that did not change keeps its next fire time across a reload.
@@ -480,6 +498,9 @@ func (d *Daemon) syncSchedules(items []*config.Integration) {
 	want := map[string]string{}
 	for _, it := range items {
 		if !it.Valid || it.Manifest == nil {
+			continue
+		}
+		if d.paused.Paused(it.ID) {
 			continue
 		}
 		if spec := it.Manifest.Cron(); spec != "" {
@@ -507,6 +528,12 @@ func (d *Daemon) syncSchedules(items []*config.Integration) {
 			continue
 		}
 		d.sched.Unregister(id)
+		// Pausing unregisters in the same breath, so a paused integration is
+		// already gone by the time a reload looks. Reporting it here would
+		// claim the reload removed a schedule that the pause removed.
+		if d.paused.Paused(id) {
+			continue
+		}
 		d.log.Info("cron_unregistered", "integration", id)
 	}
 }
@@ -721,6 +748,14 @@ func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int
 // cronTick enqueues a run for a cron trigger. The job does no work itself, so
 // a slow integration never blocks the cron runner.
 func (d *Daemon) cronTick(integrationID, spec string) {
+	// Stop is not the same instant as unregister. A tick already in flight when
+	// the operator paused would otherwise become a run, so the pause is
+	// re-checked here as the last word on admission.
+	if d.paused.Paused(integrationID) {
+		d.log.Debug("cron_skipped", "integration", integrationID, "cron", spec, "reason", "paused")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
