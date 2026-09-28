@@ -97,10 +97,37 @@ func (q *Queue) Remove(ctx context.Context, runID string) (bool, error) {
 //
 // The whole operation runs in one immediate transaction, so a run can never
 // be handed to two workers.
+//
+// A reservation is only handed to the caller once the transaction that removes
+// the run has committed. Every other outcome -- an in-transaction failure, a
+// conflict, or a failed commit -- gives the reserved slots back, because a
+// reservation the caller never learns about would shrink the integration's
+// capacity for the rest of the process's life.
 func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*Item, error) {
-	var claimed *Item
+	var (
+		claimed *Item
+		// held records every slot reserved by this attempt, in order, so the
+		// cleanup below can give back exactly what was taken.
+		held      []string
+		committed bool
+	)
 
-	err := q.withTx(ctx, func(tx *sql.Tx) error {
+	// The transaction removes the run from the queue and the caller must not
+	// learn about a run that was never really removed. If any part of the
+	// transaction fails -- including the commit -- the reservations that were
+	// granted while it ran are handed back; a reservation the caller never
+	// learns about would shrink this integration's capacity for the rest of
+	// the process's life.
+	defer func() {
+		if committed || capacity == nil {
+			return
+		}
+		for i := len(held) - 1; i >= 0; i-- {
+			capacity.Release(held[i])
+		}
+	}()
+
+	ok, err := q.withTx(ctx, commitQueueTx, func(tx *sql.Tx) (bool, error) {
 		rows, err := tx.QueryContext(ctx,
 			`SELECT run_id, integration_id, available_at, created_at FROM run_queue
 			 WHERE available_at <= ?
@@ -108,47 +135,52 @@ func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*I
 			 LIMIT 200`,
 			database.FormatTime(now))
 		if err != nil {
-			return fmt.Errorf("queue: select candidates: %w", err)
+			return false, fmt.Errorf("queue: select candidates: %w", err)
 		}
 
 		candidates, err := scanItems(rows)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		for _, it := range candidates {
-			if capacity != nil && !capacity.Reserve(it.IntegrationID) {
+			reserved := capacity != nil && capacity.Reserve(it.IntegrationID)
+			if reserved {
+				held = append(held, it.IntegrationID)
+			} else if capacity != nil {
 				continue // integration is at its concurrency limit or draining
 			}
 
 			res, err := tx.ExecContext(ctx, `DELETE FROM run_queue WHERE run_id = ?`, it.RunID)
 			if err != nil {
-				if capacity != nil {
-					capacity.Release(it.IntegrationID)
-				}
-				return fmt.Errorf("queue: claim %s: %w", it.RunID, err)
+				return false, fmt.Errorf("queue: claim %s: %w", it.RunID, err)
 			}
 			n, err := res.RowsAffected()
 			if err != nil {
-				if capacity != nil {
-					capacity.Release(it.IntegrationID)
-				}
-				return fmt.Errorf("queue: claim %s: %w", it.RunID, err)
+				return false, fmt.Errorf("queue: claim %s: %w", it.RunID, err)
 			}
 			if n != 1 {
-				// Someone else got there first; give the slot back.
-				if capacity != nil {
+				// Someone else got there first; give this slot back now and
+				// keep looking at the remaining candidates.
+				if reserved {
 					capacity.Release(it.IntegrationID)
+					held = held[:len(held)-1]
 				}
 				continue
 			}
 
 			item := it
 			claimed = &item
-			return nil
+			return true, nil
 		}
-		return nil
+		return false, nil
 	})
+
+	// The transaction committed, so the run really is gone from the queue and
+	// the caller owns the reserved slots. Any other outcome -- a failed query,
+	// a failed commit, or nothing claimable -- leaves the reservations to the
+	// cleanup above.
+	committed = ok
 	if err != nil {
 		return nil, err
 	}
@@ -226,21 +258,38 @@ func (q *Queue) DiscardAll(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+// commitQueueTx is the production commit step. It exists as a variable so
+// tests can inject a commit failure, which is otherwise impossible to trigger
+// against a healthy SQLite file and is exactly the failure that used to leak
+// capacity slots.
+var commitQueueTx = func(tx *sql.Tx) error { return tx.Commit() }
+
 // withTx runs fn inside a transaction using explicit BEGIN IMMEDIATE
-// semantics supplied by the driver's _txlock setting.
-func (q *Queue) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+// semantics supplied by the driver's _txlock setting. fn reports whether it
+// wants the transaction committed; when it does not, the transaction is rolled
+// back and withTx reports ok=false.
+//
+// The commit is performed by the caller-supplied commit function so that a
+// failed commit is treated as a transaction failure rather than as an error
+// the caller has to interpret.
+func (q *Queue) withTx(ctx context.Context, commit func(tx *sql.Tx) error, fn func(tx *sql.Tx) (bool, error)) (ok bool, err error) {
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("queue: begin: %w", err)
+		return false, fmt.Errorf("queue: begin: %w", err)
 	}
-	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
-		return err
+	defer func() { _ = tx.Rollback() }()
+
+	wantCommit, err := fn(tx)
+	if err != nil {
+		return false, err
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("queue: commit: %w", err)
+	if !wantCommit {
+		return false, nil
 	}
-	return nil
+	if err := commit(tx); err != nil {
+		return false, fmt.Errorf("queue: commit: %w", err)
+	}
+	return true, nil
 }
 
 func scanItems(rows *sql.Rows) ([]Item, error) {

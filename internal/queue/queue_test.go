@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -416,5 +417,101 @@ func TestDepthByIntegrationListAndDiscardAll(t *testing.T) {
 	}
 	if removed != 0 {
 		t.Errorf("second DiscardAll() removed %d, want 0", removed)
+	}
+}
+
+// setCommitHook makes the next transactions fail at commit. A commit failure
+// against a healthy SQLite file cannot be provoked from the outside, so the
+// queue exposes the commit step for tests.
+func setCommitHook(t *testing.T, hook func(*sql.Tx) error) {
+	t.Helper()
+	prev := commitQueueTx
+	commitQueueTx = hook
+	t.Cleanup(func() { commitQueueTx = prev })
+}
+
+// TestClaimCommitFailureReleasesCapacity is the regression test for the
+// capacity slot leak: a reservation is granted while the claim transaction is
+// open, so a commit failure must give it back. Before the fix the slot stayed
+// reserved forever and permanently shrank the integration's concurrency.
+func TestClaimCommitFailureReleasesCapacity(t *testing.T) {
+	q, ctx := newTestQueue(t)
+	capacity := newFakeCapacity(map[string]int{"a": 1})
+	mustEnqueue(t, q, ctx, "a-1", "a", testBase)
+	now := testBase.Add(time.Hour)
+
+	commitErr := errors.New("injected commit failure")
+	setCommitHook(t, func(*sql.Tx) error { return commitErr })
+
+	item, err := q.Claim(ctx, now, capacity)
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("Claim() error = %v, want %v", err, commitErr)
+	}
+	if item != nil {
+		t.Errorf("Claim() item = %+v, want nil when the commit failed", item)
+	}
+	if got := capacity.runningFor("a"); got != 0 {
+		t.Errorf("reserved slots after failed commit = %d, want 0 (slot leaked)", got)
+	}
+	if found, err := q.Contains(ctx, "a-1"); err != nil {
+		t.Fatalf("Contains(a-1) error = %v", err)
+	} else if !found {
+		t.Errorf("a-1 was removed even though the transaction did not commit")
+	}
+
+	// The released slot must be reusable: claiming again with a working commit
+	// has to succeed on the same run.
+	setCommitHook(t, func(tx *sql.Tx) error { return tx.Commit() })
+	claimed, err := q.Claim(ctx, now, capacity)
+	if err != nil {
+		t.Fatalf("Claim() after the injected failure error = %v", err)
+	}
+	if claimed.RunID != "a-1" {
+		t.Errorf("Claim() after the injected failure RunID = %q, want a-1", claimed.RunID)
+	}
+	if got := capacity.runningFor("a"); got != 1 {
+		t.Errorf("reserved slots after a committed claim = %d, want 1", got)
+	}
+}
+
+// TestClaimCommitFailureWithoutCapacity covers the same commit failure with no
+// Capacity implementation installed, so the cleanup path is exercised with
+// nothing to release.
+func TestClaimCommitFailureWithoutCapacity(t *testing.T) {
+	q, ctx := newTestQueue(t)
+	mustEnqueue(t, q, ctx, "a-1", "a", testBase)
+
+	commitErr := errors.New("injected commit failure")
+	setCommitHook(t, func(*sql.Tx) error { return commitErr })
+
+	if _, err := q.Claim(ctx, testBase.Add(time.Hour), nil); !errors.Is(err, commitErr) {
+		t.Fatalf("Claim() error = %v, want %v", err, commitErr)
+	}
+	if found, err := q.Contains(ctx, "a-1"); err != nil {
+		t.Fatalf("Contains(a-1) error = %v", err)
+	} else if !found {
+		t.Errorf("a-1 was removed even though the transaction did not commit")
+	}
+}
+
+// TestClaimSaturatedIntegrationDoesNotReserve guards the other half of the
+// invariant: a candidate that is skipped because its integration is saturated
+// must not leave a reservation behind.
+func TestClaimSaturatedIntegrationDoesNotReserve(t *testing.T) {
+	q, ctx := newTestQueue(t)
+	capacity := newFakeCapacity(map[string]int{"a": 1})
+	mustEnqueue(t, q, ctx, "a-1", "a", testBase)
+	now := testBase.Add(time.Hour)
+
+	if _, err := q.Claim(ctx, now, capacity); err != nil {
+		t.Fatalf("first Claim() error = %v", err)
+	}
+	// Saturate "a" and try to claim a second run of the same integration.
+	mustEnqueue(t, q, ctx, "a-2", "a", testBase)
+	if _, err := q.Claim(ctx, now, capacity); !errors.Is(err, ErrEmpty) {
+		t.Fatalf("Claim() while saturated error = %v, want ErrEmpty", err)
+	}
+	if got := capacity.runningFor("a"); got != 1 {
+		t.Errorf("reserved slots while saturated = %d, want 1", got)
 	}
 }
