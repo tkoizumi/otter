@@ -189,7 +189,14 @@ Two related consequences:
   decision as `OT-007` / `OT-008` in [open-work.md](open-work.md).
 - **A backlog runs its bound release.** Each attempt records the release digest
   at submission, so a deep backlog executes the code that was active when each
-  occurrence was accepted, not the newest release.
+  occurrence was accepted, not the newest release. Submission-time binding is
+  tested by `TestRunExecutesTheActiveReleaseNotTheLiveTree`; the retry half is
+  not yet independently proven (`OT-011`).
+- **Releases still needed by pending work are protected from retention.** The
+  CLI retention pass collects the digests bound to every `queued`, `running` and
+  `retrying` attempt and protects them from deletion (`internal/cli/release.go`
+  `pinnedReleases`; `internal/release` `Retain`). A daemon-side submit racing a
+  retention pass is a known gap (`OT-010`).
 
 ### 3.2 Duplicate webhook delivery is not deduplicated
 
@@ -285,8 +292,24 @@ Guarantees:
   (the persisted-deadline half is not yet crash-tested; see FM-04 in
   [Appendix A](#appendix-a--the-ws4-fault-matrix-and-its-evidence)). *Scenario
   FM-04.*
-- **A retry runs its parent's bound release and environment**, not the live
-  tree and not whatever is active later. *Scenario FM-02.*
+
+**Retry release and environment binding (not yet proven).** Every attempt
+records the release digest and source directory, the Python mode, and — for
+managed Python — the prepared interpreter and environment digest at submission
+(`daemon/view.go`). A retry successor copies those fields rather than
+re-resolving them from the live tree (`daemon/workers.go` `planRetry`), and
+execution resolves the attempt's recorded release and environment
+(`daemon/workers.go` `executeRun`). Submission-side binding is tested by
+`TestRunExecutesTheActiveReleaseNotTheLiveTree`.
+
+What is **not** proven is the retry half: that a retry executes its parent's
+bound release after a newer release has become active, and that a managed-Python
+retry resolves its parent's prepared environment. `FM-02`'s anchor tests prove
+that the terminal outcome and its successor are committed atomically; they do
+not assert that the successor's bound fields are re-used at execution time. The
+binding is therefore described here as implemented behavior and is an
+**explicit non-guarantee** until that scenario exists. It is tracked as `OT-011`
+in [open-work.md](open-work.md).
 
 ### 5.2 Exactly-once execution is not promised
 
@@ -386,7 +409,7 @@ which is this document's. Evidence status is deliberately literal:
 | ID | Scenario | Evidence | Anchor tests |
 | --- | --- | --- | --- |
 | FM-01 | SIGKILL the daemon mid-run; every interrupted run reaches a terminal state or is re-enqueued; >50 at once | **Simulated** | `TestCrashRecoveryMarksRunningRunsFailedAndRetries`, `TestCrashRecoveryHandlesMoreThanOneListingPage` (240 seeded rows), `TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed`, `TestStartupFailClosedOnIncompleteRecovery`, `TestReconcileQueueReenqueuesMoreThanOneListingPage`. Admission/refusal: `TestSubmitRunRejectsUnknownAndInvalidIntegrations`, `TestUnreleasedIntegrationIsRefused`, `TestDrainingRuntimeRejectsNewRuns`, `TestPausedWebhookIsUnavailableButManualRunsStillWork`. A real SIGKILL, and a submit→close→reopen→read durability test: none. |
-| FM-02 | SIGKILL the daemon between finish and retry; no terminal failure without its retry | **Simulated** | `TestFinishRunPersistsOutcomeAndSuccessorAtomically`, `TestFinishCommitFailureLeavesNoPartialOutcome`, `TestFallbackJournalIsAppliedOnRestart`, `TestUnreadableFallbackJournalDoesNotReRunRunningRuns` |
+| FM-02 | SIGKILL the daemon between finish and retry; no terminal failure without its retry | **Simulated** | `TestFinishRunPersistsOutcomeAndSuccessorAtomically`, `TestFinishCommitFailureLeavesNoPartialOutcome`, `TestFallbackJournalIsAppliedOnRestart`, `TestUnreadableFallbackJournalDoesNotReRunRunningRuns`. Retry release/environment retention: none (`OT-011`). |
 | FM-03 | Kill the child, leave the daemon; attempt recorded, descendants do not survive | **Partial** | Linux direct child: `TestChildDiesWhenDaemonIsKilled` (real SIGKILL of a stand-in, no DB). In-process child death: `TestTimeoutMarksRunTimedOut`, `TestTimeoutIsRetriedWhenPolicyAllows`. Attempt-recorded-under-a-real-kill: none. |
 | FM-04 | Crash during retry backoff; retry claimable after `available_at`, backoff preserved | **Partial** | `TestClaimRespectsAvailableAt`, `TestRetryPolicyRetriesUntilSuccess`, `TestClaimedRunIsRequeuedWhenMarkRunningFails`. A real restart mid-backoff: none. |
 | FM-05 | Cancel a running run; process group dies, status `cancelled`, not retried | **Partial** | `TestCancelRunningRunIsNotRetried`, `TestCancelQueuedRunRemovesItFromTheQueue`. Process-group death under cancel: none. |
@@ -405,7 +428,8 @@ strength the release plan intends:
 - **FM-01, FM-02, FM-06** need a harness that kills the daemon and the child
   for real, and a second connection or process for the claim race. Simulated
   coverage is real coverage of the recovery logic, but it cannot detect a bug
-  that only a genuine SIGKILL exposes.
+  that only a genuine SIGKILL exposes. FM-02 also does not yet prove that a
+  retry re-uses its parent's bound release and environment (`OT-011`).
 - **FM-03, FM-04, FM-05, FM-08** need the real crash/kill halves of the
   scenario.
 - **FM-07** needs a same-key read-modify-write race to turn the

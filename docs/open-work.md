@@ -43,6 +43,11 @@ child-lifetime fix: `Pdeathsig` on Linux, and the macOS exposure stated in
 [architecture.md](architecture.md#child-lifetime-is-platform-specific). The
 limitation is documented, not fixed; a macOS watchdog remains unscheduled.
 
+The WS7 reproducible-releases audit raised `OT-011` below. It does not gate
+`v0.2.0`: the runtime contract states the retry half as an explicit
+non-guarantee rather than an unproven promise, so the published contract still
+only guarantees what a matrix scenario exercises.
+
 ### v0.3.0
 
 | ID | Task | Kind | Evidence | Status |
@@ -54,10 +59,37 @@ limitation is documented, not fixed; a macOS watchdog remains unscheduled.
 | OT-004 | Expose queue age, per-integration depth, and last-success freshness | feature | `/health` reports counts only (`api/server.go:353-391`); no `created_at` age anywhere | open |
 | OT-005 | Ship a `migration_applied` log line, or stop promising one | doc | promised at `operations.md:698`; `Migrate` has no logger and `schema_migrations` has no description column | open |
 | OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | open |
+| OT-011 | Prove queued and retry attempts retain their bound release and environment | test | [see below](#reproducible-releases-not-yet-proven) | open |
 
 `OT-001` through `OT-006` are ordered by dependency: the documented SQL is wrong
 before retention exists, retention must understand pinning before it prunes, and
 nothing in the group is safe to ship until `OT-002` is settled.
+
+#### Reproducible releases not yet proven
+
+Detail for `OT-011`. Raised by the WS7 audit against the roadmap's
+[Reproducible releases](product-roadmap.md#v020--phase-1-dependable-execution)
+bullet ("queued runs and retries retain their bound code and environment").
+
+- **What is proven.** A queued run executes its bound release snapshot, not the
+  live tree (`TestRunExecutesTheActiveReleaseNotTheLiveTree`). Retention protects
+  releases bound to non-terminal runs (`TestPinnedReleasesIncludesOnlyNonTerminalRuns`,
+  `TestRetainKeepsTheActiveAndReferenced`).
+- **What is not.** No test asserts that a *retry* re-uses its parent's
+  `release_digest` / `release_source_dir`, or that a managed-Python retry
+  resolves its parent's `environment_digest`. No test references
+  `ReleaseSourceDir` at all. `planRetry` copies the fields
+  (`internal/daemon/workers.go`), so the behavior is implemented, but nothing
+  exercises it end to end.
+- **Why it was missed.** The contract cited `FM-02` for the retry-binding
+  guarantee, but `FM-02`'s anchor tests prove only that the terminal outcome and
+  its successor are committed atomically. The citation was corrected when the
+  gap was found; the retry binding is now an explicit non-guarantee in
+  [runtime-contract.md](runtime-contract.md#5-retries-and-external-effects).
+- **Exit.** A matrix scenario that activates a newer release between a failed
+  attempt and its retry, and asserts the retry ran the parent's snapshot (and,
+  for managed Python, the parent's environment), plus a retention case that a
+  pending backlog keeps its digest.
 
 #### Backlog behavior to document
 
