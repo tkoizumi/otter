@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -38,6 +39,33 @@ func requirePython(t *testing.T) {
 
 func testLogger() *logging.Logger {
 	return logging.New(io.Discard, logging.FormatJSON, logging.LevelError)
+}
+
+// recoveryCount extracts the count reported by the startup recovery log line
+// from a captured JSON log. It is what lets a test prove recovery reported the
+// true number of interrupted runs rather than one page of them.
+func recoveryCount(t *testing.T, output string) int {
+	t.Helper()
+
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("parse log line %q: %v", line, err)
+		}
+		if record["event"] != "recovering_interrupted_runs" {
+			continue
+		}
+		count, ok := record["count"].(float64)
+		if !ok {
+			t.Fatalf("recovering_interrupted_runs count = %v, want a number", record["count"])
+		}
+		return int(count)
+	}
+	t.Fatalf("no recovering_interrupted_runs line in the startup log:\n%s", output)
+	return 0
 }
 
 // writeIntegration lays a manifest and entrypoint into root/<dir>.
@@ -215,6 +243,14 @@ func newDaemonUnreleased(t *testing.T, root, dataDir string, provider secrets.Pr
 
 func newDaemonWith(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseIntegrations bool) *Daemon {
 	t.Helper()
+	return newDaemonWithLogger(t, root, dataDir, testLogger(), provider, tweak, releaseIntegrations)
+}
+
+// newDaemonWithLogger is newDaemonWith with an explicit logger, so a test can
+// capture and assert on what startup reported -- for example the true count of
+// interrupted runs a recovery pass handled.
+func newDaemonWithLogger(t *testing.T, root, dataDir string, logger *logging.Logger, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseIntegrations bool) *Daemon {
+	t.Helper()
 	requirePython(t)
 
 	if dataDir == "" {
@@ -238,7 +274,7 @@ func newDaemonWith(t *testing.T, root, dataDir string, provider secrets.Provider
 
 	d, err := New(context.Background(), Options{
 		Config:  cfg,
-		Logger:  testLogger(),
+		Logger:  logger,
 		Secrets: provider,
 		Version: "test",
 	})
@@ -1003,6 +1039,107 @@ print("job ran")
 	}
 }
 
+// TestCrashRecoveryHandlesMoreThanOneListingPage is the regression test for the
+// truncated recovery read. A workspace whose queue is deep can hold far more
+// than one listing page of `running` rows when the daemon is killed, and every
+// one of them must be recovered -- not just the first page.
+//
+// The count seed is deliberately above both the listing default (50) and any
+// single page the exhaustive read uses, so the assertion cannot pass by
+// accident.
+func TestCrashRecoveryHandlesMoreThanOneListingPage(t *testing.T) {
+	const (
+		interrupted = 200 // first attempts, so a retry is allowed
+		exhausted   = 40  // already at the two-attempt limit, so no retry
+	)
+
+	root := t.TempDir()
+	writeIntegration(t, root, "job", `
+version: 1
+name: job
+entrypoint: main.py
+timeout: 30
+retry:
+  attempts: 2
+  backoff: none
+`, `print("job ran")`)
+
+	dataDir := t.TempDir()
+	jobID := identityIDFor(t, root, dataDir, "job")
+
+	// Simulate a daemon that died while a backlog was executing: every one of
+	// these rows was `running` at the moment of the kill.
+	seed, err := database.Open(context.Background(), dataDir)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := database.Migrate(context.Background(), seed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := runs.NewStore(seed.DB)
+	base := time.Now().UTC().Add(-time.Hour)
+	wantAttempts := make(map[string]int, interrupted+exhausted)
+
+	seedRun := func(id string, attempt int, startedAt time.Time) {
+		t.Helper()
+		if err := store.Create(context.Background(), &runs.Run{
+			ID:            id,
+			IntegrationID: jobID,
+			TriggerType:   runs.TriggerManual,
+			Status:        runs.StatusRunning,
+			Attempt:       attempt,
+			CreatedAt:     startedAt,
+			StartedAt:     &startedAt,
+		}); err != nil {
+			t.Fatalf("seed run %s: %v", id, err)
+		}
+	}
+	for i := 0; i < interrupted; i++ {
+		id := fmt.Sprintf("interrupted-%03d", i)
+		seedRun(id, 1, base.Add(time.Duration(i)*time.Millisecond))
+		wantAttempts[id] = 2 // recovered, then one retry successor
+	}
+	for i := 0; i < exhausted; i++ {
+		id := fmt.Sprintf("exhausted-%03d", i)
+		seedRun(id, 2, base.Add(time.Duration(interrupted+i)*time.Millisecond))
+		wantAttempts[id] = 1 // recovered, but the attempt limit forbids a retry
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed database: %v", err)
+	}
+
+	// Constructing a daemon on that data directory performs recovery. Capture
+	// the log so the reported count can be checked too: a silently truncated
+	// pass is exactly the defect this test exists for.
+	var logs bytes.Buffer
+	d := newDaemonWithLogger(t, root, dataDir,
+		logging.New(&logs, logging.FormatJSON, logging.LevelDebug), nil, nil, true)
+
+	wantRecovered := interrupted + exhausted
+	if got := recoveryCount(t, logs.String()); got != wantRecovered {
+		t.Errorf("recovering_interrupted_runs reported count=%d, want %d", got, wantRecovered)
+	}
+
+	ctx := context.Background()
+	for id, want := range wantAttempts {
+		run, err := d.runs.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if !run.Status.Terminal() {
+			t.Errorf("run %s is still %s, want a terminal status", id, run.Status)
+			continue
+		}
+		_, attempts, err := d.runs.Chain(ctx, id)
+		if err != nil {
+			t.Fatalf("chain %s: %v", id, err)
+		}
+		if len(attempts) != want {
+			t.Fatalf("run %s has %d attempts, want %d", id, len(attempts), want)
+		}
+	}
+}
+
 func TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed(t *testing.T) {
 	root := t.TempDir()
 	writeIntegration(t, root, "job", `
@@ -1190,6 +1327,64 @@ print("job ran")
 	view := awaitTerminal(t, d, orphan.ID)
 	if view.Run.Status != runs.StatusSucceeded {
 		t.Errorf("re-enqueued run status = %s, want succeeded", view.Run.Status)
+	}
+}
+
+// TestReconcileQueueReenqueuesMoreThanOneListingPage is the reconciliation
+// regression test: every orphaned run in a waiting status must get exactly one
+// queue row, not just the first page.
+func TestReconcileQueueReenqueuesMoreThanOneListingPage(t *testing.T) {
+	const orphans = 60 // per status, so more than one listing page in total
+
+	root := t.TempDir()
+	writeIntegration(t, root, "job", minimalManifest("job"), noopPython)
+
+	// Not started: reconciliation is called directly, so nothing claims the
+	// rows while the test counts them.
+	d := newDaemon(t, root, "", nil, nil)
+	ctx := context.Background()
+	jobID := runtimeID(t, d, "job")
+
+	ids := make([]string, 0, 2*orphans)
+	for _, status := range []runs.Status{runs.StatusQueued, runs.StatusRetrying} {
+		for i := 0; i < orphans; i++ {
+			id := fmt.Sprintf("%s-%03d", status, i)
+			ids = append(ids, id)
+			run := &runs.Run{
+				ID:            id,
+				IntegrationID: jobID,
+				TriggerType:   runs.TriggerManual,
+				Status:        status,
+				Attempt:       1,
+				CreatedAt:     time.Now().UTC(),
+			}
+			if err := d.runs.Create(ctx, run); err != nil {
+				t.Fatalf("seed run %s: %v", id, err)
+			}
+		}
+	}
+
+	if err := d.reconcileQueue(ctx); err != nil {
+		t.Fatalf("reconcile queue: %v", err)
+	}
+
+	// Every orphan must be queued exactly once. The queue is keyed by run id,
+	// so an exact depth is the exactly-once assertion.
+	for _, id := range ids {
+		present, err := d.queue.Contains(ctx, id)
+		if err != nil {
+			t.Fatalf("queue contains %s: %v", id, err)
+		}
+		if !present {
+			t.Errorf("orphaned run %s was not re-enqueued", id)
+		}
+	}
+	depth, err := d.queue.Depth(ctx)
+	if err != nil {
+		t.Fatalf("queue depth: %v", err)
+	}
+	if depth != len(ids) {
+		t.Errorf("queue depth = %d, want %d", depth, len(ids))
 	}
 }
 
@@ -2115,6 +2310,78 @@ func TestReloadCancelsQueuedRunsOfARemovedIntegration(t *testing.T) {
 	// The integration that stayed was not touched.
 	if _, ok := d.GetIntegration("kept"); !ok {
 		t.Error("reload removed an integration that is still on disk")
+	}
+}
+
+// TestReloadCancelsMoreThanOneListingPageOfRemovedRuns is the reload-path
+// regression test: a removal must cancel every queued and retrying run, not the
+// first page. A truncated pass leaves the rest queued, and a later release can
+// then execute work the operator explicitly removed.
+func TestReloadCancelsMoreThanOneListingPageOfRemovedRuns(t *testing.T) {
+	const doomed = 60 // per status, so more than one listing page in total
+
+	root := t.TempDir()
+	writeIntegration(t, root, "doomed", minimalManifest("doomed"), noopPython)
+	writeIntegration(t, root, "kept", minimalManifest("kept"), noopPython)
+
+	// Not started, so nothing claims the runs: they stay queued and are
+	// available to be cancelled by the reload.
+	d := newDaemon(t, root, "", nil, nil)
+	ctx := context.Background()
+	doomedID := runtimeID(t, d, "doomed")
+
+	ids := make([]string, 0, 2*doomed)
+	for _, status := range []runs.Status{runs.StatusQueued, runs.StatusRetrying} {
+		for i := 0; i < doomed; i++ {
+			id := fmt.Sprintf("%s-%03d", status, i)
+			ids = append(ids, id)
+			run := &runs.Run{
+				ID:            id,
+				IntegrationID: doomedID,
+				TriggerType:   runs.TriggerManual,
+				Status:        status,
+				Attempt:       1,
+				CreatedAt:     time.Now().UTC(),
+			}
+			if err := d.runs.Create(ctx, run); err != nil {
+				t.Fatalf("seed run %s: %v", id, err)
+			}
+			if err := d.queue.Enqueue(ctx, id, doomedID, time.Now().UTC()); err != nil {
+				t.Fatalf("enqueue %s: %v", id, err)
+			}
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, "doomed")); err != nil {
+		t.Fatalf("remove integration: %v", err)
+	}
+
+	result, err := d.Reload(ctx)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != "doomed" {
+		t.Errorf("removed = %v, want [doomed]", result.Removed)
+	}
+	if result.RunsCancelled != len(ids) {
+		t.Errorf("runs cancelled = %d, want %d", result.RunsCancelled, len(ids))
+	}
+
+	for _, id := range ids {
+		run, err := d.runs.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if run.Status != runs.StatusCancelled {
+			t.Errorf("run %s status = %s, want cancelled", id, run.Status)
+		}
+		present, err := d.queue.Contains(ctx, id)
+		if err != nil {
+			t.Fatalf("queue contains %s: %v", id, err)
+		}
+		if present {
+			t.Errorf("cancelled run %s is still queued", id)
+		}
 	}
 }
 

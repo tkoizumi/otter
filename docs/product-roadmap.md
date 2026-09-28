@@ -14,15 +14,39 @@ documentation describes substantial runtime functionality; it does not by itself
 prove production readiness. Items below mean verify, harden, or fill a demonstrated
 gap, not automatically rebuild an existing feature.
 
+## Release ladder
+
+The phases below carry the release numbers. A phase is not "done" until its exit
+gate passes, so a version number here means a phase closed, not a date reached.
+
+| Version | Phase | The release promises |
+| --- | --- | --- |
+| `v0.2.0` | 1. Dependable execution | Accepted work is never lost, including across a hard kill |
+| `v0.3.0` | 2. Operable runtime | A stranger can install, diagnose, upgrade, and restore it from the docs |
+| `v0.4.0` | 2. Operable runtime | Manifest, SDK, CLI JSON, and API stop moving |
+| `v0.5.0` | 2. Operable runtime | It holds under load, and its limits are published |
+| `v0.6.0` | 3. Runtime validation | Real integrations survive real time (release candidate) |
+| `v1.0.0` | Freeze | The contract holds, with no new surface |
+
+Phases 4 and 5 are post-1.0 tracks: neither takes a runtime version number until
+Phase 3's gate produces the evidence that justifies funding it.
+
+`v1.0.0` adds no features. It is the freeze release: the runtime contract,
+compatibility commitment, and supporting evidence are published, and nothing
+ships that those documents do not already cover.
+
 ## Sequence
 
-| Phase | Customer outcome | Main investment | Exit gate |
+| Version | Phase | Customer outcome | Exit gate |
 | --- | --- | --- | --- |
-| 1. Dependable execution | “My work is accounted for, even after a crash.” | Execution, queue, retries, state, releases | Failure and recovery contracts pass repeatable validation |
-| 2. Operable runtime | “I can deploy, diagnose, upgrade, and recover it myself.” | Diagnostics, lifecycle, capacity, backups, security | A second operator completes the operating drills without author intervention |
-| 3. Runtime validation | “I trust it with an unattended integration.” | Real workloads, support feedback, compatibility | Representative pilots meet the runtime readiness gate |
-| 4. Development harness | “I can reproduce a failure and verify a repair before release.” | Isolated scenarios, effects, evidence | A failed integration is repaired and the tested artifact is promoted |
-| 5. Managed cloud | “I get the same runtime without maintaining a host.” | Provisioning, isolation, backups, upgrades, access | Managed pilots pass operational and isolation gates |
+| `v0.2.0` | 1. Dependable execution | “My work is accounted for, even after a crash.” | Failure and recovery contracts pass repeatable validation |
+| `v0.3.0` | 2. Operable runtime | “I can deploy, diagnose, upgrade, and recover it myself.” | A second operator completes the operating drills without author intervention |
+| `v0.4.0` | 2. Operable runtime | “I can build against it without it moving underneath me.” | Compatibility and deprecation policy published, with contract tests |
+| `v0.5.0` | 2. Operable runtime | “I know what it will do when it is busy.” | A supported-load envelope is published and overload behaves as documented |
+| `v0.6.0` | 3. Runtime validation | “I trust it with an unattended integration.” | Representative pilots meet the runtime readiness gate |
+| `v1.0.0` | Freeze | “I can depend on this.” | Contract frozen, compatibility commitment published, no open release blockers |
+| post-1.0 | 4. Development harness | “I can reproduce a failure and verify a repair before release.” | A failed integration is repaired and the tested artifact is promoted |
+| post-1.0 | 5. Managed cloud | “I get the same runtime without maintaining a host.” | Managed pilots pass operational and isolation gates |
 
 Phases 1–3 are the foundation. No cloud or harness product implementation starts
 before the runtime readiness gate. Customer interviews and paper designs can
@@ -34,7 +58,7 @@ reduce integration debugging effort. After Phase 3, reverse that order if pilot
 evidence shows host operations are the larger adoption blocker. Avoid launching
 both tracks at once with a small team.
 
-## 1. Dependable execution
+## v0.2.0 — Phase 1. Dependable execution
 
 Prioritize correctness over expanding the command surface.
 
@@ -64,9 +88,15 @@ these cases, with no unresolved critical correctness failures. Performance targe
 must name hardware, workload, and supported load; establish a baseline before
 choosing latency and throughput thresholds.
 
-## 2. Operable runtime
+## v0.3.0 — Phase 2. Operable runtime
 
 Make the entire lifecycle usable outside this repository.
+
+This version is the first half of Phase 2: the runtime becomes diagnosable,
+recoverable, and maintainable by someone who did not build it. The contract and
+capacity halves of Phase 2 follow as `v0.4.0` and `v0.5.0`, so the exit evidence
+below covers the phase as a whole rather than this version alone. The
+stabilize-public-contracts work from this phase is specified under `v0.4.0`.
 
 - **First success.** Install → initialize → validate → release → run → inspect
   state. Errors explain what failed and the next useful action. Validate this in
@@ -85,16 +115,53 @@ Make the entire lifecycle usable outside this repository.
 - **Define the trust boundary.** Verify scoped API access, credential handling,
   redaction, and filesystem permissions. Document that trusted Python runs with
   the host user's privileges; process separation is not tenant isolation.
-- **Stabilize public contracts.** Specify manifest, SDK, CLI JSON, and API
-  compatibility, supported platforms, and deprecation policy. Add extension
-  points only when a demonstrated runtime requirement needs them.
 
 Exit evidence: an operator who did not build Otter deploys an integration,
 diagnoses a seeded failure, rotates a secret, upgrades, and restores onto a clean
 host using published instructions. Record failures and repeat affected drills
 after fixes.
 
-## 3. Runtime validation and release gate
+## v0.4.0 — Phase 2. Contract freeze
+
+The runtime stops being a moving target for anyone building against it. This is
+still Phase 2 work: the point is not new surface, it is making the existing
+surface a promise.
+
+- **Freeze the interfaces.** Manifest schema, Python SDK, CLI JSON, and the HTTP
+  API each get a written compatibility and deprecation policy. A breaking change
+  needs a versioned path and a deprecation window, not a patch release.
+- **Version the machine-readable output.** Stable, versioned JSON envelopes for
+  the commands and endpoints scripts consume, so automation is not built on an
+  unversioned shape.
+- **State the platform contract.** Name the supported OS and architectures, and
+  mark the rest unsupported rather than leaving them implicit. "Unsupported but
+  documented" is a valid answer; "undocumented" is not.
+- **State the honest limits.** Publish what is guaranteed and what is not: state
+  update concurrency, retry effect duplication, downgrade support, and transport
+  security. These belong in the contract, because a guarantee discovered by a
+  user in production is a defect report.
+
+Exit evidence: the compatibility and deprecation policy is published, contract
+tests pin each frozen interface, and every documented limit matches observed
+behavior.
+
+## v0.5.0 — Phase 2. Capacity and bounded behavior
+
+Define what happens when the runtime is busy, and publish it.
+
+- **Bound admission.** Queue depth, payload, log, capture, and storage limits are
+  explicit, with visible behavior when a limit is reached. Backpressure or
+  refusal must be inspectable, never silent.
+- **Publish a supported-load envelope.** Queue latency, resource use, storage
+  growth, and overload behavior, measured against named hardware and workload.
+- **Exercise the edges.** Database contention, disk exhaustion, large output, and
+  sustained overload. Failures must be visible and recovery documented.
+
+Exit evidence: the supported-load envelope is published, overload behaves as
+documented, and the performance targets name the hardware and workload they were
+measured on.
+
+## v0.6.0 — Phase 3. Runtime validation and release gate
 
 Use a small set of real integrations in separately owned integration projects.
 Include a scheduled incremental sync, a webhook-driven flow, and a longer
@@ -122,7 +189,7 @@ At the gate review, publish the evidence and remaining limitations, then make an
 explicit go/no-go decision. Calendar pressure is not a substitute for passing.
 Continue runtime maintenance and regression validation after expansion.
 
-## 4. Development harness
+## post-1.0 — Phase 4. Development harness
 
 The first harness product closes one loop: **reproduce → repair → verify →
 promote**. Start with one transport and one representative integration, then
@@ -150,7 +217,7 @@ technical detail; its milestones begin after the runtime readiness gate here.
 Defer custom agent orchestration, broad connector coverage, live production
 writes, and autonomous data repair.
 
-## 5. Managed cloud
+## post-1.0 — Phase 5. Managed cloud
 
 Start with managed operation of the proven runtime for one trusted team per
 isolated deployment. Preserve the same Python, manifests, SDK, release identity,
@@ -175,6 +242,26 @@ Defer shared multi-tenant workers, distributed scheduling, multi-region operatio
 a workflow canvas, and a connector marketplace until customer requirements and
 measured limits justify them.
 
+## v1.0.0 — Freeze
+
+`v1.0.0` is not a feature release. By this point the phases above have passed
+their gates, and the only work left is to state the commitment and publish the
+evidence behind it.
+
+- **Publish the evidence bundle.** The versioned runtime contract, the passing
+  fault matrix, the pilot results, the supported-load envelope, and the known
+  limitations, in one place a reader can check.
+- **State the compatibility commitment.** How long interfaces are supported, what
+  counts as a breaking change, and how deprecation is announced.
+- **Ship nothing new.** If a capability is not already covered by the frozen
+  contract and the evidence, it waits for a post-1.0 release.
+- **Confirm no open release blockers.** No unresolved correctness,
+  credential-exposure, or upgrade defect at the moment of tagging.
+
+Exit gate: the phase 3 gate review has made an explicit go decision, and the
+published contract matches a release that passed the fault matrix. Calendar
+pressure is not a substitute for passing.
+
 ## Immediate planning backlog
 
 1. Inventory each runtime contract as documented, implemented, tested, or proven
@@ -192,3 +279,5 @@ Planning basis: [README](../README.md), [architecture](architecture.md),
 [operations](operations.md), [security model](security.md), and the proposed
 [harness plan](otter-harness-implementation-plan.md). This roadmap is grounded in
 those documents; it is not a code audit or a certification of current readiness.
+The version numbers above assign each phase to a release; they do not imply that
+a phase's items are implemented or tested today.

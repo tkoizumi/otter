@@ -201,7 +201,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	identStore := identity.NewStore(db.DB)
-	runsStore := runs.NewStore(db.DB)
+	runsStore := runs.NewStore(db.DB).WithLogger(opts.Logger)
 	logsStore := runs.NewLogStore(db.DB)
 	inspectionStore := inspection.NewStore(db.DB,
 		inspection.NewRedactor(cfg.CaptureRedactHeaders, cfg.CaptureRedactQuery, cfg.CaptureRedactFields),
@@ -711,7 +711,7 @@ func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int
 
 	cancelled := 0
 	for _, status := range []runs.Status{runs.StatusQueued, runs.StatusRetrying} {
-		list, err := d.runs.ListByStatus(ctx, status, 10000)
+		list, err := d.runs.ListByStatusAll(ctx, status)
 		if err != nil {
 			return cancelled, err
 		}

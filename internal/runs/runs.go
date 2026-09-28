@@ -139,13 +139,39 @@ const runColumns = `id, integration_id, trigger_type, status, attempt, parent_ru
 	release_digest, release_source_dir, sdk_version,
 	integration_name, integration_generation, capture_policy`
 
+// defaultListLimit is the page size List substitutes when a caller supplies no
+// limit, and maxListLimit is the largest explicit limit it accepts. A limit
+// outside (0, maxListLimit] is out of range and is replaced by the default.
+//
+// The substitution is deliberate for display reads -- "the newest 20 runs" --
+// but it is silent: a caller that asks for 10,000 rows receives 50 and a nil
+// error. Reads that must be complete use ListByStatusAll instead.
+const (
+	defaultListLimit = 50
+	maxListLimit     = 1000
+)
+
+// DebugLogger is the subset of the daemon logger the store uses to make a
+// rejected limit observable. A store with no logger stays silent.
+type DebugLogger interface {
+	Debug(event string, kv ...any)
+}
+
 // Store provides access to run records.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	log DebugLogger
 }
 
 // NewStore wraps a database handle.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+// WithLogger attaches a logger for diagnostic events and returns the store, so
+// a caller can chain it onto NewStore.
+func (s *Store) WithLogger(log DebugLogger) *Store {
+	s.log = log
+	return s
+}
 
 // Create inserts a run record.
 func (s *Store) Create(ctx context.Context, r *Run) error {
@@ -300,6 +326,16 @@ type Filter struct {
 }
 
 // List returns runs matching the filter, newest first by default.
+//
+// It is a bounded display read. A f.Limit outside (0, maxListLimit] -- including
+// one larger than maxListLimit -- is out of range and is replaced with
+// defaultListLimit rather than reported as an error, so a caller cannot tell a
+// truncated result from a complete one. That is intentional here, where "the
+// newest 20 runs" wants a default; it is why a read that must be exhaustive,
+// such as recovery, uses ListByStatusAll instead of a large magic limit.
+//
+// When a logger is attached, an explicitly supplied limit that is out of range
+// is logged at debug level so the substitution is at least observable.
 func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 	var (
 		where []string
@@ -337,8 +373,18 @@ func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 	}
 
 	limit := f.Limit
-	if limit <= 0 || limit > 1000 {
-		limit = 50
+	if limit <= 0 || limit > maxListLimit {
+		// An explicit limit above the ceiling is the dangerous case: the caller
+		// asked for everything and is about to receive a page. Say so when a
+		// logger is attached. A non-positive limit means "not specified", which
+		// is the documented default and not worth a line.
+		if limit > maxListLimit && s.log != nil {
+			s.log.Debug("runs_list_limit_rejected",
+				"requested", limit,
+				"max", maxListLimit,
+				"default", defaultListLimit)
+		}
+		limit = defaultListLimit
 	}
 	query += " LIMIT ? OFFSET ?"
 	args = append(args, limit, max0(f.Offset))
@@ -362,8 +408,111 @@ func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 
 // ListByStatus returns runs in a given status, oldest first so that recovery
 // and queue reconciliation process them in creation order.
+//
+// Like List it is a bounded read: a limit outside (0, maxListLimit] silently
+// becomes defaultListLimit. Callers that need every run in a status must use
+// ListByStatusAll.
 func (s *Store) ListByStatus(ctx context.Context, status Status, limit int) ([]*Run, error) {
 	return s.List(ctx, Filter{Status: status, Limit: limit, Ascending: true})
+}
+
+// exhaustivePageSize is how many rows ListByStatusAll fetches per keyset page.
+// It is a batching detail, not a ceiling: the read keeps paging until a short
+// page proves the status is exhausted.
+const exhaustivePageSize = 500
+
+// ListByStatusAll returns every run in a status, oldest first, with no default
+// ceiling. Completeness is the entire point of this read, which is what
+// separates it from ListByStatus.
+//
+// It pages with a keyset cursor over (created_at, rowid) -- the same key the
+// ascending order uses, so no row is skipped or visited twice. created_at is
+// stored as a fixed-width UTC string, so its lexicographic order is its
+// chronological order. rowid, not id, is the tiebreaker because that is what
+// the ordering already uses.
+//
+// The full set is collected before it is returned. A caller that mutates status
+// while iterating therefore cannot disturb the cursor: the key is read from the
+// table, and status changes never touch created_at or rowid. Rows inserted
+// concurrently with a later created_at are picked up; rows already seen are not
+// revisited.
+func (s *Store) ListByStatusAll(ctx context.Context, status Status) ([]*Run, error) {
+	return s.listByStatusAll(ctx, status, exhaustivePageSize)
+}
+
+// listByStatusAll is ListByStatusAll with an injectable page size, so a test can
+// force many page boundaries -- including one that falls in the middle of a
+// group of rows sharing a created_at.
+func (s *Store) listByStatusAll(ctx context.Context, status Status, pageSize int) ([]*Run, error) {
+	if pageSize <= 0 {
+		pageSize = exhaustivePageSize
+	}
+
+	var out []*Run
+	var afterCreatedAt string
+	var afterRowID int64
+
+	for {
+		page, err := s.listByStatusPage(ctx, status, afterCreatedAt, afterRowID, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page {
+			out = append(out, row.run)
+		}
+		if len(page) < pageSize {
+			return out, nil
+		}
+
+		// Advance from the last row of the page just read, never from a row the
+		// caller has since mutated.
+		last := page[len(page)-1]
+		afterCreatedAt = database.FormatTime(last.run.CreatedAt)
+		afterRowID = last.rowID
+	}
+}
+
+// runRow is a run together with the rowid that keys the pagination cursor.
+type runRow struct {
+	run   *Run
+	rowID int64
+}
+
+// listByStatusPage reads one keyset page strictly after (afterCreatedAt,
+// afterRowID). An empty afterCreatedAt means "from the beginning".
+func (s *Store) listByStatusPage(ctx context.Context, status Status, afterCreatedAt string, afterRowID int64, pageSize int) ([]runRow, error) {
+	if pageSize <= 0 {
+		pageSize = 1
+	}
+
+	query := `SELECT rowid, ` + runColumns + ` FROM runs WHERE status = ?`
+	args := []any{string(status)}
+	if afterCreatedAt != "" {
+		query += ` AND (created_at > ? OR (created_at = ? AND rowid > ?))`
+		args = append(args, afterCreatedAt, afterCreatedAt, afterRowID)
+	}
+	query += ` ORDER BY created_at ASC, rowid ASC LIMIT ?`
+	args = append(args, pageSize)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("runs: list by status page: %w", err)
+	}
+	defer rows.Close()
+
+	page := make([]runRow, 0, pageSize)
+	for rows.Next() {
+		var rowID int64
+		run, err := scanRunRow(rows, &rowID)
+		if err != nil {
+			return nil, fmt.Errorf("runs: list by status page scan: %w", err)
+		}
+		page = append(page, runRow{run: run, rowID: rowID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("runs: list by status page: %w", err)
+	}
+	return page, nil
 }
 
 // CountByStatus returns the number of runs in each status.
@@ -497,6 +646,13 @@ func (s *Store) Chain(ctx context.Context, id string) (*Run, []*Run, error) {
 }
 
 func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
+	return scanRunRow(sc, nil)
+}
+
+// scanRunRow scans a run, optionally preceded by the rowid column. The
+// exhaustive read's keyset cursor advances on that rowid, so it has to be read
+// with the row rather than reconstructed from the run's fields.
+func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) {
 	var (
 		r                 Run
 		status            string
@@ -518,13 +674,18 @@ func scanRun(sc interface{ Scan(...any) error }) (*Run, error) {
 		integrationGen    int64
 		capturePolicy     string
 	)
-	if err := sc.Scan(
+
+	dest := []any{
 		&r.ID, &r.IntegrationID, &r.TriggerType, &status, &r.Attempt,
 		&parent, &created, &started, &finished, &exitCode, &errMsg, &meta,
 		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
 		&releaseDigest, &releaseSourceDir, &sdkVersion,
 		&integrationName, &integrationGen, &capturePolicy,
-	); err != nil {
+	}
+	if rowID != nil {
+		dest = append([]any{rowID}, dest...)
+	}
+	if err := sc.Scan(dest...); err != nil {
 		return nil, err
 	}
 

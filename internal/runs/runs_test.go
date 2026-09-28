@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -538,5 +539,171 @@ func TestListMatchesAnyIntegrationID(t *testing.T) {
 	}
 	if len(exact) != 1 || exact[0].ID != legacy.ID {
 		t.Fatalf("exact filter matched %+v, want only the legacy row", exact)
+	}
+}
+
+// recordingLogger captures debug events so a test can assert that the silent
+// limit substitution became observable.
+type recordingLogger struct {
+	events []string
+	fields []map[string]any
+}
+
+func (l *recordingLogger) Debug(event string, kv ...any) {
+	l.events = append(l.events, event)
+	fields := map[string]any{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		key, ok := kv[i].(string)
+		if !ok {
+			continue
+		}
+		fields[key] = kv[i+1]
+	}
+	l.fields = append(l.fields, fields)
+}
+
+// TestListByStatusAllPagesEveryRunExactlyOnce is the load-bearing store test:
+// more rows than one page, groups sharing an identical created_at so a page
+// boundary falls mid-tie, and an assertion on the full ordered sequence. An
+// equal slice proves no row was skipped and none was returned twice.
+func TestListByStatusAllPagesEveryRunExactlyOnce(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	const (
+		total  = 120
+		group  = 10 // rows per identical created_at
+		queued = 4  // every fourth row is a different status
+	)
+	base := time.Now().UTC().Add(-time.Hour)
+
+	var want []string
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("run-%03d", i)
+		status := StatusRunning
+		if i%queued == 0 {
+			status = StatusQueued
+		} else {
+			want = append(want, id)
+		}
+		run := sampleRun(id, status, 1)
+		run.CreatedAt = base.Add(time.Duration(i/group) * time.Minute)
+		if err := store.Create(ctx, run); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	// The exported read uses the default page size; the unexported one lets a
+	// test shrink it until a page boundary lands inside a tie, and choose sizes
+	// that divide the result exactly.
+	for _, pageSize := range []int{1, 7, 30, 50, 90, 500} {
+		got, err := store.listByStatusAll(ctx, StatusRunning, pageSize)
+		if err != nil {
+			t.Fatalf("page size %d: %v", pageSize, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("page size %d returned %d runs, want %d", pageSize, len(got), len(want))
+		}
+		for i, run := range got {
+			if run.ID != want[i] {
+				t.Fatalf("page size %d: run %d = %s, want %s", pageSize, i, run.ID, want[i])
+			}
+			if run.Status != StatusRunning {
+				t.Fatalf("page size %d returned a %s run: %s", pageSize, run.Status, run.ID)
+			}
+		}
+	}
+
+	all, err := store.ListByStatusAll(ctx, StatusRunning)
+	if err != nil {
+		t.Fatalf("ListByStatusAll: %v", err)
+	}
+	if len(all) != len(want) {
+		t.Fatalf("ListByStatusAll returned %d runs, want %d", len(all), len(want))
+	}
+	for i, run := range all {
+		if run.ID != want[i] {
+			t.Fatalf("ListByStatusAll: run %d = %s, want %s", i, run.ID, want[i])
+		}
+	}
+}
+
+// TestListByStatusAllHandlesEmptyAndExactPages covers the two loop boundaries:
+// nothing to return, and a final page that is exactly full and must therefore
+// be followed by one more (empty) page before the loop terminates.
+func TestListByStatusAllHandlesEmptyAndExactPages(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	none, err := store.listByStatusAll(ctx, StatusSucceeded, 7)
+	if err != nil {
+		t.Fatalf("empty read: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("empty read returned %d runs, want 0", len(none))
+	}
+
+	const total = 20
+	base := time.Now().UTC()
+	for i := 0; i < total; i++ {
+		run := sampleRun(fmt.Sprintf("run-%02d", i), StatusQueued, 1)
+		run.CreatedAt = base.Add(time.Duration(i) * time.Second)
+		if err := store.Create(ctx, run); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+
+	// 20 is an exact multiple of 5, so the read cannot stop merely because the
+	// first page was full.
+	got, err := store.listByStatusAll(ctx, StatusQueued, 5)
+	if err != nil {
+		t.Fatalf("exact-multiple read: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("exact-multiple read returned %d runs, want %d", len(got), total)
+	}
+}
+
+// TestListLogsARejectedLimit proves the coercion that hid the truncation is now
+// observable, and that an unspecified limit stays quiet.
+func TestListLogsARejectedLimit(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	logger := &recordingLogger{}
+	store.WithLogger(logger)
+
+	if _, err := store.List(ctx, Filter{Limit: 10000}); err != nil {
+		t.Fatalf("list with a rejected limit: %v", err)
+	}
+	if len(logger.events) != 1 || logger.events[0] != "runs_list_limit_rejected" {
+		t.Fatalf("debug events = %v, want one runs_list_limit_rejected", logger.events)
+	}
+	if got := logger.fields[0]["requested"]; got != 10000 {
+		t.Errorf("logged requested limit = %v, want 10000", got)
+	}
+
+	if _, err := store.List(ctx, Filter{}); err != nil {
+		t.Fatalf("list with no limit: %v", err)
+	}
+	if len(logger.events) != 1 {
+		t.Errorf("an unspecified limit should not log: %v", logger.events)
+	}
+}
+
+// TestListStillDefaultsAndDoesNotWarnOnASmallLimit keeps the bounded display
+// behaviour intact, including the maximum accepted limit.
+func TestListStillDefaultsAndDoesNotWarnOnASmallLimit(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	logger := &recordingLogger{}
+	store.WithLogger(logger)
+
+	for _, limit := range []int{0, -1, 1, 20, maxListLimit} {
+		if _, err := store.List(ctx, Filter{Limit: limit}); err != nil {
+			t.Fatalf("list limit %d: %v", limit, err)
+		}
+	}
+	if len(logger.events) != 0 {
+		t.Errorf("in-range limits should not log: %v", logger.events)
 	}
 }

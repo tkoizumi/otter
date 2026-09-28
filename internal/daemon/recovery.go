@@ -20,7 +20,7 @@ const crashMessage = "otter daemon restarted during execution"
 // before triggers are registered, guarantees the work is picked up again
 // without ever running twice.
 func (d *Daemon) recoverRuns(ctx context.Context) error {
-	stale, err := d.runs.ListByStatus(ctx, runs.StatusRunning, 10000)
+	stale, err := d.runs.ListByStatusAll(ctx, runs.StatusRunning)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (d *Daemon) reconcileQueue(ctx context.Context) error {
 	requeued := 0
 
 	for _, status := range []runs.Status{runs.StatusQueued, runs.StatusRetrying} {
-		list, err := d.runs.ListByStatus(ctx, status, 10000)
+		list, err := d.runs.ListByStatusAll(ctx, status)
 		if err != nil {
 			return err
 		}
