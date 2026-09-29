@@ -143,8 +143,8 @@ type LogEvidence struct {
 // seeks. It never loads a message.
 //
 // The pair detects every mutation the log store can perform: appending raises
-// MaxID, and the only deletion paths (DeleteForRun, DeleteOlderThan and the
-// per-job cascade) remove whole rows, moving MinID or clearing both.
+// MaxID, and the only deletion paths (DeleteForRun, DeleteOlderThan, DeleteRuns
+// and the per-job cascade) remove whole rows, moving MinID or clearing both.
 // Log rows are never updated. An in-place edit of a row, or any external write
 // to the database, is outside what this revision claims to detect.
 func (s *LogStore) LogEvidenceTx(ctx context.Context, tx *sql.Tx, runID string) (LogEvidence, error) {

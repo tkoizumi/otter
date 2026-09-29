@@ -497,25 +497,67 @@ Typical daemon log volume is small — a handful of lines per run plus HTTP acce
 records. The bursty, unbounded part is the second stream.
 
 **Run logs** are child stdout/stderr captured into SQLite (`run_logs`). A chatty
-job can add hundreds of thousands of rows. Prune them on a schedule with
-the `sqlite3` CLI, and reclaim space afterwards:
+job can add hundreds of thousands of rows. The daemon can bound them
+automatically; the `sqlite3` examples below remain for a stopped daemon or a
+one-off cleanup.
+
+### Automatic retention
+
+Run history and run output have separate windows, and both are opt-in: `0` —
+the default — retains forever, so nothing is deleted until you ask for it.
 
 ```bash
-# Delete captured output older than 14 days, including runtime annotations.
-sudo sqlite3 /var/lib/otter/otter.db <<'SQL'
+otterd --log-retention 336h --run-retention 2160h   # 14 days of output, 90 days of runs
+otterd --log-retention 0 --run-retention 0          # the default: keep everything
+```
+
+- **`--log-retention D`** deletes the captured output of runs older than `D` and
+  keeps the run rows, so `otter runs` history survives a shorter output window.
+- **`--run-retention D`** deletes the run rows as well, together with their
+  output and any captured HTTP payloads.
+
+What is never deleted, whatever the windows say:
+
+- a run in `queued`, `running` or `retrying`: it is live work, its output may
+  still be appended, and a queued backlog keeps the release it is bound to;
+- any attempt in a retry chain while another attempt in that chain is live — a
+  chain goes as a unit or not at all;
+- a run inside either window. A chain is dated by its newest attempt, so a
+  recent retry keeps the whole chain even when its root is old.
+
+The sweep runs hourly in bounded batches and needs no downtime. A sweep that
+removes something logs `logs_retained` or `runs_retained` with the cutoff it
+used and the counts removed, so an operator watching the daemon log can see the
+window is live rather than guess.
+
+`--capture-retention` (see "Reading a run's HTTP requests") is a third,
+independent window: it expires HTTP payloads but keeps the per-run summary.
+`--run-retention` removes the summary with the run.
+
+### Manual pruning
+
+Use the statements below when the daemon is stopped, or for a one-off cleanup.
+The timestamp compared here is `runs.created_at`, the submission time.
+
+Delete captured output for runs older than 14 days. This removes every
+`run_logs` row for those runs — both the child's own output (`origin = 'child'`)
+and the runtime's annotations (`origin = 'daemon'`). Add `AND l.origin =
+'child'` to the inner query to keep the annotations, so `otter trace` still
+shows a run's lifecycle after its output is gone.
+
+```sql
 DELETE FROM run_logs
  WHERE id IN (
    SELECT l.id
      FROM run_logs l
      JOIN runs r ON r.id = l.run_id
-    WHERE r.queued_at < datetime('now', '-14 days')
+    WHERE r.created_at < datetime('now', '-14 days')
  );
-SQL
 ```
 
-```bash
-# Keep only the newest 2000 lines per run, for all runs.
-sudo sqlite3 /var/lib/otter/otter.db <<'SQL'
+Keep only the newest 2000 lines per run, for all runs:
+
+```sql
 DELETE FROM run_logs
  WHERE id NOT IN (
    SELECT id FROM (
@@ -523,14 +565,15 @@ DELETE FROM run_logs
        FROM run_logs
    ) WHERE rn <= 2000
  );
-SQL
 ```
 
-```bash
-# Optionally drop old run history too (this also orphans nothing: logs are
-# already pruned above).
-sudo sqlite3 /var/lib/otter/otter.db \
-  "DELETE FROM runs WHERE queued_at < datetime('now','-90 days') AND status IN ('succeeded','failed','cancelled','timed_out');"
+Optionally drop old run history too. Logs are pruned above, so this orphans
+nothing:
+
+```sql
+DELETE FROM runs
+ WHERE created_at < datetime('now', '-90 days')
+   AND status IN ('succeeded', 'failed', 'cancelled', 'timed_out');
 ```
 
 SQLite does not return freed pages to the filesystem automatically. Reclaim
@@ -550,7 +593,7 @@ about 2 GB; the state table itself is tiny, so growth is almost always
 Example weekly maintenance:
 
 ```cron
-30 4 * * 0 root sqlite3 /var/lib/otter/otter.db "DELETE FROM run_logs WHERE id IN (SELECT l.id FROM run_logs l JOIN runs r ON r.id = l.run_id WHERE r.queued_at < datetime('now','-14 days'));" && sqlite3 /var/lib/otter/otter.db 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'
+30 4 * * 0 root sqlite3 /var/lib/otter/otter.db "DELETE FROM run_logs WHERE id IN (SELECT l.id FROM run_logs l JOIN runs r ON r.id = l.run_id WHERE r.created_at < datetime('now','-14 days'));" && sqlite3 /var/lib/otter/otter.db 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'
 ```
 
 ## Reading a run's HTTP requests

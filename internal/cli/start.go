@@ -259,8 +259,10 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	notifyOn := fs.String("notify-on", "", "comma-separated terminal statuses that notify")
 	captureDefault := fs.String("capture-default", "", "HTTP capture policy for runs that do not choose one: off, metadata or full")
 	captureRetention := fs.Duration("capture-retention", 0, "how long captured HTTP payloads are kept (0 disables expiry)")
+	logRetention := fs.Duration("log-retention", 0, "how long the captured output of a run is kept (0 retains forever)")
+	runRetention := fs.Duration("run-retention", 0, "how long terminal run history is kept (0 retains forever)")
 	allowIncompleteRecovery := fs.Bool("allow-incomplete-recovery", false, "start even when crash recovery or queue reconciliation fails")
-	_ = []any{workers, apiToken, logFormat, logLevel, shutdownGrace, sdkPath, notifyURL, notifyFormat, notifyOn, captureDefault, captureRetention, allowIncompleteRecovery}
+	_ = []any{workers, apiToken, logFormat, logLevel, shutdownGrace, sdkPath, notifyURL, notifyFormat, notifyOn, captureDefault, captureRetention, logRetention, runRetention, allowIncompleteRecovery}
 
 	// Anything left over is forwarded verbatim, so a daemon flag added later
 	// works here before start knows about it.

@@ -110,6 +110,78 @@ func TestApplyEnvNotify(t *testing.T) {
 }
 
 // Flags win over the environment, which is the documented precedence.
+// Run and log retention are opt-in: the default must delete nothing.
+func TestRetentionDefaultsAreZero(t *testing.T) {
+	c := DefaultDaemonConfig("test")
+	if c.LogRetention != 0 || c.RunRetention != 0 {
+		t.Errorf("retention defaults = log %s, run %s; want both 0 (retain forever)",
+			c.LogRetention, c.RunRetention)
+	}
+}
+
+// Both windows are reachable from the environment and the flag, and the flag
+// wins over the environment.
+func TestRetentionFromEnvAndFlags(t *testing.T) {
+	t.Setenv("OTTER_LOG_RETENTION", "336h")
+	t.Setenv("OTTER_RUN_RETENTION", "2160h")
+
+	c := DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err != nil {
+		t.Fatalf("ApplyEnv: %v", err)
+	}
+	if c.LogRetention != 336*time.Hour {
+		t.Errorf("LogRetention = %s, want 336h", c.LogRetention)
+	}
+	if c.RunRetention != 2160*time.Hour {
+		t.Errorf("RunRetention = %s, want 2160h", c.RunRetention)
+	}
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	c.RegisterFlags(fs)
+	if err := fs.Parse([]string{"--log-retention", "24h", "--run-retention", "720h"}); err != nil {
+		t.Fatal(err)
+	}
+	if c.LogRetention != 24*time.Hour {
+		t.Errorf("LogRetention = %s, want the flag value 24h", c.LogRetention)
+	}
+	if c.RunRetention != 720*time.Hour {
+		t.Errorf("RunRetention = %s, want the flag value 720h", c.RunRetention)
+	}
+}
+
+func TestRetentionRejectsMalformedValues(t *testing.T) {
+	t.Setenv("OTTER_LOG_RETENTION", "two weeks")
+	c := DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err == nil {
+		t.Error("a non-duration OTTER_LOG_RETENTION was accepted")
+	}
+
+	t.Setenv("OTTER_LOG_RETENTION", "")
+	t.Setenv("OTTER_RUN_RETENTION", "forever")
+	c = DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err == nil {
+		t.Error("a non-duration OTTER_RUN_RETENTION was accepted")
+	}
+}
+
+func TestRetentionRejectsNegativeWindows(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*DaemonConfig)
+	}{
+		{"log", func(c *DaemonConfig) { c.LogRetention = -time.Hour }},
+		{"run", func(c *DaemonConfig) { c.RunRetention = -time.Hour }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := DefaultDaemonConfig("test")
+			tc.set(&c)
+			if err := c.Validate(); err == nil {
+				t.Errorf("negative %s retention was accepted", tc.name)
+			}
+		})
+	}
+}
+
 func TestFlagsOverrideEnv(t *testing.T) {
 	t.Setenv("OTTER_LISTEN", "127.0.0.1:1111")
 

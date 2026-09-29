@@ -525,11 +525,20 @@ func TestLogStoreAppendAndList(t *testing.T) {
 }
 
 func TestLogStoreDeleteAndPrune(t *testing.T) {
-	_, logs := newTestStore(t)
+	store, logs := newTestStore(t)
 	ctx := context.Background()
 
 	old := time.Now().UTC().Add(-48 * time.Hour)
 	recent := time.Now().UTC()
+
+	// Retention only prunes the logs of a run, so the run has to exist and be
+	// terminal before its output is eligible.
+	if err := store.Create(ctx, &Run{
+		ID: "run-1", JobID: "shopify", TriggerType: TriggerManual,
+		Status: StatusSucceeded, Attempt: 1, CreatedAt: old,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := logs.AppendBatch(ctx, []LogEntry{
 		{RunID: "run-1", Stream: StreamStdout, Message: "old", Timestamp: old},
@@ -542,26 +551,44 @@ func TestLogStoreDeleteAndPrune(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	if removed != 1 {
-		t.Errorf("pruned %d lines, want 1", removed)
+	if removed != 2 {
+		t.Errorf("pruned %d lines, want 2 (the whole run is past the window)", removed)
 	}
 
 	remaining, err := logs.List(ctx, "run-1", 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != 1 || remaining[0].Message != "new" {
+	if len(remaining) != 0 {
 		t.Errorf("remaining = %+v", remaining)
 	}
 
-	deleted, err := logs.DeleteForRun(ctx, "run-1")
+	// A run inside the window keeps its output...
+	if err := store.Create(ctx, &Run{
+		ID: "run-2", JobID: "shopify", TriggerType: TriggerManual,
+		Status: StatusSucceeded, Attempt: 1, CreatedAt: recent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Append(ctx, LogEntry{RunID: "run-2", Stream: StreamStdout, Message: "kept", Timestamp: recent}); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := logs.DeleteOlderThan(ctx, time.Now().UTC().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("prune recent: %v", err)
+	}
+	if kept != 0 {
+		t.Errorf("pruned %d recent lines, want 0", kept)
+	}
+
+	deleted, err := logs.DeleteForRun(ctx, "run-2")
 	if err != nil {
 		t.Fatalf("delete for run: %v", err)
 	}
 	if deleted != 1 {
 		t.Errorf("deleted %d lines, want 1", deleted)
 	}
-	empty, err := logs.List(ctx, "run-1", 0, 10)
+	empty, err := logs.List(ctx, "run-2", 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

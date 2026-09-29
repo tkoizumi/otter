@@ -275,11 +275,19 @@ func (s *LogStore) DeleteForRun(ctx context.Context, runID string) (int64, error
 	return res.RowsAffected()
 }
 
-// DeleteOlderThan prunes log lines older than cutoff. Operators use this to
-// keep the database from growing without bound.
+// DeleteOlderThan prunes the logs of runs older than cutoff. It is the
+// daemon's `--log-retention` sweep; the `sqlite3` statements in operations.md
+// cover the same ground when the daemon is stopped.
+//
+// Only the logs of a run whose whole retry chain is terminal and whose newest
+// attempt predates cutoff are removed. A queued, running or retrying attempt is
+// live work whose logs may still be appended, and while any attempt in a chain
+// is live no attempt's logs are touched. At most LogRetentionBatch rows are
+// removed per call, so a sweep stays bounded; the caller repeats until it
+// removes nothing.
 func (s *LogStore) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM run_logs WHERE timestamp < ?`, database.FormatTime(cutoff))
+	res, err := s.db.ExecContext(ctx, deleteOlderThanQuery(),
+		database.FormatTime(cutoff), LogRetentionBatch)
 	if err != nil {
 		return 0, fmt.Errorf("runs: prune logs: %w", err)
 	}

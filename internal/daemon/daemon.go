@@ -258,6 +258,12 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		"default_policy", cfg.CaptureDefaultPolicy().String(),
 		"retention", cfg.CaptureRetention.String())
 
+	// Run and log retention are opt-in, so say what they are set to. A zero
+	// here is the promise that nothing is deleted automatically.
+	d.log.Info("retention_configured",
+		"log_retention", cfg.LogRetention.String(),
+		"run_retention", cfg.RunRetention.String())
+
 	if host, err := os.Hostname(); err == nil {
 		d.hostname = host
 	}
@@ -797,6 +803,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.sched.Start()
 	d.startWorkers()
 	go d.runCaptureRetention(apiCtx)
+	go d.runRetention(apiCtx)
 
 	d.log.Info("daemon_started",
 		"version", d.version,

@@ -32,6 +32,14 @@ const (
 	// DefaultCapturePolicy is what a run records when neither the run nor its
 	// job chooses a policy.
 	DefaultCapturePolicy = inspection.PolicyFull
+
+	// DefaultLogRetention and DefaultRunRetention are both 0: retain forever.
+	// Automatically deleting run history in a minor release is a destructive
+	// default change. Capture retention can safely default to seven days
+	// because the per-run summary survives, but a deleted log line has no
+	// summary fallback, so the built-in retention is opt-in.
+	DefaultLogRetention = time.Duration(0)
+	DefaultRunRetention = time.Duration(0)
 )
 
 // DaemonConfig is the runtime configuration of otterd. Values come from
@@ -59,6 +67,18 @@ type DaemonConfig struct {
 	// disables automatic expiry, which is only sensible when something else
 	// prunes the database.
 	CaptureRetention time.Duration
+
+	// LogRetention is how long the captured output of a run is kept after the
+	// run itself. Zero (the default) retains run logs forever. A window deletes
+	// only the logs of runs whose whole retry chain is terminal; live work and
+	// the run rows themselves are left alone.
+	LogRetention time.Duration
+
+	// RunRetention is how long terminal run history is kept. Zero (the default)
+	// retains runs forever. A window deletes a settled retry chain as a unit,
+	// together with its logs and captured HTTP payloads. Non-terminal work is
+	// never deleted, so a pending backlog keeps the release it is bound to.
+	RunRetention time.Duration
 
 	// CaptureDefault is the capture policy for a run whose job does not
 	// declare one. A per-run request overrides it, and a manifest `capture:`
@@ -204,6 +224,8 @@ func DefaultDaemonConfig(version string) DaemonConfig {
 
 		CaptureRetention: DefaultCaptureRetention,
 		CaptureDefault:   DefaultCapturePolicy,
+		LogRetention:     DefaultLogRetention,
+		RunRetention:     DefaultRunRetention,
 		Version:          version,
 	}
 }
@@ -265,6 +287,20 @@ func (c *DaemonConfig) ApplyEnv() error {
 	if v, ok := os.LookupEnv("OTTER_SDK_PATH"); ok && v != "" {
 		c.SDKPath = v
 	}
+	if v, ok := os.LookupEnv("OTTER_LOG_RETENTION"); ok && strings.TrimSpace(v) != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("OTTER_LOG_RETENTION must be a duration such as 336h, got %q", v)
+		}
+		c.LogRetention = d
+	}
+	if v, ok := os.LookupEnv("OTTER_RUN_RETENTION"); ok && strings.TrimSpace(v) != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("OTTER_RUN_RETENTION must be a duration such as 2160h, got %q", v)
+		}
+		c.RunRetention = d
+	}
 	if v, ok := os.LookupEnv("OTTER_CAPTURE_DEFAULT"); ok && strings.TrimSpace(v) != "" {
 		c.CaptureDefault = inspection.Policy(strings.ToLower(strings.TrimSpace(v)))
 	}
@@ -324,6 +360,8 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.AllowIncompleteRecovery, "allow-incomplete-recovery", c.AllowIncompleteRecovery,
 		"start even when crash recovery or queue reconciliation fails; affected runs may stay stranded")
 	fs.DurationVar(&c.CaptureRetention, "capture-retention", c.CaptureRetention, "how long captured HTTP payloads are kept; the per-run summary survives (0 disables expiry)")
+	fs.DurationVar(&c.LogRetention, "log-retention", c.LogRetention, "how long the captured output of a run is kept after the run (0 retains logs forever)")
+	fs.DurationVar(&c.RunRetention, "run-retention", c.RunRetention, "how long terminal run history is kept (0 retains runs forever)")
 	fs.Var(policyFlag{target: &c.CaptureDefault}, "capture-default",
 		"HTTP capture policy for runs that do not choose one: "+policyNames())
 	fs.StringVar(&c.SDKPath, "sdk-path", c.SDKPath, "directory prepended to the child PYTHONPATH (defaults to the embedded SDK extracted into the data directory)")
@@ -351,6 +389,12 @@ func (c *DaemonConfig) Validate() error {
 	}
 	if c.CaptureRetention < 0 {
 		return fmt.Errorf("--capture-retention must not be negative")
+	}
+	if c.LogRetention < 0 {
+		return fmt.Errorf("--log-retention must not be negative")
+	}
+	if c.RunRetention < 0 {
+		return fmt.Errorf("--run-retention must not be negative")
 	}
 	if c.CaptureDefault != "" && !c.CaptureDefault.Valid() {
 		return fmt.Errorf("--capture-default must be one of off, metadata, full; got %q", c.CaptureDefault)

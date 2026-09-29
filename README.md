@@ -461,6 +461,8 @@ otterd \
 | `--sdk-path` | `OTTER_SDK_PATH` | *(embedded)* | Override the directory put on the child `PYTHONPATH`. |
 | `--capture-default` | `OTTER_CAPTURE_DEFAULT` | `full` | HTTP capture for runs that do not choose one: `off`, `metadata`, `full`. |
 | `--capture-retention` | — | `168h` | How long captured payloads are kept; `0` disables expiry. |
+| `--log-retention` | `OTTER_LOG_RETENTION` | `0` | How long the captured output of a run is kept after the run; `0` retains forever. |
+| `--run-retention` | `OTTER_RUN_RETENTION` | `0` | How long terminal run history is kept, with its logs and capture; `0` retains forever. |
 | — | `OTTER_CAPTURE_REDACT_HEADERS` | *(none)* | Extra header names to redact, comma-separated. |
 | — | `OTTER_CAPTURE_REDACT_QUERY` | *(none)* | Extra query-parameter names to redact, comma-separated. |
 | — | `OTTER_CAPTURE_REDACT_FIELDS` | *(none)* | Extra JSON field names to redact, comma-separated. |
