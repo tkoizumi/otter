@@ -86,10 +86,10 @@ func (d *Daemon) recoverRuns(ctx context.Context) error {
 // transaction as the terminal write. A returned error means the run was not
 // repaired and remains `running`.
 func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) error {
-	entry, ok := d.reg.get(run.IntegrationID)
+	entry, ok := d.reg.get(run.JobID)
 	if !ok || entry.Manifest == nil {
 		d.log.Warn("recovery_no_manifest",
-			"integration", run.IntegrationID, "run_id", run.ID)
+			"job", run.JobID, "run_id", run.ID)
 	}
 
 	var next *retryPlan
@@ -109,7 +109,7 @@ func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) error {
 
 	d.appendOtterLog(run.ID, "marked failed: "+crashMessage)
 	d.log.Warn("run_recovered",
-		"integration", run.IntegrationID,
+		"job", run.JobID,
 		"run_id", run.ID,
 		"attempt", run.Attempt)
 
@@ -140,7 +140,7 @@ func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finis
 
 	var next *retryPlan
 	if rec.Retry {
-		if entry, ok := d.reg.get(run.IntegrationID); ok && entry.Manifest != nil &&
+		if entry, ok := d.reg.get(run.JobID); ok && entry.Manifest != nil &&
 			retry.ShouldRetry(entry.Manifest.MaxAttempts(), run.Attempt) {
 			next = d.planRetry(run, entry.Manifest)
 		}
@@ -153,7 +153,7 @@ func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finis
 
 	d.appendOtterLog(run.ID, "recorded outcome recovered: "+string(rec.Status))
 	d.log.Warn("run_outcome_recovered",
-		"integration", run.IntegrationID,
+		"job", run.JobID,
 		"run_id", run.ID,
 		"status", string(rec.Status),
 		"attempt", run.Attempt)
@@ -185,12 +185,12 @@ func (d *Daemon) reconcileQueue(ctx context.Context) error {
 			if present {
 				continue
 			}
-			if err := d.queue.Enqueue(ctx, run.ID, run.IntegrationID, time.Now().UTC()); err != nil {
+			if err := d.queue.Enqueue(ctx, run.ID, run.JobID, time.Now().UTC()); err != nil {
 				return err
 			}
 			requeued++
 			d.log.Warn("run_requeued",
-				"integration", run.IntegrationID,
+				"job", run.JobID,
 				"run_id", run.ID,
 				"status", string(status))
 		}

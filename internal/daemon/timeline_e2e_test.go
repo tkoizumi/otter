@@ -22,7 +22,7 @@ import (
 // TestRunTimelineEndToEnd is the acceptance test for `otter trace`: after the
 // same failed JSON POST the capture milestone uses, one merged read must show
 // the lifecycle, the captured exchange with its call site, and the exception
-// output — with no logging added to the integration.
+// output — with no logging added to the job.
 func TestRunTimelineEndToEnd(t *testing.T) {
 	requirePython(t)
 
@@ -40,7 +40,7 @@ func TestRunTimelineEndToEnd(t *testing.T) {
 	defer origin.Close()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "trace-demo", fmt.Sprintf(`
+	writeJob(t, root, "trace-demo", fmt.Sprintf(`
 version: 1
 name: trace-demo
 entrypoint: main.py
@@ -73,8 +73,8 @@ env:
 	if page.Context.Status != string(runs.StatusFailed) {
 		t.Errorf("status = %q, want failed", page.Context.Status)
 	}
-	if page.Context.IntegrationName != "trace-demo" {
-		t.Errorf("integration name = %q, want trace-demo", page.Context.IntegrationName)
+	if page.Context.JobName != "trace-demo" {
+		t.Errorf("job name = %q, want trace-demo", page.Context.JobName)
 	}
 	if page.Context.TriggerType != string(runs.TriggerManual) {
 		t.Errorf("trigger = %q, want manual", page.Context.TriggerType)
@@ -181,7 +181,7 @@ func TestRunTimelinePagingIsStableAcrossPageSizes(t *testing.T) {
 	defer origin.Close()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "trace-paging", fmt.Sprintf(`
+	writeJob(t, root, "trace-paging", fmt.Sprintf(`
 version: 1
 name: trace-paging
 entrypoint: main.py
@@ -269,7 +269,7 @@ func TestRunTimelineRefusesNonTerminalAttempts(t *testing.T) {
 	defer unblock()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "trace-blocking", fmt.Sprintf(`
+	writeJob(t, root, "trace-blocking", fmt.Sprintf(`
 version: 1
 name: trace-blocking
 entrypoint: main.py
@@ -321,7 +321,7 @@ func TestRunTimelineWithoutCaptureStillTellsTheStory(t *testing.T) {
 	requirePython(t)
 
 	root := t.TempDir()
-	writeIntegration(t, root, "trace-nocall", `
+	writeJob(t, root, "trace-nocall", `
 version: 1
 name: trace-nocall
 entrypoint: main.py
@@ -373,13 +373,13 @@ raise RuntimeError("nothing to send, configuration is missing")
 }
 
 // TestRunTimelineSeparatesCtxLogFromNarration is the end-to-end form of the
-// classification bug: an integration's ctx.log line and the runtime's narration
+// classification bug: a job's ctx.log line and the runtime's narration
 // share the `otter` stream, so a trace must still tell them apart.
 func TestRunTimelineSeparatesCtxLogFromNarration(t *testing.T) {
 	requirePython(t)
 
 	root := t.TempDir()
-	writeIntegration(t, root, "trace-ctxlog", `
+	writeJob(t, root, "trace-ctxlog", `
 version: 1
 name: trace-ctxlog
 entrypoint: main.py
@@ -452,7 +452,7 @@ func TestRunTimelineOverHTTP(t *testing.T) {
 	requirePython(t)
 
 	root := t.TempDir()
-	writeIntegration(t, root, "trace-http", `
+	writeJob(t, root, "trace-http", `
 version: 1
 name: trace-http
 entrypoint: main.py

@@ -8,7 +8,7 @@ import (
 )
 
 // TestResolveCapturePolicyPrecedence pins the rule that makes payload capture
-// safe to have on by default: an integration can always refuse, and an explicit
+// safe to have on by default: a job can always refuse, and an explicit
 // per-run request wins over everything.
 func TestResolveCapturePolicyPrecedence(t *testing.T) {
 	tests := []struct {

@@ -32,11 +32,11 @@ func runsAPI(t *testing.T, total int) *httptest.Server {
 		list := []*runs.Run{}
 		for i := offset; i < total && len(list) < limit; i++ {
 			list = append(list, &runs.Run{
-				ID:            "run-" + strconv.Itoa(i),
-				IntegrationID: "int-1",
-				TriggerType:   runs.TriggerManual,
-				Status:        runs.StatusSucceeded,
-				Attempt:       1,
+				ID:          "run-" + strconv.Itoa(i),
+				JobID:       "int-1",
+				TriggerType: runs.TriggerManual,
+				Status:      runs.StatusSucceeded,
+				Attempt:     1,
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"runs": list})
@@ -137,9 +137,9 @@ func TestRunsTruncationHintStaysAtTheMaximum(t *testing.T) {
 	}
 }
 
-// TestRunsTakesAPositionalIntegration is the verb-convention fix: the
-// integration is an argument, not a flag.
-func TestRunsTakesAPositionalIntegration(t *testing.T) {
+// TestRunsTakesAPositionalJob is the verb-convention fix: the
+// job is an argument, not a flag.
+func TestRunsTakesAPositionalJob(t *testing.T) {
 	rec := &runsFilterRecorder{}
 	server := rec.server(t)
 	defer server.Close()
@@ -148,14 +148,14 @@ func TestRunsTakesAPositionalIntegration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
-	if got := rec.query.Get("integration_id"); got != "counter" {
-		t.Errorf("integration_id = %q, want counter", got)
+	if got := rec.query.Get("job_id"); got != "counter" {
+		t.Errorf("job_id = %q, want counter", got)
 	}
 }
 
-// TestRunsScopesToTheWorkingDirectoryIntegration answers "otter runs in an
-// integration directory": no argument means the integration you are standing in.
-func TestRunsScopesToTheWorkingDirectoryIntegration(t *testing.T) {
+// TestRunsScopesToTheWorkingDirectoryJob answers "otter runs in an
+// job directory": no argument means the job you are standing in.
+func TestRunsScopesToTheWorkingDirectoryJob(t *testing.T) {
 	withWorkingDir(t, writeManifest(t, "counter"))
 
 	rec := &runsFilterRecorder{}
@@ -166,14 +166,14 @@ func TestRunsScopesToTheWorkingDirectoryIntegration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
-	if got := rec.query.Get("integration_id"); got != "counter" {
-		t.Errorf("integration_id = %q, want counter", got)
+	if got := rec.query.Get("job_id"); got != "counter" {
+		t.Errorf("job_id = %q, want counter", got)
 	}
 }
 
-// TestRunsOutsideAnIntegrationRefusesToGuess: a bare `otter runs` elsewhere must
+// TestRunsOutsideAnJobRefusesToGuess: a bare `otter runs` elsewhere must
 // not silently answer with the whole workspace.
-func TestRunsOutsideAnIntegrationRefusesToGuess(t *testing.T) {
+func TestRunsOutsideAnJobRefusesToGuess(t *testing.T) {
 	withWorkingDir(t, t.TempDir())
 
 	rec := &runsFilterRecorder{}
@@ -187,7 +187,7 @@ func TestRunsOutsideAnIntegrationRefusesToGuess(t *testing.T) {
 	if rec.query != nil {
 		t.Errorf("the CLI queried the daemon anyway: %v", rec.query)
 	}
-	if !strings.Contains(stderr, "--all") || !strings.Contains(stderr, "otter runs <integration>") {
+	if !strings.Contains(stderr, "--all") || !strings.Contains(stderr, "otter runs <job>") {
 		t.Errorf("the refusal should name both ways out:\n%s", stderr)
 	}
 	if strings.TrimSpace(stdout) != "" {
@@ -205,13 +205,13 @@ func TestRunsAllSkipsTheFilter(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
-	if got := rec.query.Get("integration_id"); got != "" {
-		t.Errorf("integration_id = %q, want it unset for --all", got)
+	if got := rec.query.Get("job_id"); got != "" {
+		t.Errorf("job_id = %q, want it unset for --all", got)
 	}
 }
 
-// TestRunsAllRejectsANamedIntegration: --all and a name are contradictory.
-func TestRunsAllRejectsANamedIntegration(t *testing.T) {
+// TestRunsAllRejectsANamedJob: --all and a name are contradictory.
+func TestRunsAllRejectsANamedJob(t *testing.T) {
 	code, _, stderr := runCLI(t, "--api", "http://127.0.0.1:1", "runs", "--all", "counter")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %s", code, stderr)
@@ -221,30 +221,30 @@ func TestRunsAllRejectsANamedIntegration(t *testing.T) {
 	}
 }
 
-// TestRunsDeprecatedIntegrationFlagStillResolves keeps the older spelling
+// TestRunsDeprecatedJobFlagStillResolves keeps the older spelling
 // working; documentation and scripts used it long before the positional form.
-func TestRunsDeprecatedIntegrationFlagStillResolves(t *testing.T) {
+func TestRunsDeprecatedJobFlagStillResolves(t *testing.T) {
 	rec := &runsFilterRecorder{}
 	server := rec.server(t)
 	defer server.Close()
 
-	code, _, stderr := runCLI(t, "--api", server.URL, "runs", "--integration", "counter")
+	code, _, stderr := runCLI(t, "--api", server.URL, "runs", "--job", "counter")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
-	if got := rec.query.Get("integration_id"); got != "counter" {
-		t.Errorf("integration_id = %q, want counter", got)
+	if got := rec.query.Get("job_id"); got != "counter" {
+		t.Errorf("job_id = %q, want counter", got)
 	}
 }
 
 // TestRunsFlagAndPositionalMustAgree refuses a contradiction rather than
 // silently picking one.
 func TestRunsFlagAndPositionalMustAgree(t *testing.T) {
-	code, _, stderr := runCLI(t, "--api", "http://127.0.0.1:1", "runs", "counter", "--integration", "other")
+	code, _, stderr := runCLI(t, "--api", "http://127.0.0.1:1", "runs", "counter", "--job", "other")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "different integrations") {
+	if !strings.Contains(stderr, "different jobs") {
 		t.Errorf("stderr should name the conflict:\n%s", stderr)
 	}
 }
@@ -262,22 +262,22 @@ func TestRunsPathArgumentResolvesTheManifestName(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
-	if got := rec.query.Get("integration_id"); got != "counter" {
-		t.Errorf("integration_id = %q, want the manifest name counter", got)
+	if got := rec.query.Get("job_id"); got != "counter" {
+		t.Errorf("job_id = %q, want the manifest name counter", got)
 	}
 }
 
-// TestRunsTableShowsTheLabelNotTheIdentity: integration_id is a durable UUID on
+// TestRunsTableShowsTheLabelNotTheIdentity: job_id is a durable UUID on
 // a migrated workspace; the table must show what the operator can type back.
 func TestRunsTableShowsTheLabelNotTheIdentity(t *testing.T) {
 	const identity = "986d91e8-dde4-45be-b298-c9332c220498"
 	rec := &runsFilterRecorder{list: []*runs.Run{{
-		ID:              "run-1",
-		IntegrationID:   identity,
-		IntegrationName: "counter",
-		TriggerType:     runs.TriggerManual,
-		Status:          runs.StatusSucceeded,
-		Attempt:         1,
+		ID:          "run-1",
+		JobID:       identity,
+		JobName:     "counter",
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusSucceeded,
+		Attempt:     1,
 	}}}
 	server := rec.server(t)
 	defer server.Close()
@@ -287,7 +287,7 @@ func TestRunsTableShowsTheLabelNotTheIdentity(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
 	if !strings.Contains(stdout, "counter") {
-		t.Errorf("the table should name the integration:\n%s", stdout)
+		t.Errorf("the table should name the job:\n%s", stdout)
 	}
 	if strings.Contains(stdout, identity) {
 		t.Errorf("the table should not show the durable identity:\n%s", stdout)
@@ -298,11 +298,11 @@ func TestRunsTableShowsTheLabelNotTheIdentity(t *testing.T) {
 // existed have no name, and their id is the label.
 func TestRunsTableFallsBackToTheIDForLegacyRows(t *testing.T) {
 	rec := &runsFilterRecorder{list: []*runs.Run{{
-		ID:            "run-1",
-		IntegrationID: "shopify-to-salesforce",
-		TriggerType:   runs.TriggerManual,
-		Status:        runs.StatusSucceeded,
-		Attempt:       1,
+		ID:          "run-1",
+		JobID:       "shopify-to-salesforce",
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusSucceeded,
+		Attempt:     1,
 	}}}
 	server := rec.server(t)
 	defer server.Close()

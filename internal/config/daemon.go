@@ -18,7 +18,7 @@ import (
 const (
 	DefaultListen        = "127.0.0.1:7337"
 	DefaultDataDir       = "./tmp"
-	DefaultIntegrations  = "./integrations"
+	DefaultJobs          = "./jobs"
 	DefaultShutdownGrace = 15 * time.Second
 	DefaultLogFormat     = "json"
 	DefaultLogLevel      = "info"
@@ -30,21 +30,21 @@ const (
 	DefaultCaptureRetention = 7 * 24 * time.Hour
 
 	// DefaultCapturePolicy is what a run records when neither the run nor its
-	// integration chooses a policy.
+	// job chooses a policy.
 	DefaultCapturePolicy = inspection.PolicyFull
 )
 
 // DaemonConfig is the runtime configuration of otterd. Values come from
 // defaults, then environment variables, then command-line flags.
 type DaemonConfig struct {
-	IntegrationsDir string
-	DataDir         string
-	Listen          string
-	Workers         int
-	APIToken        string
-	LogFormat       string
-	LogLevel        string
-	ShutdownGrace   time.Duration
+	JobsDir       string
+	DataDir       string
+	Listen        string
+	Workers       int
+	APIToken      string
+	LogFormat     string
+	LogLevel      string
+	ShutdownGrace time.Duration
 
 	// AllowIncompleteRecovery lets startup continue when crash recovery or
 	// queue reconciliation fails. It exists for one case: bringing a daemon up
@@ -60,9 +60,9 @@ type DaemonConfig struct {
 	// prunes the database.
 	CaptureRetention time.Duration
 
-	// CaptureDefault is the capture policy for a run whose integration does not
+	// CaptureDefault is the capture policy for a run whose job does not
 	// declare one. A per-run request overrides it, and a manifest `capture:`
-	// field overrides it for that integration. Empty means DefaultCapturePolicy.
+	// field overrides it for that job. Empty means DefaultCapturePolicy.
 	CaptureDefault inspection.Policy
 
 	// CaptureRedactHeaders, CaptureRedactQuery and CaptureRedactFields extend
@@ -194,13 +194,13 @@ func (n NotifyConfig) RedactedURL() string {
 // DefaultDaemonConfig returns the documented defaults.
 func DefaultDaemonConfig(version string) DaemonConfig {
 	return DaemonConfig{
-		IntegrationsDir: DefaultIntegrations,
-		DataDir:         DefaultDataDir,
-		Listen:          DefaultListen,
-		Workers:         DefaultWorkers(),
-		LogFormat:       DefaultLogFormat,
-		LogLevel:        DefaultLogLevel,
-		ShutdownGrace:   DefaultShutdownGrace,
+		JobsDir:       DefaultJobsDirectory(),
+		DataDir:       DefaultDataDir,
+		Listen:        DefaultListen,
+		Workers:       DefaultWorkers(),
+		LogFormat:     DefaultLogFormat,
+		LogLevel:      DefaultLogLevel,
+		ShutdownGrace: DefaultShutdownGrace,
 
 		CaptureRetention: DefaultCaptureRetention,
 		CaptureDefault:   DefaultCapturePolicy,
@@ -223,8 +223,8 @@ func DefaultWorkers() int {
 // ApplyEnv overlays OTTER_* environment variables onto the configuration.
 // Malformed values are returned as errors rather than ignored.
 func (c *DaemonConfig) ApplyEnv() error {
-	if v, ok := os.LookupEnv("OTTER_INTEGRATIONS_DIR"); ok && v != "" {
-		c.IntegrationsDir = v
+	if v := os.Getenv("OTTER_JOBS_DIR"); v != "" {
+		c.JobsDir = v
 	}
 	if v, ok := os.LookupEnv("OTTER_DATA_DIR"); ok && v != "" {
 		c.DataDir = v
@@ -313,14 +313,14 @@ func redactURL(raw string) string {
 // RegisterFlags binds daemon flags, seeding each default from the current
 // configuration so that flags win over environment variables.
 func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
-	fs.StringVar(&c.IntegrationsDir, "integrations", c.IntegrationsDir, "root directory scanned recursively for "+ManifestFileName)
+	fs.StringVar(&c.JobsDir, "jobs", c.JobsDir, "root directory scanned recursively for "+ManifestFileName)
 	fs.StringVar(&c.DataDir, "data", c.DataDir, "data directory holding otter.db and the extracted Python SDK")
 	fs.StringVar(&c.Listen, "listen", c.Listen, "HTTP API listen address (host:port)")
-	fs.IntVar(&c.Workers, "workers", c.Workers, "maximum number of concurrently running integrations")
+	fs.IntVar(&c.Workers, "workers", c.Workers, "maximum number of concurrently running jobs")
 	fs.StringVar(&c.APIToken, "api-token", c.APIToken, "bearer token required for API access (mandatory when --listen is not loopback)")
 	fs.StringVar(&c.LogFormat, "log-format", c.LogFormat, "daemon log format: json or pretty")
 	fs.StringVar(&c.LogLevel, "log-level", c.LogLevel, "daemon log level: debug, info, warn or error")
-	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running integrations may finish after SIGTERM before being terminated")
+	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running jobs may finish after SIGTERM before being terminated")
 	fs.BoolVar(&c.AllowIncompleteRecovery, "allow-incomplete-recovery", c.AllowIncompleteRecovery,
 		"start even when crash recovery or queue reconciliation fails; affected runs may stay stranded")
 	fs.DurationVar(&c.CaptureRetention, "capture-retention", c.CaptureRetention, "how long captured HTTP payloads are kept; the per-run summary survives (0 disables expiry)")
@@ -334,8 +334,8 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 
 // Validate checks the configuration before the daemon starts.
 func (c *DaemonConfig) Validate() error {
-	if strings.TrimSpace(c.IntegrationsDir) == "" {
-		return fmt.Errorf("--integrations must not be empty")
+	if strings.TrimSpace(c.JobsDir) == "" {
+		return fmt.Errorf("--jobs must not be empty")
 	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return fmt.Errorf("--data must not be empty")
@@ -394,7 +394,7 @@ func (c *DaemonConfig) Validate() error {
 	return nil
 }
 
-// CaptureDefaultPolicy is the capture policy for a run whose integration does
+// CaptureDefaultPolicy is the capture policy for a run whose job does
 // not declare one. An unset field means the built-in default, so a configuration
 // built in code that predates the field still records something sensible rather
 // than silently capturing nothing.
@@ -456,7 +456,7 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// ChildAPIURL is the API base URL handed to integration processes. Children
+// ChildAPIURL is the API base URL handed to job processes. Children
 // always talk to a concrete loopback address, never to a wildcard bind.
 func (c *DaemonConfig) ChildAPIURL() string {
 	host, port, err := net.SplitHostPort(c.Listen)

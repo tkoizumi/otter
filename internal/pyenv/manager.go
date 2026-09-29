@@ -32,7 +32,7 @@ const RecipeVersion = "1"
 // or a new recipe) can still be validated against an environment that was
 // legitimately prepared under the older policy.
 type Spec struct {
-	Integration  string `json:"integration"`
+	Job          string `json:"job"`
 	Python       string `json:"python"`
 	Digest       string `json:"digest"`
 	InputsDigest string `json:"inputs_digest"`
@@ -46,6 +46,23 @@ type Ready struct {
 	UVVersion   string `json:"uv_version"`
 }
 
+// UnmarshalJSON preserves readiness markers written before the job rename.
+func (r *Ready) UnmarshalJSON(data []byte) error {
+	type current Ready
+	var wire struct {
+		current
+		LegacyJob string `json:"integration"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = Ready(wire.current)
+	if r.Job == "" {
+		r.Job = wire.LegacyJob
+	}
+	return nil
+}
+
 // Manager owns the derived environments under a data directory.
 type Manager struct{ DataDir string }
 
@@ -56,16 +73,16 @@ func (m Manager) root() (string, error) {
 	return filepath.Abs(m.DataDir)
 }
 
-// Resolve hashes the lock, project metadata, exact Python pin, integration
+// Resolve hashes the lock, project metadata, exact Python pin, job
 // identity, target platform and every preparation-policy input. The directory
 // is never shared across targets.
 //
 // uvVersion is part of the identity because a different uv resolves and
 // installs differently; pass "" when uv is unavailable and the caller is only
 // reproducing an identity it already recorded.
-func (m Manager) Resolve(dir, integration, uvVersion string) (Spec, error) {
-	if integration == "" {
-		return Spec{}, errors.New("integration name is empty")
+func (m Manager) Resolve(dir, job, uvVersion string) (Spec, error) {
+	if job == "" {
+		return Spec{}, errors.New("job name is empty")
 	}
 	var inputs [][]byte
 	for _, name := range []string{".python-version", "pyproject.toml", "uv.lock"} {
@@ -80,12 +97,12 @@ func (m Manager) Resolve(dir, integration, uvVersion string) (Spec, error) {
 		return Spec{}, fmt.Errorf(".python-version must pin an exact CPython patch version (for example 3.13.5), got %q", version)
 	}
 
-	policy := buildPolicy(integration, version, targetPlatform(), libcVariant, uvVersion)
+	policy := buildPolicy(job, version, targetPlatform(), libcVariant, uvVersion)
 
 	// The inputs digest deliberately excludes the policy so that a recorded run
 	// stays valid across a preparation-time tooling change.
 	inputsHasher := sha256.New()
-	for _, s := range []string{"otter-pyenv-inputs-v1", integration, version} {
+	for _, s := range []string{"otter-pyenv-inputs-v1", job, version} {
 		_, _ = inputsHasher.Write([]byte(s + "\x00"))
 	}
 	for _, input := range inputs {
@@ -99,7 +116,7 @@ func (m Manager) Resolve(dir, integration, uvVersion string) (Spec, error) {
 	}
 
 	return Spec{
-		Integration:  integration,
+		Job:          job,
 		Python:       version,
 		Digest:       hex.EncodeToString(hasher.Sum(nil)),
 		InputsDigest: hex.EncodeToString(inputsHasher.Sum(nil)),
@@ -111,7 +128,7 @@ func (m Manager) Resolve(dir, integration, uvVersion string) (Spec, error) {
 // inputs that changes what gets prepared: the recipe, the pinned interpreter
 // and its exact version, the target ABI, and the dependency-selection and
 // installation policy.
-func buildPolicy(integration, python, platform, libc, uvVersion string) string {
+func buildPolicy(job, python, platform, libc, uvVersion string) string {
 	return strings.Join([]string{
 		"recipe=" + RecipeVersion,
 		"uv=" + uvVersion,
@@ -127,7 +144,7 @@ func buildPolicy(integration, python, platform, libc, uvVersion string) string {
 		"python=managed-only",
 		"config=none",
 		"index=default",
-		"integration=" + integration,
+		"job=" + job,
 	}, ";")
 }
 
@@ -156,7 +173,7 @@ func (m Manager) envDir(spec Spec) (string, error) {
 // tooling change, because its environment was already prepared and is still on
 // disk.
 func (m Manager) GetReady(spec Spec) (Ready, error) {
-	if len(spec.Digest) != 64 || spec.Integration == "" || spec.Python == "" {
+	if len(spec.Digest) != 64 || spec.Job == "" || spec.Python == "" {
 		return Ready{}, errors.New("run has no valid managed Python environment identity")
 	}
 	dir, err := m.envDir(spec)
@@ -186,7 +203,7 @@ func (m Manager) GetReady(spec Spec) (Ready, error) {
 
 // matches confirms that a readiness marker describes the requested identity.
 func matches(want Spec, ready Ready) bool {
-	return ready.Integration == want.Integration &&
+	return ready.Job == want.Job &&
 		ready.Python == want.Python &&
 		ready.Digest == want.Digest
 }
@@ -195,23 +212,23 @@ func matches(want Spec, ready Ready) bool {
 // this host right now, resolving the uv version because it is part of the
 // policy. It is only for preparation and for binding a new run; execution uses
 // the identity the run recorded instead.
-func (m Manager) ResolveCurrent(ctx context.Context, dir, integration string) (Spec, error) {
-	return m.currentIdentity(ctx, dir, integration, "")
+func (m Manager) ResolveCurrent(ctx context.Context, dir, job string) (Spec, error) {
+	return m.currentIdentity(ctx, dir, job, "")
 }
 
 // ResolveCurrentAt is ResolveCurrent with an explicit uv path, for callers that
 // manage the toolchain location themselves.
-func (m Manager) ResolveCurrentAt(ctx context.Context, dir, integration, uvPath string) (Spec, error) {
-	return m.currentIdentity(ctx, dir, integration, uvPath)
+func (m Manager) ResolveCurrentAt(ctx context.Context, dir, job, uvPath string) (Spec, error) {
+	return m.currentIdentity(ctx, dir, job, uvPath)
 }
 
 // currentIdentity returns the identity a fresh preparation would produce. The
 // uv version is part of the policy, so it is resolved here; a missing uv does
 // not fail identity resolution, it is recorded as "absent" so an already
 // prepared environment stays reusable.
-func (m Manager) currentIdentity(ctx context.Context, dir, integration, uvPath string) (Spec, error) {
+func (m Manager) currentIdentity(ctx context.Context, dir, job, uvPath string) (Spec, error) {
 	version := uvVersionOf(ctx, m.UVPath(uvPath))
-	return m.Resolve(dir, integration, version)
+	return m.Resolve(dir, job, version)
 }
 
 // uvCandidate locates a vendored uv.
@@ -221,7 +238,7 @@ func (m Manager) currentIdentity(ctx context.Context, dir, integration, uvPath s
 // directory. Both spellings resolve to the same binary, which matters because
 // uv is part of the environment identity: a daemon and a `otter release` that
 // disagreed about which uv they found would compute different environment
-// digests for the same integration.
+// digests for the same job.
 func (m Manager) uvCandidate() (string, bool) {
 	root, err := m.root()
 	if err != nil {
@@ -238,7 +255,7 @@ func (m Manager) uvCandidate() (string, bool) {
 	// The nearest one wins. Both spellings have to resolve to the same binary,
 	// because uv is part of the environment identity: a daemon and a deploy that
 	// disagreed about which uv they found would compute different digests for
-	// the same integration, and every run would look for an environment that
+	// the same job, and every run would look for an environment that
 	// preparation never created.
 	var dirs []string
 	dirs = append(dirs, filepath.Join(root, "tools", "uv"))
@@ -269,7 +286,7 @@ func (m Manager) uvCandidate() (string, bool) {
 // path. The daemon and `otter release` must resolve uv identically: uv is part
 // of the preparation policy and therefore of the environment digest, so two
 // different answers would produce two different environments for the same
-// integration, and a run would look for an environment preparation never
+// job, and a run would look for an environment preparation never
 // created.
 func (m Manager) UVPath(explicit string) string {
 	if candidate, ok := m.uvCandidate(); ok {
@@ -320,15 +337,15 @@ func uvVersionOf(ctx context.Context, uvPath string) string {
 // The daemon uses this on the run path. It never invokes uv or re-derives the
 // policy, because a queued run must keep resolving to the environment it was
 // submitted against even after the toolchain changes.
-func RecordedIdentity(integration, python, digest, policy string) Spec {
-	return Spec{Integration: integration, Python: python, Digest: digest, Policy: policy}
+func RecordedIdentity(job, python, digest, policy string) Spec {
+	return Spec{Job: job, Python: python, Digest: digest, Policy: policy}
 }
 
 // Prepare downloads the pinned interpreter and syncs locked production
 // dependencies. A crashed preparation leaves no readiness marker; retrying
 // safely reconstructs the incomplete directory under an advisory lock.
-func (m Manager) Prepare(ctx context.Context, dir, integration, uvPath string) (Ready, error) {
-	spec, err := m.currentIdentity(ctx, dir, integration, uvPath)
+func (m Manager) Prepare(ctx context.Context, dir, job, uvPath string) (Ready, error) {
+	spec, err := m.currentIdentity(ctx, dir, job, uvPath)
 	if err != nil {
 		return Ready{}, err
 	}
@@ -381,7 +398,7 @@ func (m Manager) Prepare(ctx context.Context, dir, integration, uvPath string) (
 	sync := exec.CommandContext(ctx, uv, "sync", "--locked", "--no-install-project", "--no-build", "--no-config", "--no-python-downloads", "--python", spec.Python, "--python-preference", "only-managed")
 	sync.Dir, sync.Env = dir, baseEnv
 	if out, err := sync.CombinedOutput(); err != nil {
-		return Ready{}, fmt.Errorf("sync %s: %w: %s", integration, err, strings.TrimSpace(string(out)))
+		return Ready{}, fmt.Errorf("sync %s: %w: %s", job, err, strings.TrimSpace(string(out)))
 	}
 	interpreter := filepath.Join(envDir, "bin", "python")
 	verify := exec.CommandContext(ctx, interpreter, "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))")

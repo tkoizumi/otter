@@ -20,21 +20,21 @@ var ErrEmpty = errors.New("queue is empty")
 
 // Item is a queued run.
 type Item struct {
-	RunID         string    `json:"run_id"`
-	IntegrationID string    `json:"integration_id"`
-	AvailableAt   time.Time `json:"available_at"`
-	CreatedAt     time.Time `json:"created_at"`
+	RunID       string    `json:"run_id"`
+	JobID       string    `json:"job_id"`
+	AvailableAt time.Time `json:"available_at"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
-// Capacity reserves execution slots for an integration. Reserve must be
-// atomic: it returns false when the integration is already at its
+// Capacity reserves execution slots for a job. Reserve must be
+// atomic: it returns false when the job is already at its
 // concurrency limit. Release gives the slot back.
 //
-// Keeping this as an interface lets the queue enforce per-integration
+// Keeping this as an interface lets the queue enforce per-job
 // concurrency without knowing anything about the daemon.
 type Capacity interface {
-	Reserve(integrationID string) bool
-	Release(integrationID string)
+	Reserve(jobID string) bool
+	Release(jobID string)
 }
 
 // Queue is the SQLite-backed run queue.
@@ -46,25 +46,25 @@ type Queue struct {
 func New(db *sql.DB) *Queue { return &Queue{db: db} }
 
 // Enqueue adds a run to the queue.
-func (q *Queue) Enqueue(ctx context.Context, runID, integrationID string, availableAt time.Time) error {
-	return q.EnqueueTx(ctx, nil, runID, integrationID, availableAt)
+func (q *Queue) Enqueue(ctx context.Context, runID, jobID string, availableAt time.Time) error {
+	return q.EnqueueTx(ctx, nil, runID, jobID, availableAt)
 }
 
 // EnqueueTx adds a run to the queue, optionally inside an existing
 // transaction so that creating a run record and enqueueing it are atomic.
-func (q *Queue) EnqueueTx(ctx context.Context, tx *sql.Tx, runID, integrationID string, availableAt time.Time) error {
+func (q *Queue) EnqueueTx(ctx context.Context, tx *sql.Tx, runID, jobID string, availableAt time.Time) error {
 	if availableAt.IsZero() {
 		availableAt = time.Now().UTC()
 	}
 	createdAt := time.Now().UTC()
 
-	const query = `INSERT INTO run_queue (run_id, integration_id, available_at, created_at)
+	const query = `INSERT INTO run_queue (run_id, job_id, available_at, created_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
-			integration_id = excluded.integration_id,
+			job_id = excluded.job_id,
 			available_at   = excluded.available_at`
 
-	args := []any{runID, integrationID, database.FormatTime(availableAt), database.FormatTime(createdAt)}
+	args := []any{runID, jobID, database.FormatTime(availableAt), database.FormatTime(createdAt)}
 
 	var err error
 	if tx != nil {
@@ -91,7 +91,7 @@ func (q *Queue) Remove(ctx context.Context, runID string) (bool, error) {
 	return n == 1, nil
 }
 
-// Claim atomically takes the oldest available run whose integration has spare
+// Claim atomically takes the oldest available run whose job has spare
 // concurrency capacity, reserving a slot for it. When nothing is claimable it
 // returns ErrEmpty.
 //
@@ -101,7 +101,7 @@ func (q *Queue) Remove(ctx context.Context, runID string) (bool, error) {
 // A reservation is only handed to the caller once the transaction that removes
 // the run has committed. Every other outcome -- an in-transaction failure, a
 // conflict, or a failed commit -- gives the reserved slots back, because a
-// reservation the caller never learns about would shrink the integration's
+// reservation the caller never learns about would shrink the job's
 // capacity for the rest of the process's life.
 func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*Item, error) {
 	var (
@@ -116,7 +116,7 @@ func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*I
 	// learn about a run that was never really removed. If any part of the
 	// transaction fails -- including the commit -- the reservations that were
 	// granted while it ran are handed back; a reservation the caller never
-	// learns about would shrink this integration's capacity for the rest of
+	// learns about would shrink this job's capacity for the rest of
 	// the process's life.
 	defer func() {
 		if committed || capacity == nil {
@@ -129,7 +129,7 @@ func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*I
 
 	ok, err := q.withTx(ctx, commitQueueTx, func(tx *sql.Tx) (bool, error) {
 		rows, err := tx.QueryContext(ctx,
-			`SELECT run_id, integration_id, available_at, created_at FROM run_queue
+			`SELECT run_id, job_id, available_at, created_at FROM run_queue
 			 WHERE available_at <= ?
 			 ORDER BY available_at ASC, created_at ASC, run_id ASC
 			 LIMIT 200`,
@@ -144,11 +144,11 @@ func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*I
 		}
 
 		for _, it := range candidates {
-			reserved := capacity != nil && capacity.Reserve(it.IntegrationID)
+			reserved := capacity != nil && capacity.Reserve(it.JobID)
 			if reserved {
-				held = append(held, it.IntegrationID)
+				held = append(held, it.JobID)
 			} else if capacity != nil {
-				continue // integration is at its concurrency limit or draining
+				continue // job is at its concurrency limit or draining
 			}
 
 			res, err := tx.ExecContext(ctx, `DELETE FROM run_queue WHERE run_id = ?`, it.RunID)
@@ -163,7 +163,7 @@ func (q *Queue) Claim(ctx context.Context, now time.Time, capacity Capacity) (*I
 				// Someone else got there first; give this slot back now and
 				// keep looking at the remaining candidates.
 				if reserved {
-					capacity.Release(it.IntegrationID)
+					capacity.Release(it.JobID)
 					held = held[:len(held)-1]
 				}
 				continue
@@ -212,12 +212,12 @@ func (q *Queue) Depth(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// DepthByIntegration returns the queue depth per integration.
-func (q *Queue) DepthByIntegration(ctx context.Context) (map[string]int, error) {
+// DepthByJob returns the queue depth per job.
+func (q *Queue) DepthByJob(ctx context.Context) (map[string]int, error) {
 	rows, err := q.db.QueryContext(ctx,
-		`SELECT integration_id, COUNT(*) FROM run_queue GROUP BY integration_id`)
+		`SELECT job_id, COUNT(*) FROM run_queue GROUP BY job_id`)
 	if err != nil {
-		return nil, fmt.Errorf("queue: depth by integration: %w", err)
+		return nil, fmt.Errorf("queue: depth by job: %w", err)
 	}
 	defer rows.Close()
 
@@ -228,7 +228,7 @@ func (q *Queue) DepthByIntegration(ctx context.Context) (map[string]int, error) 
 			n  int
 		)
 		if err := rows.Scan(&id, &n); err != nil {
-			return nil, fmt.Errorf("queue: depth by integration scan: %w", err)
+			return nil, fmt.Errorf("queue: depth by job scan: %w", err)
 		}
 		out[id] = n
 	}
@@ -239,7 +239,7 @@ func (q *Queue) DepthByIntegration(ctx context.Context) (map[string]int, error) 
 // observability and tests rather than for hot paths.
 func (q *Queue) List(ctx context.Context) ([]Item, error) {
 	rows, err := q.db.QueryContext(ctx,
-		`SELECT run_id, integration_id, available_at, created_at FROM run_queue
+		`SELECT run_id, job_id, available_at, created_at FROM run_queue
 		 ORDER BY available_at ASC, created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("queue: list: %w", err)
@@ -302,7 +302,7 @@ func scanItems(rows *sql.Rows) ([]Item, error) {
 			availableAt database.NullableTime
 			createdAt   database.NullableTime
 		)
-		if err := rows.Scan(&it.RunID, &it.IntegrationID, &availableAt, &createdAt); err != nil {
+		if err := rows.Scan(&it.RunID, &it.JobID, &availableAt, &createdAt); err != nil {
 			return nil, fmt.Errorf("queue: scan item: %w", err)
 		}
 		it.AvailableAt = availableAt.Time

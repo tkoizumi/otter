@@ -22,18 +22,18 @@ import (
 // incomplete, because a failed read is never evidence of deletion.
 func Observe(root string, knownPaths []string) (identity.Scan, error) {
 	if strings.TrimSpace(root) == "" {
-		return identity.Scan{}, fmt.Errorf("integrations directory must not be empty")
+		return identity.Scan{}, fmt.Errorf("jobs directory must not be empty")
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return identity.Scan{}, fmt.Errorf("resolve integrations directory %s: %w", root, err)
+		return identity.Scan{}, fmt.Errorf("resolve jobs directory %s: %w", root, err)
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
-		return identity.Scan{}, fmt.Errorf("integrations directory %s: %w", abs, err)
+		return identity.Scan{}, fmt.Errorf("jobs directory %s: %w", abs, err)
 	}
 	if !info.IsDir() {
-		return identity.Scan{}, fmt.Errorf("integrations path %s is not a directory", abs)
+		return identity.Scan{}, fmt.Errorf("jobs path %s is not a directory", abs)
 	}
 
 	scan := identity.Scan{Complete: true}
@@ -68,7 +68,7 @@ func Observe(root string, knownPaths []string) (identity.Scan, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return identity.Scan{}, fmt.Errorf("walk integrations directory %s: %w", abs, walkErr)
+		return identity.Scan{}, fmt.Errorf("walk jobs directory %s: %w", abs, walkErr)
 	}
 
 	for _, path := range knownPaths {

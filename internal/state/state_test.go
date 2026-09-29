@@ -76,10 +76,10 @@ func TestSetGetRoundTrip(t *testing.T) {
 		}
 	})
 
-	t.Run("missing key in missing integration", func(t *testing.T) {
+	t.Run("missing key in missing job", func(t *testing.T) {
 		_, err := store.Get(ctx, "int-missing", "key")
 		if !errors.Is(err, ErrNotFound) {
-			t.Fatalf("Get(missing integration) error = %v, want ErrNotFound", err)
+			t.Fatalf("Get(missing job) error = %v, want ErrNotFound", err)
 		}
 	})
 }
@@ -173,7 +173,7 @@ func TestAllNamespacingAndDeterminism(t *testing.T) {
 		t.Errorf("All(int-a) = %v, want %v", got, wantA)
 	}
 
-	// Keys written for another integration must not leak.
+	// Keys written for another job must not leak.
 	gotB, err := store.All(ctx, "int-b")
 	if err != nil {
 		t.Fatalf("All(int-b) error = %v", err)
@@ -311,7 +311,7 @@ func TestDeleteAll(t *testing.T) {
 		t.Errorf("DeleteAll(int-a) leaked into int-b: got %v", gotB)
 	}
 
-	// Clearing an already-empty integration is a no-op, not an error.
+	// Clearing an already-empty job is a no-op, not an error.
 	removed, err = store.DeleteAll(ctx, "int-a")
 	if err != nil {
 		t.Fatalf("second DeleteAll(int-a) error = %v", err)

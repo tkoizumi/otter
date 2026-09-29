@@ -154,7 +154,7 @@ def _run_pending() -> None:
         _exit_now(1)
 
     # Success: fall through so the interpreter exits normally with status 0 and
-    # any handlers the integration registered still run.
+    # any handlers the job registered still run.
 
 
 def _invoke(fn: Any, ctx: Context) -> Any:
@@ -179,11 +179,11 @@ def _invoke(fn: Any, ctx: Context) -> Any:
 def _report_failure(ctx: Any, tb: str) -> None:
     """Log and print a traceback without ever raising."""
     stripped = tb.strip()
-    summary = stripped.splitlines()[-1] if stripped else "integration failed"
+    summary = stripped.splitlines()[-1] if stripped else "job failed"
     if ctx is not None:
         try:
             ctx.log.error(
-                "integration failed: %s" % summary,
+                "job failed: %s" % summary,
                 error=summary,
                 traceback=tb,
             )

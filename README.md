@@ -1,17 +1,26 @@
 # Otter
 
-> Otter is a lightweight runtime for running integration code anywhere.
+> A self-hosted runtime for stateful Python jobs.
 >
-> Write normal Python. Otter handles scheduling, retries, durable state, logs, and execution.
+> Run ordinary Python with persistent state, scheduling, retries, and versioned
+> releases. One binary, on your infrastructure.
 
-Otter is a single self-hosted binary that runs your Python integrations as
-child processes. It finds them on disk, triggers them on a schedule or on
-demand, keeps their state, retries their failures and records everything they
-print — using nothing but a local SQLite file and a Python interpreter.
+Otter manages the work around running Python: when a job starts, which release
+it runs, how many runs can overlap, what happens after a failure, and where its
+state and execution history live. Use it for data pipelines, scheduled reports,
+document processing, API-driven operations, or agents.
 
-It is deliberately **not** a visual workflow builder, not an iPaaS, and not a
-distributed workflow engine. Integration logic belongs in Python; Otter
-provides the runtime primitives that make it reliable.
+A **job** is a named Python program with a manifest and dependencies. A
+**release** is a versioned snapshot of that job. A **run** is one execution.
+The **runtime** is the Otter daemon that manages jobs and executes their runs.
+
+Otter runs each job as a child process, on demand, on a schedule, or in response
+to a webhook. It stores state, queued work, logs, and run history in local SQLite.
+Your code uses ordinary Python libraries and explicitly saves any progress it
+needs to resume on a later run.
+
+Install the binary on your laptop or server and use the Python interpreter
+already there, or let Otter prepare a managed Python environment for each job.
 
 ---
 
@@ -23,7 +32,7 @@ brew install tkoizumi/tap/otter
 
 Installs `otter` — the client, and the runtime for a project — and `otterd`,
 the same daemon with its own flag defaults. Python 3 is required on the machine
-that runs integrations, unless an integration opts into `python.mode: managed`,
+that runs jobs, unless a job opts into `python.mode: managed`,
 which prepares its own interpreter.
 
 To build from source instead, `make build` produces `./bin/otter` and
@@ -38,7 +47,7 @@ directory:
 ```bash
 brew install tkoizumi/tap/otter     # or a release tarball, or go install
 
-otter init my-project               # a workspace and one integration
+otter init my-project               # a workspace and one job
 cd my-project
 otter validate my-project
 otter release my-project            # stage and activate an immutable snapshot
@@ -52,7 +61,7 @@ otter stop
 `otter.env` and `otter.daemon.env` if they exist, and records where it listens
 in `.otter/serve/`. Every other command then finds that runtime on its own.
 
-`otter init` writes the smallest useful integration: a manifest, an entrypoint,
+`otter init` writes the smallest useful job: a manifest, an entrypoint,
 a pure-logic module and its test. Edit those files. A run executes the active
 release rather than the source tree, so an edit is not live until `otter
 release` has staged and activated a new snapshot.
@@ -63,9 +72,9 @@ the installed product.
 
 ---
 
-## What an integration looks like
+## What a job looks like
 
-An integration is a directory with a manifest and a Python entrypoint:
+A job is a directory with a manifest and a Python entrypoint:
 
 ```text
 salesforce-to-netsuite/
@@ -124,7 +133,7 @@ below.
 Point the daemon at the directory that contains it:
 
 ```bash
-./bin/otterd --integrations /opt/otter/integrations --data /var/lib/otter
+./bin/otterd --jobs /opt/otter/jobs --data /var/lib/otter
 ```
 
 Every `otter.yaml` under that root is discovered recursively, validated and
@@ -170,9 +179,9 @@ Available on the context:
 | `ctx.state.get(key, default=None)` | Read a JSON value; `default` when unset. |
 | `ctx.state.set(key, value)` | Persist any JSON-serialisable value. |
 | `ctx.state.delete(key)` | Remove a key; returns `True` if it existed. |
-| `ctx.state.all()` | Every key/value pair for this integration. |
+| `ctx.state.all()` | Every key/value pair for this job. |
 | `ctx.log.debug/info/warning/error(message, **fields)` | Structured log line, stored against the run. |
-| `ctx.run_id`, `ctx.integration_id` | Identifiers for the current run. |
+| `ctx.run_id`, `ctx.job_id` | Identifiers for the current run. |
 | `ctx.trigger.type` | `manual`, `cron` or `webhook`. |
 | `ctx.trigger.body`, `ctx.trigger.headers`, `ctx.trigger.header(name)` | The webhook payload, when there is one. |
 
@@ -198,7 +207,7 @@ trigger:
 ./bin/otter run salesforce-to-netsuite
 ```
 
-**Webhook** — opt in per integration:
+**Webhook** — opt in per job:
 
 ```yaml
 trigger:
@@ -224,7 +233,7 @@ gets a `401`.
 
 ## Reliability
 
-These are the behaviours that make an integration safe to leave running.
+These are the behaviours that make a job safe to leave running.
 
 **Timeouts.** `timeout: 300` sends `SIGTERM` to the process group, waits about
 five seconds, then sends `SIGKILL`. The run is marked `timed_out` and the retry
@@ -243,7 +252,7 @@ chain is auditable:
 ```console
 $ ./bin/otter run-status afd1b271-7e83-4bbc-a202-a7592fc0320d
 run id:        afd1b271-7e83-4bbc-a202-a7592fc0320d
-integration:   flaky
+job:   flaky
 status:        failed
 attempt:       1
 error:         process exited with code 1
@@ -255,7 +264,7 @@ attempts:
   8a6c3c9e-8cbe-4a23-a287-1f7a6cd5fa18  3        succeeded  13:16:25  103ms     -
 ```
 
-**Concurrency.** `concurrency: N` limits simultaneous runs of one integration;
+**Concurrency.** `concurrency: N` limits simultaneous runs of one job;
 extra triggers queue durably instead of piling up. `--workers N` caps total
 concurrent runs (default: CPU cores, capped at 8).
 
@@ -267,16 +276,15 @@ daemon refuses to start rather than serve with stranded work. State, run history
 and logs survive.
 
 **Graceful shutdown.** On `SIGTERM`/`SIGINT`, Otter stops the scheduler, stops
-claiming work, gives running integrations `--shutdown-grace` (default 15s) to
+claiming work, gives running jobs `--shutdown-grace` (default 15s) to
 finish, terminates what is left, records those runs as failed with `otter
 daemon shut down during execution` (retry policy applies), and closes SQLite
 cleanly.
 
-**Checkpointing.** Because state is durable and written by the integration
-itself, a crashed sync resumes instead of starting over. The bundled
-`customer-sync` example demonstrates it: it stores its progress after *every*
-customer, so a crash halfway through leaves the checkpoint exactly where it
-stopped.
+**Checkpointing.** A job can save progress in `ctx.state` and read it on the
+next run. After a failure, Otter starts a fresh process; your Python code uses
+the saved checkpoint to decide where to resume. Otter does not automatically
+restore Python execution at the point of failure.
 
 ---
 
@@ -285,7 +293,7 @@ stopped.
 A sync that must survive a crash is a pattern rather than a shipped example:
 persist a cursor in `ctx.state` and read it back on the next run, so a restart
 resumes instead of replaying. [docs/examples.md](docs/examples.md) shows the
-shape, and `otter state get <integration> <key>` inspects one from the CLI.
+shape, and `otter state get <job> <key>` inspects one from the CLI.
 
 ---
 
@@ -293,13 +301,13 @@ shape, and `otter state get <integration> <key>` inspects one from the CLI.
 
 ```bash
 otter status                            # daemon health, queue depth, run counts
-otter integrations [--all]              # integration names (--all includes invalid)
-otter reload                            # re-read integrations; no restart, running work continues
-otter pause [<integration>|.]           # suspend cron and webhook; manual runs still work
-otter resume [<integration>|.]          # re-arm the triggers a pause suspended
-otter inspect <integration>             # full manifest view, triggers, recent runs
-otter run [<integration>] [--body <json>] [--capture <policy>]  # queue a manual run; prints the run id
-otter runs [<integration>] [--all] [--status S] [--limit N]  # one integration, or --all
+otter jobs [--all]              # jobs with their id, status and path; --all adds invalid/retired
+otter reload                            # re-read jobs; no restart, running work continues
+otter pause [<job>|.]                   # suspend cron and webhook; manual runs still work
+otter resume [<job>|.]                  # re-arm the triggers a pause suspended
+otter inspect <job>                     # full manifest view, triggers, recent runs
+otter run [<job>] [--body <json>] [--capture <policy>]  # queue a manual run; prints the run id
+otter runs [<job>] [--all] [--status S] [--limit N]  # one job, or --all
 otter cancel <run-id>                   # stop a queued or running run; never retried
 otter run-status <run-id>               # one run plus its retry attempts
 otter logs <run-id> [--follow]          # captured output
@@ -307,39 +315,39 @@ otter requests <run-id>                 # captured outgoing HTTP requests
 otter request <request-id>              # one exchange; its run is resolved for you
 otter request <run-id> <request-id>     # one exchange, when the id needs disambiguating
 otter trace <run-id>                    # one finished attempt: context, output and HTTP in time order
-otter state get <integration> <key>
-otter state set <integration> <key> <json>
-otter state delete <integration> <key>
-otter init [name]                       # scaffold a workspace and one integration
+otter state get <job> <key>
+otter state set <job> <key> <json>
+otter state delete <job> <key>
+otter init [name]                       # scaffold a workspace and one job
 otter validate <otter.yaml|dir|name>    # validate without a running daemon
 otter start [--detach]                  # this project's runtime, free port, env loaded
 otter stop                              # stop the runtime serving this project
 otter serve                             # the daemon with the daemon's own flag defaults
 otter deploy --host <user@host>         # install or update a runtime over SSH
 otter deploy --status                   # what this project last deployed
-otter prepare [<integration>]           # prepare opt-in managed Python environments
-otter release [<integration>|.] [--all] # stage and activate an immutable release
-otter release --list <integration>      # staged releases, newest first
-otter release --list --all               # every integration with a release, and every one without
-otter release --list --all --prune --apply  # remove release data left by an unregistered integration
-otter release --activate <digest> <integration>  # roll back to a staged release
+otter prepare [<job>]                   # prepare opt-in managed Python environments
+otter release [<job>|.] [--all]         # stage and activate an immutable release
+otter release --list <job>              # staged releases, newest first
+otter release --list --all              # every job with a release, and every one without
+otter release --list --all --prune --apply  # remove release data left by a job that is no longer registered
+otter release --activate <digest> <job>  # roll back to a staged release
 ```
 
 Runs record their outgoing HTTP by default -- sanitized headers and bounded JSON
 bodies included -- because capture observes live traffic and cannot be turned on
-after an unattended failure. An integration opts down in its own manifest
+after an unattended failure. A job opts down in its own manifest
 (`capture: off` or `capture: metadata`), and `--capture-default` lowers the
 default for a whole deployment; `--capture` on `otter run` overrides one run.
 `otter requests` and `otter request` read the recording back without any logging
-in the integration. Capture covers `urllib` always, and `requests` and `httpx`
+in the job. Capture covers `urllib` always, and `requests` and `httpx`
 (both sync and async) when the run's interpreter has them installed; each
 recording reports the adapters it actually had. See
 [docs/http-capture.md](docs/http-capture.md) for precedence, coverage, redaction,
 limits and retention.
 
-`otter runs` always names its scope: `<integration>` takes the same reference as
-every other integration verb (a manifest name, a directory, or `id:<id>`), and
-with no argument the integration in the working directory is used. A
+`otter runs` always names its scope: `<job>` takes the same reference as
+every other job verb (a manifest name, a directory, or `id:<id>`), and
+with no argument the job in the working directory is used. A
 workspace-wide listing is asked for explicitly with `--all`, never inferred.
 
 `otter logs` and `otter requests` each show one slice of an attempt, so reading
@@ -367,7 +375,7 @@ A failed attempt reads as one page, with the payload command spelled out:
 
 ```console
 $ ./bin/otter trace 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
-integration: orders-sync   status: failed   attempt: 1
+job: orders-sync   status: failed   attempt: 1
 release: 8c1d4f0a9b3e   trigger: manual   duration: 41ms
 error: process exited with code 1
 retry context: otter run-status 3f2a91c4-7d18-4a6e-8b21-5c0d9e4a17bb
@@ -386,24 +394,24 @@ TIME      KIND       DETAIL
                          otter request 3f2a91c4-... 87603b35e60c4dae9f57040b15e24ab3
 ```
 
-A run executes the integration's active release, so `otter release` is required
-before an integration can run at all -- external and managed Python alike. With
-no argument it releases the integration in the working directory. What managed
+A run executes the job's active release, so `otter release` is required
+before a job can run at all -- external and managed Python alike. With
+no argument it releases the job in the working directory. What managed
 mode adds is the other half: a prepared interpreter and locked dependencies, so
 it does not depend on the host's Python. See
 [docs/managed-python.md](docs/managed-python.md).
 
-A release places the integration and every shared tree it imports relative to one
-base: the closest common ancestor of the integrations discovery root, the
-integration and each captured tree. That is what lets a manifest keep
+A release places the job and every shared tree it imports relative to one
+base: the closest common ancestor of the job discovery root, the
+job and each captured tree. That is what lets a manifest keep
 `python.path` verbatim -- including `otter deploy`, which stages each
-integration at `<remote>/integrations/<name>` and every declared tree at the
+job at `<remote>/jobs/<name>` and every declared tree at the
 relative depth the manifest names from there. The placement and each tree's
 destination name are part
 of the release digest, so a snapshot laid out differently is never reused; a
 release that cannot capture a declared tree (missing, absolute, or reachable
 only through an escaping symlink) is refused instead of shipped. Every
-integration must be released once after upgrading Otter: the digest format is
+job must be released once after upgrading Otter: the digest format is
 versioned and old snapshots are left on disk until retention prunes them, so a
 rollback across the upgrade still works.
 
@@ -411,16 +419,16 @@ Global flags: `--api <url>`, `--token <token>`, `--json`, `--version`.
 
 Without `--api` or `OTTER_API_URL`, the daemon URL is read from the nearest
 `.otter/serve/listen.url`, walking up from the working directory. That is what
-makes `otter run <integration>` work in a project whose runtime is not on the
+makes `otter run <job>` work in a project whose runtime is not on the
 default port, with nothing to export and no wrapper script to remember.
 
-An integration is named by the `name` in its manifest, or by the path that holds
-that manifest. Standing in an integration, `otter run .` runs it and `otter run`
+A job is named by the `name` in its manifest, or by the path that holds
+that manifest. Standing in a job directory, `otter run .` runs it and `otter run`
 with no argument does the same; `otter inspect .` works too, and `otter release`
 and `otter prepare` accept the same references. The name is read from
 `otter.yaml`, so the directory name does not have to match.
 
-`otter integrations`, `otter run` and `otter state get` print machine-friendly
+`otter jobs --json`, `otter run` and `otter state get` print machine-friendly
 output so they compose in scripts:
 
 ```bash
@@ -433,7 +441,7 @@ otter logs "$(otter run counter)" --follow
 
 ```bash
 otterd \
-  --integrations /opt/otter/integrations \
+  --jobs /opt/otter/jobs \
   --data /var/lib/otter \
   --listen 127.0.0.1:7337 \
   --workers 8
@@ -441,14 +449,14 @@ otterd \
 
 | Flag | Environment | Default | Purpose |
 | --- | --- | --- | --- |
-| `--integrations` | `OTTER_INTEGRATIONS_DIR` | `./integrations` | Root scanned recursively for `otter.yaml`. |
+| `--jobs` | `OTTER_JOBS_DIR` | `./jobs` | Root scanned recursively for `otter.yaml`. |
 | `--data` | `OTTER_DATA_DIR` | `./tmp` | Holds `otter.db` and the extracted SDK. |
 | `--listen` | `OTTER_LISTEN` | `127.0.0.1:7337` | HTTP API address. |
 | `--workers` | `OTTER_WORKERS` | CPU cores, max 8 | Maximum concurrent runs. |
 | `--api-token` | `OTTER_API_TOKEN` | *(none)* | Bearer token; **required** for non-loopback binding. |
 | `--log-format` | `OTTER_LOG_FORMAT` | `json` | `json` or `pretty`. |
 | `--log-level` | `OTTER_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
-| `--shutdown-grace` | `OTTER_SHUTDOWN_GRACE` | `15s` | Time running integrations get on shutdown. |
+| `--shutdown-grace` | `OTTER_SHUTDOWN_GRACE` | `15s` | Time running jobs get on shutdown. |
 | `--allow-incomplete-recovery` | `OTTER_ALLOW_INCOMPLETE_RECOVERY` | `false` | Start even when crash recovery or queue reconciliation fails; affected runs may stay stranded. |
 | `--sdk-path` | `OTTER_SDK_PATH` | *(embedded)* | Override the directory put on the child `PYTHONPATH`. |
 | `--capture-default` | `OTTER_CAPTURE_DEFAULT` | `full` | HTTP capture for runs that do not choose one: `off`, `metadata`, `full`. |
@@ -460,7 +468,7 @@ otterd \
 The daemon logs structured JSON to stdout by default:
 
 ```json
-{"event":"run_succeeded","exit_code":0,"integration":"counter","level":"info","run_id":"...","timestamp":"..."}
+{"event":"run_succeeded","exit_code":0,"job":"counter","level":"info","run_id":"...","timestamp":"..."}
 ```
 
 Use `--log-format pretty` during development.
@@ -478,13 +486,13 @@ secrets:
 If one is missing, the run fails before Python starts and is not retried:
 
 ```text
-integration shopify-to-erp requires secrets that are not available: SHOPIFY_TOKEN
+job shopify-to-erp requires secrets that are not available: SHOPIFY_TOKEN
 ```
 
 `env` values may reference the daemon environment or a resolved secret with
 `${VAR}`. The daemon's own `OTTER_API_TOKEN` is stripped from the child
 environment, and each child receives a short-lived token scoped to its own run
-and integration only.
+and job only.
 
 The internal `SecretProvider` interface is the seam for AWS Secrets Manager,
 Vault, 1Password or a control plane later; today only the environment provider
@@ -498,10 +506,10 @@ The daemon listens on `127.0.0.1:7337` by default.
 
 ```text
 GET    /health
-GET    /v1/integrations
-GET    /v1/integrations/{id}
-POST   /v1/integrations/{id}/runs   ?capture=off|metadata|full
-GET    /v1/runs                     ?integration_id=&status=&limit=&offset=
+GET    /v1/jobs
+GET    /v1/jobs/{id}
+POST   /v1/jobs/{id}/runs   ?capture=off|metadata|full
+GET    /v1/runs                     ?job_id=&status=&limit=&offset=
 GET    /v1/runs/{id}
 GET    /v1/runs/{id}/logs           ?after_id=&limit=
 POST   /v1/runs/{id}/logs
@@ -510,18 +518,18 @@ GET    /v1/runs/{id}/requests       ?after_id=&limit=
 GET    /v1/runs/{id}/requests/{request_id}
 GET    /v1/requests/{request_id}
 POST   /v1/runs/{id}/cancel
-GET    /v1/integrations/{id}/state
-GET    /v1/integrations/{id}/state/{key}
-PUT    /v1/integrations/{id}/state/{key}
-DELETE /v1/integrations/{id}/state/{key}
-POST   /v1/hooks/{integration}
+GET    /v1/jobs/{id}/state
+GET    /v1/jobs/{id}/state/{key}
+PUT    /v1/jobs/{id}/state/{key}
+DELETE /v1/jobs/{id}/state/{key}
+POST   /v1/hooks/{job}
 ```
 
 Loopback binding needs no token. Binding elsewhere requires
 `OTTER_API_TOKEN`, and the daemon refuses to start without it:
 
 ```bash
-curl -H "Authorization: Bearer $OTTER_API_TOKEN" http://127.0.0.1:7337/v1/integrations
+curl -H "Authorization: Bearer $OTTER_API_TOKEN" http://127.0.0.1:7337/v1/jobs
 ```
 
 See [docs/api-reference.md](docs/api-reference.md) for request and response
@@ -537,7 +545,7 @@ tooling — if you can `ssh` to it, you can deploy to it.
 
 Run it from your project. The nearest directory holding `.otter`, `.git` or
 `go.mod` is the project root, and it is scanned recursively for `otter.yaml`,
-so integrations may be nested and grouped however you like:
+so jobs may be nested and grouped however you like:
 
 ```bash
 otter deploy --host root@203.0.113.10     # install or update
@@ -549,7 +557,7 @@ otter deploy --host droplet --destroy     # stop and remove it
 It detects the remote architecture, obtains both binaries for it — compiled from
 your source when the project is a Go checkout, otherwise fetched from the
 matching published release and verified against its checksums — syncs every
-discovered integration and the shared trees their manifests declare, writes the
+discovered job and the shared trees their manifests declare, writes the
 systemd unit and the secrets files (over SSH stdin, never argv), restarts the
 service and waits for its health endpoint. Run it twice and the second run is a
 no-op; your data directory is never touched, so run history and sync watermarks
@@ -563,8 +571,8 @@ otter runs --all --limit 10
 
 `--source <checkout>` compiles from a runtime checkout, `--build` forces a
 compile from the project itself, and `--binaries <dir>` uses executables you
-supply (the offline path). To ship one integration and leave the rest of the
-host alone, pass `--integration <name>`.
+supply (the offline path). To ship one job and leave the rest of the
+host alone, pass `--job <name>`.
 
 **One host holds many workspaces.** Each project you deploy gets its own
 directory under `/opt/otter/workspaces/<name>`, its own systemd unit, its own
@@ -592,7 +600,7 @@ By hand, one workspace is one systemd unit:
 
 ```ini
 [Unit]
-Description=Otter integration runtime
+Description=Otter job runtime
 After=network.target
 
 [Service]
@@ -600,7 +608,7 @@ User=otter
 WorkingDirectory=/opt/otter/workspaces/examples
 EnvironmentFile=-/etc/otter/workspaces/examples.env
 ExecStart=/opt/otter/workspaces/examples/bin/otterd \
-  --integrations /opt/otter/workspaces/examples/integrations \
+  --jobs /opt/otter/workspaces/examples/jobs \
   --data /opt/otter/workspaces/examples/.otter/data \
   --listen 127.0.0.1:7337
 Restart=always
@@ -619,10 +627,10 @@ retention, upgrades and troubleshooting.
 
 ## Security
 
-> An Otter integration executes with the operating-system permissions of the
-> Otter worker process. Otter does not sandbox integrations in the MVP.
+> An Otter job executes with the operating-system permissions of the
+> Otter worker process. Otter does not sandbox jobs in the MVP.
 
-Integrations are trusted code supplied by the operator. Run the daemon as a
+Jobs are trusted code supplied by the operator. Run the daemon as a
 dedicated unprivileged user, keep the API on loopback, and use containers,
 dedicated users or separate machines when isolation is required. Details and a
 hardening checklist are in [docs/security.md](docs/security.md).
@@ -631,8 +639,8 @@ hardening checklist are in [docs/security.md](docs/security.md).
 
 ## Repository layout
 
-This repository is the runtime. It contains no vendor code and no integration of
-its own; a user's integrations live in the user's project, and `otter init`
+This repository is the runtime. It contains no vendor code and no job of
+its own; a user's jobs live in the user's project, and `otter init`
 generates them.
 
 ```
@@ -647,7 +655,7 @@ generates them.
 │   ├── database/       SQLite connection and migrations
 │   ├── deploy/         `otter deploy`: SSH converge, systemd unit, secrets
 │   ├── executor/       child process execution, timeout, cancellation
-│   ├── identity/       durable integration identity and its registry
+│   ├── identity/       durable job identity and its registry
 │   ├── logging/        structured daemon logs
 │   ├── pyenv/          managed Python environments
 │   ├── queue/          durable run queue and atomic claiming
@@ -656,17 +664,17 @@ generates them.
 │   ├── runs/           run history and captured logs
 │   ├── scheduler/      cron registration
 │   ├── secrets/        SecretProvider and the environment provider
-│   └── state/          durable per-integration key/value state
+│   └── state/          durable per-job key/value state
 ├── migrations/         embedded SQL schema
 ├── sdk/python/otter/   the Python SDK (embedded into the daemon binary)
 ├── scripts/smoke.sh    the end-to-end contributor smoke workflow
 └── docs/
 ```
 
-Shared Python that several of *your* integrations use belongs in your project,
-not here: an integration declares it with `python.path` and `otter release`
-captures those trees beside the integration so relative imports keep resolving.
-Vendor clients, mappings and real integrations belong in separate projects — the
+Shared Python that several of *your* jobs use belongs in your project,
+not here: a job declares it with `python.path` and `otter release`
+captures those trees beside the job so relative imports keep resolving.
+Vendor clients, mappings and real jobs belong in separate projects — the
 daemon stays small and the clients stay yours to read, fork and version.
 
 The runtime is a single process with a durable SQLite queue underneath it. Read
@@ -762,5 +770,5 @@ distributed scheduler, no Kubernetes operator, no browser UI, no cloud control
 plane, no multi-tenant SaaS, no object storage, no arbitrary-language support.
 
 The test for adding a primitive is simple: does almost every reliable
-integration need it? If it is specific to a vendor, a workflow or a UI, it
+job need it? If it is specific to a vendor, a workflow or a UI, it
 belongs outside the runtime.

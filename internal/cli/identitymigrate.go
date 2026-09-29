@@ -2,12 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/tkoizumi/otter/internal/config"
@@ -27,8 +25,6 @@ func (a *App) cmdIdentity(ctx context.Context, args []string) int {
 	switch args[0] {
 	case "migrate":
 		return a.cmdIdentityMigrate(ctx, args[1:])
-	case "list":
-		return a.cmdIdentityList(ctx, args[1:])
 	default:
 		fmt.Fprintf(a.Stderr, "otter: unknown identity subcommand %q\n", args[0])
 		return 2
@@ -52,7 +48,7 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 func (a *App) cmdIdentityMigrate(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("identity migrate", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	integrations := fs.String("integrations", config.DefaultIntegrations, "integrations root (default: this workspace)")
+	jobs := fs.String("jobs", config.DefaultJobs, "jobs root (default: this workspace)")
 	data := fs.String("data", "", "Otter data directory (default: the workspace's)")
 	apply := fs.Bool("apply", false, "write markers and the registry; without it the command only reports")
 	var assigns stringList
@@ -78,7 +74,7 @@ func (a *App) cmdIdentityMigrate(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	integrationsRoot, code := resolveIntegrationsRoot(a.Stderr, *integrations, flagWasSet(fs, "integrations"))
+	jobsRoot, code := resolveJobsRoot(a.Stderr, *jobs, flagWasSet(fs, "jobs"))
 	if code != 0 {
 		return code
 	}
@@ -120,7 +116,7 @@ func (a *App) cmdIdentityMigrate(ctx context.Context, args []string) int {
 	}
 
 	store := identity.NewStore(db.DB)
-	service := identity.NewService(store, integrationsRoot)
+	service := identity.NewService(store, jobsRoot)
 
 	done, err := store.BootstrapComplete(ctx)
 	if err != nil {
@@ -148,7 +144,7 @@ func (a *App) cmdIdentityMigrate(ctx context.Context, args []string) int {
 		return 0
 	}
 
-	scan, err := config.Observe(integrationsRoot, nil)
+	scan, err := config.Observe(jobsRoot, nil)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 1
@@ -199,13 +195,13 @@ func (a *App) cmdIdentityMigrate(ctx context.Context, args []string) int {
 	// trustworthy: a release records the tree it was staged from, and if that
 	// is the directory the operator decided against, running it would execute
 	// the wrong code against the chosen tree's state. Disable it without
-	// destroying the snapshot, so the integration refuses to run until it is
+	// destroying the snapshot, so the job refuses to run until it is
 	// released again.
 	if n := a.quarantineMismatchedReleases(ctx, db, dataDir, result.Assigned); n > 0 {
 		fmt.Fprintf(a.Stdout, "quarantined %d release(s) whose provenance does not match the chosen owner\n", n)
 	}
 
-	fmt.Fprintln(a.Stdout, "bootstrap complete: start the runtime to register the remaining integrations")
+	fmt.Fprintln(a.Stdout, "bootstrap complete: start the runtime to register the remaining jobs")
 	return 0
 }
 
@@ -253,110 +249,4 @@ func (a *App) quarantineMismatchedReleases(ctx context.Context, db *database.DB,
 		}
 	}
 	return quarantined
-}
-
-// cmdIdentityList prints the registry's active registrations.
-//
-// It reads the registry directly rather than asking the daemon, so it works on
-// a host whose runtime is stopped -- which is exactly when a deployment needs
-// to record the destination identities it just registered. Reads are safe
-// without the data lock; only mutation needs it.
-func (a *App) cmdIdentityList(ctx context.Context, args []string) int {
-	fs := flag.NewFlagSet("identity list", flag.ContinueOnError)
-	fs.SetOutput(a.Stderr)
-	integrations := fs.String("integrations", config.DefaultIntegrations, "integrations root")
-	data := fs.String("data", "", "Otter data directory")
-	asJSON := fs.Bool("json", false, "emit JSON instead of a table")
-	all := fs.Bool("all", false, "include retired and deleted identities")
-	fs.Usage = func() {
-		fmt.Fprintln(a.Stderr, "Usage: otter identity list [--json] [--all] [--integrations DIR] [--data DIR]")
-	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter identity list [--json] [--all] [--integrations DIR] [--data DIR]")
-		return 2
-	}
-
-	integrationsRoot, code := resolveIntegrationsRoot(a.Stderr, *integrations, flagWasSet(fs, "integrations"))
-	if code != 0 {
-		return code
-	}
-	dataDir, code := resolveWorkspaceData(a.Stderr, *data, flagWasSet(fs, "data"))
-	if code != 0 {
-		return code
-	}
-
-	db, err := database.Open(ctx, dataDir)
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
-		return 1
-	}
-	defer func() { _ = db.Close() }()
-	if err := database.Migrate(ctx, db); err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
-		return 1
-	}
-
-	store := identity.NewStore(db.DB)
-	instances, err := store.Instances(ctx)
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
-		return 1
-	}
-
-	type row struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		Path       string `json:"path"`
-		Status     string `json:"status"`
-		Generation int64  `json:"generation"`
-	}
-	rows := make([]row, 0, len(instances))
-	for _, inst := range instances {
-		// An active-only listing answers "what is running"; --all answers
-		// "what was ever registered", which is what a purge needs.
-		if !*all && inst.Status != identity.StatusActive {
-			continue
-		}
-		rows = append(rows, row{
-			ID: inst.ID.String(), Name: inst.Name, Path: inst.CanonicalPath,
-			Status: string(inst.Status), Generation: inst.Generation,
-		})
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Path < rows[j].Path })
-
-	if *asJSON {
-		encoded, err := json.Marshal(rows)
-		if err != nil {
-			fmt.Fprintf(a.Stderr, "otter: %v\n", err)
-			return 1
-		}
-		fmt.Fprintln(a.Stdout, string(encoded))
-		return 0
-	}
-	if len(rows) == 0 {
-		fmt.Fprintln(a.Stderr, "otter: no registered integrations")
-		return 1
-	}
-	// Widths follow the data so a long label never collides with the id.
-	nameWidth, idWidth := len("NAME"), len("ID")
-	for _, r := range rows {
-		if len(r.Name) > nameWidth {
-			nameWidth = len(r.Name)
-		}
-		if len(r.ID) > idWidth {
-			idWidth = len(r.ID)
-		}
-	}
-	fmt.Fprintf(a.Stdout, "%-*s  %-*s  %-10s  %s\n", nameWidth, "NAME", idWidth, "ID", "STATUS", "PATH")
-	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "%-*s  %-*s  %-10s  %s\n", nameWidth, r.Name, idWidth, r.ID, r.Status, r.Path)
-	}
-	_ = integrationsRoot
-	return 0
 }

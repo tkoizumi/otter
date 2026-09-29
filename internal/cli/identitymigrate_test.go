@@ -19,7 +19,7 @@ import (
 )
 
 // seedLegacyWorkspace builds a workspace the way the previous model left it:
-// an integration on disk and durable rows keyed by manifest name.
+// a job on disk and durable rows keyed by manifest name.
 func seedLegacyWorkspace(t *testing.T) (root, dir, dataDir string) {
 	t.Helper()
 
@@ -32,7 +32,7 @@ func seedLegacyWorkspace(t *testing.T) (root, dir, dataDir string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeIntegrationFixture(t, dir, "counter", "print('ok')\n")
+	writeJobFixture(t, dir, "counter", "print('ok')\n")
 
 	ctx := context.Background()
 	db, err := database.Open(ctx, dataDir)
@@ -44,7 +44,7 @@ func seedLegacyWorkspace(t *testing.T) (root, dir, dataDir string) {
 		t.Fatalf("migrate legacy database: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO integration_state (integration_id, key, value, updated_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO job_state (job_id, key, value, updated_at) VALUES (?, ?, ?, ?)`,
 		"counter", "count", "60", database.FormatTime(time.Now().UTC())); err != nil {
 		t.Fatalf("seed legacy state: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestIdentityMigrateMovesLegacyStateAndTheDaemonServesIt(t *testing.T) {
 
 	ctx := context.Background()
 	cfg := config.DefaultDaemonConfig("test")
-	cfg.IntegrationsDir = root
+	cfg.JobsDir = root
 	cfg.DataDir = dataDir
 	cfg.Workers = 1
 	cfg.LogLevel = "error"
@@ -156,7 +156,7 @@ func TestIdentityMigrateRefusesACollisionWithoutAnOwner(t *testing.T) {
 	if err := os.MkdirAll(second, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeIntegrationFixture(t, second, "counter", "print('copy')\n")
+	writeJobFixture(t, second, "counter", "print('copy')\n")
 
 	_, stderr, code := otterIn(t, root, "identity", "migrate", "--apply")
 	if code == 0 {
@@ -207,7 +207,7 @@ func TestIdentityMigrateQuarantinesAMismatchedRelease(t *testing.T) {
 	if err := os.MkdirAll(losing, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeIntegrationFixture(t, losing, "counter", "print('copy')\n")
+	writeJobFixture(t, losing, "counter", "print('copy')\n")
 
 	// Stage and activate a release for the legacy name from the losing
 	// directory, the way the incident did.
@@ -234,7 +234,7 @@ func TestIdentityMigrateQuarantinesAMismatchedRelease(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := seed.ExecContext(ctx,
-		`INSERT INTO runs (id, integration_id, trigger_type, status, attempt, created_at, release_digest)
+		`INSERT INTO runs (id, job_id, trigger_type, status, attempt, created_at, release_digest)
 		 VALUES ('pinned', 'counter', 'manual', 'queued', 1, ?, ?)`,
 		database.FormatTime(time.Now().UTC()), meta.Digest); err != nil {
 		t.Fatalf("seed pinned run: %v", err)

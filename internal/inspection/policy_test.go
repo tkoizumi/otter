@@ -44,7 +44,7 @@ func TestParsePolicyOverride(t *testing.T) {
 }
 
 // An override and a default answer different questions: an empty override means
-// "no opinion" so the integration and deployment defaults can be consulted,
+// "no opinion" so the job and deployment defaults can be consulted,
 // while an empty default means full.
 func TestParsePolicyOverrideIsNotTheDefault(t *testing.T) {
 	override, err := ParsePolicyOverride("")

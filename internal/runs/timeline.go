@@ -45,22 +45,22 @@ const (
 // must not travel through the timeline response or its cursor. A projection also
 // means a field added to Run later cannot silently appear here.
 type TimelineRun struct {
-	ID                    string
-	IntegrationID         string
-	IntegrationName       string
-	Status                Status
-	Attempt               int
-	ParentRunID           *string
-	TriggerType           string
-	Error                 *string
-	ExitCode              *int
-	ReleaseDigest         string
-	CreatedAt             time.Time
-	StartedAt             *time.Time
-	FinishedAt            *time.Time
-	CapturePolicy         string
-	EnvironmentDigest     string
-	IntegrationGeneration int64
+	ID                string
+	JobID             string
+	JobName           string
+	Status            Status
+	Attempt           int
+	ParentRunID       *string
+	TriggerType       string
+	Error             *string
+	ExitCode          *int
+	ReleaseDigest     string
+	CreatedAt         time.Time
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	CapturePolicy     string
+	EnvironmentDigest string
+	JobGeneration     int64
 }
 
 // TimelineRunTx reads the timeline projection for one run inside a caller's
@@ -81,11 +81,11 @@ func (s *Store) TimelineRunTx(ctx context.Context, tx *sql.Tx, runID string) (*T
 		generation sql.NullInt64
 	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT id, integration_id, integration_name, status, attempt, parent_run_id,
+		`SELECT id, job_id, job_name, status, attempt, parent_run_id,
 		        trigger_type, error, exit_code, release_digest, created_at, started_at,
-		        finished_at, capture_policy, environment_digest, integration_generation
+		        finished_at, capture_policy, environment_digest, job_generation
 		   FROM runs WHERE id = ?`, runID).
-		Scan(&r.ID, &r.IntegrationID, &r.IntegrationName, &status, &r.Attempt, &parent,
+		Scan(&r.ID, &r.JobID, &r.JobName, &status, &r.Attempt, &parent,
 			&r.TriggerType, &errMsg, &exitCode, &r.ReleaseDigest, &created, &started,
 			&finished, &r.CapturePolicy, &r.EnvironmentDigest, &generation)
 	if err != nil {
@@ -120,7 +120,7 @@ func (s *Store) TimelineRunTx(ctx context.Context, tx *sql.Tx, runID string) (*T
 		r.FinishedAt = &value
 	}
 	if generation.Valid {
-		r.IntegrationGeneration = generation.Int64
+		r.JobGeneration = generation.Int64
 	}
 	return &r, nil
 }
@@ -144,7 +144,7 @@ type LogEvidence struct {
 //
 // The pair detects every mutation the log store can perform: appending raises
 // MaxID, and the only deletion paths (DeleteForRun, DeleteOlderThan and the
-// per-integration cascade) remove whole rows, moving MinID or clearing both.
+// per-job cascade) remove whole rows, moving MinID or clearing both.
 // Log rows are never updated. An in-place edit of a row, or any external write
 // to the database, is outside what this revision claims to detect.
 func (s *LogStore) LogEvidenceTx(ctx context.Context, tx *sql.Tx, runID string) (LogEvidence, error) {

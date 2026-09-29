@@ -21,12 +21,13 @@ import (
 
 // WorkspaceRecord is what the host remembers about one workspace.
 type WorkspaceRecord struct {
-	ID        string    `json:"id"`
-	Slug      string    `json:"slug"`
-	Name      string    `json:"name"`
-	Unit      string    `json:"unit"`
-	Listen    string    `json:"listen"`
-	CreatedAt time.Time `json:"created_at"`
+	JobsLayout string    `json:"jobs_layout,omitempty"`
+	ID         string    `json:"id"`
+	Slug       string    `json:"slug"`
+	Name       string    `json:"name"`
+	Unit       string    `json:"unit"`
+	Listen     string    `json:"listen"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // workspacePortsMarker separates the records from the list of ports in use.
@@ -168,6 +169,7 @@ func SelectWorkspace(t Target, records []WorkspaceRecord, listening []int, reque
 // withListenPort gives the target the next free loopback port unless one was
 // named, then completes the paths that follow from the workspace name.
 func withListenPort(t Target, records []WorkspaceRecord, listening []int) Target {
+	t.JobsLayout = LocalJobsDir
 	if strings.TrimSpace(t.Listen) == "" {
 		t.Listen = net.JoinHostPort(DefaultListenHost, strconv.Itoa(NextListenPort(records, listening)))
 	}
@@ -184,6 +186,11 @@ func adoptWorkspace(t Target, rec WorkspaceRecord) Target {
 	dataWasDefault := t.DataDir == "" || t.DataDir == filepath.Join(t.WorkspaceDir(), StateDirName, "data")
 	serviceWasDefault := t.ServiceName == "" || t.ServiceName == DefaultServicePrefix+"-"+t.WorkspaceName()
 
+	t.JobsLayout = rec.JobsLayout
+	if t.JobsLayout == "" {
+		// Records written before the rename always used this directory.
+		t.JobsLayout = "integrations"
+	}
 	t.WorkspaceID = rec.ID
 	t.WorkspaceSlug = rec.Slug
 	// The recorded name wins outright: it names a directory, a unit and an
@@ -224,12 +231,13 @@ func matchWorkspace(records []WorkspaceRecord, requested string) (WorkspaceRecor
 // RecordFor renders the record a target should have on the host.
 func RecordFor(t Target, created time.Time) WorkspaceRecord {
 	return WorkspaceRecord{
-		ID:        t.WorkspaceID,
-		Slug:      t.WorkspaceSlug,
-		Name:      t.WorkspaceName(),
-		Unit:      t.ServiceName,
-		Listen:    t.Listen,
-		CreatedAt: created,
+		JobsLayout: t.jobsLayout(),
+		ID:         t.WorkspaceID,
+		Slug:       t.WorkspaceSlug,
+		Name:       t.WorkspaceName(),
+		Unit:       t.ServiceName,
+		Listen:     t.Listen,
+		CreatedAt:  created,
 	}
 }
 

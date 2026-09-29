@@ -20,7 +20,7 @@ layout, backups, retention, upgrades, tuning and troubleshooting.
 | Target | Notes |
 | --- | --- |
 | Linux VM / EC2 | The primary target. One static binary, one directory, systemd. |
-| Raspberry Pi (arm64/armv7) | Cross-compiled with `make cross`; fine for a handful of integrations. |
+| Raspberry Pi (arm64/armv7) | Cross-compiled with `make cross`; fine for a handful of jobs. |
 
 Otter has no external service dependencies: no database server, no broker, no
 shared filesystem. A host needs a Python 3 interpreter, a writable data
@@ -48,7 +48,7 @@ Create the service account and directories:
 sudo useradd --system --create-home --home-dir /var/lib/otter --shell /usr/sbin/nologin otter
 sudo install -d -o otter -g otter -m 0700 /var/lib/otter
 sudo install -d -o root  -g otter -m 0750 /etc/otter
-sudo install -d -o otter -g otter -m 0750 /srv/otter/integrations
+sudo install -d -o otter -g otter -m 0750 /srv/otter/jobs
 ```
 
 Check that the interpreter is visible to the service user (see
@@ -61,19 +61,19 @@ sudo -u otter python3 --version
 Validate manifests before you start the daemon:
 
 ```bash
-otter validate /srv/otter/integrations/*/otter.yaml
+otter validate /srv/otter/jobs/*/otter.yaml
 ```
 
 Start the daemon in the foreground once to confirm discovery:
 
 ```bash
 sudo -u otter otterd \
-  --integrations /srv/otter/integrations \
+  --jobs /srv/otter/jobs \
   --data /var/lib/otter \
   --log-format pretty
 ```
 
-You should see one `integration_registered` line per valid integration and an
+You should see one `job_registered` line per valid job and an
 `http_listening` line for `127.0.0.1:7337`. Ctrl-C stops it gracefully.
 
 ## systemd unit
@@ -82,7 +82,7 @@ You should see one `integration_registered` line per valid integration and an
 
 ```bash
 # /etc/otter/otter.env — mode 0600, owner otter
-OTTER_INTEGRATIONS_DIR=/srv/otter/integrations
+OTTER_JOBS_DIR=/srv/otter/jobs
 OTTER_DATA_DIR=/var/lib/otter
 OTTER_LISTEN=127.0.0.1:7337
 OTTER_LOG_FORMAT=json
@@ -98,7 +98,7 @@ OTTER_SHUTDOWN_GRACE=30s
 # Uncomment only to bring the daemon up anyway while diagnosing that.
 #OTTER_ALLOW_INCOMPLETE_RECOVERY=true
 
-# Integration secrets, referenced by name from otter.yaml `secrets:`.
+# Job secrets, referenced by name from otter.yaml `secrets:`.
 SHOPIFY_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxx
 ERP_TOKEN=erp_xxxxxxxxxxxxxxxxxxxx
 ```
@@ -111,7 +111,7 @@ sudo install -o otter -g otter -m 0600 /dev/null /etc/otter/otter.env   # then e
 
 ```ini
 [Unit]
-Description=Otter integration runtime
+Description=Otter job runtime
 Documentation=https://github.com/tkoizumi/otter/blob/main/docs/operations.md
 After=network-online.target
 Wants=network-online.target
@@ -151,8 +151,8 @@ WantedBy=multi-user.target
 ```
 
 > `ProtectSystem=strict` makes the whole filesystem read-only except
-> `ReadWritePaths`. Add every directory an integration writes to (for example
-> its own scratch space) to `ReadWritePaths`, or the integration will fail with
+> `ReadWritePaths`. Add every directory a job writes to (for example
+> its own scratch space) to `ReadWritePaths`, or the job will fail with
 > `Permission denied`.
 
 Enable and start:
@@ -188,15 +188,15 @@ Use the same systemd setup as a VM, but tune for the hardware:
 - `timeout` values matter more than on a server: a run that is merely slow on a
   Pi will be killed and retried if the timeout is tuned for server hardware.
 - Power loss is common on a Pi. WAL mode plus a journaling filesystem protects
-  the database, but anything an integration does outside SQLite (a half-written
-  file) is the integration's problem. Checkpoint from state rather than from
+  the database, but anything a job does outside SQLite (a half-written
+  file) is the job's problem. Checkpoint from state rather than from
   side effects.
 
 ## Data directory layout
 
 ```
 /var/lib/otter/
-├── otter.db          # the only durable state: integrations, runs, logs, queue, tokens
+├── otter.db          # the only durable state: jobs, runs, logs, queue, tokens
 ├── otter.db-wal      # write-ahead log (transient, checkpointed on clean shutdown)
 ├── otter.db-shm      # shared-memory index (transient)
 └── sdk/python/       # Python SDK extracted from the binary at startup
@@ -211,7 +211,7 @@ Use the same systemd setup as a VM, but tune for the hardware:
   startup, so it never needs backing up. `--sdk-path` overrides where it is
   extracted, and that directory must also be writable.
 - The daemon creates the data directory if it does not exist. The service user
-  must own it and it should be mode `0700` — it holds integration state and the
+  must own it and it should be mode `0700` — it holds job state and the
   webhook tokens.
 - Nothing else writes into the data directory. No log files, no PID files, no
   sockets.
@@ -227,7 +227,7 @@ is on loopback**. On the host:
 
 ```sh
 otter status          # just works
-otter integrations --schedule
+otter jobs --schedule
 OTTER_API_TOKEN=xyz otter status   # an explicit value always wins
 ```
 
@@ -240,39 +240,39 @@ daemon's owner can read it either way.
 
 ## Is it running on a schedule?
 
-A scheduled integration fires without anyone watching, so the question "is this
+A scheduled job fires without anyone watching, so the question "is this
 actually running?" comes up immediately after the first start. Three places
 answer it.
 
-**The schedule view** lists every cron integration with its next run time and
+**The schedule view** lists every cron job with its next run time and
 what happened last time:
 
 ```sh
-otter integrations --schedule
-# or: otter integrations --schedule
+otter jobs --schedule
+# or: otter jobs --schedule
 ```
 
 ```
-INTEGRATION          CRON             NEXT RUN              IN         LAST RUN
+JOB          CRON             NEXT RUN              IN         LAST RUN
 --------------------------------------------------------------------------------------------
 shopify-to-salesforce */5 * * * *     2026-09-13 17:05:00   2m14s      succeeded at 17:00:04
 ```
 
-An integration that has never run reports `no runs yet`, which distinguishes
+A job that has never run reports `no runs yet`, which distinguishes
 "not yet due" from "silently not firing".
 
 **The daemon log** records every tick as it happens. `otter start` runs the
 daemon in the foreground, so cron lines appear in that terminal:
 
 ```
-INFO cron_fired integration=shopify-to-salesforce cron=*/5 * * * *
+INFO cron_fired job=shopify-to-salesforce cron=*/5 * * * *
 ```
 
 To keep that output, start the daemon with a log file instead of `otter start`:
 
 ```sh
 set -a; . ./otter.env; set +a
-./bin/otterd --integrations ./integrations --data ./tmp --log-format pretty \
+./bin/otterd --jobs ./jobs --data ./tmp --log-format pretty \
   2>&1 | tee /tmp/otter.log
 ```
 
@@ -284,20 +284,20 @@ then `tail -f /tmp/otter.log` from another terminal.
 otter runs shopify-to-salesforce --limit 10
 ```
 
-## Pausing one integration
+## Pausing one job
 
 Sometimes the schedule is the problem: a vendor is down, a credential expired,
-or an integration is making a mess and needs to stop firing *now* without being
+or a job is making a mess and needs to stop firing *now* without being
 torn down. Pausing is that control.
 
 ```sh
-cd integrations/shopify-to-salesforce
+cd jobs/shopify-to-salesforce
 otter pause
 # paused: shopify-to-salesforce
 # cron and webhook will not fire; otter run still runs it on demand
 ```
 
-With no argument the integration in the working directory is used, so `otter
+With no argument the job in the working directory is used, so `otter
 pause` and `otter pause .` are the same command, exactly like `otter run`. A
 name, a path or `id:<id>` works from anywhere.
 
@@ -314,7 +314,7 @@ what the pause was about, and you often want to test the fix before resuming.
 
 ```sh
 otter resume                     # re-arm; missed windows are not replayed
-otter integrations --schedule    # NEXT RUN shows "paused" for a paused one
+otter jobs --schedule    # NEXT RUN shows "paused" for a paused one
 otter inspect                    # paused: since 2026-09-13 17:02:11
 ```
 
@@ -335,11 +335,11 @@ otter cancel 0f9c1e2a-...        # never retried, whatever the manifest says
 pause to the new directory, because the identity moved with it. `otter reset`
 mints a fresh identity, and it starts enabled. Purging with `otter delete`
 removes the pause with everything else. The pause is durable: it survives
-`otter reload`, a daemon restart and a deploy, so an integration paused at 3am
+`otter reload`, a daemon restart and a deploy, so a job paused at 3am
 is still paused after the morning's `otter deploy`.
 
 **In scripts.** Pause and resume are idempotent: pausing an already-paused
-integration exits `0` and reports `changed: false`, so a deploy step can call it
+job exits `0` and reports `changed: false`, so a deploy step can call it
 unconditionally.
 
 ```sh
@@ -354,28 +354,28 @@ Recurring blackout windows would be a scheduling feature, not this one.
 
 ## Managed Python
 
-Every integration executes an immutable release snapshot rather than its source
+Every job executes an immutable release snapshot rather than its source
 tree, so a release is required before its first run and an edit is not live
 until it is released again (`otter release`, or automatically during
-`otter deploy`). Separately, integrations that set `python.mode: managed` run on
+`otter deploy`). Separately, jobs that set `python.mode: managed` run on
 an interpreter and a dependency set that Otter prepared, not on the host's
 Python. Both are separate from execution and never part of a run. See
 [managed-python.md](managed-python.md).
 
-A release places the integration and every shared tree it declares relative to
+A release places the job and every shared tree it declares relative to
 one base — the closest common ancestor of the discovery root, the
-integration and each captured tree — so `python.path` keeps resolving verbatim
+job and each captured tree — so `python.path` keeps resolving verbatim
 whatever shape the workspace has. A declared tree that is missing, an absolute
 `python.path`, and a symlink that resolves outside the captured trees are all
 refused at release time rather than shipped as a snapshot that depends on the
-live tree. Activation re-validates the snapshot and, for a managed integration,
+live tree. Activation re-validates the snapshot and, for a managed job,
 that its environment is ready, so `--activate` cannot roll back onto a broken or
 unprepared release.
 
 Releases accumulate under `<data dir>/.releases`. Nothing removes them unless
-you pass `otter release --keep N`, so check `otter release --list <integration>`
-(or `otter release --list --all` for every integration and every gap)
-if the data directory grows. Retention is per integration and `--keep` applies
+you pass `otter release --keep N`, so check `otter release --list <job>`
+(or `otter release --list --all` for every job and every gap)
+if the data directory grows. Retention is per job and `--keep` applies
 to `--all` as well, so `otter release --all --keep 3` prunes a whole workspace
 in one command.
 
@@ -423,7 +423,7 @@ sudo systemctl start otter
 Delete stale `-wal`/`-shm` files when restoring by hand; a WAL from a different
 database generation is not valid for the restored file.
 
-Because integrations are code, back up the integrations root too — it is usually
+Because jobs are code, back up the jobs root too — it is usually
 in git, which is the right answer. Back up `/etc/otter/otter.env` only if you
 keep those secrets somewhere safe and encrypted (it is not a good idea to put
 plaintext credentials in an ordinary backup).
@@ -454,26 +454,26 @@ Each JSONL record is:
 ```
 
 `text` is the human prefix and `fields` is the structured payload the
-integration logged, kept separate so a field named `run_id` or `level` inside
+job logged, kept separate so a field named `run_id` or `level` inside
 your own payload cannot collide with the envelope. Every line parses on its own
 — a multi-line traceback is escaped into a single record — so `jq` works
 directly with no prefix-stripping and nothing is lost to terminal wrapping.
 
 Two consequences worth knowing:
 
-- **All streams go to stdout in the JSON form**, including captured integration
+- **All streams go to stdout in the JSON form**, including captured job
   stderr. Splitting them across two file descriptors would silently drop half
   the output from a pipe; which stream a line came from is the `stream` field
   instead. The human form keeps them separated, so a 2>/dev/null still hides
-  integration stderr.
+  job stderr.
 - **Values are bounded in the human form.** A large nested record is truncated
   with `…` rather than wrapping the line across the terminal several times. The
   JSON form always has the complete value.
 
-To pick a run to look at, `otter runs <integration> --limit 5` lists recent ones,
-and `otter runs <integration> --limit 1 --json | jq -r '.[0].id'` gives the
+To pick a run to look at, `otter runs <job> --limit 5` lists recent ones,
+and `otter runs <job> --limit 1 --json | jq -r '.[0].id'` gives the
 newest run id. Add `--all` to search the whole workspace instead of one
-integration.
+job.
 
 ## Log rotation and run-log retention
 
@@ -497,7 +497,7 @@ Typical daemon log volume is small — a handful of lines per run plus HTTP acce
 records. The bursty, unbounded part is the second stream.
 
 **Run logs** are child stdout/stderr captured into SQLite (`run_logs`). A chatty
-integration can add hundreds of thousands of rows. Prune them on a schedule with
+job can add hundreds of thousands of rows. Prune them on a schedule with
 the `sqlite3` CLI, and reclaim space afterwards:
 
 ```bash
@@ -557,7 +557,7 @@ Example weekly maintenance:
 
 Otter records every run's outgoing HTTP by default — headers and sanitized JSON
 bodies included — so a failure can be explained after it happened rather than
-after someone has added logging. An integration opts down in its manifest, and a
+after someone has added logging. A job opts down in its manifest, and a
 deployment can lower the default. The recording is read back with two commands:
 
 ```sh
@@ -578,7 +578,7 @@ own — `complete` with zero requests means capture observed nothing, `off` mean
 this run was not recorded, and `unavailable` means the run predates capture or
 was never configured for it. It also prints the coverage the run had: `urllib`
 always, plus `requests` and `httpx` when the run's interpreter had them
-installed. An empty list under coverage that omits the client an integration
+installed. An empty list under coverage that omits the client a job
 uses means that client was not instrumented, not that nothing was sent. The list
 never loads bodies, so it is safe to run against a run with many exchanges.
 
@@ -587,14 +587,14 @@ per run. If a run hits those limits, capture is dropped rather than the run bein
 failed, and the dropped counts appear in the capture summary.
 
 **Choosing what to record.** The per-run `--capture` flag wins, then the
-integration's own `capture:` field, then the daemon default:
+job's own `capture:` field, then the daemon default:
 
 ```bash
 otterd --capture-default metadata     # deployment-wide summaries only
 otterd --capture-default off          # record nothing at all
 ```
 
-An integration that handles regulated or personal data should say so itself, so
+A job that handles regulated or personal data should say so itself, so
 the decision travels with the code and survives a change to the deployment
 default:
 
@@ -603,8 +603,8 @@ default:
 capture: off        # or metadata; capture: full keeps payloads under a lower default
 ```
 
-`otter inspect <integration>` prints the policy a new run would use, spelled out.
-The integration's declaration is read from the live manifest, so lowering it
+`otter inspect <job>` prints the policy a new run would use, spelled out.
+The job's declaration is read from the live manifest, so lowering it
 takes effect on `otter reload` without a new release.
 
 Redaction can be extended, never weakened, from the daemon environment:
@@ -629,9 +629,9 @@ runs hourly in bounded batches and does not require downtime. Like `run_logs`,
 capture data lives in `otter.db`; `--capture-retention 0` means the database
 keeps growing with payload data until you prune it yourself.
 
-## Reloading integrations
+## Reloading jobs
 
-The daemon reads the integrations directory when it starts. Adding or editing a
+The daemon reads the jobs directory when it starts. Adding or editing a
 manifest is picked up with `otter reload`, which re-reads the directory against
 the running daemon:
 
@@ -639,17 +639,17 @@ the running daemon:
 otter reload
 added        shopify-to-netsuite
 changed      shopify-to-erp
-no changes   2 integration(s)
+no changes   2 job(s)
 ```
 
 Nothing is stopped. The process, the API listener, the worker pool and every
 executing run are left alone, and a cron trigger whose expression did not change
 keeps its next fire time. Only what the daemon knows about is replaced.
 
-That makes the ordinary "deploy an integration" loop restart-free:
+That makes the ordinary "deploy a job" loop restart-free:
 
 ```bash
-# Drop the new integration into the integrations root, then:
+# Drop the new job into the jobs root, then:
 otter reload                    # the daemon can now see it
 otter release shopify-to-netsuite   # a run executes the active release
 otter run shopify-to-netsuite
@@ -663,10 +663,10 @@ fixed by editing the file.
 
 Two things reload does not do:
 
-- **It does not release anything.** A newly visible integration has no active
+- **It does not release anything.** A newly visible job has no active
   release, so `otter run` answers `409` until `otter release` stages one.
-- **It does not cancel work for an integration that still exists.** Removing an
-  integration from the directory does end its *queued* runs, because they can
+- **It does not cancel work for a job that still exists.** Removing a
+  job from the directory does end its *queued* runs, because they can
   never execute; runs already executing are left to finish. The reload reports
   how many were cancelled.
 
@@ -683,7 +683,7 @@ migrations are applied automatically on startup, in order, inside a transaction.
 # 1. Back up first. Always.
 sudo sqlite3 /var/lib/otter/otter.db ".backup '/var/backups/otter/pre-upgrade.db'"
 
-# 2. Stop the daemon. This waits for running integrations up to --shutdown-grace.
+# 2. Stop the daemon. This waits for running jobs up to --shutdown-grace.
 sudo systemctl stop otter
 
 # 3. Replace the binaries atomically (install writes a new inode).
@@ -707,7 +707,7 @@ After the restart:
 
 ```bash
 otter status
-otter integrations
+otter jobs
 otter runs --all --limit 10
 ```
 
@@ -715,23 +715,23 @@ Behavior worth expecting:
 
 - **In-flight runs do not survive a restart** in any version. Crash recovery
   marks them `failed` with `otter daemon restarted during execution` and
-  re-enqueues a retry when the policy allows. Design integrations to be
+  re-enqueues a retry when the policy allows. Design jobs to be
   idempotent, or stop the daemon when nothing long-running is in progress.
 - **Downgrades are not supported.** The old binary does not understand a newer
   schema. Restore the pre-upgrade backup if you must roll back.
 - **`sdk/python/` is refreshed** from the new binary at startup, so a newer SDK
-  takes effect without any action. Integrations written against the old SDK keep
+  takes effect without any action. Jobs written against the old SDK keep
   working unless a changelog says otherwise.
 - **Manifests are re-validated** at startup. An upgrade that adds stricter
-  validation can turn a previously valid integration invalid; the daemon logs
-  `integration_invalid` and keeps running.
-- **Every integration must be released once after upgrading.** The release
+  validation can turn a previously valid job invalid; the daemon logs
+  `job_invalid` and keeps running.
+- **Every job must be released once after upgrading.** The release
   digest format is versioned, and the new implementation deliberately does not
   reuse a snapshot laid out by an older one, even for identical inputs. Old
   snapshots are not deleted by the upgrade and stay on disk until retention
   prunes them, so a rollback to a pre-upgrade release still works. A deployment
   does this automatically; a local workspace needs `otter release --all` (or one
-  `otter release` per integration) before runs resume executing current code.
+  `otter release` per job) before runs resume executing current code.
 - **Startup can refuse to run.** If crash recovery or queue reconciliation
   cannot complete, the daemon exits instead of serving with stranded work. See
   [Daemon refuses to start after a crash](#daemon-refuses-to-start-after-a-crash).
@@ -742,28 +742,28 @@ Two knobs, applied together:
 
 | Knob | Scope | Default | Effect |
 | --- | --- | --- | --- |
-| `--workers N` (`OTTER_WORKERS`) | Whole daemon | CPU cores, capped at 8 | Maximum simultaneous child processes across all integrations. |
-| `concurrency: N` (manifest) | One integration | `1` | Maximum simultaneous runs of that integration. Excess triggers queue. |
+| `--workers N` (`OTTER_WORKERS`) | Whole daemon | CPU cores, capped at 8 | Maximum simultaneous child processes across all jobs. |
+| `concurrency: N` (manifest) | One job | `1` | Maximum simultaneous runs of that job. Excess triggers queue. |
 
 A run starts only when **both** limits allow it. With `--workers 2` and eight
-integrations at the default `concurrency: 1`, at most two integrations run at any
+jobs at the default `concurrency: 1`, at most two jobs run at any
 instant and the rest wait in the durable queue.
 
 Sizing guidance:
 
 - **Workers ≈ CPU cores** is the right starting point, which is why it is the
-  default. Integrations are usually I/O-bound (HTTP to SaaS APIs), so you can
+  default. Jobs are usually I/O-bound (HTTP to SaaS APIs), so you can
   safely go higher — `2 × cores` is common — but each worker is a Python
   process with real memory cost.
 - **Watch RSS, not CPU.** A worker holding a large pandas DataFrame can use
   hundreds of MB. Budget `workers × peak_python_RSS` against available RAM, and
   leave room for the page cache that makes SQLite fast.
-- **Raise `concurrency` only for stateless integrations.** An integration that
+- **Raise `concurrency` only for stateless jobs.** A job that
   increments a shared counter through `ctx.state` is safe at `concurrency: 1`
   and racy above it. A counter that reads and writes one key must stay at
   `concurrency: 1`; a checkpoint-based sync needs care to run concurrently
   because two attempts can claim the same work.
-- **Long runs + cron schedules queue up.** A 20-minute integration on a
+- **Long runs + cron schedules queue up.** A 20-minute job on a
   `*/5` schedule with `concurrency: 1` produces a growing backlog of queued runs
   instead of overlapping execution. Fix the schedule or shorten the run; raising
   `concurrency` may hammer the downstream API.
@@ -782,7 +782,7 @@ curl -s http://127.0.0.1:7337/health | python3 -m json.tool
 
 If `queue_depth` grows without bound and `runs.running` sits at the worker limit,
 add workers (if RAM allows) or reduce run duration. If `runs.running` is below
-the worker limit while work is queued, the per-integration `concurrency` is the
+the worker limit while work is queued, the per-job `concurrency` is the
 constraint.
 
 ## Health checking
@@ -799,7 +799,7 @@ otter runs --all --status failed --limit 5
 ```
 
 ```json
-{"status":"ok","version":"0.4.1","uptime_seconds":81234.5,"integrations":{"total":7,"valid":6,"invalid":1},"queue_depth":2,"runs":{"queued":2,"running":2,"succeeded":1043,"failed":17,"retrying":1,"cancelled":0,"timed_out":3}}
+{"status":"ok","version":"0.4.1","uptime_seconds":81234.5,"jobs":{"total":7,"valid":6,"invalid":1},"queue_depth":2,"runs":{"queued":2,"running":2,"succeeded":1043,"failed":17,"retrying":1,"cancelled":0,"timed_out":3}}
 ```
 
 Useful alerting rules:
@@ -807,8 +807,8 @@ Useful alerting rules:
 | Signal | Rule | Why |
 | --- | --- | --- |
 | Daemon up | `curl -fsS /health` fails twice in a row | The process or listener is gone; systemd should be restarting it. |
-| Invalid manifests | `integrations.invalid > 0` | Someone shipped a broken `otter.yaml`; it is logged and skipped. |
-| Backlog | `queue_depth` rising for more than an hour | Workers or per-integration `concurrency` cannot keep up. |
+| Invalid manifests | `jobs.invalid > 0` | Someone shipped a broken `otter.yaml`; it is logged and skipped. |
+| Backlog | `queue_depth` rising for more than an hour | Workers or per-job `concurrency` cannot keep up. |
 | Failures | `runs.failed` and `runs.timed_out` increasing | An upstream changed, or timeouts need tuning. |
 | Database growth | `otter.db` over ~2 GB | `run_logs` needs retention (see above). |
 
@@ -853,7 +853,7 @@ The error appears in the run's `otter`-stream logs: `otter logs <run-id>`.
 **Symptom.** The run fails *before Python starts*:
 
 ```
-{"level":"warn","event":"run_finished","integration":"shopify-to-erp","run_id":"run_...","status":"failed","error":"integration shopify-to-erp requires secrets that are not available: SHOPIFY_TOKEN"}
+{"level":"warn","event":"run_finished","job":"shopify-to-erp","run_id":"run_...","status":"failed","error":"job shopify-to-erp requires secrets that are not available: SHOPIFY_TOKEN"}
 ```
 
 The client sees `exit code` unset and this error on the run:
@@ -862,7 +862,7 @@ The client sees `exit code` unset and this error on the run:
 $ otter run-status run_01HZY7Q1W2E3R4T5Y6U7I8O9P0
 ...
 status:        failed
-error:         integration shopify-to-erp requires secrets that are not available: SHOPIFY_TOKEN
+error:         job shopify-to-erp requires secrets that are not available: SHOPIFY_TOKEN
 ```
 
 This is a configuration failure and is **not retried**. `run_logs` contains an
@@ -881,35 +881,41 @@ was started.
 4. Re-run: `otter run shopify-to-erp`.
 
 Remember secrets are read from the **daemon's** environment, not the
-integration's `.env` file. A `.env` next to `main.py` is invisible to Otter
-unless the integration loads it itself.
+job's `.env` file. A `.env` next to `main.py` is invisible to Otter
+unless the job loads it itself.
 
-### Integration invalid
+### Job invalid
 
-**Symptom.** A directory does not appear in `otter integrations`, or
+**Symptom.** A directory does not appear in `otter jobs`, or
 `otter run` returns `400 invalid_manifest`.
 
 ```bash
-otter integrations --all          # includes invalid ones
-otter validate /srv/otter/integrations/shopify-to-erp
+otter jobs --all          # includes invalid and retired jobs
+otter validate /srv/otter/jobs/shopify-to-erp
 otter inspect shopify-to-erp      # shows "valid": false and the error
 ```
+
+`otter jobs` hides an invalid job because only a running runtime has read its
+manifest. With the runtime stopped the listing comes from the identity
+registry, which records ownership rather than manifest validity — status is
+deliberately independent of it — so the job is listed there until a daemon can
+say otherwise.
 
 Typical causes:
 
 | Error | Fix |
 | --- | --- |
 | `name must match ^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$` | Lowercase it; remove leading/trailing separators. |
-| `ambiguous integration` | Two integrations declare the same label. Use `id:<id>` or a path; see [identity.md](identity.md). |
-| `entrypoint "main.py" does not exist` | Fix the path or the filename; it is relative to the integration directory. |
-| `entrypoint escapes the integration directory` | Remove `../` or an absolute path. |
+| `ambiguous job` | Two jobs declare the same label. Use `id:<id>` or a path; see [identity.md](identity.md). |
+| `entrypoint "main.py" does not exist` | Fix the path or the filename; it is relative to the job directory. |
+| `entrypoint escapes the job directory` | Remove `../` or an absolute path. |
 | `unknown field "timeouts"` | Fix the typo; unknown fields are rejected. |
 | `invalid cron expression` | Use exactly 5 fields: `minute hour dom month dow`. |
 | `version must be 1` | Add `version: 1`. |
 
-An invalid integration is logged (`"event":"integration_invalid"`) and reported
+An invalid job is logged (`"event":"job_invalid"`) and reported
 by the API, and it never crashes the daemon. After fixing the manifest, run
-`otter reload` to re-read it — see [Reloading integrations](#reloading-integrations).
+`otter reload` to re-read it — see [Reloading jobs](#reloading-jobs).
 
 ### Port already in use
 
@@ -951,7 +957,7 @@ reason.
 FATA failed to open database: unable to open database file: /var/lib/otter/otter.db (permission denied)
 ```
 
-or integrations fail with `Permission denied` when writing files.
+or jobs fail with `Permission denied` when writing files.
 
 ```bash
 ls -ld /var/lib/otter
@@ -970,7 +976,7 @@ Watch for two specific traps:
 - **SELinux/AppArmor.** On RHEL-family hosts, label the directory:
   `sudo semanage fcontext -a -t var_lib_t '/var/lib/otter(/.*)?' && sudo restorecon -R /var/lib/otter`.
 - **systemd hardening.** A unit with `ProtectSystem=strict` without a matching
-  `ReadWritePaths=/var/lib/otter` (and any directory an integration writes to)
+  `ReadWritePaths=/var/lib/otter` (and any directory a job writes to)
   produces permission errors that do not appear when you run `otterd` by hand as
   the same user.
 
@@ -993,7 +999,7 @@ dmesg -T | grep -i 'killed process'      # OOM kills
 systemctl show otter -p NRestarts
 ```
 
-Make integrations idempotent, or checkpoint with `ctx.state` so a repeated
+Make jobs idempotent, or checkpoint with `ctx.state` so a repeated
 attempt resumes instead of starting over — persist a cursor in `ctx.state` and
 read it back at the start of the next run.
 
@@ -1032,7 +1038,7 @@ non-terminal until a later restart recovers them successfully.
    ```
 2. If `running` equals `--workers`, the daemon is saturated: raise workers (RAM
    permitting) or make runs faster.
-3. If `running` is 0 or low, a per-integration `concurrency` limit is blocking,
+3. If `running` is 0 or low, a per-job `concurrency` limit is blocking,
    or runs are parked in `retrying` backoff. Check the manifests and the retry
    policy.
 4. If nothing runs at all, look for missing secrets or an invalid manifest
@@ -1043,11 +1049,11 @@ non-terminal until a later restart recovers them successfully.
 
 **Symptom.** Runs succeed but no work happens.
 
-Check that the integration is not silently short-circuiting on state: state
+Check that the job is not silently short-circuiting on state: state
 persists across runs by design, so a `cursor` or `last_processed_*` key left
-behind by an earlier experiment keeps the integration from redoing work.
+behind by an earlier experiment keeps the job from redoing work.
 
 ```bash
-otter state get my-integration cursor
-otter state set my-integration cursor 'null'
+otter state get my-job cursor
+otter state set my-job cursor 'null'
 ```

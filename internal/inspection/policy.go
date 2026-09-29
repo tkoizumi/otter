@@ -4,7 +4,7 @@
 //
 // Capture is diagnostic. Every rule here exists to keep a recording bounded,
 // attributable and safe to store: a failure to record must never change what an
-// integration does, and a stored value must never contain a credential.
+// job does, and a stored value must never contain a credential.
 package inspection
 
 import (
@@ -25,7 +25,7 @@ const (
 	PolicyFull Policy = "full"
 )
 
-// DefaultPolicy is what a run records when neither the run, its integration nor
+// DefaultPolicy is what a run records when neither the run, its job nor
 // the deployment asks for something else.
 //
 // Full is the default because the failure worth debugging is the one nobody
@@ -33,7 +33,7 @@ const (
 // payload capture beforehand, and capture observes live traffic, so it cannot
 // be turned on retroactively. The cost of that choice is bounded and visible:
 // redaction runs before storage, bodies are capped, and the recording expires.
-// An integration that must not store payloads opts out with `capture: off` (or
+// A job that must not store payloads opts out with `capture: off` (or
 // `capture: metadata`) in its manifest, and an operator can lower the default
 // for a whole deployment with --capture-default.
 const DefaultPolicy = PolicyFull
@@ -43,7 +43,7 @@ func AllPolicies() []Policy { return []Policy{PolicyOff, PolicyMetadata, PolicyF
 
 // ParsePolicy resolves a caller-supplied capture level. An empty value means the
 // default, which is how a run that names no policy is resolved once the
-// integration and deployment defaults have been consulted.
+// job and deployment defaults have been consulted.
 func ParsePolicy(s string) (Policy, error) {
 	if s == "" {
 		return DefaultPolicy, nil
@@ -58,7 +58,7 @@ func ParsePolicy(s string) (Policy, error) {
 // ParsePolicyOverride resolves an optional, explicit override.
 //
 // Unlike ParsePolicy, an empty value is not the default: it means "no override
-// was given", which lets the caller fall through to the integration's declared
+// was given", which lets the caller fall through to the job's declared
 // policy and then the deployment default. Only an explicit, non-empty value is
 // validated here, so a genuine typo is rejected while an omission is not.
 func ParsePolicyOverride(s string) (Policy, error) {
@@ -178,7 +178,7 @@ type Limits struct {
 	MaxRequestIDLength int
 	// FlushDeadline bounds how long the SDK will wait to deliver capture on
 	// shutdown. It is a hard ceiling: dropping capture is always preferable to
-	// delaying or altering an integration's exit.
+	// delaying or altering a job's exit.
 	FlushDeadline time.Duration
 }
 

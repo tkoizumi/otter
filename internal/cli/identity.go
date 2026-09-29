@@ -43,7 +43,7 @@ func (a *App) cmdRegister(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 
-	view, err := g.client().RegisterIntegration(ctx, absolute)
+	view, err := g.client().RegisterJob(ctx, absolute)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -56,7 +56,7 @@ func (a *App) cmdRegister(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
-// cmdReset implements `otter reset <integration>`.
+// cmdReset implements `otter reset <job>`.
 func (a *App) cmdReset(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -64,7 +64,7 @@ func (a *App) cmdReset(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter reset <integration>")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter reset <job>")
 		return 2
 	}
 	ref, err := daemonRef(fs.Arg(0))
@@ -73,7 +73,7 @@ func (a *App) cmdReset(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 
-	result, err := g.client().ResetIntegration(ctx, ref)
+	result, err := g.client().ResetJob(ctx, ref)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -88,7 +88,7 @@ func (a *App) cmdReset(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
-// cmdDelete implements `otter delete <integration>`.
+// cmdDelete implements `otter delete <job>`.
 func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -96,7 +96,7 @@ func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter delete <integration>")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter delete <job>")
 		return 2
 	}
 	ref, err := daemonRef(fs.Arg(0))
@@ -107,7 +107,7 @@ func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 
 	// The daemon resolves the reference, so a retired identity can still be
 	// purged by id after its directory has been removed.
-	result, err := g.client().DeleteIntegration(ctx, ref)
+	result, err := g.client().DeleteJob(ctx, ref)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -123,7 +123,7 @@ func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
-// cmdMove implements `otter move <integration> <destination>`.
+// cmdMove implements `otter move <job> <destination>`.
 func (a *App) cmdMove(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("move", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -131,7 +131,7 @@ func (a *App) cmdMove(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if fs.NArg() != 2 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter move <integration> <destination>")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter move <job> <destination>")
 		return 2
 	}
 	ref, err := daemonRef(fs.Arg(0))
@@ -145,7 +145,7 @@ func (a *App) cmdMove(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 
-	view, err := g.client().MoveIntegration(ctx, ref, destination)
+	view, err := g.client().MoveJob(ctx, ref, destination)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -172,7 +172,7 @@ func daemonRef(ref string) (string, error) {
 	return absoluteDir(ref)
 }
 
-// resolveViaDaemon resolves a reference to the integration view the daemon
+// resolveViaDaemon resolves a reference to the job view the daemon
 // holds, so a command can act on the durable identity rather than on the label
 // the operator typed.
 func (a *App) resolveViaDaemon(ctx context.Context, g globals, ref string) (id, name string, code int) {
@@ -181,7 +181,7 @@ func (a *App) resolveViaDaemon(ctx context.Context, g globals, ref string) (id, 
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return "", "", 2
 	}
-	view, err := g.client().ResolveIntegration(ctx, daemonReference)
+	view, err := g.client().ResolveJob(ctx, daemonReference)
 	if err != nil {
 		return "", "", a.fail(err)
 	}

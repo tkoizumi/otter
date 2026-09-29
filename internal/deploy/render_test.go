@@ -32,7 +32,7 @@ func TestUnitFileRendersEnvironment(t *testing.T) {
 		"User=otter",
 		"Group=otter",
 		"WorkingDirectory=" + target.WorkspaceDir(),
-		"ExecStart=" + target.BinaryPath() + " --integrations " + target.IntegrationsDir() +
+		"ExecStart=" + target.BinaryPath() + " --jobs " + target.JobsDir() +
 			" --data " + target.DataDir + " --listen " + target.Listen,
 		"EnvironmentFile=-" + target.DaemonEnvFilePath(),
 		"EnvironmentFile=-" + target.SharedEnvFilePath(),
@@ -50,18 +50,18 @@ func TestUnitFileRendersEnvironment(t *testing.T) {
 	if strings.Contains(unit, "*.env") {
 		t.Errorf("unit file uses a wildcard EnvironmentFile:\n%s", unit)
 	}
-	// One shared credentials file, not one per integration. The daemon's
-	// environment is a single process environment, so per-integration files
+	// One shared credentials file, not one per job. The daemon's
+	// environment is a single process environment, so per-job files
 	// never isolated anything -- they only multiplied rotation sites.
 	if strings.Contains(unit, "counter.env") {
-		t.Errorf("unit file still references a per-integration env file:\n%s", unit)
+		t.Errorf("unit file still references a per-job env file:\n%s", unit)
 	}
 }
 
 func TestUnitFileNeverTouchesTheDataDirectory(t *testing.T) {
 	unit := UnitFile(testTarget())
 	// The data directory is only ever an argument. Anything that deletes or
-	// recreates it on deploy would destroy every integration's watermark.
+	// recreates it on deploy would destroy every job's watermark.
 	for _, forbidden := range []string{"ExecStartPre", "ExecStopPost", "rm -rf"} {
 		if strings.Contains(unit, forbidden) {
 			t.Errorf("unit file contains %q, which could disturb the data directory:\n%s", forbidden, unit)
@@ -124,7 +124,7 @@ func TestInstallScriptBakesTheUnit(t *testing.T) {
 func TestInstallScriptCreatesDirectoriesBeforePushing(t *testing.T) {
 	script := InstallScript(testTarget())
 	for _, want := range []string{
-		`install -d -m 0755 -o "$RUN_AS" -g "$RUN_AS" "$WORKSPACE_DIR" "$WORKSPACE_DIR/bin" "$WORKSPACE_DIR/integrations" "$WORKSPACE_DIR/tools"`,
+		`install -d -m 0755 -o "$RUN_AS" -g "$RUN_AS" "$WORKSPACE_DIR" "$WORKSPACE_DIR/bin" "$WORKSPACE_DIR/jobs" "$WORKSPACE_DIR/tools"`,
 		`install -d -m 0700 -o "$RUN_AS" -g "$RUN_AS" "$DATA_DIR"`,
 	} {
 		if !strings.Contains(script, want) {
@@ -166,7 +166,7 @@ func TestInstallScriptOwnsTheVendoredToolchain(t *testing.T) {
 	script := InstallScript(testTarget())
 	// A vendored uv is provisioned out of band; it must end up owned by the
 	// service account that runs preparation.
-	if !strings.Contains(script, "for dir in bin integrations lib tools; do") {
+	if !strings.Contains(script, "for dir in bin jobs lib tools; do") {
 		t.Errorf("install script does not take ownership of tools/:\n%s", script)
 	}
 }
@@ -211,7 +211,7 @@ func TestEnvFilePathsAreStable(t *testing.T) {
 	}
 }
 
-// The release command names the integrations discovery root explicitly, so the
+// The release command names the jobs discovery root explicitly, so the
 // host never has to guess which directory to scan for manifests.
 func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
 	target := testTarget()
@@ -219,26 +219,26 @@ func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
 
 	for _, want := range []string{
 		`"$CLI" release`,
-		"--integrations " + ShellQuote(target.IntegrationsDir()),
+		"--jobs " + ShellQuote(target.JobsDir()),
 		"--data " + ShellQuote(target.DataDir),
 		"--uv " + ShellQuote("/opt/otter/tools/uv/uv"),
-		// Each integration is released by its destination path, so a failure
-		// is reported against the integration that caused it and identity
+		// Each job is released by its destination path, so a failure
+		// is reported against the job that caused it and identity
 		// resolution never mistakes a directory basename for a label.
-		ShellQuote(target.IntegrationsDir() + "/counter"),
-		ShellQuote(target.IntegrationsDir() + "/invoices"),
+		ShellQuote(target.JobsDir() + "/counter"),
+		ShellQuote(target.JobsDir() + "/invoices"),
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("release script is missing %q\n---\n%s", want, script)
 		}
 	}
-	if want := target.WorkspaceDir() + "/integrations"; target.IntegrationsDir() != want {
-		t.Errorf("IntegrationsDir = %q, want %q", target.IntegrationsDir(), want)
+	if want := target.WorkspaceDir() + "/jobs"; target.JobsDir() != want {
+		t.Errorf("JobsDir = %q, want %q", target.JobsDir(), want)
 	}
-	// Each integration is released separately, so a failure is reported
-	// against the integration that caused it.
+	// Each job is released separately, so a failure is reported
+	// against the job that caused it.
 	if strings.Count(script, `"$CLI" release`) != 2 {
-		t.Errorf("release script does not release each integration separately:\n%s", script)
+		t.Errorf("release script does not release each job separately:\n%s", script)
 	}
 }
 
@@ -325,7 +325,7 @@ func TestDispatcherResolvesTheWorkspaceFromTheWorkingDirectory(t *testing.T) {
 	target = target.fillWorkspaceDefaults()
 	ws := target.WorkspaceDir()
 
-	sub := filepath.Join(ws, "integrations", "one")
+	sub := filepath.Join(ws, "jobs", "one")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}

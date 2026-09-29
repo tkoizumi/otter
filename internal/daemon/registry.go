@@ -8,24 +8,24 @@ import (
 	"github.com/tkoizumi/otter/internal/identity"
 )
 
-// registered is an integration instance known to the daemon together with the
+// registered is a job instance known to the daemon together with the
 // runtime state Otter attaches to it.
 //
-// Integration.ID is the durable registry identity; Integration.Name is the
+// Job.ID is the durable registry identity; Job.Name is the
 // mutable manifest label. The two are deliberately different values: state,
 // runs, tokens, releases and environments key off the identity, while the
 // label is what an operator types and reads.
 type registered struct {
-	Integration *config.Integration
-	Manifest    *config.Manifest
-	Instance    identity.Instance
+	Job      *config.Job
+	Manifest *config.Manifest
+	Instance identity.Instance
 
 	// WebhookToken is generated on first start and persisted, so webhook URLs
 	// keep working across restarts.
 	WebhookToken string
 }
 
-// registry holds the discovered integrations. It is rebuilt from disk on every
+// registry holds the discovered jobs. It is rebuilt from disk on every
 // daemon start and on every reload; the registry database and the manifests
 // themselves are the source of truth.
 type registry struct {
@@ -41,7 +41,7 @@ func newRegistry() *registry {
 
 // discovered is the result of one observation-and-reconciliation pass.
 type discovered struct {
-	items     []*config.Integration
+	items     []*config.Job
 	tokens    map[string]string
 	instances map[string]identity.Instance
 }
@@ -61,7 +61,7 @@ func (r *registry) load(set discovered) {
 		if _, exists := r.byID[it.ID]; exists {
 			continue
 		}
-		entry := &registered{Integration: it, Manifest: it.Manifest}
+		entry := &registered{Job: it, Manifest: it.Manifest}
 		if inst, ok := set.instances[it.ID]; ok {
 			entry.Instance = inst
 		}
@@ -102,7 +102,7 @@ func (r *registry) byLabel(label string) []*registered {
 	return out
 }
 
-// snapshot returns the current contents keyed by integration id. A reload
+// snapshot returns the current contents keyed by job id. A reload
 // takes one before loading so it can report what actually changed; the map is
 // a copy, so the caller can compare it without holding the lock.
 func (r *registry) snapshot() map[string]*registered {
@@ -135,10 +135,10 @@ func (r *registry) len() int {
 	return len(r.byID)
 }
 
-// counts returns how many registered integrations are valid and invalid.
+// counts returns how many registered jobs are valid and invalid.
 func (r *registry) counts() (valid, invalid int) {
 	for _, entry := range r.all() {
-		if entry.Integration.Valid {
+		if entry.Job.Valid {
 			valid++
 		} else {
 			invalid++
@@ -147,7 +147,7 @@ func (r *registry) counts() (valid, invalid int) {
 	return valid, invalid
 }
 
-// limits returns the per-integration concurrency limits.
+// limits returns the per-job concurrency limits.
 func (r *registry) limits() map[string]int {
 	limits := map[string]int{}
 	for _, entry := range r.all() {
@@ -155,7 +155,7 @@ func (r *registry) limits() map[string]int {
 			continue
 		}
 		if entry.Manifest.Concurrency > 0 {
-			limits[entry.Integration.ID] = entry.Manifest.Concurrency
+			limits[entry.Job.ID] = entry.Manifest.Concurrency
 		}
 	}
 	return limits

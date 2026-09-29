@@ -511,7 +511,7 @@ func TestLoadMissingPath(t *testing.T) {
 }
 
 func TestLoadSetsPathAndDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "integrations", "my-int")
+	dir := filepath.Join(t.TempDir(), "jobs", "my-int")
 	touch(t, filepath.Join(dir, "main.py"))
 	path := writeManifest(t, dir, "version: 1\nname: my-int\nentrypoint: main.py\n")
 
@@ -559,9 +559,9 @@ func TestMaxAttemptsSemantics(t *testing.T) {
 	}
 }
 
-// TestManifestCapture proves the integration-level opt-out: an omitted field
+// TestManifestCapture proves the job-level opt-out: an omitted field
 // means "no opinion" (the deployment default applies), while an explicit value
-// — including off — is the integration's own decision.
+// — including off — is the job's own decision.
 func TestManifestCapture(t *testing.T) {
 	dir := t.TempDir()
 	touch(t, filepath.Join(dir, "main.py"))
@@ -598,7 +598,7 @@ func TestManifestCapture(t *testing.T) {
 	}
 
 	// A typo is refused at validation rather than silently ignored, which would
-	// leave the integration on the deployment default without saying so.
+	// leave the job on the deployment default without saying so.
 	if _, err := LoadAndValidate(writeManifest(t, dir, base+"capture: everything\n")); err == nil {
 		t.Error("an invalid capture policy was accepted")
 	}

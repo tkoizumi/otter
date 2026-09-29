@@ -14,8 +14,8 @@ import (
 func TestDefaultDaemonConfig(t *testing.T) {
 	c := DefaultDaemonConfig("1.2.3")
 
-	if c.IntegrationsDir != DefaultIntegrations {
-		t.Errorf("IntegrationsDir = %q, want %q", c.IntegrationsDir, DefaultIntegrations)
+	if c.JobsDir != DefaultJobs {
+		t.Errorf("JobsDir = %q, want %q", c.JobsDir, DefaultJobs)
 	}
 	if c.DataDir != DefaultDataDir {
 		t.Errorf("DataDir = %q, want %q", c.DataDir, DefaultDataDir)
@@ -45,7 +45,7 @@ func TestDefaultWorkersIsCapped(t *testing.T) {
 }
 
 func TestApplyEnv(t *testing.T) {
-	t.Setenv("OTTER_INTEGRATIONS_DIR", "/srv/integrations")
+	t.Setenv("OTTER_JOBS_DIR", "/srv/jobs")
 	t.Setenv("OTTER_DATA_DIR", "/var/lib/otter")
 	t.Setenv("OTTER_LISTEN", "127.0.0.1:9999")
 	t.Setenv("OTTER_WORKERS", "3")
@@ -59,7 +59,7 @@ func TestApplyEnv(t *testing.T) {
 		t.Fatalf("ApplyEnv: %v", err)
 	}
 
-	if c.IntegrationsDir != "/srv/integrations" || c.DataDir != "/var/lib/otter" {
+	if c.JobsDir != "/srv/jobs" || c.DataDir != "/var/lib/otter" {
 		t.Errorf("directories not applied: %+v", c)
 	}
 	if c.Listen != "127.0.0.1:9999" || c.Workers != 3 {
@@ -184,7 +184,7 @@ func TestValidate(t *testing.T) {
 		name   string
 		mutate func(*DaemonConfig)
 	}{
-		{"empty integrations dir", func(c *DaemonConfig) { c.IntegrationsDir = "" }},
+		{"empty jobs dir", func(c *DaemonConfig) { c.JobsDir = "" }},
 		{"empty data dir", func(c *DaemonConfig) { c.DataDir = "" }},
 		{"listen without port", func(c *DaemonConfig) { c.Listen = "127.0.0.1" }},
 		{"zero workers", func(c *DaemonConfig) { c.Workers = 0 }},

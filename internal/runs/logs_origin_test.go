@@ -47,7 +47,7 @@ func TestLooksLikeDaemonNarrationMatchesTheRealStrings(t *testing.T) {
 		}
 	}
 
-	// An integration's own output must not be mistaken for narration, even when
+	// A job's own output must not be mistaken for narration, even when
 	// it borrows the vocabulary. These are the lines a child can actually write.
 	child := []string{
 		"run failed because the token expired",
@@ -65,7 +65,7 @@ func TestLooksLikeDaemonNarrationMatchesTheRealStrings(t *testing.T) {
 
 // TestLegacyRowsFallBackToShape covers rows written before the origin column: the
 // SDK marker wins, then the narration shapes, and anything unrecognised is the
-// integration's.
+// job's.
 func TestLegacyRowsFallBackToShape(t *testing.T) {
 	cases := []struct {
 		message string

@@ -22,22 +22,22 @@ import (
 
 // Result is what a successful deploy reports back to the CLI.
 type Result struct {
-	Host         string
-	Platform     string
-	Version      string
-	Revision     string
-	FirstDeploy  bool
-	APIToken     string
-	RevealToken  bool
-	Warnings     []string
-	Integrations []string
-	Bindings     []Binding
-	RemoteDir    string
-	Workspace    string
-	APIURL       string
-	ServiceUnit  string
-	DryRun       bool
-	Elapsed      time.Duration
+	Host        string
+	Platform    string
+	Version     string
+	Revision    string
+	FirstDeploy bool
+	APIToken    string
+	RevealToken bool
+	Warnings    []string
+	Jobs        []string
+	Bindings    []Binding
+	RemoteDir   string
+	Workspace   string
+	APIURL      string
+	ServiceUnit string
+	DryRun      bool
+	Elapsed     time.Duration
 }
 
 // Deployer converges one host. Its collaborators are injected so the whole
@@ -162,10 +162,10 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
-	// A managed integration needs uv on the host for preparation, and a fresh
+	// A managed job needs uv on the host for preparation, and a fresh
 	// host has none. Vendoring it keeps the promise that a host needs nothing
 	// installed in advance.
-	managed := d.managedIntegrations(cfg)
+	managed := d.managedJobs(cfg)
 	if len(managed) > 0 && !d.NoUV {
 		d.step("build", "vendoring uv %s for %s", d.uvVersion(), cfg.Target.Platform)
 		if err := d.Builder.VendorUV(ctx, cfg, outDir); err != nil {
@@ -189,7 +189,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 
 	// --- push --------------------------------------------------------------
-	d.step("sync", "pushing %d integration(s) and the shared library", len(cfg.Integrations))
+	d.step("sync", "pushing %d job(s) and the shared library", len(cfg.Jobs))
 	if err := d.pushSources(ctx, outDir); err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	// --- ownership ---------------------------------------------------------
 	// The push wrote as the login user, so the daemon would not own its own
 	// tree without this, and the service account could not write the identity
-	// marker each integration needs.
+	// marker each job needs.
 	d.step("prepare", "handing the workspace to %s", cfg.Target.RunAsUser)
 	if err := d.Runner.RunScript(ctx, ClaimOwnershipScript(cfg.Target)); err != nil {
 		return nil, d.hint(err)
@@ -232,28 +232,28 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 
 	// --- release -----------------------------------------------------------
 	// Runs before the restart so a failure leaves the previously deployed
-	// runtime serving. Each integration is staged, prepared and then activated
+	// runtime serving. Each job is staged, prepared and then activated
 	// in that order, so a candidate that fails preparation never becomes
 	// active and never disturbs what is currently running.
 	//
-	// Every integration is released, not only the managed ones: a run executes
-	// the active release, so an unreleased integration would deploy and then
+	// Every job is released, not only the managed ones: a run executes
+	// the active release, so an unreleased job would deploy and then
 	// refuse to run. Preparation is the managed-only part, and it happens
 	// inside the same command.
 	// uv is named only when something actually needs preparing: a host with no
-	// managed integrations never receives the vendored toolchain, so pointing
+	// managed jobs never receives the vendored toolchain, so pointing
 	// the release at it would name a path that is not there.
 	uvPath := ""
 	if len(managed) > 0 {
 		uvPath = d.uvPath(cfg)
 	}
-	if len(cfg.Integrations) > 0 {
-		d.step("release", "releasing %d integration(s)", len(cfg.Integrations))
-		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.IntegrationNames(), uvPath)); err != nil {
-			return nil, fmt.Errorf("release integrations on %s: %w", cfg.Target, err)
+	if len(cfg.Jobs) > 0 {
+		d.step("release", "releasing %d job(s)", len(cfg.Jobs))
+		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.JobNames(), uvPath)); err != nil {
+			return nil, fmt.Errorf("release jobs on %s: %w", cfg.Target, err)
 		}
 	} else {
-		d.step("release", "no integrations; nothing to release")
+		d.step("release", "no jobs; nothing to release")
 	}
 
 	// --- activate ----------------------------------------------------------
@@ -271,7 +271,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 
 	// --- bind --------------------------------------------------------------
-	// The destination mints its own identity for each integration. Recording
+	// The destination mints its own identity for each job. Recording
 	// which one it chose is what makes a later deploy able to say "same
 	// instance, new code" instead of re-registering, and makes the remote
 	// registration inspectable from the checkout.
@@ -300,25 +300,25 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 
 	d.step("done", "%s deployed to %s in %s", cfg.Version, cfg.Target, time.Since(started).Round(time.Second))
 	return &Result{
-		Host:         cfg.Target.Host,
-		Platform:     cfg.Target.Platform,
-		Version:      cfg.Version,
-		Revision:     revision,
-		FirstDeploy:  !hadPrevious,
-		APIToken:     cfg.Target.APIToken,
-		RevealToken:  reveal,
-		Integrations: cfg.IntegrationNames(),
-		Bindings:     bindings,
-		RemoteDir:    cfg.Target.RemoteDir,
-		Workspace:    cfg.Target.WorkspaceName(),
-		APIURL:       cfg.Target.APIURL(),
-		ServiceUnit:  cfg.Target.ServiceUnit(),
-		Elapsed:      time.Since(started),
+		Host:        cfg.Target.Host,
+		Platform:    cfg.Target.Platform,
+		Version:     cfg.Version,
+		Revision:    revision,
+		FirstDeploy: !hadPrevious,
+		APIToken:    cfg.Target.APIToken,
+		RevealToken: reveal,
+		Jobs:        cfg.JobNames(),
+		Bindings:    bindings,
+		RemoteDir:   cfg.Target.RemoteDir,
+		Workspace:   cfg.Target.WorkspaceName(),
+		APIURL:      cfg.Target.APIURL(),
+		ServiceUnit: cfg.Target.ServiceUnit(),
+		Elapsed:     time.Since(started),
 	}, nil
 }
 
 // readBindings asks the destination runtime for the identity it assigned each
-// deployed integration. Local and remote identities are independent, so this
+// deployed job. Local and remote identities are independent, so this
 // is the only place the two are related; a host whose runtime predates the
 // registry fails here and the deploy records no bindings rather than failing.
 func (d *Deployer) readBindings(ctx context.Context, cfg Config) ([]Binding, error) {
@@ -496,24 +496,24 @@ func (d *Deployer) pushSources(ctx context.Context, outDir string) error {
 	// pushed separately, and .otter holds this workspace's own state (SQLite,
 	// releases, prepared interpreters) plus the record written just before.
 	// The leading slash anchors the record pattern to the transfer root so an
-	// integration that happens to contain a workspace.json keeps it.
+	// job that happens to contain a workspace.json keeps it.
 	excludes := []string{"bin", "tools", StateDirName, "/" + WorkspaceRecordName}
 
 	args := make([]string, 0, len(excludes)*2+4)
 	for _, name := range excludes {
 		args = append(args, "--exclude", name)
 	}
-	// A limited deploy carries one integration. --delete would then remove
-	// every other integration directory from the host, taking deployed code
-	// with it, so the rest of the integrations tree is protected from deletion
+	// A limited deploy carries one job. --delete would then remove
+	// every other job directory from the host, taking deployed code
+	// with it, so the rest of the jobs tree is protected from deletion
 	// while still being skipped for transfer.
 	//
-	// A shared tree can land outside integrations/ -- a manifest whose
-	// python.path reaches above the integration root puts it there -- so each
+	// A shared tree can land outside jobs/ -- a manifest whose
+	// python.path reaches above the job root puts it there -- so each
 	// tree this deploy carries is protected by name as well. Otherwise
-	// deploying one integration would delete a library the others import.
+	// deploying one job would delete a library the others import.
 	if d.Config.Limited {
-		args = append(args, "--filter", "protect /"+LocalIntegrationsDir+"/***")
+		args = append(args, "--filter", "protect /"+d.Config.Target.jobsLayout()+"/***")
 		for _, rel := range d.stagedTreePaths() {
 			args = append(args, "--filter", "protect /"+strings.SplitN(rel, "/", 2)[0]+"/***")
 		}
@@ -530,9 +530,9 @@ func (d *Deployer) pushSources(ctx context.Context, outDir string) error {
 func (d *Deployer) stagedTreePaths() []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, integ := range d.Config.Integrations {
+	for _, integ := range d.Config.Jobs {
 		for _, tree := range integ.Trees {
-			rel, err := TreePlacement(integ, tree)
+			rel, err := treePlacement(d.Config.Target.jobsLayout(), integ, tree)
 			if err != nil || seen[rel] {
 				continue
 			}
@@ -584,7 +584,7 @@ func (d *Deployer) writeDaemonEnv(ctx context.Context) error {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Generated by `otter deploy` from %s. Mode 0600, root owned.\n", DaemonEnvFileName)
-	b.WriteString("# Daemon-wide settings, not per-integration secrets. Re-run otter deploy\n")
+	b.WriteString("# Daemon-wide settings, not per-job secrets. Re-run otter deploy\n")
 	b.WriteString("# to refresh; do not edit by hand.\n\n")
 
 	keys := make([]string, 0, len(secrets))
@@ -612,12 +612,12 @@ chmod 0600 ` + ShellQuote(path) + `
 	return nil
 }
 
-// writeSharedEnv writes the credentials file every integration draws from, over
+// writeSharedEnv writes the credentials file every job draws from, over
 // SSH stdin, and returns a hash of its contents.
 //
-// One file, not one per integration. The daemon merges every EnvironmentFile=
-// into a single process environment and each integration receives only the keys
-// its manifest declares, so per-integration files never isolated anything --
+// One file, not one per job. The daemon merges every EnvironmentFile=
+// into a single process environment and each job receives only the keys
+// its manifest declares, so per-job files never isolated anything --
 // they just made rotating one credential an N-file edit.
 //
 // Secrets never appear in a command line, not even a quoted one: argv is
@@ -648,7 +648,7 @@ func (d *Deployer) writeSharedEnv(ctx context.Context) (string, error) {
 
 	if len(secrets) == 0 {
 		d.step("secrets", "no %s, deploying anyway (the daemon will refuse to run "+
-			"an integration whose declared secrets are absent)", SharedEnvFileName)
+			"a job whose declared secrets are absent)", SharedEnvFileName)
 	} else {
 		d.step("secrets", "%d variable(s) from %s", len(secrets), cfg.SharedEnv)
 	}
@@ -761,46 +761,46 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 		d.step("plan", "daemon:    no %s; nothing daemon-wide to configure", DaemonEnvFileName)
 	}
 	if cfg.SharedEnv != "" {
-		d.step("plan", "secrets:   %s -> %s (shared by every integration)",
+		d.step("plan", "secrets:   %s -> %s (shared by every job)",
 			cfg.SharedEnv, cfg.Target.SharedEnvFilePath())
 	} else {
-		d.step("plan", "secrets:   no %s; integrations rely on their manifest env", SharedEnvFileName)
+		d.step("plan", "secrets:   no %s; jobs rely on their manifest env", SharedEnvFileName)
 	}
-	if len(cfg.Integrations) > 0 {
-		managed := d.managedIntegrations(cfg)
-		line := "release:   would stage and activate " + strings.Join(cfg.IntegrationNames(), ", ")
+	if len(cfg.Jobs) > 0 {
+		managed := d.managedJobs(cfg)
+		line := "release:   would stage and activate " + strings.Join(cfg.JobNames(), ", ")
 		if len(managed) > 0 {
 			line += " (preparing managed Python for " + strings.Join(managed, ", ") + ")"
 		}
 		d.step("plan", line)
 	} else {
-		d.step("plan", "release:   no integrations; nothing to release")
+		d.step("plan", "release:   no jobs; nothing to release")
 	}
 	for _, m := range missing {
 		d.step("plan", "warning:   secret %s", m)
 	}
 
 	return &Result{
-		Host:         cfg.Target.Host,
-		Platform:     cfg.Target.Platform,
-		Version:      cfg.Version,
-		Warnings:     missing,
-		Integrations: cfg.IntegrationNames(),
-		RemoteDir:    cfg.Target.RemoteDir,
-		Workspace:    cfg.Target.WorkspaceName(),
-		APIURL:       cfg.Target.APIURL(),
-		ServiceUnit:  cfg.Target.ServiceUnit(),
-		DryRun:       true,
-		Elapsed:      time.Since(started),
+		Host:        cfg.Target.Host,
+		Platform:    cfg.Target.Platform,
+		Version:     cfg.Version,
+		Warnings:    missing,
+		Jobs:        cfg.JobNames(),
+		RemoteDir:   cfg.Target.RemoteDir,
+		Workspace:   cfg.Target.WorkspaceName(),
+		APIURL:      cfg.Target.APIURL(),
+		ServiceUnit: cfg.Target.ServiceUnit(),
+		DryRun:      true,
+		Elapsed:     time.Since(started),
 	}
 }
 
-// managedIntegrations lists the integrations being deployed that opted into a
+// managedJobs lists the jobs being deployed that opted into a
 // managed Python environment. The local manifests are the source of truth;
 // they are the same files that were just pushed.
-func (d *Deployer) managedIntegrations(cfg Config) []string {
+func (d *Deployer) managedJobs(cfg Config) []string {
 	var managed []string
-	for _, integ := range cfg.Integrations {
+	for _, integ := range cfg.Jobs {
 		if d.managesPython(integ) {
 			managed = append(managed, integ.Name)
 		}
@@ -808,8 +808,8 @@ func (d *Deployer) managedIntegrations(cfg Config) []string {
 	return managed
 }
 
-// managesPython reports whether one integration uses managed Python.
-func (d *Deployer) managesPython(integ Integration) bool {
+// managesPython reports whether one job uses managed Python.
+func (d *Deployer) managesPython(integ Job) bool {
 	path := filepath.Join(integ.Dir, "otter.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -846,7 +846,7 @@ func (d *Deployer) uvVersion() string {
 }
 
 // Destroy removes the deployment. The data directory is kept unless the caller
-// explicitly opts in to deleting it: it holds every integration's watermark,
+// explicitly opts in to deleting it: it holds every job's watermark,
 // and losing it means rescanning the source system from scratch.
 func (d *Deployer) Destroy(ctx context.Context, keepData bool) error {
 	cfg := d.Config

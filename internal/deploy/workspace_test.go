@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// writeProjectIntegration creates a minimal valid integration at dir with the
+// writeProjectJob creates a minimal valid job at dir with the
 // given python.path declarations.
-func writeProjectIntegration(t *testing.T, dir, name string, pythonPath ...string) {
+func writeProjectJob(t *testing.T, dir, name string, pythonPath ...string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -29,31 +29,31 @@ func writeProjectIntegration(t *testing.T, dir, name string, pythonPath ...strin
 	}
 }
 
-// A workspace is free to group its integrations, and the shared library's
+// A workspace is free to group its jobs, and the shared library's
 // placement has to follow the declaration rather than a hardcoded depth. The
 // bug this pins: deploy only ever knew the runtime repository's own layout, so
-// shopify_integrations/<name> with python.path ../lib/python could not be
+// shopify_jobs/<name> with python.path ../lib/python could not be
 // deployed at all.
 func TestTreePlacementFollowsTheDeclaration(t *testing.T) {
 	project := t.TempDir()
 
-	grouped := Integration{
+	grouped := Job{
 		Name: "customer_sync",
-		Dir:  filepath.Join(project, "shopify_integrations", "customer_sync"),
+		Dir:  filepath.Join(project, "shopify_jobs", "customer_sync"),
 	}
-	got, err := TreePlacement(grouped, filepath.Join(project, "shopify_integrations", "lib", "python"))
+	got, err := TreePlacement(grouped, filepath.Join(project, "shopify_jobs", "lib", "python"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "integrations/lib/python" {
-		t.Errorf("grouped placement = %q, want integrations/lib/python", got)
+	if got != "jobs/lib/python" {
+		t.Errorf("grouped placement = %q, want jobs/lib/python", got)
 	}
 
 	// The runtime repository's own layout: the library sits beside the
-	// integrations directory, two levels up from the integration.
-	classic := Integration{
+	// jobs directory, two levels up from the job.
+	classic := Job{
 		Name: "one",
-		Dir:  filepath.Join(project, "integrations", "one"),
+		Dir:  filepath.Join(project, "jobs", "one"),
 	}
 	got, err = TreePlacement(classic, filepath.Join(project, "lib", "python"))
 	if err != nil {
@@ -69,7 +69,7 @@ func TestTreePlacementFollowsTheDeclaration(t *testing.T) {
 func TestTreePlacementRefusesEscapingTrees(t *testing.T) {
 	base := t.TempDir()
 	project := filepath.Join(base, "a", "b")
-	integ := Integration{Name: "one", Dir: filepath.Join(project, "integrations", "one")}
+	integ := Job{Name: "one", Dir: filepath.Join(project, "jobs", "one")}
 	outside := filepath.Join(base, "shared")
 
 	if _, err := TreePlacement(integ, outside); err == nil {
@@ -77,13 +77,13 @@ func TestTreePlacementRefusesEscapingTrees(t *testing.T) {
 	}
 }
 
-// Stage must produce the geometry the host releases from: the integration under
-// integrations/, and each declared tree at the depth its manifest names.
+// Stage must produce the geometry the host releases from: the job under
+// jobs/, and each declared tree at the depth its manifest names.
 func TestStagePreservesDeclaredGeometry(t *testing.T) {
 	project := t.TempDir()
-	integDir := filepath.Join(project, "shopify_integrations", "customer_sync")
-	libDir := filepath.Join(project, "shopify_integrations", "lib", "python")
-	writeProjectIntegration(t, integDir, "customer_sync", "../lib/python")
+	integDir := filepath.Join(project, "shopify_jobs", "customer_sync")
+	libDir := filepath.Join(project, "shopify_jobs", "lib", "python")
+	writeProjectJob(t, integDir, "customer_sync", "../lib/python")
 	if err := os.MkdirAll(filepath.Join(libDir, "otter_connectors"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestStagePreservesDeclaredGeometry(t *testing.T) {
 	builder := NewLocalBuilder(nil, nil)
 	cfg := Config{
 		ProjectRoot: project,
-		Integrations: []Integration{{
+		Jobs: []Job{{
 			Name:  "customer_sync",
 			Label: "customer_sync",
 			Dir:   integDir,
@@ -107,11 +107,11 @@ func TestStagePreservesDeclaredGeometry(t *testing.T) {
 	}
 
 	for _, rel := range []string{
-		"integrations/customer_sync/otter.yaml",
-		"integrations/customer_sync/main.py",
-		// The declaration is ../lib/python from integrations/customer_sync,
+		"jobs/customer_sync/otter.yaml",
+		"jobs/customer_sync/main.py",
+		// The declaration is ../lib/python from jobs/customer_sync,
 		// so this is where it has to land for the manifest to resolve.
-		"integrations/lib/python/otter_connectors/shopify.py",
+		"jobs/lib/python/otter_connectors/shopify.py",
 	} {
 		if _, err := os.Stat(filepath.Join(outDir, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("staged tree is missing %s: %v", rel, err)
@@ -125,8 +125,8 @@ func TestStageRefusesConflictingTrees(t *testing.T) {
 	project := t.TempDir()
 	first := filepath.Join(project, "a", "one")
 	second := filepath.Join(project, "b", "two")
-	writeProjectIntegration(t, first, "one", "../../shared")
-	writeProjectIntegration(t, second, "two", "../../shared")
+	writeProjectJob(t, first, "one", "../../shared")
+	writeProjectJob(t, second, "two", "../../shared")
 	sharedA := filepath.Join(project, "a", "shared")
 	sharedB := filepath.Join(project, "b", "shared")
 	for _, dir := range []string{sharedA, sharedB} {
@@ -137,7 +137,7 @@ func TestStageRefusesConflictingTrees(t *testing.T) {
 
 	cfg := Config{
 		ProjectRoot: project,
-		Integrations: []Integration{
+		Jobs: []Job{
 			{Name: "one", Dir: first, Trees: []string{sharedA}},
 			{Name: "two", Dir: second, Trees: []string{sharedB}},
 		},
@@ -150,13 +150,13 @@ func TestStageRefusesConflictingTrees(t *testing.T) {
 
 // Discovery walks the project, so a nested grouping directory deploys exactly
 // what `otter start` would serve.
-func TestLoadConfigDiscoversNestedIntegrations(t *testing.T) {
+func TestLoadConfigDiscoversNestedJobs(t *testing.T) {
 	project := t.TempDir()
-	group := filepath.Join(project, "shopify_integrations")
+	group := filepath.Join(project, "shopify_jobs")
 	customer := filepath.Join(group, "customer_sync")
 	product := filepath.Join(group, "product_sync")
-	writeProjectIntegration(t, customer, "customer_sync", "../lib/python")
-	writeProjectIntegration(t, product, "product_sync", "../lib/python")
+	writeProjectJob(t, customer, "customer_sync", "../lib/python")
+	writeProjectJob(t, product, "product_sync", "../lib/python")
 	for _, dir := range []string{customer, product, filepath.Join(group, "lib", "python")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -167,10 +167,10 @@ func TestLoadConfigDiscoversNestedIntegrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Integrations) != 2 {
-		t.Fatalf("discovered %d integrations, want 2", len(cfg.Integrations))
+	if len(cfg.Jobs) != 2 {
+		t.Fatalf("discovered %d jobs, want 2", len(cfg.Jobs))
 	}
-	for _, integ := range cfg.Integrations {
+	for _, integ := range cfg.Jobs {
 		if integ.Name == "customer_sync" && integ.Label != "customer_sync" {
 			t.Errorf("label = %q, want the manifest name", integ.Label)
 		}
@@ -183,22 +183,22 @@ func TestLoadConfigDiscoversNestedIntegrations(t *testing.T) {
 	}
 
 	// A limited deploy may name either the directory or the manifest label.
-	filtered, err := LoadConfig(project, &Flags{Integration: "product_sync", set: map[string]bool{}}, HostDeploy{})
+	filtered, err := LoadConfig(project, &Flags{Job: "product_sync", set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !filtered.Limited || len(filtered.Integrations) != 1 || filtered.Integrations[0].Name != "product_sync" {
-		t.Errorf("--integration did not select exactly product_sync: %+v", filtered.Integrations)
+	if !filtered.Limited || len(filtered.Jobs) != 1 || filtered.Jobs[0].Name != "product_sync" {
+		t.Errorf("--job did not select exactly product_sync: %+v", filtered.Jobs)
 	}
 }
 
-// A broken manifest blocks the integration it belongs to, but must not block
+// A broken manifest blocks the job it belongs to, but must not block
 // deploying a different, healthy one.
 func TestBrokenManifestDoesNotBlockALimitedDeploy(t *testing.T) {
 	project := t.TempDir()
 	good := filepath.Join(project, "group", "good")
 	bad := filepath.Join(project, "group", "bad")
-	writeProjectIntegration(t, good, "good")
+	writeProjectJob(t, good, "good")
 	if err := os.MkdirAll(bad, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -211,24 +211,24 @@ func TestBrokenManifestDoesNotBlockALimitedDeploy(t *testing.T) {
 	if _, err := LoadConfig(project, &Flags{set: map[string]bool{}}, HostDeploy{}); err == nil {
 		t.Error("an unfiltered deploy accepted a broken manifest")
 	}
-	cfg, err := LoadConfig(project, &Flags{Integration: "good", set: map[string]bool{}}, HostDeploy{})
+	cfg, err := LoadConfig(project, &Flags{Job: "good", set: map[string]bool{}}, HostDeploy{})
 	if err != nil {
-		t.Fatalf("a healthy integration could not be deployed: %v", err)
+		t.Fatalf("a healthy job could not be deployed: %v", err)
 	}
-	if len(cfg.Integrations) != 1 || cfg.Integrations[0].Name != "good" {
-		t.Errorf("selected %+v, want just good", cfg.Integrations)
+	if len(cfg.Jobs) != 1 || cfg.Jobs[0].Name != "good" {
+		t.Errorf("selected %+v, want just good", cfg.Jobs)
 	}
 }
 
-// A duplicate integration label must be caught locally: the host registers
-// integrations by name, so shipping both would leave one unaddressable.
+// A duplicate job label must be caught locally: the host registers
+// jobs by name, so shipping both would leave one unaddressable.
 func TestLoadConfigRejectsDuplicateLabels(t *testing.T) {
 	project := t.TempDir()
-	writeProjectIntegration(t, filepath.Join(project, "envs", "prod"), "sync")
-	writeProjectIntegration(t, filepath.Join(project, "envs", "stage"), "sync")
+	writeProjectJob(t, filepath.Join(project, "envs", "prod"), "sync")
+	writeProjectJob(t, filepath.Join(project, "envs", "stage"), "sync")
 
 	_, err := LoadConfig(project, &Flags{set: map[string]bool{}}, HostDeploy{})
-	if err == nil || !strings.Contains(err.Error(), "duplicate integration name") {
+	if err == nil || !strings.Contains(err.Error(), "duplicate job name") {
 		t.Errorf("duplicate labels were accepted: %v", err)
 	}
 }

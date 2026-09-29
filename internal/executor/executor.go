@@ -1,4 +1,4 @@
-// Package executor runs an integration as a separate child process.
+// Package executor runs a job as a separate child process.
 //
 // Arbitrary Python never runs inside the daemon: each run gets its own
 // process so a crash, a memory leak or a timeout can be contained and
@@ -47,12 +47,12 @@ func (f LogSinkFunc) Line(stream string, at time.Time, message string) { f(strea
 type Request struct {
 	Manifest *config.Manifest
 
-	// IntegrationID is the durable identity the child addresses its state and
-	// logs with. IntegrationName is the manifest label. They are separate
+	// JobID is the durable identity the child addresses its state and
+	// logs with. JobName is the manifest label. They are separate
 	// values on purpose: the label may change or be shared, the identity may
 	// not, and neither is read back out of the manifest here.
-	IntegrationID   string
-	IntegrationName string
+	JobID   string
+	JobName string
 
 	Executable     string
 	Managed        bool
@@ -99,7 +99,7 @@ func (r *Result) Succeeded() bool {
 		r.ExitCode != nil && *r.ExitCode == 0
 }
 
-// Executor launches integration processes.
+// Executor launches job processes.
 type Executor struct {
 	logger *logging.Logger
 
@@ -113,7 +113,7 @@ func New(logger *logging.Logger, sdkPath string) *Executor {
 	return &Executor{logger: logger, SDKPath: sdkPath}
 }
 
-// Run executes the integration and blocks until it finishes, times out or is
+// Run executes the job and blocks until it finishes, times out or is
 // cancelled. It always returns a Result; failures are described by the
 // Result rather than by an error return.
 func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result {
@@ -194,12 +194,12 @@ func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result 
 	case <-timeoutCh:
 		timedOut = true
 		e.logger.Warn("run_timeout",
-			"integration", m.Name, "run_id", req.RunID, "timeout", req.Timeout.String())
+			"job", m.Name, "run_id", req.RunID, "timeout", req.Timeout.String())
 		werr = e.terminate(cmd, done, grace)
 	case <-ctx.Done():
 		cancelled = true
 		e.logger.Info("run_cancelled",
-			"integration", m.Name, "run_id", req.RunID)
+			"job", m.Name, "run_id", req.RunID)
 		werr = e.terminate(cmd, done, grace)
 	}
 
@@ -209,7 +209,7 @@ func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result 
 	select {
 	case <-streamsDone:
 	case <-time.After(5 * time.Second):
-		e.logger.Warn("run_log_drain_timeout", "integration", m.Name, "run_id", req.RunID)
+		e.logger.Warn("run_log_drain_timeout", "job", m.Name, "run_id", req.RunID)
 	}
 
 	res.FinishedAt = time.Now().UTC()
@@ -245,7 +245,7 @@ func (e *Executor) terminate(cmd *exec.Cmd, done <-chan error, grace time.Durati
 // startError explains a failure to launch, adding the likely cause when the
 // interpreter is simply not there.
 //
-// The runtime never requires Python on the host for a managed integration, so
+// The runtime never requires Python on the host for a managed job, so
 // "python3: executable file not found" is the expected first failure on a fresh
 // server -- and the fix is to opt into managed mode, not to install Python.
 func startError(interpreter string, m *config.Manifest, err error) error {
@@ -261,7 +261,7 @@ func startError(interpreter string, m *config.Manifest, err error) error {
 // buildEnv assembles the child environment.
 //
 // Inherited OTTER_* variables are removed first: the daemon's own API token
-// (OTTER_API_TOKEN) must never leak into integration code. The child receives
+// (OTTER_API_TOKEN) must never leak into job code. The child receives
 // only the scoped, per-run values set below.
 func (e *Executor) buildEnv(req *Request) ([]string, error) {
 	m := req.Manifest
@@ -291,7 +291,7 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 		inherited = append(inherited, kv)
 	}
 	if req.Managed {
-		// Tools launched by the integration should discover the matching venv.
+		// Tools launched by the job should discover the matching venv.
 		inherited = append(inherited, "PATH="+filepath.Dir(req.Executable)+string(os.PathListSeparator)+os.Getenv("PATH"))
 		noProxy := strings.Trim(strings.Join([]string{os.Getenv("NO_PROXY"), os.Getenv("no_proxy"), "127.0.0.1", "localhost", "::1"}, ","), ",")
 		inherited = append(inherited, "NO_PROXY="+noProxy, "no_proxy="+noProxy)
@@ -313,16 +313,20 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 	}
 
 	inherited = append(inherited,
-		"OTTER_INTEGRATION_ID="+req.IntegrationID,
-		"OTTER_INTEGRATION_NAME="+req.IntegrationName,
+		"OTTER_JOB_ID="+req.JobID,
+		"OTTER_JOB_NAME="+req.JobName,
 		"OTTER_RUN_ID="+req.RunID,
 		"OTTER_API_URL="+req.APIURL,
 		"OTTER_TRIGGER_TYPE="+req.TriggerType,
+		"OTTER_JOB_DIR="+m.Dir,
+		// Compatibility for code in immutable releases written before the rename.
+		"OTTER_INTEGRATION_ID="+req.JobID,
+		"OTTER_INTEGRATION_NAME="+req.JobName,
 		"OTTER_INTEGRATION_DIR="+m.Dir,
 		// Unbuffered output means log lines arrive as they are written
 		// instead of being held in Python's stdout buffer until exit.
 		"PYTHONUNBUFFERED=1",
-		// Keep integration directories free of __pycache__, which matters
+		// Keep job directories free of __pycache__, which matters
 		// when they are mounted read-only.
 		"PYTHONDONTWRITEBYTECODE=1",
 	)
@@ -367,17 +371,17 @@ func managedHostVariable(key string) bool {
 		"SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE":
 		return true
 
-	// Operational knobs an integration reads from its own environment.
+	// Operational knobs a job reads from its own environment.
 	//
 	// The managed environment is deliberately narrow: the daemon's world does
 	// not become the child's, which is what keeps credentials from leaking
 	// sideways. But the same narrowness silently swallowed the tunables an
 	// operator sets per deployment -- a dry run quietly performed real writes,
-	// because DRY_RUN never reached the integration.
+	// because DRY_RUN never reached the job.
 	//
 	// These are listed explicitly rather than by prefix so the set stays
 	// auditable. `env:` in the manifest is still the first choice; this only
-	// makes an operator's environment able to reach an integration that reads
+	// makes an operator's environment able to reach a job that reads
 	// a documented knob.
 	case "DRY_RUN", "PAGE_SIZE", "MAX_PAGES_PER_RUN", "RUN_BUDGET_SECONDS",
 		"OVERLAP_SECONDS", "SALESFORCE_BATCH_SIZE", "SYNC_ADDRESS",

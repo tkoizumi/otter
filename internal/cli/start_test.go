@@ -22,7 +22,7 @@ func TestDaemonArgsForwardsBoolFlag(t *testing.T) {
 		t.Fatalf("parse start flags: %v", err)
 	}
 
-	args := daemonArgs(fs, "/srv/integrations", "/var/lib/otter", "127.0.0.1:7337", nil)
+	args := daemonArgs(fs, "/srv/jobs", "/var/lib/otter", "127.0.0.1:7337", nil)
 
 	cfg := config.DefaultDaemonConfig("test")
 	daemonFS := flag.NewFlagSet("otterd", flag.ContinueOnError)
@@ -39,7 +39,7 @@ func TestDaemonArgsForwardsBoolFlag(t *testing.T) {
 	if cfg.Workers != 4 {
 		t.Errorf("workers = %d, want 4", cfg.Workers)
 	}
-	if cfg.IntegrationsDir != "/srv/integrations" || cfg.DataDir != "/var/lib/otter" || cfg.Listen != "127.0.0.1:7337" {
+	if cfg.JobsDir != "/srv/jobs" || cfg.DataDir != "/var/lib/otter" || cfg.Listen != "127.0.0.1:7337" {
 		t.Errorf("derived args wrong: %+v", cfg)
 	}
 }
@@ -49,12 +49,12 @@ func TestDetectProjectRoot(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	nested := filepath.Join(root, "integrations", "hello")
+	nested := filepath.Join(root, "jobs", "hello")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, dir := range []string{root, filepath.Join(root, "integrations"), nested} {
+	for _, dir := range []string{root, filepath.Join(root, "jobs"), nested} {
 		got, ok := detectProjectRoot(dir)
 		if !ok {
 			t.Fatalf("no project found from %s", dir)
@@ -72,7 +72,7 @@ func TestDetectProjectRoot(t *testing.T) {
 	}
 }
 
-// The nearest project wins, so a checkout inside an integrations project (or
+// The nearest project wins, so a checkout inside a jobs project (or
 // the reverse) resolves to the one the developer is standing in.
 func TestDetectProjectRootPrefersTheNearest(t *testing.T) {
 	outer := t.TempDir()
@@ -197,7 +197,7 @@ func TestProjectEnvFilesOrderAndAbsence(t *testing.T) {
 // With no project, and nothing typed, start cannot guess where state belongs.
 func TestResolveStartWithoutAProjectNeedsData(t *testing.T) {
 	fs, _, _ := startFlagSet(t)
-	if _, err := resolveStart("", fs, "./integrations", "./tmp", ""); err == nil {
+	if _, err := resolveStart("", fs, "./jobs", "./tmp", ""); err == nil {
 		t.Error("resolveStart guessed a data directory with no project and no flag")
 	}
 }
@@ -205,22 +205,22 @@ func TestResolveStartWithoutAProjectNeedsData(t *testing.T) {
 func TestResolveStartDerivesFromTheProject(t *testing.T) {
 	root := t.TempDir()
 	fs, _, _ := startFlagSet(t)
-	opts, err := resolveStart(root, fs, "./integrations", "./tmp", "127.0.0.1:7400")
+	opts, err := resolveStart(root, fs, "./jobs", "./tmp", "127.0.0.1:7400")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if opts.Data != filepath.Join(root, stateDirName, "data") {
 		t.Errorf("Data = %q, want the project's own state directory", opts.Data)
 	}
-	if opts.Integrations != root {
-		t.Errorf("Integrations = %q, want the project root", opts.Integrations)
+	if opts.Jobs != root {
+		t.Errorf("Jobs = %q, want the project root", opts.Jobs)
 	}
 }
 
 // An explicit flag always beats what the project would have chosen.
 func TestResolveStartHonoursExplicitFlags(t *testing.T) {
 	root := t.TempDir()
-	fs, _, _ := startFlagSet(t, "--integrations", "/elsewhere", "--data", "/var/otter")
+	fs, _, _ := startFlagSet(t, "--jobs", "/elsewhere", "--data", "/var/otter")
 	opts, err := resolveStart(root, fs, "/elsewhere", "/var/otter", "127.0.0.1:7400")
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +228,8 @@ func TestResolveStartHonoursExplicitFlags(t *testing.T) {
 	if opts.Data != "/var/otter" {
 		t.Errorf("Data = %q, want the flag value", opts.Data)
 	}
-	if opts.Integrations != "/elsewhere" {
-		t.Errorf("Integrations = %q, want the flag value", opts.Integrations)
+	if opts.Jobs != "/elsewhere" {
+		t.Errorf("Jobs = %q, want the flag value", opts.Jobs)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestResolveStartHonoursExplicitFlags(t *testing.T) {
 func TestResolveStartLeavesListenForTheCallerToChoose(t *testing.T) {
 	root := t.TempDir()
 	fs, _, _ := startFlagSet(t)
-	opts, err := resolveStart(root, fs, "./integrations", "./tmp", "")
+	opts, err := resolveStart(root, fs, "./jobs", "./tmp", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,15 +258,15 @@ func TestResolveStartLeavesListenForTheCallerToChoose(t *testing.T) {
 // same flag names and the same flagWasSet behaviour.
 func startFlagSet(t *testing.T, args ...string) (*flag.FlagSet, *string, *string) {
 	t.Helper()
-	integrations := new(string)
+	jobs := new(string)
 	data := new(string)
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
-	fs.StringVar(integrations, "integrations", "./integrations", "")
+	fs.StringVar(jobs, "jobs", "./jobs", "")
 	fs.StringVar(data, "data", "./tmp", "")
 	fs.String("listen", "", "")
 	fs.Bool("detach", false, "")
 	if err := fs.Parse(args); err != nil {
 		t.Fatal(err)
 	}
-	return fs, integrations, data
+	return fs, jobs, data
 }

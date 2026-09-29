@@ -51,6 +51,12 @@ type globals struct {
 	token   string
 	jsonOut bool
 	version bool
+
+	// apiExplicit records that the operator named the daemon (--api or
+	// OTTER_API_URL) rather than it being discovered from the workspace. A
+	// named daemon may own a different data directory, so a local command must
+	// not assume this workspace's registry describes it.
+	apiExplicit bool
 }
 
 // Run executes the CLI and returns a process exit code.
@@ -93,8 +99,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return 0
 	case "status":
 		return a.cmdStatus(ctx, g)
-	case "integrations":
-		return a.cmdIntegrations(ctx, g, commandArgs)
+	case "jobs":
+		return a.cmdJobs(ctx, g, commandArgs)
 	case "reload":
 		return a.cmdReload(ctx, g, commandArgs)
 	case "pause":
@@ -134,7 +140,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	case "identity":
 		return a.cmdIdentity(ctx, commandArgs)
 	case "init":
-		// Scaffolds a workspace and one integration. Local: no daemon, no
+		// Scaffolds a workspace and one job. Local: no daemon, no
 		// network, nothing but files the developer is expected to edit.
 		return a.cmdInit(commandArgs)
 	case "start":
@@ -146,7 +152,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	case "serve":
 		// `otter serve` is the daemon itself, with the daemon's own flag
 		// defaults. It stays for systemd units and scripts that already pass
-		// --integrations, --data and --listen explicitly.
+		// --jobs, --data and --listen explicitly.
 		return RunDaemon(ctx, a.Version, commandArgs, a.Stdout, a.Stderr)
 	case "deploy":
 		return a.cmdDeploy(ctx, g, commandArgs)
@@ -176,8 +182,10 @@ func parseGlobals(args []string) (globals, []string, error) {
 			}
 			i++
 			g.api = args[i]
+			g.apiExplicit = true
 		case strings.HasPrefix(arg, "--api="):
 			g.api = strings.TrimPrefix(arg, "--api=")
+			g.apiExplicit = true
 
 		case arg == "--token":
 			if i+1 >= len(args) {
@@ -217,7 +225,7 @@ func (g globals) client() *api.Client {
 	return api.NewClient(base, token)
 }
 
-// EnvDir is where `otter deploy` writes one environment file per integration,
+// EnvDir is where `otter deploy` writes one environment file per job,
 // mode 0600. The API token lives in one of them.
 const EnvDir = "/etc/otter"
 
@@ -228,7 +236,7 @@ var envDirForTest = EnvDir
 // localHostToken reads the API token from the daemon's own environment file.
 //
 // On the host that runs otterd, the token is already on disk -- systemd reads
-// it out of /etc/otter/<integration>.env for the daemon. An operator's shell is
+// it out of /etc/otter/<job>.env for the daemon. An operator's shell is
 // a different process and inherits none of it, so every command on the host
 // otherwise starts with a 401 and a copy-and-paste. Reading it here removes
 // that without weakening anything: the file is 0600 and only root can read it.
@@ -317,7 +325,7 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 
 	// The daemon only discloses counters to an authenticated caller, so a
 	// missing or wrong token shows up here instead of failing silently.
-	if health.Integrations == nil {
+	if health.Jobs == nil {
 		fmt.Fprintln(a.Stderr, "otter: run counts unavailable: the daemon requires an API token")
 		fmt.Fprintln(a.Stderr, "hint: set OTTER_API_TOKEN or pass --token")
 		return 0
@@ -328,8 +336,8 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 		queueDepth = *health.QueueDepth
 	}
 
-	fmt.Fprintf(a.Stdout, "integrations:  %d total, %d valid, %d invalid\n",
-		health.Integrations.Total, health.Integrations.Valid, health.Integrations.Invalid)
+	fmt.Fprintf(a.Stdout, "jobs:          %d total, %d valid, %d invalid\n",
+		health.Jobs.Total, health.Jobs.Valid, health.Jobs.Invalid)
 	fmt.Fprintf(a.Stdout, "queue depth:   %d\n", queueDepth)
 	fmt.Fprintf(a.Stdout, "runs:          running=%d queued=%d retrying=%d\n",
 		health.Runs[string(runs.StatusRunning)],
@@ -343,113 +351,6 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 	return 0
 }
 
-func (a *App) cmdIntegrations(ctx context.Context, g globals, args []string) int {
-	fs := flag.NewFlagSet("integrations", flag.ContinueOnError)
-	fs.SetOutput(a.Stderr)
-	all := fs.Bool("all", false, "include invalid integrations")
-	schedule := fs.Bool("schedule", false, "show each integration's cron, next run and last outcome")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-
-	list, err := g.client().ListIntegrations(ctx)
-	if err != nil {
-		return a.fail(err)
-	}
-
-	if g.jsonOut {
-		return a.printJSON(list)
-	}
-
-	if *schedule {
-		return a.printSchedule(ctx, g, list, *all)
-	}
-
-	printed := 0
-	for _, it := range list {
-		if !it.Valid {
-			if !*all {
-				continue
-			}
-			fmt.Fprintf(a.Stdout, "%s\t(invalid: %s)\n", it.ID, oneLine(it.Error))
-			printed++
-			continue
-		}
-		// The default output is exactly the integration names, one per line,
-		// so it can be consumed by scripts.
-		fmt.Fprintln(a.Stdout, it.ID)
-		printed++
-	}
-
-	if printed == 0 {
-		fmt.Fprintln(a.Stderr, "otter: no integrations found (use --all to include invalid ones)")
-	}
-	return 0
-}
-
-// printSchedule answers the question "is this actually running on a schedule?":
-// what each integration's cron is, when it next fires, and what happened last
-// time it did.
-//
-// A cron integration that has never run is the common case after a first
-// start, so "no runs yet" is reported rather than an empty column.
-func (a *App) printSchedule(ctx context.Context, g globals, list []api.IntegrationView, includeInvalid bool) int {
-	client := g.client()
-	now := time.Now().UTC()
-
-	fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n",
-		"INTEGRATION", "CRON", "NEXT RUN", "IN", "LAST RUN")
-	fmt.Fprintln(a.Stdout, strings.Repeat("-", 92))
-
-	shown := 0
-	for _, it := range list {
-		if !it.Valid {
-			if !includeInvalid {
-				continue
-			}
-			fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n",
-				it.ID, "-", "-", "-", "(invalid: "+oneLine(it.Error)+")")
-			shown++
-			continue
-		}
-
-		cron := it.Triggers.Cron
-		if cron == "" {
-			continue // not scheduled; this view is about schedules
-		}
-		shown++
-
-		next, in := "-", "-"
-		switch {
-		case it.Triggers.Paused:
-			// A paused integration has no next run. Naming the pause here is
-			// what keeps a blank column from reading as "not yet due" or as an
-			// integration that silently stopped firing.
-			next = "paused"
-		case it.NextRunAt != nil:
-			next = it.NextRunAt.Local().Format("2006-01-02 15:04:05")
-			in = it.NextRunAt.Sub(now).Round(time.Second).String()
-		}
-
-		last := "no runs yet"
-		// A small limit keeps this a status view rather than a history dump.
-		if recent, err := client.ListRuns(ctx, api.RunsQuery{IntegrationID: it.ID, Limit: 1}); err == nil && len(recent) > 0 {
-			r := recent[0]
-			last = fmt.Sprintf("%s at %s", r.Status, r.CreatedAt.Local().Format("15:04:05"))
-			if r.Error != nil && *r.Error != "" && r.Status != runs.StatusSucceeded {
-				last += " (" + oneLine(*r.Error) + ")"
-			}
-		}
-		fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n", it.ID, cron, next, in, last)
-	}
-
-	if shown == 0 {
-		fmt.Fprintln(a.Stderr, "otter: no integrations with a cron trigger")
-		return 0
-	}
-	return 0
-}
-
 func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -457,10 +358,10 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter inspect [integration]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter inspect [job]")
 		return 2
 	}
-	// No argument means "the integration I am standing in", the same default
+	// No argument means "the job I am standing in", the same default
 	// `otter run` and `otter release` use, so `otter inspect .` is only needed
 	// when you are somewhere else.
 	ref := "."
@@ -468,15 +369,15 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 		ref = fs.Arg(0)
 	}
 	// Accept a directory or manifest too, so `otter inspect .` shows the
-	// integration the working directory holds.
-	id, err := resolveIntegrationRef(ref)
+	// job the working directory holds.
+	id, err := resolveJobRef(ref)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
 	}
 
 	client := g.client()
-	it, err := client.GetIntegration(ctx, id)
+	it, err := client.GetJob(ctx, id)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -485,7 +386,7 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 		return a.printJSON(it)
 	}
 
-	fmt.Fprintf(a.Stdout, "integration:   %s\n", it.ID)
+	fmt.Fprintf(a.Stdout, "job:           %s\n", it.ID)
 	if it.Description != "" {
 		fmt.Fprintf(a.Stdout, "description:   %s\n", it.Description)
 	}
@@ -513,7 +414,7 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 		fmt.Fprintf(a.Stdout, "next run:      %s\n", it.NextRunAt.Format(time.RFC3339))
 	}
 	if it.Triggers.Paused {
-		// A paused integration has no next run, so this line is what tells the
+		// A paused job has no next run, so this line is what tells the
 		// reader that the missing schedule is deliberate.
 		fmt.Fprintf(a.Stdout, "paused:        %s\n", pausedSummary(it.Triggers))
 	}
@@ -535,7 +436,7 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 		fmt.Fprintf(a.Stdout, "secrets:       %s\n", strings.Join(it.Secrets, ", "))
 	}
 
-	recent, err := client.ListRuns(ctx, api.RunsQuery{IntegrationID: id, Limit: 5})
+	recent, err := client.ListRuns(ctx, api.RunsQuery{JobID: id, Limit: 5})
 	if err == nil && len(recent) > 0 {
 		fmt.Fprintf(a.Stdout, "\nrecent runs:\n")
 		a.writeRunTable(recent)
@@ -544,7 +445,7 @@ func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
-// captureSummary spells out what a capture policy means for an integration, so
+// captureSummary spells out what a capture policy means for a job, so
 // `otter inspect` answers "are payloads being stored for this one?" without the
 // reader having to know the policy names. Full is the default, which makes the
 // question worth answering explicitly.
@@ -619,7 +520,7 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 	body := fs.String("body", "", "JSON value recorded as the trigger body")
 	noWait := fs.Bool("no-wait", false, "queue the run and print its id without waiting")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the run and any retries to finish")
-	capture := fs.String("capture", "", "override this run's HTTP capture policy: off, metadata or full (default: the integration's policy)")
+	capture := fs.String("capture", "", "override this run's HTTP capture policy: off, metadata or full (default: the job's policy)")
 	// Only --body, --timeout and --capture take a value; the rest are booleans,
 	// so the reorderer needs no reflection over the flag set.
 	takesValue := func(arg string) bool {
@@ -634,13 +535,13 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter run [integration] [--body <json>] [--no-wait] [--capture <policy>]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter run [job] [--body <json>] [--no-wait] [--capture <policy>]")
 		return 2
 	}
 
 	// Validate before submitting: a mistyped policy should not queue a run. An
 	// omitted flag is not a policy, though: it leaves the choice to the
-	// integration's manifest and then the deployment default, which only the
+	// job's manifest and then the deployment default, which only the
 	// daemon can resolve.
 	capturePolicy, err := inspection.ParsePolicyOverride(*capture)
 	if err != nil {
@@ -657,20 +558,20 @@ func (a *App) cmdRun(ctx context.Context, g globals, args []string) int {
 		payload = json.RawMessage(*body)
 	}
 
-	// No argument means "the integration I am standing in", so `otter run` and
+	// No argument means "the job I am standing in", so `otter run` and
 	// `otter run .` are the same command.
 	ref := "."
 	if fs.NArg() == 1 {
 		ref = fs.Arg(0)
 	}
-	integration, err := resolveIntegrationRef(ref)
+	job, err := resolveJobRef(ref)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
 	}
 
 	client := g.client()
-	rootID, err := client.SubmitRunWithOptions(ctx, integration, payload, capturePolicy.String())
+	rootID, err := client.SubmitRunWithOptions(ctx, job, payload, capturePolicy.String())
 	if err != nil {
 		return a.fail(err)
 	}
@@ -777,7 +678,7 @@ func (a *App) waitForRun(ctx context.Context, client *api.Client, rootID string,
 		// A failure or timeout the manifest can no longer retry is the end of
 		// the chain. Deciding this from the ceiling rather than from the clock
 		// is what keeps `otter run` from spending the grace below on every
-		// failure of an integration that never retries -- the common case.
+		// failure of a job that never retries -- the common case.
 		if retriesExhausted(view) {
 			return view, nil
 		}
@@ -804,16 +705,16 @@ func (a *App) waitForRun(ctx context.Context, client *api.Client, rootID string,
 // queue entry carries the backoff (see scheduleRetry), so this covers a couple
 // of database writes rather than someone else's retry policy. It is the
 // fallback for the cases retriesExhausted cannot decide: a daemon that does not
-// report the ceiling (an older one, or an integration that has since been
+// report the ceiling (an older one, or a job that has since been
 // removed) and a retry that was meant to be scheduled but failed.
 const retryGrace = 2 * time.Second
 
 // retriesExhausted reports whether the newest attempt ended in a status no
-// retry can follow, because it already used the integration's last allowed
+// retry can follow, because it already used the job's last allowed
 // attempt. A failed or timed-out chain with attempts left is deliberately not
 // exhausted: the daemon queues the next attempt a moment after the terminal
 // status becomes visible, so the grace above still applies there. MaxAttempts is
-// 0 when the daemon could not resolve the integration's manifest, which also
+// 0 when the daemon could not resolve the job's manifest, which also
 // leaves the decision to the grace.
 func retriesExhausted(view *api.RunView) bool {
 	if !retryableStatus(view.LatestStatus) || view.MaxAttempts <= 0 {
@@ -873,16 +774,16 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(a.Stderr, "Usage: otter runs [<integration>] [--all] [--status <status>] [--limit <n>]")
+		fmt.Fprintln(a.Stderr, "Usage: otter runs [<job>] [--all] [--status <status>] [--limit <n>]")
 		fmt.Fprintln(a.Stderr)
-		fmt.Fprintln(a.Stderr, "Lists the runs of one integration. With no argument the integration in the")
-		fmt.Fprintln(a.Stderr, "working directory is used; --all lists every integration instead.")
+		fmt.Fprintln(a.Stderr, "Lists the runs of one job. With no argument the job in the")
+		fmt.Fprintln(a.Stderr, "working directory is used; --all lists every job instead.")
 	}
-	// --integration predates the positional argument and is kept so existing
+	// --job predates the positional argument and is kept so existing
 	// scripts keep working. It now resolves the same references the positional
 	// form does, rather than being the only way in.
-	integration := fs.String("integration", "", "integration to list (deprecated: pass it positionally)")
-	all := fs.Bool("all", false, "list runs of every integration")
+	job := fs.String("job", "", "job to list (deprecated: pass it positionally)")
+	all := fs.Bool("all", false, "list runs of every job")
 	status := fs.String("status", "", "filter by status")
 	limit := fs.Int("limit", 100, "maximum number of runs")
 	takesValue := func(arg string) bool {
@@ -890,27 +791,27 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 		if i := strings.Index(name, "="); i >= 0 {
 			name = name[:i]
 		}
-		return name == "integration" || name == "status" || name == "limit"
+		return name == "job" || name == "status" || name == "limit"
 	}
 	args = flagsFirst(normalizeLongFlags(args), takesValue)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter runs [<integration>] [--all] [--status <status>] [--limit <n>]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter runs [<job>] [--all] [--status <status>] [--limit <n>]")
 		return 2
 	}
 
-	ref := *integration
+	ref := *job
 	if fs.NArg() == 1 {
 		if ref != "" && ref != fs.Arg(0) {
-			fmt.Fprintf(a.Stderr, "otter: %q and --integration %q name different integrations\n", fs.Arg(0), ref)
+			fmt.Fprintf(a.Stderr, "otter: %q and --job %q name different jobs\n", fs.Arg(0), ref)
 			return 2
 		}
 		ref = fs.Arg(0)
 	}
 	if *all && ref != "" {
-		fmt.Fprintln(a.Stderr, "otter: --all lists every integration; do not also name one")
+		fmt.Fprintln(a.Stderr, "otter: --all lists every job; do not also name one")
 		return 2
 	}
 	if *status != "" && !runs.Status(*status).Valid() {
@@ -919,7 +820,7 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 	}
 
 	// The scope is deliberately explicit: a workspace-wide listing is asked
-	// for with --all, never inferred. Anything else names one integration, and
+	// for with --all, never inferred. Anything else names one job, and
 	// no name at all means the one in the working directory -- the same
 	// default `otter run`, `otter inspect` and `otter pause` use.
 	scope := ""
@@ -932,11 +833,11 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 		// `otter runs .` means the directory the operator is standing in and
 		// not the daemon's. A bare label or id: is passed through to the
 		// daemon, which is where reference resolution lives.
-		id, _, err := resolveIntegrationRefDir(ref)
+		id, _, err := resolveJobRefDir(ref)
 		if err != nil {
 			if !explicit {
-				fmt.Fprintf(a.Stderr, "otter: no integration here: no %s in this directory\n", config.ManifestFileName)
-				fmt.Fprintln(a.Stderr, "otter: name one (otter runs <integration>) or list every integration (otter runs --all)")
+				fmt.Fprintf(a.Stderr, "otter: no job here: no %s in this directory\n", config.ManifestFileName)
+				fmt.Fprintln(a.Stderr, "otter: name one (otter runs <job>) or list every job (otter runs --all)")
 				return 2
 			}
 			fmt.Fprintf(a.Stderr, "otter: %v\n", err)
@@ -946,9 +847,9 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 	}
 
 	list, err := g.client().ListRuns(ctx, api.RunsQuery{
-		IntegrationID: scope,
-		Status:        *status,
-		Limit:         *limit,
+		JobID:  scope,
+		Status: *status,
+		Limit:  *limit,
 	})
 	if err != nil {
 		return a.fail(err)
@@ -992,30 +893,30 @@ func runsListNextLimit(current int) int {
 
 func (a *App) writeRunTable(list []*runs.Run) {
 	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN ID\tINTEGRATION\tTRIGGER\tSTATUS\tATTEMPT\tSTARTED\tDURATION")
+	fmt.Fprintln(tw, "RUN ID\tJOB\tTRIGGER\tSTATUS\tATTEMPT\tSTARTED\tDURATION")
 	for _, r := range list {
 		started := "-"
 		if r.StartedAt != nil {
 			started = r.StartedAt.Format("2006-01-02T15:04:05Z")
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-			r.ID, integrationDisplayName(r), r.TriggerType, r.Status, r.Attempt, started,
+			r.ID, jobDisplayName(r), r.TriggerType, r.Status, r.Attempt, started,
 			r.Duration().Round(time.Millisecond))
 	}
 	_ = tw.Flush()
 }
 
-// integrationDisplayName is the label a run was submitted under, which is what
-// an operator typed and can type again. integration_id is the durable identity
+// jobDisplayName is the label a run was submitted under, which is what
+// an operator typed and can type again. job_id is the durable identity
 // and is a UUID on any workspace that has been migrated, so showing it in a
 // table answers a question nobody asked. Rows written before identities
 // existed carry no name; their id is the label, so the fallback is right for
 // both spellings.
-func integrationDisplayName(r *runs.Run) string {
-	if r.IntegrationName != "" {
-		return r.IntegrationName
+func jobDisplayName(r *runs.Run) string {
+	if r.JobName != "" {
+		return r.JobName
 	}
-	return r.IntegrationID
+	return r.JobID
 }
 
 func (a *App) cmdRunStatus(ctx context.Context, g globals, args []string) int {
@@ -1040,7 +941,7 @@ func (a *App) cmdRunStatus(ctx context.Context, g globals, args []string) int {
 
 	r := view.Run
 	fmt.Fprintf(a.Stdout, "run id:        %s\n", r.ID)
-	fmt.Fprintf(a.Stdout, "integration:   %s\n", integrationDisplayName(r))
+	fmt.Fprintf(a.Stdout, "job:           %s\n", jobDisplayName(r))
 	fmt.Fprintf(a.Stdout, "trigger:       %s\n", r.TriggerType)
 	fmt.Fprintf(a.Stdout, "status:        %s\n", r.Status)
 	fmt.Fprintf(a.Stdout, "attempt:       %d\n", r.Attempt)
@@ -1167,7 +1068,7 @@ func (a *App) cmdLogs(ctx context.Context, g globals, args []string) int {
 			rendered := renderLogLine(entry.Message)
 			switch entry.Stream {
 			case runs.StreamStderr:
-				// Integration stderr stays on the CLI's stderr, mirroring the
+				// Job stderr stays on the CLI's stderr, mirroring the
 				// process it came from.
 				fmt.Fprintln(a.Stderr, rendered)
 			default:
@@ -1208,7 +1109,7 @@ func (a *App) cmdLogs(ctx context.Context, g globals, args []string) int {
 
 func (a *App) cmdState(ctx context.Context, g globals, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter state <get|set|delete> <integration> <key> [json]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter state <get|set|delete> <job> <key> [json]")
 		return 2
 	}
 
@@ -1218,7 +1119,7 @@ func (a *App) cmdState(ctx context.Context, g globals, args []string) int {
 	switch sub {
 	case "get":
 		if len(rest) != 2 {
-			fmt.Fprintln(a.Stderr, "otter: usage: otter state get <integration> <key>")
+			fmt.Fprintln(a.Stderr, "otter: usage: otter state get <job> <key>")
 			return 2
 		}
 		value, err := client.GetState(ctx, rest[0], rest[1])
@@ -1236,7 +1137,7 @@ func (a *App) cmdState(ctx context.Context, g globals, args []string) int {
 
 	case "set":
 		if len(rest) != 3 {
-			fmt.Fprintln(a.Stderr, "otter: usage: otter state set <integration> <key> <json>")
+			fmt.Fprintln(a.Stderr, "otter: usage: otter state set <job> <key> <json>")
 			return 2
 		}
 		if !json.Valid([]byte(rest[2])) {
@@ -1255,7 +1156,7 @@ func (a *App) cmdState(ctx context.Context, g globals, args []string) int {
 
 	case "delete", "del", "rm":
 		if len(rest) != 2 {
-			fmt.Fprintln(a.Stderr, "otter: usage: otter state delete <integration> <key>")
+			fmt.Fprintln(a.Stderr, "otter: usage: otter state delete <job> <key>")
 			return 2
 		}
 		if err := client.DeleteState(ctx, rest[0], rest[1]); err != nil {
@@ -1278,7 +1179,7 @@ func (a *App) cmdValidate(args []string) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter validate <otter.yaml|directory|integration>")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter validate <otter.yaml|directory|job>")
 		return 2
 	}
 	target := fs.Arg(0)
@@ -1336,10 +1237,10 @@ func (a *App) cmdValidate(args []string) int {
 	}
 
 	if failures > 0 {
-		fmt.Fprintf(a.Stderr, "\n%d of %d integration(s) are invalid\n", failures, len(items))
+		fmt.Fprintf(a.Stderr, "\n%d of %d job(s) are invalid\n", failures, len(items))
 		return 1
 	}
-	fmt.Fprintf(a.Stdout, "\n%d integration(s) valid\n", len(items))
+	fmt.Fprintf(a.Stdout, "\n%d job(s) valid\n", len(items))
 	return 0
 }
 
@@ -1376,45 +1277,46 @@ func (a *App) fail(err error) int {
 	}
 
 	fmt.Fprintln(a.Stderr, "hint: is otterd running? start it with:")
-	fmt.Fprintln(a.Stderr, "  otterd --integrations ./integrations --data ./tmp")
+	fmt.Fprintln(a.Stderr, "  otterd --jobs ./jobs --data ./tmp")
 	return 1
 }
 
 func (a *App) printUsage(w io.Writer) {
-	fmt.Fprintf(w, `Otter is a lightweight runtime for running integration code anywhere.
+	fmt.Fprintf(w, `Otter is a lightweight runtime for running job code anywhere.
 
 Usage:
   otter [--api <url>] [--token <token>] [--json] <command> [arguments]
 
 Getting started:
-  init [--force] [name]           scaffold a workspace and one integration
-  release [<integration>|.]       stage and activate an immutable release
+  init [--force] [name]           scaffold a workspace and one job
+  release [<job>|.]       stage and activate an immutable release
 
 Runtime:
   start [--detach]                run this project's runtime, free port, env loaded
   stop                            stop the runtime serving this project
   status                          show daemon health and run counts
-  integrations [--all]            list integration names
-  integrations --schedule         cron, next run and last outcome per integration
-  reload                          re-read the integrations directory; no restart
-  pause [<integration>|.]         suspend cron and webhook; manual runs still work
-  resume [<integration>|.]        re-arm the triggers a pause suspended
-  inspect [<integration>|.]       show one integration in detail
-  run [<integration>] [--no-wait] run it, wait, print the outcome and its output
+  jobs [--all]            list jobs with their id, status and path
+  jobs --all              also show invalid, retired and deleted jobs
+  jobs --schedule         cron, next run and last outcome per job
+  reload                          re-read the jobs directory; no restart
+  pause [<job>|.]         suspend cron and webhook; manual runs still work
+  resume [<job>|.]        re-arm the triggers a pause suspended
+  inspect [<job>|.]       show one job in detail
+  run [<job>] [--no-wait] run it, wait, print the outcome and its output
   run --capture off|metadata|full override this run's HTTP capture policy
   serve [flags]                   run the daemon with the daemon's own defaults
 
 Identity:
   register [<path>|.]             give a source directory a durable identity
-  reset <integration>             retire its identity, mint a fresh one at the same path
-  delete <integration>            purge its state, history, tokens and releases
-  move <integration> <dest>       preserve its identity across a directory rename
+  reset <job>             retire its identity, mint a fresh one at the same path
+  delete <job>            purge its state, history, tokens and releases
+  move <job> <dest>       preserve its identity across a directory rename
   identity migrate [--apply]      move a name-keyed workspace onto the identity registry
 
 Runs:
-  runs [<integration>]            runs for that integration; no argument means this directory
+  runs [<job>]            runs for that job; no argument means this directory
   runs --all [--status S] [--limit N]
-                                  runs for every integration in the workspace
+                                  runs for every job in the workspace
   cancel <run-id>                 stop a queued or running run; it is never retried
   run-status <run-id>             show a run and its retry attempts
   logs <run-id> [--follow]        print captured output (JSONL when piped; --pretty to force prose)
@@ -1424,22 +1326,22 @@ Runs:
   trace <run-id>                  one finished attempt's context, output and HTTP in time order
 
 State:
-  state get <integration> <key>
-  state set <integration> <key> <json>
-  state delete <integration> <key>
+  state get <job> <key>
+  state set <job> <key> <json>
+  state delete <job> <key>
 
 Manifests:
   validate <otter.yaml|dir|name>  validate without a running daemon
 
 Python:
-  prepare [--integrations DIR] [--data DIR] [<integration>|.]
+  prepare [--jobs DIR] [--data DIR] [<job>|.]
                                   prepare opt-in managed Python environments
-  release [--all] [<integration>|.]
+  release [--all] [<job>|.]
                                   stage and activate an immutable release
-  release --list <integration>    list staged releases
-  release --list --all            every integration that has a release, and every one that does not
+  release --list <job>    list staged releases
+  release --list --all            every job that has a release, and every one that does not
   release --list --all --prune    remove release directories with no registered identity (--apply to act)
-  release --activate <digest> <integration>
+  release --activate <digest> <job>
                                   roll back to a staged release
 
 Deployment:
@@ -1458,37 +1360,37 @@ address below .otter/, walking up from the working directory. A running daemon
 records its address there when it starts, so commands in a project reach the
 daemon serving that project -- including one on a non-default port.
 
-An integration is addressed by the label in its manifest, by the filesystem path
+A job is addressed by the label in its manifest, by the filesystem path
 that holds that manifest, or by its durable identity as id:<id>: otter run .
-runs the integration in the working directory, otter run inside one does the
+runs the job in the working directory, otter run inside one does the
 same, and otter inspect . looks at it. A path is resolved through the registry,
 so the directory name does not matter. Labels need not be unique; when two
-integrations share one, the bare label is refused and the candidates are listed.
+jobs share one, the bare label is refused and the candidates are listed.
 
 State, run history, webhook tokens, releases and environments belong to the
 durable identity the runtime mints, not to the label, so renaming an
-integration keeps them and copying a directory does not inherit them. See
+job keeps them and copying a directory does not inherit them. See
 docs/identity.md. The "otter identity migrate" command moves an older,
 name-keyed workspace onto the registry.
 
-A run executes the integration's active release rather than its source tree, so
+A run executes the job's active release rather than its source tree, so
 an edit is not live until otter release stages and activates a new one. Every
-integration needs a release before its first run, whether or not it uses managed
+job needs a release before its first run, whether or not it uses managed
 Python; otter release --all covers a whole workspace.
 
 Examples:
-  otter init acme                 # scaffold a workspace and an integration
+  otter init acme                 # scaffold a workspace and a job
   otter start                     # in a project: free port, env files loaded
   otter start --detach            # same, in the background
   otter run counter
-  otter runs counter              # that integration's history
+  otter runs counter              # that job's history
   otter runs --all --status failed
-  otter run                       # the integration in the working directory
-  otter release                   # release the integration in this directory
-  otter release --all             # release every integration in the workspace
+  otter run                       # the job in the working directory
+  otter release                   # release the job in this directory
+  otter release --all             # release every job in the workspace
   otter stop
-  otter integrations
-  otter reload                    # after adding an integration: no restart
+  otter jobs
+  otter reload                    # after adding a job: no restart
   otter logs $(otter run counter) --follow
   otter state get counter count
   otter prepare shopify-to-salesforce
@@ -1500,13 +1402,15 @@ Examples:
 
 // needsDaemon reports whether a command acts on a running runtime rather than
 // on files in the working tree. The local commands -- init, validate, serve,
-// release, prepare, deploy -- read and write files directly and need no daemon.
-// The workspace-scoped ones among them resolve their directories from the
-// workspace when there is one and from explicit flags when there is not, which
-// is how `otter deploy` operates on a host that has no checkout.
+// release, prepare, deploy, jobs -- read and write files directly and need no
+// daemon. A command that can also use one (jobs enriches its listing from a
+// reachable runtime) decides for itself. The workspace-scoped ones among them
+// resolve their directories from the workspace when there is one and from
+// explicit flags when there is not, which is how `otter deploy` operates on a
+// host that has no checkout.
 func needsDaemon(command string) bool {
 	switch command {
-	case "status", "integrations", "reload", "inspect", "run", "runs", "run-status", "logs", "state",
+	case "status", "reload", "inspect", "run", "runs", "run-status", "logs", "state",
 		"register", "reset", "delete", "move", "requests", "request", "trace", "pause", "resume", "cancel":
 		return true
 	default:

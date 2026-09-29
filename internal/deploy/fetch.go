@@ -20,10 +20,10 @@ import (
 // This file is how a deploy gets its executables when the project being
 // deployed is not the runtime's own source tree.
 //
-// A deploy target is a *project*: a directory with integrations in it. Most of
+// A deploy target is a *project*: a directory with jobs in it. Most of
 // them are Python, not Go, so `go build ./cmd/otterd` is not available and
 // demanding a checkout of the runtime repository would make the split between
-// the runtime and its integrations a fiction. The runtime is already published
+// the runtime and its jobs a fiction. The runtime is already published
 // as a per-platform archive containing both binaries, so that is what a project
 // deploy consumes. A Go checkout still builds from source (see LocalBuilder),
 // and --binaries covers the offline case.

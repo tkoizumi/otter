@@ -1,6 +1,6 @@
 // Command otterd is the Otter daemon.
 //
-// It discovers integrations under --integrations, registers their triggers,
+// It discovers jobs under --jobs, registers their triggers,
 // executes them as child processes, persists runs, logs and state in SQLite
 // and serves the HTTP API on --listen.
 package main

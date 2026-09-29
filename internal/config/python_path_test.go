@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-// python.path lets integrations share client code. Entries are relative to the
-// integration directory, and escaping upwards is the point.
-func TestPythonPathResolvesRelativeToIntegrationDir(t *testing.T) {
+// python.path lets jobs share client code. Entries are relative to the
+// job directory, and escaping upwards is the point.
+func TestPythonPathResolvesRelativeToJobDir(t *testing.T) {
 	root := t.TempDir()
 	shared := filepath.Join(root, "lib", "python")
 	if err := os.MkdirAll(shared, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	dir := filepath.Join(root, "integrations", "sync")
+	dir := filepath.Join(root, "jobs", "sync")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestPythonPathResolvesRelativeToIntegrationDir(t *testing.T) {
 
 func TestPythonPathAcceptsAbsolutePaths(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "integration")
+	dir := filepath.Join(root, "job")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestPythonPathAcceptsAbsolutePaths(t *testing.T) {
 
 func TestPythonPathMustExistAndBeADirectory(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "integration")
+	dir := filepath.Join(root, "job")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

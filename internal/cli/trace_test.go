@@ -43,17 +43,17 @@ func tracePage(runID string) *timeline.Page {
 	finished := time.Date(2026, 1, 1, 12, 0, 0, 41000000, time.UTC)
 	return &timeline.Page{
 		Context: timeline.Context{
-			SchemaVersion:   timeline.SchemaVersion,
-			RunID:           runID,
-			IntegrationID:   "int-1",
-			IntegrationName: "orders-sync",
-			Status:          "failed",
-			Attempt:         1,
-			TriggerType:     "manual",
-			ReleaseDigest:   "8c1d4f0a9b3e",
-			IncludeHTTP:     true,
-			StartedAt:       &started,
-			FinishedAt:      &finished,
+			SchemaVersion: timeline.SchemaVersion,
+			RunID:         runID,
+			JobID:         "int-1",
+			JobName:       "orders-sync",
+			Status:        "failed",
+			Attempt:       1,
+			TriggerType:   "manual",
+			ReleaseDigest: "8c1d4f0a9b3e",
+			IncludeHTTP:   true,
+			StartedAt:     &started,
+			FinishedAt:    &finished,
 			Capture: &inspection.RunCapture{
 				RunID: runID, State: inspection.CaptureComplete, Policy: inspection.PolicyFull,
 				RequestCount: 2, CompletedCount: 2, Coverage: "urllib",
@@ -86,7 +86,7 @@ func tracePage(runID string) *timeline.Page {
 }
 
 // TestTraceTableShowsKindsNotStreamNames is a regression test for a rendering
-// bug: the KIND column printed the raw stream name, so an integration's ctx.log
+// bug: the KIND column printed the raw stream name, so a job's ctx.log
 // line appeared as "otter" — the same stream the runtime narrates on. The kind is
 // what the column is for, and the stream belongs in the detail.
 func TestTraceTableShowsKindsNotStreamNames(t *testing.T) {
@@ -143,7 +143,7 @@ func TestTraceHumanOutputShowsContextAndMergedEvents(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr)
 	}
 	for _, want := range []string{
-		"integration: orders-sync",
+		"job: orders-sync",
 		"status: failed",
 		"release: 8c1d4f0a9b3e",
 		"trigger: manual",
@@ -228,7 +228,7 @@ func TestTraceHeaderStaysCompact(t *testing.T) {
 	runID := "b8cd3371-ec4c-4401-880f-20e9284f8e98"
 	server := traceAPI(t, func(w http.ResponseWriter, r *http.Request, req *timeline.Request) {
 		page := tracePage(runID)
-		page.Context.IntegrationName = "counter"
+		page.Context.JobName = "counter"
 		page.Context.Status = "succeeded"
 		page.Context.ReleaseDigest = "a83b081b641026a0ddb1a4c0af9f6a2c5cdafc1e1437db60e232150ba8145095"
 		_ = json.NewEncoder(w).Encode(page)

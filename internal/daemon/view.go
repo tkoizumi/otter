@@ -21,33 +21,33 @@ import (
 	"github.com/tkoizumi/otter/sdk"
 )
 
-// Integration views -----------------------------------------------------------
+// Job views -----------------------------------------------------------
 
-// ListIntegrations implements api.Backend. Webhook tokens are omitted here so
-// that listing integrations never spills credentials.
-func (d *Daemon) ListIntegrations() []api.IntegrationView {
+// ListJobs implements api.Backend. Webhook tokens are omitted here so
+// that listing jobs never spills credentials.
+func (d *Daemon) ListJobs() []api.JobView {
 	entries := d.reg.all()
-	out := make([]api.IntegrationView, 0, len(entries))
+	out := make([]api.JobView, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, d.integrationView(entry, false))
+		out = append(out, d.jobView(entry, false))
 	}
 	return out
 }
 
-// GetIntegration implements api.Backend. It accepts a reference -- an id, a
+// GetJob implements api.Backend. It accepts a reference -- an id, a
 // unique label, or a path -- and resolves it before building the view.
-func (d *Daemon) GetIntegration(ref string) (api.IntegrationView, bool) {
+func (d *Daemon) GetJob(ref string) (api.JobView, bool) {
 	entry, err := d.resolveRef(ref)
 	if err != nil {
-		return api.IntegrationView{}, false
+		return api.JobView{}, false
 	}
-	return d.integrationView(entry, true), true
+	return d.jobView(entry, true), true
 }
 
-func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) api.IntegrationView {
-	it := entry.Integration
+func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobView {
+	it := entry.Job
 
-	view := api.IntegrationView{
+	view := api.JobView{
 		ID:         it.ID,
 		Name:       it.Name,
 		Path:       it.Dir,
@@ -98,7 +98,7 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 		}
 	}
 
-	// A paused integration is unarmed, so it has no next run. Saying so
+	// A paused job is unarmed, so it has no next run. Saying so
 	// explicitly is what keeps "paused" from reading as "not yet due" or
 	// "silently not firing".
 	if d.paused != nil {
@@ -118,7 +118,7 @@ func (d *Daemon) integrationView(entry *registered, includeWebhookToken bool) ap
 	return view
 }
 
-// CapturePolicyFor is the policy a new run of an integration would use, ignoring
+// CapturePolicyFor is the policy a new run of a job would use, ignoring
 // any per-run override. It is what `otter inspect` reports, so an operator can
 // see that payloads are being stored before a failure rather than after.
 func (d *Daemon) CapturePolicyFor(manifest *config.Manifest) inspection.Policy {
@@ -130,7 +130,7 @@ func (d *Daemon) CapturePolicyFor(manifest *config.Manifest) inspection.Policy {
 }
 
 // resolveCapturePolicy applies the capture precedence: an explicit per-run
-// override, then the integration's declared policy, then the deployment
+// override, then the job's declared policy, then the deployment
 // default.
 //
 // An empty override or declaration means "no opinion", not "off", so a run only
@@ -172,24 +172,24 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 	if err != nil {
 		return "", err
 	}
-	label := entry.Integration.Name
+	label := entry.Job.Name
 	if label == "" {
-		label = entry.Integration.ID
+		label = entry.Job.ID
 	}
-	// An integration that is present but invalid is still listed and still
+	// A job that is present but invalid is still listed and still
 	// named in the error; only the identity check below can make it unknown.
-	if !entry.Integration.Valid || entry.Manifest == nil {
-		return "", fmt.Errorf("integration %q cannot run: %s: %w",
-			label, entry.Integration.Error, api.ErrInvalid)
+	if !entry.Job.Valid || entry.Manifest == nil {
+		return "", fmt.Errorf("job %q cannot run: %s: %w",
+			label, entry.Job.Error, api.ErrInvalid)
 	}
 	inst := entry.Instance
 	if inst.ID.IsZero() {
-		return "", fmt.Errorf("integration %q has no registry identity: %w", label, api.ErrNotFound)
+		return "", fmt.Errorf("job %q has no registry identity: %w", label, api.ErrNotFound)
 	}
 	if !inst.Status.AcceptsWork() {
-		return "", fmt.Errorf("integration %q is %s and cannot accept new runs: %w", label, inst.Status, api.ErrConflict)
+		return "", fmt.Errorf("job %q is %s and cannot accept new runs: %w", label, inst.Status, api.ErrConflict)
 	}
-	integrationID := inst.ID.String()
+	jobID := inst.ID.String()
 
 	triggerType := payload.Type
 	if triggerType == "" {
@@ -204,8 +204,8 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 	// A retry never reaches this point. It is created by the worker from the
 	// attempt it retries, so pausing stops new work without stranding a chain
 	// that was already admitted.
-	if triggerType != api.TriggerManual && d.paused.Paused(integrationID) {
-		return "", fmt.Errorf("integration %q is paused; resume it with otter resume %q: %w",
+	if triggerType != api.TriggerManual && d.paused.Paused(jobID) {
+		return "", fmt.Errorf("job %q is paused; resume it with otter resume %q: %w",
 			label, label, api.ErrPaused)
 	}
 
@@ -213,9 +213,9 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 	// the child is told the result and cannot widen it, and a retry inherits
 	// exactly what the run was submitted with.
 	//
-	// The integration's own declaration is read from the LIVE manifest rather
+	// The job's own declaration is read from the LIVE manifest rather
 	// than the bound release. Capture is a diagnostic switch, not code: turning
-	// it off for a noisy or sensitive integration must take effect on the next
+	// it off for a noisy or sensitive job must take effect on the next
 	// reload, not wait for a new release.
 	capturePolicy, err := d.resolveCapturePolicy(opts.Capture, entry.Manifest)
 	if err != nil {
@@ -228,7 +228,7 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 	}
 
 	now := time.Now().UTC()
-	// Every integration runs from an immutable release, so binding happens here,
+	// Every job runs from an immutable release, so binding happens here,
 	// at submission: activating a newer release cannot move a queued or retried
 	// attempt onto different source code.
 	//
@@ -236,20 +236,20 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 	// the live one. The live manifest describes code that may already be
 	// different -- editing python.mode must not move a released run onto the
 	// live tree -- while the snapshot is what actually executes.
-	released, digest, ok, err := release.ActiveSourceDir(d.cfg.DataDir, integrationID)
+	released, digest, ok, err := release.ActiveSourceDir(d.cfg.DataDir, jobID)
 	if err != nil {
 		return "", err
 	}
 	if !ok {
-		// A conflict with the integration's current state, not a server fault:
-		// the request is well formed and the integration exists, but nothing has
+		// A conflict with the job's current state, not a server fault:
+		// the request is well formed and the job exists, but nothing has
 		// been made live for it to run.
-		return "", fmt.Errorf("integration %s has no active release; run otter release %s before submitting runs: %w",
+		return "", fmt.Errorf("job %s has no active release; run otter release %s before submitting runs: %w",
 			label, label, api.ErrConflict)
 	}
 	bound, err := config.LoadAndValidate(filepath.Join(released, config.ManifestFileName))
 	if err != nil {
-		return "", fmt.Errorf("integration %s: active release %s is invalid: %v; re-run otter release %s: %w",
+		return "", fmt.Errorf("job %s: active release %s is invalid: %v; re-run otter release %s: %w",
 			label, shortDigest(digest), err, label, api.ErrConflict)
 	}
 	pythonMode := bound.Python.Mode
@@ -269,9 +269,9 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 		manager := pyenv.Manager{DataDir: d.cfg.DataDir}
 		// Resolved against the snapshot, not the live tree: the snapshot is
 		// what executes, so it is what the environment must match.
-		spec, err := manager.ResolveCurrent(context.Background(), sourceDir, integrationID)
+		spec, err := manager.ResolveCurrent(context.Background(), sourceDir, jobID)
 		if err != nil {
-			return "", fmt.Errorf("resolve managed Python for %s: %w", integrationID, err)
+			return "", fmt.Errorf("resolve managed Python for %s: %w", jobID, err)
 		}
 		if _, err := manager.GetReady(spec); err != nil {
 			return "", err
@@ -279,42 +279,42 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 		pythonVersion, environmentDigest, pythonPolicy = spec.Python, spec.Digest, spec.Policy
 	}
 	run := &runs.Run{
-		ID:                    uuid.NewString(),
-		IntegrationID:         integrationID,
-		IntegrationName:       entry.Integration.Name,
-		IntegrationGeneration: inst.Generation,
-		TriggerType:           triggerType,
-		Status:                runs.StatusQueued,
-		Attempt:               1,
-		CreatedAt:             now,
-		Metadata:              metadata,
-		PythonMode:            pythonMode,
-		PythonVersion:         pythonVersion,
-		EnvironmentDigest:     environmentDigest,
-		PythonPolicy:          pythonPolicy,
-		ReleaseDigest:         releaseDigest,
-		ReleaseSourceDir:      releaseSourceDir,
-		SDKVersion:            sdk.Version,
-		CapturePolicy:         capturePolicy.String(),
+		ID:                uuid.NewString(),
+		JobID:             jobID,
+		JobName:           entry.Job.Name,
+		JobGeneration:     inst.Generation,
+		TriggerType:       triggerType,
+		Status:            runs.StatusQueued,
+		Attempt:           1,
+		CreatedAt:         now,
+		Metadata:          metadata,
+		PythonMode:        pythonMode,
+		PythonVersion:     pythonVersion,
+		EnvironmentDigest: environmentDigest,
+		PythonPolicy:      pythonPolicy,
+		ReleaseDigest:     releaseDigest,
+		ReleaseSourceDir:  releaseSourceDir,
+		SDKVersion:        sdk.Version,
+		CapturePolicy:     capturePolicy.String(),
 	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
 		if err := d.runs.CreateTx(ctx, tx, run); err != nil {
 			return err
 		}
-		return d.queue.EnqueueTx(ctx, tx, run.ID, integrationID, now)
+		return d.queue.EnqueueTx(ctx, tx, run.ID, jobID, now)
 	})
 	if err != nil {
-		return "", fmt.Errorf("queue run for %s: %w", integrationID, err)
+		return "", fmt.Errorf("queue run for %s: %w", jobID, err)
 	}
 
 	// The summary is written before workers are woken, so a child can never
 	// submit capture for a run whose recording does not exist yet.
-	d.beginCapture(run.ID, integrationID, capturePolicy)
+	d.beginCapture(run.ID, jobID, capturePolicy)
 
 	d.log.Info("run_queued",
-		"integration", entry.Integration.Name,
-		"id", integrationID,
+		"job", entry.Job.Name,
+		"id", jobID,
 		"run_id", run.ID,
 		"trigger", triggerType)
 	d.appendOtterLog(run.ID, "run queued (trigger "+triggerType+")")
@@ -367,7 +367,7 @@ func (d *Daemon) CancelRun(ctx context.Context, runID string) error {
 				return err
 			}
 			d.appendOtterLog(runID, "run cancelled before execution")
-			d.log.Info("run_cancelled", "integration", run.IntegrationID, "run_id", runID, "phase", "queued")
+			d.log.Info("run_cancelled", "job", run.JobID, "run_id", runID, "phase", "queued")
 			return nil
 		}
 	}
@@ -382,7 +382,7 @@ func (d *Daemon) CancelRun(ctx context.Context, runID string) error {
 
 	ctl.setReason(reasonUser)
 	ctl.cancel()
-	d.log.Info("run_cancel_requested", "integration", run.IntegrationID, "run_id", runID)
+	d.log.Info("run_cancel_requested", "job", run.JobID, "run_id", runID)
 	return nil
 }
 
@@ -407,17 +407,17 @@ func (d *Daemon) GetRunDetail(ctx context.Context, runID string) (*api.RunView, 
 		RootRunID:    root.ID,
 		LatestStatus: latest,
 		Attempts:     attempts,
-		MaxAttempts:  d.maxAttemptsFor(target.IntegrationID),
+		MaxAttempts:  d.maxAttemptsFor(target.JobID),
 	}, nil
 }
 
-// maxAttemptsFor reports the retry ceiling the integration's manifest currently
-// allows, or 0 when the integration is no longer registered. Run history
+// maxAttemptsFor reports the retry ceiling the job's manifest currently
+// allows, or 0 when the job is no longer registered. Run history
 // outlives the registration (and a release can change the policy), so a missing
 // manifest degrades to "unknown" rather than inventing a ceiling for a chain
 // that has already run.
-func (d *Daemon) maxAttemptsFor(integrationID string) int {
-	entry, ok := d.reg.get(integrationID)
+func (d *Daemon) maxAttemptsFor(jobID string) int {
+	entry, ok := d.reg.get(jobID)
 	if !ok || entry.Manifest == nil {
 		return 0
 	}
@@ -426,25 +426,25 @@ func (d *Daemon) maxAttemptsFor(integrationID string) int {
 
 // ListRuns implements api.Backend.
 //
-// A filter that names an integration is a reference, not a raw key: the
+// A filter that names a job is a reference, not a raw key: the
 // operator types a label (`otter runs counter`), the CLI's positional form, and
 // the durable identity a run records is a UUID. Resolving here is what makes
-// both the CLI and `GET /v1/runs?integration_id=counter` mean the one
-// integration instead of silently matching nothing. Legacy rows, keyed by the
+// both the CLI and `GET /v1/runs?job_id=counter` mean the one
+// job instead of silently matching nothing. Legacy rows, keyed by the
 // label before identities existed, are matched alongside the identity so a
 // migrated workspace does not lose its history.
 func (d *Daemon) ListRuns(ctx context.Context, f runs.Filter) ([]*runs.Run, error) {
-	if f.IntegrationID != "" {
-		entry, err := d.resolveRef(f.IntegrationID)
+	if f.JobID != "" {
+		entry, err := d.resolveRef(f.JobID)
 		if err != nil {
 			return nil, err
 		}
-		ids := []string{entry.Integration.ID}
-		if name := entry.Integration.Name; name != "" && name != entry.Integration.ID {
+		ids := []string{entry.Job.ID}
+		if name := entry.Job.Name; name != "" && name != entry.Job.ID {
 			ids = append(ids, name)
 		}
-		f.IntegrationIDs = ids
-		f.IntegrationID = ""
+		f.JobIDs = ids
+		f.JobID = ""
 	}
 	return d.runs.List(ctx, f)
 }
@@ -482,9 +482,9 @@ func (d *Daemon) AppendRunLog(ctx context.Context, runID, stream, message string
 
 // State ----------------------------------------------------------------------
 
-func (d *Daemon) requireIntegration(id string) error {
+func (d *Daemon) requireJob(id string) error {
 	if _, ok := d.reg.get(id); !ok {
-		return fmt.Errorf("integration %q: %w", id, api.ErrNotFound)
+		return fmt.Errorf("job %q: %w", id, api.ErrNotFound)
 	}
 	return nil
 }
@@ -507,70 +507,70 @@ func normalizeNotFound(err error) error {
 
 // stateScope resolves a reference to the durable identity that namespaces
 // state. State is always stored under the identity, never the label: a
-// recreated integration must not read a previous one's values.
+// recreated job must not read a previous one's values.
 func (d *Daemon) stateScope(ref string) (string, error) {
 	entry, err := d.resolveRef(ref)
 	if err != nil {
 		return "", err
 	}
 	if entry.Instance.ID.IsZero() {
-		return "", fmt.Errorf("integration %q: %w", ref, api.ErrNotFound)
+		return "", fmt.Errorf("job %q: %w", ref, api.ErrNotFound)
 	}
 	if !entry.Instance.Status.AcceptsWork() {
-		return "", fmt.Errorf("integration %q is %s: %w", ref, entry.Instance.Status, api.ErrConflict)
+		return "", fmt.Errorf("job %q is %s: %w", ref, entry.Instance.Status, api.ErrConflict)
 	}
 	return entry.Instance.ID.String(), nil
 }
 
 // GetState implements api.Backend.
 func (d *Daemon) GetState(ctx context.Context, ref, key string) (json.RawMessage, error) {
-	integrationID, err := d.stateScope(ref)
+	jobID, err := d.stateScope(ref)
 	if err != nil {
 		return nil, err
 	}
-	if err := d.requireIntegration(integrationID); err != nil {
+	if err := d.requireJob(jobID); err != nil {
 		return nil, err
 	}
-	value, err := d.state.Get(ctx, integrationID, key)
+	value, err := d.state.Get(ctx, jobID, key)
 	return value, normalizeNotFound(err)
 }
 
 // SetState implements api.Backend.
 func (d *Daemon) SetState(ctx context.Context, ref, key string, value json.RawMessage) (time.Time, error) {
-	integrationID, err := d.stateScope(ref)
+	jobID, err := d.stateScope(ref)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if err := d.requireIntegration(integrationID); err != nil {
+	if err := d.requireJob(jobID); err != nil {
 		return time.Time{}, err
 	}
-	updatedAt, err := d.state.Set(ctx, integrationID, key, value)
+	updatedAt, err := d.state.Set(ctx, jobID, key, value)
 	return updatedAt, normalizeNotFound(err)
 }
 
 // DeleteState implements api.Backend.
 func (d *Daemon) DeleteState(ctx context.Context, ref, key string) (bool, error) {
-	integrationID, err := d.stateScope(ref)
+	jobID, err := d.stateScope(ref)
 	if err != nil {
 		return false, err
 	}
-	if err := d.requireIntegration(integrationID); err != nil {
+	if err := d.requireJob(jobID); err != nil {
 		return false, err
 	}
-	deleted, err := d.state.Delete(ctx, integrationID, key)
+	deleted, err := d.state.Delete(ctx, jobID, key)
 	return deleted, normalizeNotFound(err)
 }
 
 // AllState implements api.Backend.
 func (d *Daemon) AllState(ctx context.Context, ref string) (map[string]json.RawMessage, error) {
-	integrationID, err := d.stateScope(ref)
+	jobID, err := d.stateScope(ref)
 	if err != nil {
 		return nil, err
 	}
-	if err := d.requireIntegration(integrationID); err != nil {
+	if err := d.requireJob(jobID); err != nil {
 		return nil, err
 	}
-	all, err := d.state.All(ctx, integrationID)
+	all, err := d.state.All(ctx, jobID)
 	return all, normalizeNotFound(err)
 }
 
@@ -602,7 +602,7 @@ func (d *Daemon) ResolveRunToken(token string) (api.RunToken, bool) {
 }
 
 // WebhookTokenFor implements api.Backend. It returns false both for an unknown
-// integration and for one with the webhook trigger disabled. The reference is
+// job and for one with the webhook trigger disabled. The reference is
 // resolved like any other, so a hook URL that carries either the durable
 // identity or a still-unambiguous label keeps working.
 func (d *Daemon) WebhookTokenFor(ref string) (string, bool) {

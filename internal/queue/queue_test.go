@@ -12,7 +12,7 @@ import (
 	"github.com/tkoizumi/otter/internal/database"
 )
 
-// fakeCapacity is a deterministic test double for Capacity. An integration
+// fakeCapacity is a deterministic test double for Capacity. A job
 // absent from limit (or with a non-positive limit) is unlimited.
 type fakeCapacity struct {
 	mu      sync.Mutex
@@ -24,30 +24,30 @@ func newFakeCapacity(limits map[string]int) *fakeCapacity {
 	return &fakeCapacity{limit: limits, running: map[string]int{}}
 }
 
-func (c *fakeCapacity) Reserve(integrationID string) bool {
+func (c *fakeCapacity) Reserve(jobID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	limit, hasLimit := c.limit[integrationID]
-	if hasLimit && limit > 0 && c.running[integrationID] >= limit {
+	limit, hasLimit := c.limit[jobID]
+	if hasLimit && limit > 0 && c.running[jobID] >= limit {
 		return false
 	}
-	c.running[integrationID]++
+	c.running[jobID]++
 	return true
 }
 
-func (c *fakeCapacity) Release(integrationID string) {
+func (c *fakeCapacity) Release(jobID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.running[integrationID] > 0 {
-		c.running[integrationID]--
+	if c.running[jobID] > 0 {
+		c.running[jobID]--
 	}
 }
 
-func (c *fakeCapacity) runningFor(integrationID string) int {
+func (c *fakeCapacity) runningFor(jobID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.running[integrationID]
+	return c.running[jobID]
 }
 
 func newTestQueue(t *testing.T) (*Queue, context.Context) {
@@ -67,9 +67,9 @@ func newTestQueue(t *testing.T) (*Queue, context.Context) {
 // testBase is a fixed timestamp so ordering assertions are deterministic.
 var testBase = time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
 
-func mustEnqueue(t *testing.T, q *Queue, ctx context.Context, runID, integrationID string, availableAt time.Time) {
+func mustEnqueue(t *testing.T, q *Queue, ctx context.Context, runID, jobID string, availableAt time.Time) {
 	t.Helper()
-	if err := q.Enqueue(ctx, runID, integrationID, availableAt); err != nil {
+	if err := q.Enqueue(ctx, runID, jobID, availableAt); err != nil {
 		t.Fatalf("Enqueue(%q) error = %v", runID, err)
 	}
 }
@@ -249,7 +249,7 @@ func TestClaimEnforcesCapacity(t *testing.T) {
 		t.Errorf("reserved slots = %d, want 1", got)
 	}
 
-	// The second run belongs to a saturated integration: it must not be handed
+	// The second run belongs to a saturated job: it must not be handed
 	// out, even though it is available and at the head of the queue.
 	if _, err := q.Claim(ctx, now, capacity); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("second Claim() error = %v, want ErrEmpty while at capacity", err)
@@ -277,7 +277,7 @@ func TestClaimEnforcesCapacity(t *testing.T) {
 	}
 }
 
-func TestClaimCapacityIsPerIntegration(t *testing.T) {
+func TestClaimCapacityIsPerJob(t *testing.T) {
 	q, ctx := newTestQueue(t)
 	capacity := newFakeCapacity(map[string]int{"a": 1})
 	mustEnqueue(t, q, ctx, "a-1", "a", testBase)
@@ -366,23 +366,23 @@ func TestClaimConcurrentNoDoubleExecution(t *testing.T) {
 	}
 }
 
-func TestDepthByIntegrationListAndDiscardAll(t *testing.T) {
+func TestDepthByJobListAndDiscardAll(t *testing.T) {
 	q, ctx := newTestQueue(t)
 	mustEnqueue(t, q, ctx, "a-2", "a", testBase.Add(time.Minute))
 	mustEnqueue(t, q, ctx, "a-1", "a", testBase)
 	mustEnqueue(t, q, ctx, "b-1", "b", testBase.Add(30*time.Second))
 
-	byIntegration, err := q.DepthByIntegration(ctx)
+	byJob, err := q.DepthByJob(ctx)
 	if err != nil {
-		t.Fatalf("DepthByIntegration() error = %v", err)
+		t.Fatalf("DepthByJob() error = %v", err)
 	}
 	wantDepths := map[string]int{"a": 2, "b": 1}
-	if len(byIntegration) != len(wantDepths) {
-		t.Fatalf("DepthByIntegration() = %v, want %v", byIntegration, wantDepths)
+	if len(byJob) != len(wantDepths) {
+		t.Fatalf("DepthByJob() = %v, want %v", byJob, wantDepths)
 	}
 	for id, want := range wantDepths {
-		if got := byIntegration[id]; got != want {
-			t.Errorf("DepthByIntegration()[%q] = %d, want %d", id, got, want)
+		if got := byJob[id]; got != want {
+			t.Errorf("DepthByJob()[%q] = %d, want %d", id, got, want)
 		}
 	}
 
@@ -433,7 +433,7 @@ func setCommitHook(t *testing.T, hook func(*sql.Tx) error) {
 // TestClaimCommitFailureReleasesCapacity is the regression test for the
 // capacity slot leak: a reservation is granted while the claim transaction is
 // open, so a commit failure must give it back. Before the fix the slot stayed
-// reserved forever and permanently shrank the integration's concurrency.
+// reserved forever and permanently shrank the job's concurrency.
 func TestClaimCommitFailureReleasesCapacity(t *testing.T) {
 	q, ctx := newTestQueue(t)
 	capacity := newFakeCapacity(map[string]int{"a": 1})
@@ -494,10 +494,10 @@ func TestClaimCommitFailureWithoutCapacity(t *testing.T) {
 	}
 }
 
-// TestClaimSaturatedIntegrationDoesNotReserve guards the other half of the
-// invariant: a candidate that is skipped because its integration is saturated
+// TestClaimSaturatedJobDoesNotReserve guards the other half of the
+// invariant: a candidate that is skipped because its job is saturated
 // must not leave a reservation behind.
-func TestClaimSaturatedIntegrationDoesNotReserve(t *testing.T) {
+func TestClaimSaturatedJobDoesNotReserve(t *testing.T) {
 	q, ctx := newTestQueue(t)
 	capacity := newFakeCapacity(map[string]int{"a": 1})
 	mustEnqueue(t, q, ctx, "a-1", "a", testBase)
@@ -506,7 +506,7 @@ func TestClaimSaturatedIntegrationDoesNotReserve(t *testing.T) {
 	if _, err := q.Claim(ctx, now, capacity); err != nil {
 		t.Fatalf("first Claim() error = %v", err)
 	}
-	// Saturate "a" and try to claim a second run of the same integration.
+	// Saturate "a" and try to claim a second run of the same job.
 	mustEnqueue(t, q, ctx, "a-2", "a", testBase)
 	if _, err := q.Claim(ctx, now, capacity); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("Claim() while saturated error = %v, want ErrEmpty", err)

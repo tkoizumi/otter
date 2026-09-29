@@ -10,20 +10,20 @@ import (
 	"github.com/tkoizumi/otter/internal/pyenv"
 )
 
-// cmdPrepare prepares managed integrations before they can execute.
+// cmdPrepare prepares managed jobs before they can execute.
 //
 // It is a diagnostic and a warm-up, not a gate: `otter release` prepares the
 // environment a run needs, and this builds the same environment without
-// staging or activating a release. An integration still needs a release before
+// staging or activating a release. A job still needs a release before
 // anything runs.
 //
 // Identity follows `otter release` and `otter run`: no argument means every
-// integration in the workspace, a bare word is a manifest name, and anything
+// job in the workspace, a bare word is a manifest name, and anything
 // path-shaped is read from disk.
 func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("prepare", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	integrations := fs.String("integrations", config.DefaultIntegrations, "integrations root (default: this workspace)")
+	jobs := fs.String("jobs", config.DefaultJobs, "jobs root (default: this workspace)")
 	data := fs.String("data", "", "Otter data directory (default: the workspace's, .otter/data)")
 	// Empty means "let the manager choose": a vendored copy under the data
 	// directory is preferred, and PATH is the fallback. Defaulting to the bare
@@ -33,11 +33,11 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(a.Stderr, "usage: otter prepare [--integrations DIR] [--data DIR] [<integration>|.]")
+		fmt.Fprintln(a.Stderr, "usage: otter prepare [--jobs DIR] [--data DIR] [<job>|.]")
 		return 2
 	}
 
-	integrationsRoot, code := resolveIntegrationsRoot(a.Stderr, *integrations, flagWasSet(fs, "integrations"))
+	jobsRoot, code := resolveJobsRoot(a.Stderr, *jobs, flagWasSet(fs, "jobs"))
 	if code != 0 {
 		return code
 	}
@@ -51,16 +51,16 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 	if named {
 		ref = fs.Arg(0)
 	}
-	// No argument means every integration: prepare is the warm-up for a whole
+	// No argument means every job: prepare is the warm-up for a whole
 	// workspace, and naming one is the narrowing case.
-	targets, code := a.integrationTargets(ref, integrationsRoot, "", named, !named)
+	targets, code := a.jobTargets(ref, jobsRoot, "", named, !named)
 	if code != 0 {
 		return code
 	}
 	// Environments are keyed by the durable identity, so resolve before
 	// preparing: preparing under a label would build an environment the
 	// runtime never looks for.
-	targets, code = a.mapTargetIdentities(ctx, integrationsRoot, dataDir, targets)
+	targets, code = a.mapTargetIdentities(ctx, jobsRoot, dataDir, targets)
 	if code != 0 {
 		return code
 	}
@@ -89,7 +89,7 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 		count++
 	}
 	if !named && count == 0 {
-		fmt.Fprintln(a.Stderr, "otter: no managed integrations found")
+		fmt.Fprintln(a.Stderr, "otter: no managed jobs found")
 	}
 	return 0
 }

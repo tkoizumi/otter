@@ -1,7 +1,7 @@
-// Package state implements Otter's durable per-integration key/value store.
+// Package state implements Otter's durable per-job key/value store.
 //
-// State is what makes an integration resumable: a checkpoint written by one
-// run is visible to the next run, and survives integration failures, daemon
+// State is what makes a job resumable: a checkpoint written by one
+// run is visible to the next run, and survives job failures, daemon
 // restarts and machine reboots. The authoritative copy always lives here in
 // SQLite, never in the Python SDK.
 package state
@@ -72,7 +72,7 @@ type Store struct {
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // Get returns the raw JSON value for a key.
-func (s *Store) Get(ctx context.Context, integrationID, key string) (json.RawMessage, error) {
+func (s *Store) Get(ctx context.Context, jobID, key string) (json.RawMessage, error) {
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}
@@ -81,13 +81,13 @@ func (s *Store) Get(ctx context.Context, integrationID, key string) (json.RawMes
 		updatedAt database.NullableTime
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT value, updated_at FROM integration_state WHERE integration_id = ? AND key = ?`,
-		integrationID, key).Scan(&value, &updatedAt)
+		`SELECT value, updated_at FROM job_state WHERE job_id = ? AND key = ?`,
+		jobID, key).Scan(&value, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("state: get %s/%s: %w", integrationID, key, err)
+		return nil, fmt.Errorf("state: get %s/%s: %w", jobID, key, err)
 	}
 	if !value.Valid {
 		return json.RawMessage("null"), nil
@@ -96,7 +96,7 @@ func (s *Store) Get(ctx context.Context, integrationID, key string) (json.RawMes
 }
 
 // GetEntry returns the value together with its update timestamp.
-func (s *Store) GetEntry(ctx context.Context, integrationID, key string) (*Entry, error) {
+func (s *Store) GetEntry(ctx context.Context, jobID, key string) (*Entry, error) {
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}
@@ -105,13 +105,13 @@ func (s *Store) GetEntry(ctx context.Context, integrationID, key string) (*Entry
 		updatedAt database.NullableTime
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT value, updated_at FROM integration_state WHERE integration_id = ? AND key = ?`,
-		integrationID, key).Scan(&value, &updatedAt)
+		`SELECT value, updated_at FROM job_state WHERE job_id = ? AND key = ?`,
+		jobID, key).Scan(&value, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("state: get %s/%s: %w", integrationID, key, err)
+		return nil, fmt.Errorf("state: get %s/%s: %w", jobID, key, err)
 	}
 
 	entry := &Entry{Key: key, Value: json.RawMessage("null")}
@@ -125,7 +125,7 @@ func (s *Store) GetEntry(ctx context.Context, integrationID, key string) (*Entry
 }
 
 // Set writes a value, replacing any previous value for the key.
-func (s *Store) Set(ctx context.Context, integrationID, key string, value json.RawMessage) (time.Time, error) {
+func (s *Store) Set(ctx context.Context, jobID, key string, value json.RawMessage) (time.Time, error) {
 	if err := ValidateKey(key); err != nil {
 		return time.Time{}, err
 	}
@@ -135,43 +135,43 @@ func (s *Store) Set(ctx context.Context, integrationID, key string, value json.R
 
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO integration_state (integration_id, key, value, updated_at)
+		`INSERT INTO job_state (job_id, key, value, updated_at)
 		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(integration_id, key) DO UPDATE SET
+		 ON CONFLICT(job_id, key) DO UPDATE SET
 			value = excluded.value,
 			updated_at = excluded.updated_at`,
-		integrationID, key, string(value), database.FormatTime(now))
+		jobID, key, string(value), database.FormatTime(now))
 	if err != nil {
-		return time.Time{}, fmt.Errorf("state: set %s/%s: %w", integrationID, key, err)
+		return time.Time{}, fmt.Errorf("state: set %s/%s: %w", jobID, key, err)
 	}
 	return now, nil
 }
 
 // Delete removes a key. It reports whether the key existed.
-func (s *Store) Delete(ctx context.Context, integrationID, key string) (bool, error) {
+func (s *Store) Delete(ctx context.Context, jobID, key string) (bool, error) {
 	if err := ValidateKey(key); err != nil {
 		return false, err
 	}
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM integration_state WHERE integration_id = ? AND key = ?`,
-		integrationID, key)
+		`DELETE FROM job_state WHERE job_id = ? AND key = ?`,
+		jobID, key)
 	if err != nil {
-		return false, fmt.Errorf("state: delete %s/%s: %w", integrationID, key, err)
+		return false, fmt.Errorf("state: delete %s/%s: %w", jobID, key, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("state: delete %s/%s: %w", integrationID, key, err)
+		return false, fmt.Errorf("state: delete %s/%s: %w", jobID, key, err)
 	}
 	return n > 0, nil
 }
 
-// All returns every key/value pair for an integration.
-func (s *Store) All(ctx context.Context, integrationID string) (map[string]json.RawMessage, error) {
+// All returns every key/value pair for a job.
+func (s *Store) All(ctx context.Context, jobID string) (map[string]json.RawMessage, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, value FROM integration_state WHERE integration_id = ? ORDER BY key ASC`,
-		integrationID)
+		`SELECT key, value FROM job_state WHERE job_id = ? ORDER BY key ASC`,
+		jobID)
 	if err != nil {
-		return nil, fmt.Errorf("state: list %s: %w", integrationID, err)
+		return nil, fmt.Errorf("state: list %s: %w", jobID, err)
 	}
 	defer rows.Close()
 
@@ -182,7 +182,7 @@ func (s *Store) All(ctx context.Context, integrationID string) (map[string]json.
 			value sql.NullString
 		)
 		if err := rows.Scan(&key, &value); err != nil {
-			return nil, fmt.Errorf("state: list %s: %w", integrationID, err)
+			return nil, fmt.Errorf("state: list %s: %w", jobID, err)
 		}
 		if value.Valid {
 			out[key] = json.RawMessage(value.String)
@@ -193,13 +193,13 @@ func (s *Store) All(ctx context.Context, integrationID string) (map[string]json.
 	return out, rows.Err()
 }
 
-// DeleteAll clears the state of one integration and returns how many keys
+// DeleteAll clears the state of one job and returns how many keys
 // were removed.
-func (s *Store) DeleteAll(ctx context.Context, integrationID string) (int64, error) {
+func (s *Store) DeleteAll(ctx context.Context, jobID string) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM integration_state WHERE integration_id = ?`, integrationID)
+		`DELETE FROM job_state WHERE job_id = ?`, jobID)
 	if err != nil {
-		return 0, fmt.Errorf("state: clear %s: %w", integrationID, err)
+		return 0, fmt.Errorf("state: clear %s: %w", jobID, err)
 	}
 	return res.RowsAffected()
 }

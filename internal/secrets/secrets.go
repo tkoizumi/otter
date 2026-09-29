@@ -1,4 +1,4 @@
-// Package secrets resolves the secret values injected into integration
+// Package secrets resolves the secret values injected into job
 // processes.
 //
 // The MVP ships only an environment-backed provider, but the Provider
@@ -93,20 +93,20 @@ func (c *Chain) Get(ctx context.Context, key string) (string, error) {
 // resolved. This is a configuration failure, so the run is failed before
 // Python starts and is not retried.
 type MissingError struct {
-	IntegrationID string
-	Keys          []string
+	JobID string
+	Keys  []string
 }
 
 func (e *MissingError) Error() string {
 	keys := append([]string(nil), e.Keys...)
 	sort.Strings(keys)
-	return fmt.Sprintf("integration %s requires secrets that are not available: %s",
-		e.IntegrationID, strings.Join(keys, ", "))
+	return fmt.Sprintf("job %s requires secrets that are not available: %s",
+		e.JobID, strings.Join(keys, ", "))
 }
 
 // Resolve fetches every requested key. It fails as a whole when any key is
 // missing so that a run never starts with a partially configured environment.
-func Resolve(ctx context.Context, provider Provider, integrationID string, keys []string) (map[string]string, error) {
+func Resolve(ctx context.Context, provider Provider, jobID string, keys []string) (map[string]string, error) {
 	if len(keys) == 0 {
 		return map[string]string{}, nil
 	}
@@ -128,13 +128,13 @@ func Resolve(ctx context.Context, provider Provider, integrationID string, keys 
 				missing = append(missing, key)
 				continue
 			}
-			return nil, fmt.Errorf("resolve secret %s for %s: %w", key, integrationID, err)
+			return nil, fmt.Errorf("resolve secret %s for %s: %w", key, jobID, err)
 		}
 		out[key] = value
 	}
 
 	if len(missing) > 0 {
-		return nil, &MissingError{IntegrationID: integrationID, Keys: missing}
+		return nil, &MissingError{JobID: jobID, Keys: missing}
 	}
 	return out, nil
 }

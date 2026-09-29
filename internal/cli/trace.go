@@ -171,16 +171,16 @@ func (a *App) printTrace(page *timeline.Page, runID string, noHTTP bool, resumed
 
 func (a *App) printTraceHeader(page *timeline.Page) {
 	ctx := page.Context
-	name := ctx.IntegrationName
+	name := ctx.JobName
 	if name == "" {
-		name = ctx.IntegrationID
+		name = ctx.JobID
 	}
 
 	// The run id is deliberately not repeated: the operator just named it on the
 	// command line. Where it is needed it is spelled out in full anyway -- the
 	// retry hint and the request footnotes are runnable commands -- and the JSON
 	// context always carries it.
-	fmt.Fprintf(a.Stdout, "integration: %s   status: %s   attempt: %d\n",
+	fmt.Fprintf(a.Stdout, "job: %s   status: %s   attempt: %d\n",
 		escapeTerminal(name), escapeTerminal(ctx.Status), ctx.Attempt)
 
 	// The release digest is a 64-character hex string; printing it whole pushed
@@ -311,8 +311,8 @@ func (a *App) printTraceTable(page *timeline.Page) []httpRef {
 		default:
 			// The KIND column shows the event kind, never the stream name. The
 			// `otter` stream carries both the runtime's narration and an
-			// integration's ctx.log output, so printing it there would present
-			// the integration's own line as if it were the runtime talking.
+			// job's ctx.log output, so printing it there would present
+			// the job's own line as if it were the runtime talking.
 			//
 			// The stored line is shown as it was written, one row per event. A
 			// ctx.log line carries its structured fields as a JSON suffix, and

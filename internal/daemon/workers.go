@@ -83,7 +83,7 @@ func (d *Daemon) worker(id int) {
 // executeRun performs one attempt and records its outcome. The concurrency
 // slot reserved by Claim is released exactly once, on return.
 func (d *Daemon) executeRun(item *queue.Item) {
-	defer d.cap.Release(item.IntegrationID)
+	defer d.cap.Release(item.JobID)
 
 	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 30*time.Second)
 	run, err := d.runs.Get(loadCtx, item.RunID)
@@ -100,7 +100,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 			d.log.Warn("run_load_failed",
 				"error", err.Error(),
 				"run_id", item.RunID,
-				"integration", item.IntegrationID,
+				"job", item.JobID,
 				"action", "dropped")
 			return
 		}
@@ -108,16 +108,16 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		// it with a backoff: preserving the attempt is the safer default, and a
 		// fault that turns out to be permanent is repaired by startup
 		// reconciliation rather than by dropping accepted work.
-		d.log.Error("run_load_failed", err, "run_id", item.RunID, "integration", item.IntegrationID)
+		d.log.Error("run_load_failed", err, "run_id", item.RunID, "job", item.JobID)
 		d.requeueClaimed(item, "run_load_failed")
 		return
 	}
 
-	entry, ok := d.reg.get(run.IntegrationID)
+	entry, ok := d.reg.get(run.JobID)
 	if !ok || entry.Manifest == nil {
 		d.finishRun(run, nil, runs.Finish{
 			Status: runs.StatusFailed,
-			Error:  "integration is no longer available; the manifest may have been removed",
+			Error:  "job is no longer available; the manifest may have been removed",
 		}, false)
 		return
 	}
@@ -130,16 +130,16 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	if !entry.Instance.Status.AcceptsWork() {
 		d.finishRun(run, m, runs.Finish{
 			Status:     runs.StatusCancelled,
-			Error:      fmt.Sprintf("integration identity is %s", entry.Instance.Status),
+			Error:      fmt.Sprintf("job identity is %s", entry.Instance.Status),
 			FinishedAt: time.Now().UTC(),
 		}, false)
 		return
 	}
-	if run.IntegrationGeneration != 0 && entry.Instance.Generation != run.IntegrationGeneration {
+	if run.JobGeneration != 0 && entry.Instance.Generation != run.JobGeneration {
 		d.finishRun(run, m, runs.Finish{
 			Status: runs.StatusCancelled,
-			Error: fmt.Sprintf("integration identity changed (generation %d, run authorized for %d)",
-				entry.Instance.Generation, run.IntegrationGeneration),
+			Error: fmt.Sprintf("job identity changed (generation %d, run authorized for %d)",
+				entry.Instance.Generation, run.JobGeneration),
 			FinishedAt: time.Now().UTC(),
 		}, false)
 		return
@@ -149,7 +149,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	//
 	// The manifest is re-read from the snapshot rather than re-pointed at it:
 	// relative declarations in it -- python.path above all -- are resolved
-	// against the integration directory, and the snapshot mirrors the checkout
+	// against the job directory, and the snapshot mirrors the checkout
 	// layout precisely so those declarations keep resolving inside the release.
 	// Reusing the live manifest would import the live shared code instead of
 	// the code the release captured.
@@ -180,7 +180,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		// Rebuild the identity this run recorded. The policy is deliberately
 		// not re-derived: a retry must resolve the environment its parent
 		// selected, even if the toolchain that prepared it has changed since.
-		spec := pyenv.RecordedIdentity(run.IntegrationID, run.PythonVersion, run.EnvironmentDigest, run.PythonPolicy)
+		spec := pyenv.RecordedIdentity(run.JobID, run.PythonVersion, run.EnvironmentDigest, run.PythonPolicy)
 		ready, err := manager.GetReady(spec)
 		if err != nil {
 			d.finishRun(run, m, runs.Finish{Status: runs.StatusFailed, Error: err.Error()}, false)
@@ -207,7 +207,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	run.Status = runs.StatusRunning
 	run.StartedAt = &startedAt
 
-	token, err := d.runTokens.Issue(run.ID, run.IntegrationID, run.IntegrationGeneration)
+	token, err := d.runTokens.Issue(run.ID, run.JobID, run.JobGeneration)
 	if err != nil {
 		d.finishRun(run, m, runs.Finish{Status: runs.StatusFailed, Error: err.Error()}, false)
 		return
@@ -233,7 +233,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	}()
 
 	d.log.Info("run_started",
-		"integration", m.Name,
+		"job", m.Name,
 		"run_id", run.ID,
 		"attempt", run.Attempt,
 		"trigger", run.TriggerType)
@@ -242,7 +242,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		run.Attempt, m.MaxAttempts(), run.TriggerType))
 
 	// Resolve secrets before launching Python so a missing secret is a clear
-	// configuration failure rather than a crash inside the integration.
+	// configuration failure rather than a crash inside the job.
 	env, err := secrets.Resolve(context.Background(), d.secrets, m.Name, m.Secrets)
 	if err != nil {
 		message := err.Error()
@@ -257,19 +257,19 @@ func (d *Daemon) executeRun(item *queue.Item) {
 
 	sink := newRunLogSink(d.logs, run.ID, d.log)
 	result := d.exec.Run(runCtx, &executor.Request{
-		Manifest:        m,
-		IntegrationID:   run.IntegrationID,
-		IntegrationName: run.IntegrationName,
-		Executable:      interpreter,
-		Managed:         m.Python.Mode == "managed",
-		RunID:           run.ID,
-		TriggerType:     run.TriggerType,
-		APIURL:          d.cfg.ChildAPIURL(),
-		StateToken:      token,
-		ExtraEnv:        env,
-		Timeout:         m.TimeoutDuration(),
-		TerminateGrace:  5 * time.Second,
-		CapturePolicy:   run.CapturePolicy,
+		Manifest:       m,
+		JobID:          run.JobID,
+		JobName:        run.JobName,
+		Executable:     interpreter,
+		Managed:        m.Python.Mode == "managed",
+		RunID:          run.ID,
+		TriggerType:    run.TriggerType,
+		APIURL:         d.cfg.ChildAPIURL(),
+		StateToken:     token,
+		ExtraEnv:       env,
+		Timeout:        m.TimeoutDuration(),
+		TerminateGrace: 5 * time.Second,
+		CapturePolicy:  run.CapturePolicy,
 	}, sink)
 	sink.Flush()
 
@@ -309,17 +309,17 @@ func (d *Daemon) requeueClaimed(item *queue.Item, cause string) {
 	defer cancel()
 
 	availableAt := time.Now().UTC().Add(claimFailureBackoff)
-	if err := d.queue.Enqueue(ctx, item.RunID, item.IntegrationID, availableAt); err != nil {
+	if err := d.queue.Enqueue(ctx, item.RunID, item.JobID, availableAt); err != nil {
 		d.log.Error("run_requeue_failed", err,
 			"run_id", item.RunID,
-			"integration", item.IntegrationID,
+			"job", item.JobID,
 			"cause", cause)
 		return
 	}
 
 	d.log.Warn("run_requeued",
 		"run_id", item.RunID,
-		"integration", item.IntegrationID,
+		"job", item.JobID,
 		"cause", cause,
 		"retry_in", claimFailureBackoff.String())
 }
@@ -336,7 +336,7 @@ func shortDigest(digest string) string {
 	return digest
 }
 
-// withFailureHint folds the integration's own error into the message Otter
+// withFailureHint folds the job's own error into the message Otter
 // records, so `otter run-status`, the daemon log and the run log all name the
 // real cause instead of only the exit code.
 func withFailureHint(message string, status runs.Status, hint string) string {
@@ -434,8 +434,8 @@ func (d *Daemon) finishRun(run *runs.Run, m *config.Manifest, f runs.Finish, ret
 		next = d.planRetry(run, m)
 	}
 
-	// The integration's own final log line. Read before this attempt's
-	// terminal lifecycle line is written, so it is the integration's summary
+	// The job's own final log line. Read before this attempt's
+	// terminal lifecycle line is written, so it is the job's summary
 	// (pages/fetched/written) rather than Otter's own narration.
 	detail := d.detailLine(ctx, run.ID)
 
@@ -496,7 +496,7 @@ func (d *Daemon) persistOutcome(ctx context.Context, runID string, f runs.Finish
 		if err := d.runs.CreateTx(ctx, tx, plan.run); err != nil {
 			return err
 		}
-		if err := d.queue.EnqueueTx(ctx, tx, plan.run.ID, plan.run.IntegrationID, plan.availableAt); err != nil {
+		if err := d.queue.EnqueueTx(ctx, tx, plan.run.ID, plan.run.JobID, plan.availableAt); err != nil {
 			return err
 		}
 	}
@@ -532,7 +532,7 @@ func (d *Daemon) outcomeRecorded(ctx context.Context, runID string, f runs.Finis
 func (d *Daemon) fallbackOutcome(run *runs.Run, f runs.Finish, next *retryPlan, cause error) {
 	d.log.Error("run_finish_failed", cause,
 		"run_id", run.ID,
-		"integration", run.IntegrationID,
+		"job", run.JobID,
 		"status", string(f.Status),
 		"action", "journalled")
 
@@ -560,7 +560,7 @@ func (d *Daemon) fallbackOutcome(run *runs.Run, f runs.Finish, next *retryPlan, 
 func (d *Daemon) reportOutcome(run *runs.Run, f runs.Finish, detail string, retryable bool, next *retryPlan) {
 	durationMS := run.Duration().Milliseconds()
 	fields := []any{
-		"integration", run.IntegrationID,
+		"job", run.JobID,
 		"run_id", run.ID,
 		"attempt", run.Attempt,
 		"status", string(f.Status),
@@ -573,7 +573,7 @@ func (d *Daemon) reportOutcome(run *runs.Run, f runs.Finish, detail string, retr
 		fields = append(fields, "exit_code", *f.ExitCode)
 	}
 	if detail != "" {
-		// The integration's own last log line: for a successful sync that is
+		// The job's own last log line: for a successful sync that is
 		// its summary (pages/fetched/written), which is exactly what you need
 		// to tell "nothing changed" apart from "nothing was written".
 		fields = append(fields, "detail", detail)
@@ -602,13 +602,13 @@ func (d *Daemon) reportOutcome(run *runs.Run, f runs.Finish, detail string, retr
 	// Decide whether this attempt is the end of the road before notifying.
 	//
 	// An intermediate failure is not worth an alert: the retry policy exists
-	// precisely because some failures recover, and an integration that retries
+	// precisely because some failures recover, and a job that retries
 	// three times would otherwise send three alerts. Alert fatigue is how a
 	// working notification becomes an ignored one, so the signal reported is
 	// "this run has given up", not "an attempt failed".
 	if retryable {
 		d.log.Info("run_retries_exhausted",
-			"integration", run.IntegrationID, "run_id", run.ID, "attempts", run.Attempt)
+			"job", run.JobID, "run_id", run.ID, "attempts", run.Attempt)
 	}
 	d.notifyFailure(run, f, detail, durationMS)
 }
@@ -625,12 +625,12 @@ func (d *Daemon) scheduleSuccessor(previous *runs.Run, plan *retryPlan) {
 	// would report "incomplete" for a run that was never captured.
 	if next.CapturePolicy != "" {
 		if policy, err := inspection.ParsePolicy(next.CapturePolicy); err == nil {
-			d.beginCapture(next.ID, next.IntegrationID, policy)
+			d.beginCapture(next.ID, next.JobID, policy)
 		}
 	}
 
 	d.log.Info("run_retry_scheduled",
-		"integration", next.IntegrationID,
+		"job", next.JobID,
 		"run_id", next.ID,
 		"retry_of", previous.ID,
 		"attempt", next.Attempt,
@@ -658,16 +658,16 @@ func (d *Daemon) notifyFailure(run *runs.Run, f runs.Finish, detail string, dura
 	}
 
 	payload := notify.Payload{
-		Integration: run.IntegrationID,
-		RunID:       run.ID,
-		Status:      string(f.Status),
-		Attempt:     run.Attempt,
-		Error:       f.Error,
-		Detail:      detail,
-		DurationMS:  durationMS,
-		ExitCode:    f.ExitCode,
-		Release:     run.ReleaseDigest,
-		Host:        d.hostname,
+		Job:        run.JobID,
+		RunID:      run.ID,
+		Status:     string(f.Status),
+		Attempt:    run.Attempt,
+		Error:      f.Error,
+		Detail:     detail,
+		DurationMS: durationMS,
+		ExitCode:   f.ExitCode,
+		Release:    run.ReleaseDigest,
+		Host:       d.hostname,
 	}
 
 	// Bounded so a slow endpoint cannot hold the worker. The notifier already
@@ -681,7 +681,7 @@ func (d *Daemon) notifyFailure(run *runs.Run, f runs.Finish, detail string, dura
 	}
 }
 
-// detailLine returns the integration's last own log line for an attempt, read
+// detailLine returns the job's last own log line for an attempt, read
 // straight from the log store so it covers both stdout and ctx.log output.
 func (d *Daemon) detailLine(ctx context.Context, runID string) string {
 	line, ok, err := d.logs.Last(ctx, runID, runs.StreamOtter)
@@ -705,23 +705,23 @@ func (d *Daemon) planRetry(previous *runs.Run, m *config.Manifest) *retryPlan {
 	parentID := previous.ID
 
 	next := &runs.Run{
-		ID:                    uuid.NewString(),
-		IntegrationID:         previous.IntegrationID,
-		IntegrationName:       previous.IntegrationName,
-		IntegrationGeneration: previous.IntegrationGeneration,
-		TriggerType:           previous.TriggerType,
-		Status:                runs.StatusRetrying,
-		Attempt:               previous.Attempt + 1,
-		ParentRunID:           &parentID,
-		CreatedAt:             now,
-		Metadata:              previous.Metadata,
-		PythonMode:            previous.PythonMode,
-		PythonVersion:         previous.PythonVersion,
-		EnvironmentDigest:     previous.EnvironmentDigest,
-		PythonPolicy:          previous.PythonPolicy,
-		ReleaseDigest:         previous.ReleaseDigest,
-		ReleaseSourceDir:      previous.ReleaseSourceDir,
-		SDKVersion:            previous.SDKVersion,
+		ID:                uuid.NewString(),
+		JobID:             previous.JobID,
+		JobName:           previous.JobName,
+		JobGeneration:     previous.JobGeneration,
+		TriggerType:       previous.TriggerType,
+		Status:            runs.StatusRetrying,
+		Attempt:           previous.Attempt + 1,
+		ParentRunID:       &parentID,
+		CreatedAt:         now,
+		Metadata:          previous.Metadata,
+		PythonMode:        previous.PythonMode,
+		PythonVersion:     previous.PythonVersion,
+		EnvironmentDigest: previous.EnvironmentDigest,
+		PythonPolicy:      previous.PythonPolicy,
+		ReleaseDigest:     previous.ReleaseDigest,
+		ReleaseSourceDir:  previous.ReleaseSourceDir,
+		SDKVersion:        previous.SDKVersion,
 		// The capture policy belongs to the submission, not the attempt: a retry
 		// records exactly what the operator asked for, and owns its own requests.
 		CapturePolicy: previous.CapturePolicy,
@@ -735,7 +735,7 @@ func (d *Daemon) planRetry(previous *runs.Run, m *config.Manifest) *retryPlan {
 }
 
 // appendOtterLog writes a runtime lifecycle line into the same log stream as
-// the integration's own output, so `otter logs <run-id>` tells the whole story.
+// the job's own output, so `otter logs <run-id>` tells the whole story.
 func (d *Daemon) appendOtterLog(runID, message string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -752,11 +752,11 @@ func (d *Daemon) appendOtterLog(runID, message string) {
 	}
 }
 
-// runLogSink batches captured lines so a chatty integration does not cause one
+// runLogSink batches captured lines so a chatty job does not cause one
 // SQLite transaction per line.
 //
-// It also remembers the last thing the integration wrote to stderr, plus the
-// SDK's own failure line, so a failed run can be reported with the integration's
+// It also remembers the last thing the job wrote to stderr, plus the
+// SDK's own failure line, so a failed run can be reported with the job's
 // actual error instead of only "process exited with code 1". Without that,
 // diagnosing a failure means digging the reason out of run_logs by hand.
 type runLogSink struct {
@@ -786,7 +786,7 @@ func (s *runLogSink) Line(stream string, at time.Time, message string) {
 		// The last stderr line of a Python traceback is the exception itself.
 		s.lastStderr = strings.TrimSpace(message)
 	}
-	if stream == runs.StreamOtter && strings.Contains(message, "integration failed:") {
+	if stream == runs.StreamOtter && strings.Contains(message, "job failed:") {
 		s.lastSdkFailed = strings.TrimSpace(message)
 	}
 
@@ -803,14 +803,14 @@ func (s *runLogSink) Line(stream string, at time.Time, message string) {
 	}
 }
 
-// FailureHint returns the integration's own error, if it produced one.
+// FailureHint returns the job's own error, if it produced one.
 func (s *runLogSink) FailureHint() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	hint := s.lastStderr
 	if hint == "" {
-		hint = strings.TrimPrefix(s.lastSdkFailed, "integration failed: ")
+		hint = strings.TrimPrefix(s.lastSdkFailed, "job failed: ")
 	}
 	hint = strings.TrimSpace(hint)
 	if index := strings.Index(hint, " {"); index > 0 && strings.HasSuffix(hint, "}") {

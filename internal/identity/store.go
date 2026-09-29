@@ -50,7 +50,7 @@ func (s Status) Valid() bool {
 // active instance may; pending, retired, deleting and deleted may not.
 func (s Status) AcceptsWork() bool { return s == StatusActive }
 
-// Instance is one registered integration instance.
+// Instance is one registered job instance.
 //
 // ID is durable; Name is a mutable, non-unique label; CanonicalPath is where
 // the source currently lives. Only an explicit move changes the path of an
@@ -163,7 +163,7 @@ const instanceColumns = `id, name, canonical_path, status, generation, created_a
 
 // Instances returns every registered instance, active or historical.
 func (s *Store) Instances(ctx context.Context) ([]Instance, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+instanceColumns+` FROM integration_instances`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+instanceColumns+` FROM job_instances`)
 	if err != nil {
 		return nil, fmt.Errorf("identity: list instances: %w", err)
 	}
@@ -182,7 +182,7 @@ func (s *Store) Instances(ctx context.Context) ([]Instance, error) {
 
 // Instance returns one instance by ID.
 func (s *Store) Instance(ctx context.Context, id ID) (Instance, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+instanceColumns+` FROM integration_instances WHERE id = ?`, id.String())
+	row := s.db.QueryRowContext(ctx, `SELECT `+instanceColumns+` FROM job_instances WHERE id = ?`, id.String())
 	inst, err := scanInstance(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, fmt.Errorf("%w: instance %s", ErrNotFound, id)
@@ -196,7 +196,7 @@ func (s *Store) Instance(ctx context.Context, id ID) (Instance, error) {
 // ActiveInstancesByLabel returns every active instance carrying a label.
 func (s *Store) ActiveInstancesByLabel(ctx context.Context, name string) ([]Instance, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+instanceColumns+` FROM integration_instances WHERE name = ? AND status = ? ORDER BY canonical_path`,
+		`SELECT `+instanceColumns+` FROM job_instances WHERE name = ? AND status = ? ORDER BY canonical_path`,
 		name, string(StatusActive))
 	if err != nil {
 		return nil, fmt.Errorf("identity: list instances by label %q: %w", name, err)
@@ -236,7 +236,7 @@ func (s *Store) CreateInstance(ctx context.Context, inst Instance) error {
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO integration_instances (`+instanceColumns+`)
+			`INSERT INTO job_instances (`+instanceColumns+`)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			inst.ID.String(), inst.Name, inst.CanonicalPath, string(inst.Status), inst.Generation,
 			database.FormatTime(inst.CreatedAt), database.FormatTime(inst.UpdatedAt),
@@ -255,7 +255,7 @@ func (s *Store) CreateInstance(ctx context.Context, inst Instance) error {
 // UpdateObservation refreshes the mutable label of an instance.
 func (s *Store) UpdateObservation(ctx context.Context, id ID, name string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE integration_instances SET name = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE job_instances SET name = ?, updated_at = ? WHERE id = ?`,
 		name, database.FormatTime(time.Now().UTC()), id.String())
 	if err != nil {
 		return fmt.Errorf("identity: update instance %s: %w", id, err)
@@ -275,7 +275,7 @@ func (s *Store) SetStatus(ctx context.Context, id ID, status Status, reason stri
 		retiredAt = database.FormatTime(now)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE integration_instances
+		`UPDATE job_instances
 		    SET status = ?, updated_at = ?, retired_at = ?, retirement_reason = ?
 		  WHERE id = ?`,
 		string(status), database.FormatTime(now), retiredAt, reason, id.String())
@@ -292,7 +292,7 @@ func (s *Store) BumpGeneration(ctx context.Context, id ID) (int64, error) {
 	var gen int64
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx,
-			`SELECT generation FROM integration_instances WHERE id = ?`, id.String()).Scan(&gen); err != nil {
+			`SELECT generation FROM job_instances WHERE id = ?`, id.String()).Scan(&gen); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: instance %s", ErrNotFound, id)
 			}
@@ -300,7 +300,7 @@ func (s *Store) BumpGeneration(ctx context.Context, id ID) (int64, error) {
 		}
 		gen++
 		_, err := tx.ExecContext(ctx,
-			`UPDATE integration_instances SET generation = ?, updated_at = ? WHERE id = ?`,
+			`UPDATE job_instances SET generation = ?, updated_at = ? WHERE id = ?`,
 			gen, database.FormatTime(time.Now().UTC()), id.String())
 		return err
 	})
@@ -315,7 +315,7 @@ func (s *Store) BumpGeneration(ctx context.Context, id ID) (int64, error) {
 func (s *Store) SetCanonicalPath(ctx context.Context, id ID, path string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE integration_instances SET canonical_path = ?, updated_at = ? WHERE id = ?`,
+			`UPDATE job_instances SET canonical_path = ?, updated_at = ? WHERE id = ?`,
 			path, database.FormatTime(time.Now().UTC()), id.String()); err != nil {
 			return err
 		}
@@ -355,7 +355,7 @@ const pathColumns = `canonical_path, owner_id, suppressed, suppression_reason, u
 
 // PathRecord returns the ownership row for a path.
 func (s *Store) PathRecord(ctx context.Context, path string) (PathRecord, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+pathColumns+` FROM integration_paths WHERE canonical_path = ?`, path)
+	row := s.db.QueryRowContext(ctx, `SELECT `+pathColumns+` FROM job_paths WHERE canonical_path = ?`, path)
 	rec, err := scanPath(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PathRecord{}, false, nil
@@ -368,7 +368,7 @@ func (s *Store) PathRecord(ctx context.Context, path string) (PathRecord, bool, 
 
 // Paths returns every ownership row.
 func (s *Store) Paths(ctx context.Context) ([]PathRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+pathColumns+` FROM integration_paths`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+pathColumns+` FROM job_paths`)
 	if err != nil {
 		return nil, fmt.Errorf("identity: list paths: %w", err)
 	}
@@ -396,12 +396,12 @@ func (s *Store) claimPath(ctx context.Context, tx *sql.Tx, path string, owner ID
 	var existingOwner sql.NullString
 	var suppressed int
 	err := tx.QueryRowContext(ctx,
-		`SELECT owner_id, suppressed FROM integration_paths WHERE canonical_path = ?`, path).
+		`SELECT owner_id, suppressed FROM job_paths WHERE canonical_path = ?`, path).
 		Scan(&existingOwner, &suppressed)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO integration_paths (canonical_path, owner_id, suppressed, suppression_reason, updated_at)
+			`INSERT INTO job_paths (canonical_path, owner_id, suppressed, suppression_reason, updated_at)
 			 VALUES (?, ?, 0, '', ?)`, path, owner.String(), now)
 		return err
 	case err != nil:
@@ -411,7 +411,7 @@ func (s *Store) claimPath(ctx context.Context, tx *sql.Tx, path string, owner ID
 		return fmt.Errorf("%w: %s is owned by %s", ErrPathOwned, path, existingOwner.String)
 	}
 	_, err = tx.ExecContext(ctx,
-		`UPDATE integration_paths SET owner_id = ?, suppressed = 0, suppression_reason = '', updated_at = ?
+		`UPDATE job_paths SET owner_id = ?, suppressed = 0, suppression_reason = '', updated_at = ?
 		  WHERE canonical_path = ?`, owner.String(), now, path)
 	return err
 }
@@ -419,7 +419,7 @@ func (s *Store) claimPath(ctx context.Context, tx *sql.Tx, path string, owner ID
 // ReleasePath clears a path's owner, retaining the row as history.
 func (s *Store) ReleasePath(ctx context.Context, path string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE integration_paths SET owner_id = NULL, updated_at = ? WHERE canonical_path = ?`,
+		`UPDATE job_paths SET owner_id = NULL, updated_at = ? WHERE canonical_path = ?`,
 		database.FormatTime(time.Now().UTC()), path)
 	if err != nil {
 		return fmt.Errorf("identity: release path %s: %w", path, err)
@@ -431,14 +431,14 @@ func (s *Store) ReleasePath(ctx context.Context, path string) error {
 // re-register it. Only a path still owned by the deleted instance is touched.
 func (s *Store) SuppressPath(ctx context.Context, path string, owner ID, reason string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO integration_paths (canonical_path, owner_id, suppressed, suppression_reason, updated_at)
+		`INSERT INTO job_paths (canonical_path, owner_id, suppressed, suppression_reason, updated_at)
 		 VALUES (?, NULL, 1, ?, ?)
 		 ON CONFLICT(canonical_path) DO UPDATE SET
 		   suppressed = 1,
 		   suppression_reason = excluded.suppression_reason,
 		   owner_id = NULL,
 		   updated_at = excluded.updated_at
-		 WHERE integration_paths.owner_id IS NULL OR integration_paths.owner_id = ?`,
+		 WHERE job_paths.owner_id IS NULL OR job_paths.owner_id = ?`,
 		path, reason, database.FormatTime(time.Now().UTC()), owner.String())
 	if err != nil {
 		return fmt.Errorf("identity: suppress path %s: %w", path, err)
@@ -450,7 +450,7 @@ func (s *Store) SuppressPath(ctx context.Context, path string, owner ID, reason 
 // register does.
 func (s *Store) ClearSuppression(ctx context.Context, path string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE integration_paths SET suppressed = 0, suppression_reason = '', updated_at = ?
+		`UPDATE job_paths SET suppressed = 0, suppression_reason = '', updated_at = ?
 		  WHERE canonical_path = ?`,
 		database.FormatTime(time.Now().UTC()), path)
 	if err != nil {
@@ -477,7 +477,7 @@ func (s *Store) ReservePath(ctx context.Context, path string, owner ID, reason s
 }
 
 func pathInTx(ctx context.Context, tx *sql.Tx, path string) (PathRecord, bool, error) {
-	row := tx.QueryRowContext(ctx, `SELECT `+pathColumns+` FROM integration_paths WHERE canonical_path = ?`, path)
+	row := tx.QueryRowContext(ctx, `SELECT `+pathColumns+` FROM job_paths WHERE canonical_path = ?`, path)
 	rec, err := scanPath(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PathRecord{}, false, nil

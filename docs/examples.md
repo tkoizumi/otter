@@ -1,35 +1,35 @@
-# Integration patterns
+# Job patterns
 
-These are the shapes an integration takes. They are patterns rather than shipped
+These are the shapes a job takes. They are patterns rather than shipped
 files: `otter init` generates a working starting point, and the runtime ships no
 example catalog, so what you copy is the scaffold the project actually tests.
 
 - [Pattern: hello world (manual only)](#pattern-hello-world-manual-only)
 - [Pattern: cron-scheduled sync](#pattern-cron-scheduled-sync)
-- [Pattern: webhook-triggered integration](#pattern-webhook-triggered-integration)
+- [Pattern: webhook-triggered job](#pattern-webhook-triggered-job)
 
 Every one of them ends the same way: **release before you run**. A run executes
-the integration's active release rather than its source tree, so `otter run`
-refuses until the integration has been released once. After an edit, release
+the job's active release rather than its source tree, so `otter run`
+refuses until the job has been released once. After an edit, release
 again or the run keeps executing the previous snapshot.
 
 ```bash
-otter release --all          # every integration in the workspace
+otter release --all          # every job in the workspace
 otter release order-events   # or one at a time, by label or path
 ```
 
 ## Pattern: hello world (manual only)
 
-The smallest possible integration: no trigger, one command to run it.
+The smallest possible job: no trigger, one command to run it.
 
 ```text
-integrations/hello-world/
+jobs/hello-world/
 ├── otter.yaml
 └── main.py
 ```
 
 ```yaml
-# integrations/hello-world/otter.yaml
+# jobs/hello-world/otter.yaml
 version: 1
 
 name: hello-world
@@ -43,7 +43,7 @@ retry:
 ```
 
 ```python
-# integrations/hello-world/main.py
+# jobs/hello-world/main.py
 import os
 
 from otter import Context
@@ -53,26 +53,26 @@ ctx = Context.from_environment()
 previous = ctx.state.get("greeted", 0)
 ctx.state.set("greeted", previous + 1)
 
-ctx.log.info("hello from Otter", integration=ctx.integration_id, trigger=ctx.trigger.type)
+ctx.log.info("hello from Otter", job=ctx.job_id, trigger=ctx.trigger.type)
 print(f"hello world (run #{previous + 1})")
-print(f"integration dir: {os.environ['OTTER_INTEGRATION_DIR']}")
+print(f"job dir: {os.environ['OTTER_JOB_DIR']}")
 ```
 
 Run it:
 
 ```bash
-otterd --integrations ./integrations --data ./tmp --log-format pretty &
-otter validate ./integrations/hello-world
+otterd --jobs ./jobs --data ./tmp --log-format pretty &
+otter validate ./jobs/hello-world
 otter run hello-world
 ```
 
 Expected:
 
 ```console
-$ otter validate ./integrations/hello-world
-ok: hello-world (/home/me/integrations/hello-world/otter.yaml)
+$ otter validate ./jobs/hello-world
+ok: hello-world (/home/me/jobs/hello-world/otter.yaml)
 
-1 integration(s) valid
+1 job(s) valid
 
 $ otter run hello-world
 run_01HZYA1B2C3D4E5F6G7H8I9J0K1
@@ -80,7 +80,7 @@ run_01HZYA1B2C3D4E5F6G7H8I9J0K1
 $ otter logs run_01HZYA1B2C3D4E5F6G7H8I9J0K1
 run started (attempt 1 of 1, trigger manual)
 hello world (run #1)
-integration dir: /home/me/integrations/hello-world
+job dir: /home/me/jobs/hello-world
 run succeeded (attempt 1, 45ms), exit code 0
 
 $ otter state get hello-world greeted
@@ -93,16 +93,16 @@ lives in the daemon.
 ## Pattern: cron-scheduled sync
 
 A real schedule (`*/5`), a longer timeout, and retries for a flaky upstream. This
-is the shape most production integrations take.
+is the shape most production jobs take.
 
 ```text
-integrations/nightly-orders/
+jobs/nightly-orders/
 ├── otter.yaml
 └── main.py
 ```
 
 ```yaml
-# integrations/nightly-orders/otter.yaml
+# jobs/nightly-orders/otter.yaml
 version: 1
 
 name: nightly-orders
@@ -131,7 +131,7 @@ secrets:
 ```
 
 ```python
-# integrations/nightly-orders/main.py
+# jobs/nightly-orders/main.py
 import json
 import os
 import urllib.request
@@ -161,7 +161,7 @@ def main(ctx):
     orders = page["orders"]
     ctx.log.info("fetched page", count=len(orders))
 
-    # ... deliver each order here; a real integration would retry per order ...
+    # ... deliver each order here; a real job would retry per order ...
 
     if page.get("next_cursor"):
         ctx.state.set("cursor", page["next_cursor"])
@@ -202,31 +202,31 @@ The `{"level":...}` lines are `ctx.log` calls: the SDK posts them to the daemon,
 which stores them in the `otter` stream alongside the runtime's own lifecycle
 events (queued, started, retries, finished). `otter logs` prints the `stdout`
 and `otter` streams to standard output and the `stderr` stream to standard
-error, so piping `otter logs` captures the integration's normal output without
+error, so piping `otter logs` captures the job's normal output without
 losing the runtime's account of what happened.
 
 Notes:
 
 - The `ORDERS_API_TOKEN` secret must be in the **daemon's** environment. If it is
   missing, the run fails before Python starts and is not retried:
-  `integration nightly-orders requires secrets that are not available: ORDERS_API_TOKEN`.
+  `job nightly-orders requires secrets that are not available: ORDERS_API_TOKEN`.
 - Missed ticks during downtime are not replayed. The `cursor` checkpoint is what
   makes that safe: the next tick continues from where the last one stopped.
 
-## Pattern: webhook-triggered integration
+## Pattern: webhook-triggered job
 
-An integration that runs when an external system says so, with retries and
+A job that runs when an external system says so, with retries and
 enough concurrency for bursts. The hook enqueues and returns immediately, so the
 caller never waits for the work.
 
 ```text
-integrations/order-events/
+jobs/order-events/
 ├── otter.yaml
 └── main.py
 ```
 
 ```yaml
-# integrations/order-events/otter.yaml
+# jobs/order-events/otter.yaml
 version: 1
 
 name: order-events
@@ -252,7 +252,7 @@ secrets:
 ```
 
 ```python
-# integrations/order-events/main.py
+# jobs/order-events/main.py
 import json
 import os
 import urllib.request
@@ -291,14 +291,14 @@ def main(ctx):
     ctx.log.info("forwarded to warehouse", order_id=order["order_id"])
 ```
 
-Get the token the daemon generated for this integration, then deliver a hook:
+Get the token the daemon generated for this job, then deliver a hook:
 
 ```bash
 export OTTER_API_URL=http://127.0.0.1:7337
 export OTTER_API_TOKEN=...        # only needed if the daemon requires it
 
 TOKEN=$(curl -s -H "Authorization: Bearer $OTTER_API_TOKEN" \
-  "$OTTER_API_URL/v1/integrations/order-events" \
+  "$OTTER_API_URL/v1/jobs/order-events" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["webhook_token"])')
 
 curl -s -X POST \
@@ -334,6 +334,6 @@ Notes:
   handling and rotation.
 - With `concurrency: 4`, four of these run at once and the rest queue. The hook
   still returns `202` immediately for every one of them.
-- The webhook token is per integration and is regenerated if you
-  `DELETE FROM webhook_tokens WHERE integration_id='order-events';` and run
+- The webhook token is per job and is regenerated if you
+  `DELETE FROM webhook_tokens WHERE job_id='order-events';` and run
   `otter reload`. Callers must be updated when you do.

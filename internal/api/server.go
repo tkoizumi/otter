@@ -1,7 +1,7 @@
 // Package api implements Otter's local HTTP API and the CLI's HTTP client.
 //
 // The API is the only interface between the daemon, the CLI and running
-// integration processes. It binds to loopback by default; binding elsewhere
+// job processes. It binds to loopback by default; binding elsewhere
 // requires a bearer token, which the daemon enforces at startup.
 package api
 
@@ -82,22 +82,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 
 	// Admin-only: these act on the whole runtime.
-	mux.Handle("GET /v1/integrations", s.admin(s.handleListIntegrations))
-	mux.Handle("GET /v1/integrations/resolve", s.admin(s.handleResolveIntegration))
-	mux.Handle("POST /v1/integrations", s.admin(s.handleRegisterIntegration))
-	mux.Handle("POST /v1/integrations/{id}/reset", s.admin(s.handleResetIntegration))
-	mux.Handle("POST /v1/integrations/{id}/move", s.admin(s.handleMoveIntegration))
-	mux.Handle("POST /v1/integrations/{id}/pause", s.admin(s.handlePauseIntegration))
-	mux.Handle("POST /v1/integrations/{id}/resume", s.admin(s.handleResumeIntegration))
-	mux.Handle("DELETE /v1/integrations/{id}", s.admin(s.handleDeleteIntegration))
+	mux.Handle("GET /v1/jobs", s.admin(s.handleListJobs))
+	mux.Handle("GET /v1/jobs/resolve", s.admin(s.handleResolveJob))
+	mux.Handle("POST /v1/jobs", s.admin(s.handleRegisterJob))
+	mux.Handle("POST /v1/jobs/{id}/reset", s.admin(s.handleResetJob))
+	mux.Handle("POST /v1/jobs/{id}/move", s.admin(s.handleMoveJob))
+	mux.Handle("POST /v1/jobs/{id}/pause", s.admin(s.handlePauseJob))
+	mux.Handle("POST /v1/jobs/{id}/resume", s.admin(s.handleResumeJob))
+	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
-	mux.Handle("POST /v1/integrations/{id}/runs", s.admin(s.handleSubmitRun))
+	mux.Handle("POST /v1/jobs/{id}/runs", s.admin(s.handleSubmitRun))
 	mux.Handle("GET /v1/runs", s.admin(s.handleListRuns))
 	mux.Handle("POST /v1/runs/{id}/cancel", s.admin(s.handleCancelRun))
 
 	// Reachable with either the admin token or a per-run token; the handler
 	// narrows the scope further.
-	mux.Handle("GET /v1/integrations/{id}", s.principal(s.handleGetIntegration))
+	mux.Handle("GET /v1/jobs/{id}", s.principal(s.handleGetJob))
 	mux.Handle("GET /v1/runs/{id}", s.principal(s.handleGetRun))
 	mux.Handle("GET /v1/runs/{id}/logs", s.principal(s.handleGetLogs))
 	mux.Handle("POST /v1/runs/{id}/logs", s.principal(s.handleAppendLog))
@@ -112,13 +112,13 @@ func (s *Server) Handler() http.Handler {
 	// The merged timeline exposes the same metadata the log and request reads
 	// already do, so it follows them: operator-only, never a run token.
 	mux.Handle("GET /v1/runs/{id}/timeline", s.admin(s.handleTimeline))
-	mux.Handle("GET /v1/integrations/{id}/state", s.principal(s.handleGetAllState))
-	mux.Handle("GET /v1/integrations/{id}/state/{key}", s.principal(s.handleGetState))
-	mux.Handle("PUT /v1/integrations/{id}/state/{key}", s.principal(s.handleSetState))
-	mux.Handle("DELETE /v1/integrations/{id}/state/{key}", s.principal(s.handleDeleteState))
+	mux.Handle("GET /v1/jobs/{id}/state", s.principal(s.handleGetAllState))
+	mux.Handle("GET /v1/jobs/{id}/state/{key}", s.principal(s.handleGetState))
+	mux.Handle("PUT /v1/jobs/{id}/state/{key}", s.principal(s.handleSetState))
+	mux.Handle("DELETE /v1/jobs/{id}/state/{key}", s.principal(s.handleDeleteState))
 
-	// Webhooks authenticate with their own per-integration token.
-	mux.Handle("POST /v1/hooks/{integration}", s.webhook(s.handleWebhook))
+	// Webhooks authenticate with their own per-job token.
+	mux.Handle("POST /v1/hooks/{job}", s.webhook(s.handleWebhook))
 
 	mux.HandleFunc("/", s.handleNotFound)
 
@@ -167,8 +167,8 @@ type principal struct {
 	Token RunToken
 }
 
-func (p principal) allowsIntegration(id string) bool {
-	return p.Admin || (p.Token.IntegrationID != "" && p.Token.IntegrationID == id)
+func (p principal) allowsJob(id string) bool {
+	return p.Admin || (p.Token.JobID != "" && p.Token.JobID == id)
 }
 
 func (p principal) allowsRun(id string) bool {
@@ -259,21 +259,21 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (principal
 	return principal{}, false
 }
 
-// webhook authenticates a webhook call against the integration's own token.
+// webhook authenticates a webhook call against the job's own token.
 func (s *Server) webhook(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		integration := r.PathValue("integration")
-		if integration == "" {
-			s.writeError(w, http.StatusBadRequest, CodeInvalid, "integration is required")
+		job := r.PathValue("job")
+		if job == "" {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid, "job is required")
 			return
 		}
 
-		expected, ok := s.backend.WebhookTokenFor(integration)
+		expected, ok := s.backend.WebhookTokenFor(job)
 		if !ok {
-			// Deliberately identical for "unknown integration" and "webhook
-			// disabled" so the endpoint does not enumerate integrations.
+			// Deliberately identical for "unknown job" and "webhook
+			// disabled" so the endpoint does not enumerate jobs.
 			s.writeError(w, http.StatusNotFound, CodeNotFound,
-				fmt.Sprintf("integration %q does not accept webhook triggers", integration))
+				fmt.Sprintf("job %q does not accept webhook triggers", job))
 			return
 		}
 
@@ -349,7 +349,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 // handleHealth always answers 200 so that liveness probes (Docker, systemd)
 // work without credentials, but only an authenticated caller sees the
 // operational counters. That keeps a token-protected deployment from
-// disclosing integration and run counts to the network.
+// disclosing job and run counts to the network.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := HealthResponse{
 		Status:        "ok",
@@ -362,7 +362,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	views := s.backend.ListIntegrations()
+	views := s.backend.ListJobs()
 	counts := &HealthCounts{Total: len(views)}
 	for _, v := range views {
 		if v.Valid {
@@ -383,30 +383,30 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		runCounts = map[string]int{}
 	}
 
-	resp.Integrations = counts
+	resp.Jobs = counts
 	resp.QueueDepth = &depth
 	resp.Runs = runCounts
 
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"integrations": s.backend.ListIntegrations()})
+func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, http.StatusOK, map[string]any{"jobs": s.backend.ListJobs()})
 }
 
-// handleResolveIntegration resolves a label, path or id reference. It is the
+// handleResolveJob resolves a label, path or id reference. It is the
 // one place reference resolution lives, so the CLI never has to guess and
 // never has to read the registry database itself.
 //
 // A reference that is ambiguous is a 409 naming every candidate; a reference
 // that matches nothing is a 404.
-func (s *Server) handleResolveIntegration(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleResolveJob(w http.ResponseWriter, r *http.Request) {
 	ref := r.URL.Query().Get("ref")
 	if strings.TrimSpace(ref) == "" {
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, "ref is required")
 		return
 	}
-	view, err := s.backend.ResolveIntegration(ref)
+	view, err := s.backend.ResolveJob(ref)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -414,8 +414,8 @@ func (s *Server) handleResolveIntegration(w http.ResponseWriter, r *http.Request
 	s.writeJSON(w, http.StatusOK, view)
 }
 
-// handleRegisterIntegration registers a source directory explicitly.
-func (s *Server) handleRegisterIntegration(w http.ResponseWriter, r *http.Request) {
+// handleRegisterJob registers a source directory explicitly.
+func (s *Server) handleRegisterJob(w http.ResponseWriter, r *http.Request) {
 	body, err := readBody(w, r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
@@ -430,7 +430,7 @@ func (s *Server) handleRegisterIntegration(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, "path is required")
 		return
 	}
-	view, err := s.backend.RegisterIntegration(r.Context(), req.Path)
+	view, err := s.backend.RegisterJob(r.Context(), req.Path)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -438,9 +438,9 @@ func (s *Server) handleRegisterIntegration(w http.ResponseWriter, r *http.Reques
 	s.writeJSON(w, http.StatusOK, view)
 }
 
-// handleResetIntegration retires an identity and mints a fresh one.
-func (s *Server) handleResetIntegration(w http.ResponseWriter, r *http.Request) {
-	result, err := s.backend.ResetIntegration(r.Context(), r.PathValue("id"))
+// handleResetJob retires an identity and mints a fresh one.
+func (s *Server) handleResetJob(w http.ResponseWriter, r *http.Request) {
+	result, err := s.backend.ResetJob(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -448,8 +448,8 @@ func (s *Server) handleResetIntegration(w http.ResponseWriter, r *http.Request) 
 	s.writeJSON(w, http.StatusOK, result)
 }
 
-// handleMoveIntegration preserves an identity across a directory rename.
-func (s *Server) handleMoveIntegration(w http.ResponseWriter, r *http.Request) {
+// handleMoveJob preserves an identity across a directory rename.
+func (s *Server) handleMoveJob(w http.ResponseWriter, r *http.Request) {
 	body, err := readBody(w, r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
@@ -464,7 +464,7 @@ func (s *Server) handleMoveIntegration(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, "destination is required")
 		return
 	}
-	view, err := s.backend.MoveIntegration(r.Context(), r.PathValue("id"), req.Destination)
+	view, err := s.backend.MoveJob(r.Context(), r.PathValue("id"), req.Destination)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -472,15 +472,15 @@ func (s *Server) handleMoveIntegration(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, view)
 }
 
-// handlePauseIntegration suspends an integration's autonomous triggers: cron
+// handlePauseJob suspends a job's autonomous triggers: cron
 // stops firing and the webhook refuses a trigger. Nothing is retired, so
 // `otter run` still runs it on demand.
-func (s *Server) handlePauseIntegration(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePauseJob(w http.ResponseWriter, r *http.Request) {
 	s.setPaused(w, r, true)
 }
 
-// handleResumeIntegration re-arms the triggers a pause suspended.
-func (s *Server) handleResumeIntegration(w http.ResponseWriter, r *http.Request) {
+// handleResumeJob re-arms the triggers a pause suspended.
+func (s *Server) handleResumeJob(w http.ResponseWriter, r *http.Request) {
 	s.setPaused(w, r, false)
 }
 
@@ -496,11 +496,11 @@ func (s *Server) setPaused(w http.ResponseWriter, r *http.Request, paused bool) 
 	s.writeJSON(w, http.StatusOK, view)
 }
 
-// handleDeleteIntegration purges an identity's durable artifacts. It is a
+// handleDeleteJob purges an identity's durable artifacts. It is a
 // distinct operation from removing the directory: the source files are left
 // alone and the path is suppressed so a scan cannot silently re-register it.
-func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request) {
-	result, err := s.backend.DeleteIntegration(r.Context(), r.PathValue("id"))
+func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
+	result, err := s.backend.DeleteJob(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -508,7 +508,7 @@ func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request)
 	s.writeJSON(w, http.StatusOK, result)
 }
 
-// handleReload re-reads the integrations directory against the running daemon.
+// handleReload re-reads the jobs directory against the running daemon.
 // It is admin-only because it changes what the whole runtime knows about, and
 // therefore what every other caller can address.
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
@@ -520,17 +520,17 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) handleGetIntegration(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	p := principalFrom(r.Context())
-	if !p.allowsIntegration(id) {
-		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+	if !p.allowsJob(id) {
+		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this job")
 		return
 	}
 
-	view, ok := s.backend.GetIntegration(id)
+	view, ok := s.backend.GetJob(id)
 	if !ok {
-		s.writeError(w, http.StatusNotFound, CodeNotFound, fmt.Sprintf("integration %q not found", id))
+		s.writeError(w, http.StatusNotFound, CodeNotFound, fmt.Sprintf("job %q not found", id))
 		return
 	}
 	s.writeJSON(w, http.StatusOK, view)
@@ -556,7 +556,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// An absent ?capture= is not "the default": it leaves the choice to the
-	// integration's manifest and then the deployment default, which is resolved
+	// job's manifest and then the deployment default, which is resolved
 	// when the run is admitted. Only an explicit value is validated here.
 	capture, err := inspection.ParsePolicyOverride(r.URL.Query().Get("capture"))
 	if err != nil {
@@ -577,8 +577,8 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	filter := runs.Filter{
-		IntegrationID: q.Get("integration_id"),
-		ParentRunID:   q.Get("parent_run_id"),
+		JobID:       q.Get("job_id"),
+		ParentRunID: q.Get("parent_run_id"),
 	}
 	if raw := q.Get("status"); raw != "" {
 		status := runs.Status(raw)
@@ -723,7 +723,7 @@ func (s *Server) handleAppendLog(w http.ResponseWriter, r *http.Request) {
 //
 // A rejected batch is a 400: the submission is malformed and retrying it will
 // not help. A quota rejection is not an error at all -- it is diagnostic loss,
-// reported in the response body, because capture must never fail an integration.
+// reported in the response body, because capture must never fail a job.
 func (s *Server) handleIngestCapture(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	if !principalFrom(r.Context()).allowsRun(runID) {
@@ -890,7 +890,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // generationAllows reports whether a per-run principal may still act on an
-// integration. An admin always may; a run token may only while the generation
+// job. An admin always may; a run token may only while the generation
 // it was issued against is still the current one, so a token minted before a
 // reset, move, retirement or deletion cannot write to state that now belongs
 // to a different instance.
@@ -898,19 +898,19 @@ func (s *Server) generationAllows(p principal, id string) bool {
 	if p.Admin || p.Token.Generation == 0 {
 		return true
 	}
-	current, ok := s.backend.IntegrationGeneration(id)
+	current, ok := s.backend.JobGeneration(id)
 	return ok && current == p.Token.Generation
 }
 
 func (s *Server) handleGetAllState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !principalFrom(r.Context()).allowsIntegration(id) {
-		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+	if !principalFrom(r.Context()).allowsJob(id) {
+		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this job")
 		return
 	}
 
 	if !s.generationAllows(principalFrom(r.Context()), id) {
-		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
+		s.writeError(w, http.StatusConflict, CodeConflict, "the job's identity changed since this run was authorized")
 		return
 	}
 
@@ -928,13 +928,13 @@ func (s *Server) handleGetAllState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	key := r.PathValue("key")
-	if !principalFrom(r.Context()).allowsIntegration(id) {
-		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+	if !principalFrom(r.Context()).allowsJob(id) {
+		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this job")
 		return
 	}
 
 	if !s.generationAllows(principalFrom(r.Context()), id) {
-		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
+		s.writeError(w, http.StatusConflict, CodeConflict, "the job's identity changed since this run was authorized")
 		return
 	}
 
@@ -954,13 +954,13 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	key := r.PathValue("key")
-	if !principalFrom(r.Context()).allowsIntegration(id) {
-		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+	if !principalFrom(r.Context()).allowsJob(id) {
+		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this job")
 		return
 	}
 
 	if !s.generationAllows(principalFrom(r.Context()), id) {
-		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
+		s.writeError(w, http.StatusConflict, CodeConflict, "the job's identity changed since this run was authorized")
 		return
 	}
 
@@ -981,23 +981,23 @@ func (s *Server) handleSetState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, SetStateResponse{
-		IntegrationID: id,
-		Key:           key,
-		Value:         json.RawMessage(body),
-		UpdatedAt:     updatedAt,
+		JobID:     id,
+		Key:       key,
+		Value:     json.RawMessage(body),
+		UpdatedAt: updatedAt,
 	})
 }
 
 func (s *Server) handleDeleteState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	key := r.PathValue("key")
-	if !principalFrom(r.Context()).allowsIntegration(id) {
-		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this integration")
+	if !principalFrom(r.Context()).allowsJob(id) {
+		s.writeError(w, http.StatusForbidden, CodeForbidden, "token is not scoped to this job")
 		return
 	}
 
 	if !s.generationAllows(principalFrom(r.Context()), id) {
-		s.writeError(w, http.StatusConflict, CodeConflict, "the integration's identity changed since this run was authorized")
+		s.writeError(w, http.StatusConflict, CodeConflict, "the job's identity changed since this run was authorized")
 		return
 	}
 
@@ -1008,14 +1008,14 @@ func (s *Server) handleDeleteState(w http.ResponseWriter, r *http.Request) {
 	}
 	if !deleted {
 		s.writeError(w, http.StatusNotFound, CodeNotFound,
-			fmt.Sprintf("state key %q is not set for integration %q", key, id))
+			fmt.Sprintf("state key %q is not set for job %q", key, id))
 		return
 	}
-	s.writeJSON(w, http.StatusOK, DeleteStateResponse{IntegrationID: id, Key: key, Deleted: true})
+	s.writeJSON(w, http.StatusOK, DeleteStateResponse{JobID: id, Key: key, Deleted: true})
 }
 
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	integration := r.PathValue("integration")
+	job := r.PathValue("job")
 
 	body, err := readBody(w, r)
 	if err != nil {
@@ -1044,7 +1044,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		headers[name] = values
 	}
 
-	runID, err := s.backend.SubmitRun(r.Context(), integration, TriggerPayload{
+	runID, err := s.backend.SubmitRun(r.Context(), job, TriggerPayload{
 		Type:    TriggerWebhook,
 		Body:    raw,
 		Headers: headers,
@@ -1093,9 +1093,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, timeline.ErrEvidenceChanged):
 		s.writeError(w, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, ErrPaused):
-		// A paused integration is temporarily not accepting autonomous
+		// A paused job is temporarily not accepting autonomous
 		// triggers. 503 is that statement: the route exists and the caller is
-		// authorized, but this integration is not taking work right now. No
+		// authorized, but this job is not taking work right now. No
 		// Retry-After is offered because a pause has no known end.
 		s.writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
 	case errors.Is(err, ErrForbidden):

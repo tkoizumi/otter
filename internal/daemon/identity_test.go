@@ -16,10 +16,10 @@ import (
 	"github.com/tkoizumi/otter/internal/state"
 )
 
-// copyIntegrationFiles copies an integration directory the way `cp -r` does,
+// copyJobFiles copies a job directory the way `cp -r` does,
 // marker included. Copying the marker is the operation the design must treat
 // as a new instance.
-func copyIntegrationFiles(t *testing.T, src, dst string) {
+func copyJobFiles(t *testing.T, src, dst string) {
 	t.Helper()
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dst, err)
@@ -46,20 +46,20 @@ func manifestFor(name string) string {
 	return "version: 1\nname: " + name + "\nentrypoint: main.py\ntimeout: 30\n"
 }
 
-// Two integrations may share a label. The label is a human handle, not a key:
+// Two jobs may share a label. The label is a human handle, not a key:
 // a bare reference to it is ambiguous and must name every candidate, while an
 // identity or a path resolves independently.
-func TestTwoIntegrationsMayShareALabel(t *testing.T) {
+func TestTwoJobsMayShareALabel(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", manifestFor("shared"), noopPython)
-	writeIntegration(t, root, "b", manifestFor("shared"), noopPython)
+	writeJob(t, root, "a", manifestFor("shared"), noopPython)
+	writeJob(t, root, "b", manifestFor("shared"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 
-	views := d.ListIntegrations()
+	views := d.ListJobs()
 	if len(views) != 2 {
-		t.Fatalf("integrations = %+v, want two", views)
+		t.Fatalf("jobs = %+v, want two", views)
 	}
 	ids := map[string]bool{}
 	for _, v := range views {
@@ -94,11 +94,11 @@ func TestTwoIntegrationsMayShareALabel(t *testing.T) {
 	}
 }
 
-// Copying an integration directory creates a separate instance with its own
+// Copying a job directory creates a separate instance with its own
 // state, even though the copy carries the original's marker.
 func TestCopyGetsFreshIdentityAndState(t *testing.T) {
 	root := t.TempDir()
-	a := writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	a := writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -109,7 +109,7 @@ func TestCopyGetsFreshIdentityAndState(t *testing.T) {
 	}
 
 	b := filepath.Join(root, "b")
-	copyIntegrationFiles(t, a, b)
+	copyJobFiles(t, a, b)
 	if _, err := d.Reload(ctx); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestCopyGetsFreshIdentityAndState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve copy by path: %v", err)
 	}
-	bID := bEntry.Integration.ID
+	bID := bEntry.Job.ID
 	if bID == aID {
 		t.Fatalf("the copy adopted the original's identity %q", aID)
 	}
@@ -138,7 +138,7 @@ func TestCopyGetsFreshIdentityAndState(t *testing.T) {
 // suppresses the path so a scan does not silently re-register it.
 func TestDeletePurgesAndSuppressesWithoutRemovingSource(t *testing.T) {
 	root := t.TempDir()
-	dir := writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	dir := writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -147,7 +147,7 @@ func TestDeletePurgesAndSuppressesWithoutRemovingSource(t *testing.T) {
 	if _, err := d.SetState(ctx, "id:"+id, "count", json.RawMessage("7")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
-	if _, err := d.DeleteIntegration(ctx, "id:"+id); err != nil {
+	if _, err := d.DeleteJob(ctx, "id:"+id); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -172,14 +172,14 @@ func TestDeletePurgesAndSuppressesWithoutRemovingSource(t *testing.T) {
 	if _, err := d.Reload(ctx); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	for _, v := range d.ListIntegrations() {
+	for _, v := range d.ListJobs() {
 		if v.Path == mustCanonicalPath(t, dir) {
 			t.Fatalf("reload re-registered a deleted path: %+v", v)
 		}
 	}
 
 	// Re-registering explicitly clears the suppression and mints fresh.
-	registered, err := d.RegisterIntegration(ctx, dir)
+	registered, err := d.RegisterJob(ctx, dir)
 	if err != nil {
 		t.Fatalf("register after delete: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestDeletePurgesAndSuppressesWithoutRemovingSource(t *testing.T) {
 // the old data for explicit deletion.
 func TestResetMintsFreshIdentityAndKeepsOldData(t *testing.T) {
 	root := t.TempDir()
-	dir := writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	dir := writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -202,7 +202,7 @@ func TestResetMintsFreshIdentityAndKeepsOldData(t *testing.T) {
 		t.Fatalf("set state: %v", err)
 	}
 
-	result, err := d.ResetIntegration(ctx, "id:"+oldID)
+	result, err := d.ResetJob(ctx, "id:"+oldID)
 	if err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestResetMintsFreshIdentityAndKeepsOldData(t *testing.T) {
 // Move preserves identity: the same id, the same state, a new path.
 func TestMovePreservesIdentity(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -237,7 +237,7 @@ func TestMovePreservesIdentity(t *testing.T) {
 	}
 
 	destination := filepath.Join(root, "moved")
-	view, err := d.MoveIntegration(ctx, "id:"+id, destination)
+	view, err := d.MoveJob(ctx, "id:"+id, destination)
 	if err != nil {
 		t.Fatalf("move: %v", err)
 	}
@@ -259,14 +259,14 @@ func TestMovePreservesIdentity(t *testing.T) {
 // An invalid manifest is still listed, with its real error, but it cannot run.
 func TestInvalidManifestIsListedButNotRunnable(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "broken", "version: 1\nname: broken\nentrypoint: main.py\ntrigger:\n  cron: \"not a cron\"\n", noopPython)
+	writeJob(t, root, "broken", "version: 1\nname: broken\nentrypoint: main.py\ntrigger:\n  cron: \"not a cron\"\n", noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 
-	view, ok := d.GetIntegration("broken")
+	view, ok := d.GetJob("broken")
 	if !ok || view.Valid {
-		t.Fatalf("broken integration = %+v ok=%v, want present and invalid", view, ok)
+		t.Fatalf("broken job = %+v ok=%v, want present and invalid", view, ok)
 	}
 	if _, err := d.SubmitRun(ctx, "broken", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrInvalid) {
 		t.Fatalf("submit invalid = %v, want invalid", err)
@@ -287,7 +287,7 @@ func mustCanonicalPath(t *testing.T, path string) string {
 // release of its own.
 func TestResetLeavesTheFreshIdentityUnreleased(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -297,7 +297,7 @@ func TestResetLeavesTheFreshIdentityUnreleased(t *testing.T) {
 		t.Fatalf("the old identity has no active release: ok=%v err=%v", ok, err)
 	}
 
-	result, err := d.ResetIntegration(ctx, "id:"+oldID)
+	result, err := d.ResetJob(ctx, "id:"+oldID)
 	if err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestResetLeavesTheFreshIdentityUnreleased(t *testing.T) {
 // rollback to an intact snapshot must survive an authorized move.
 func TestMoveKeepsTheActiveRelease(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -327,7 +327,7 @@ func TestMoveKeepsTheActiveRelease(t *testing.T) {
 		t.Fatalf("no active release before the move: ok=%v err=%v", ok, err)
 	}
 
-	if _, err := d.MoveIntegration(ctx, "id:"+id, filepath.Join(root, "moved")); err != nil {
+	if _, err := d.MoveJob(ctx, "id:"+id, filepath.Join(root, "moved")); err != nil {
 		t.Fatalf("move: %v", err)
 	}
 
@@ -345,7 +345,7 @@ func TestMoveKeepsTheActiveRelease(t *testing.T) {
 // has to be addressable by id against the registry itself.
 func TestDeleteWorksAfterTheSourceDirectoryIsGone(t *testing.T) {
 	root := t.TempDir()
-	dir := writeIntegration(t, root, "a", manifestFor("counter"), noopPython)
+	dir := writeJob(t, root, "a", manifestFor("counter"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -366,7 +366,7 @@ func TestDeleteWorksAfterTheSourceDirectoryIsGone(t *testing.T) {
 		t.Fatalf("a retired identity is still resolvable as active")
 	}
 
-	deleted, err := d.DeleteIntegration(ctx, "id:"+id)
+	deleted, err := d.DeleteJob(ctx, "id:"+id)
 	if err != nil {
 		t.Fatalf("delete a retired identity by id: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestDeleteWorksAfterTheSourceDirectoryIsGone(t *testing.T) {
 // administrative target: deleting by its label must work, not just by id.
 func TestDeleteResolvesARetiredIdentityByLabel(t *testing.T) {
 	root := t.TempDir()
-	dir := writeIntegration(t, root, "a", manifestFor("customer-sync"), noopPython)
+	dir := writeJob(t, root, "a", manifestFor("customer-sync"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -400,7 +400,7 @@ func TestDeleteResolvesARetiredIdentityByLabel(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 
-	deleted, err := d.DeleteIntegration(ctx, "customer-sync")
+	deleted, err := d.DeleteJob(ctx, "customer-sync")
 	if err != nil {
 		t.Fatalf("delete a retired identity by label: %v", err)
 	}

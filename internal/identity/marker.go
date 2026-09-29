@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// MarkerFileName is the source marker inside every registered integration
+// MarkerFileName is the source marker inside every registered job
 // directory. It is written by the runtime, never authored by hand, and is
 // excluded from release snapshots and deployment revisions.
 const MarkerFileName = ".otter-id"

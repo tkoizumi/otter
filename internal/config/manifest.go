@@ -1,8 +1,8 @@
-// Package config loads, validates and discovers Otter integration manifests.
+// Package config loads, validates and discovers Otter job manifests.
 //
 // A manifest is a plain YAML file named otter.yaml. Otter deliberately keeps
-// the manifest small: it describes how to run an integration process and when
-// to trigger it. Integration logic belongs in Python, never in YAML.
+// the manifest small: it describes how to run a job process and when
+// to trigger it. Job logic belongs in Python, never in YAML.
 package config
 
 import (
@@ -22,7 +22,7 @@ import (
 	"github.com/tkoizumi/otter/internal/inspection"
 )
 
-// ManifestFileName is the file Otter looks for when discovering integrations.
+// ManifestFileName is the file Otter looks for when discovering jobs.
 // It is aliased from the identity package so the manifest layer, discovery and
 // the registry can never disagree about the name.
 const ManifestFileName = identity.ManifestFileName
@@ -67,27 +67,27 @@ type Manifest struct {
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
 
-	// Capture is the integration's HTTP capture policy: off, metadata or full.
-	// It is optional, and an omitted field means the integration has no opinion
+	// Capture is the job's HTTP capture policy: off, metadata or full.
+	// It is optional, and an omitted field means the job has no opinion
 	// rather than "off", so an omitted field inherits the deployment default
 	// while an explicit `capture: off` refuses to record anything.
 	Capture string `yaml:"capture"`
 
-	// Dir is the integration directory (the directory containing otter.yaml)
+	// Dir is the job directory (the directory containing otter.yaml)
 	// and Path is the manifest path. Both are derived, not authored.
 	Dir  string `yaml:"-"`
 	Path string `yaml:"-"`
 }
 
-// PythonConfig describes how to launch the integration process.
+// PythonConfig describes how to launch the job process.
 type PythonConfig struct {
 	// Mode is "external" (the legacy default) or "managed".
 	Mode       string `yaml:"mode"`
 	Executable string `yaml:"executable"`
 
 	// Path lists directories prepended to the child's PYTHONPATH, so
-	// integrations can share client code instead of copying it. Entries are
-	// resolved relative to the integration directory, and ".." is allowed
+	// jobs can share client code instead of copying it. Entries are
+	// resolved relative to the job directory, and ".." is allowed
 	// because shared code normally lives outside it.
 	Path []string `yaml:"path"`
 }
@@ -108,7 +108,7 @@ type PythonPathSpec struct {
 	// Resolved is the absolute directory the entry points at on this machine.
 	Resolved string
 	// Absolute reports that the declaration itself was absolute rather than
-	// relative to the integration directory.
+	// relative to the job directory.
 	Absolute bool
 }
 
@@ -145,7 +145,7 @@ func (m *Manifest) PythonPathEntries() []PythonPathSpec {
 // the right question for the live tree and the wrong one for a release: an
 // absolute path exists on the developer's machine and is a missing directory on
 // the host, so it passes locally and fails at run time. A release can only
-// carry a tree whose placement is expressed relative to the integration
+// carry a tree whose placement is expressed relative to the job
 // directory, so an absolute declaration is refused here, at release time,
 // before a snapshot that depends on live code is written.
 func (m *Manifest) ValidatePythonPathsForRelease() error {
@@ -156,7 +156,7 @@ func (m *Manifest) ValidatePythonPathsForRelease() error {
 			continue
 		}
 		problems = append(problems, fmt.Sprintf(
-			"python.path[%d] %q is absolute: a release cannot reproduce it on another host, so use a path relative to the integration directory",
+			"python.path[%d] %q is absolute: a release cannot reproduce it on another host, so use a path relative to the job directory",
 			i, declared))
 	}
 	if len(problems) > 0 {
@@ -172,7 +172,7 @@ type TriggerConfig struct {
 	Webhook *WebhookConfig `yaml:"webhook"`
 }
 
-// WebhookConfig enables the POST /v1/hooks/{integration} endpoint.
+// WebhookConfig enables the POST /v1/hooks/{job} endpoint.
 type WebhookConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
@@ -193,7 +193,7 @@ func (m *Manifest) WebhookEnabled() bool {
 // Cron returns the cron expression, if any.
 func (m *Manifest) Cron() string { return strings.TrimSpace(m.Trigger.Cron) }
 
-// CapturePolicy resolves the integration's declared capture policy. The bool is
+// CapturePolicy resolves the job's declared capture policy. The bool is
 // false when the manifest does not declare one, in which case the deployment
 // default applies; it is true for an explicit policy, including `off`.
 //
@@ -447,8 +447,8 @@ func (m *Manifest) Validate() error {
 		}
 		// python.path is allowed in managed mode. The declared directories are
 		// captured into the release at the same relative depth, so the paths
-		// keep resolving after activation. Integration-local directories are
-		// captured with the integration itself; anything outside it is staged
+		// keep resolving after activation. Job-local directories are
+		// captured with the job itself; anything outside it is staged
 		// as a shared tree.
 	}
 
@@ -463,11 +463,11 @@ func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Entrypoint) == "" {
 		add("entrypoint is required")
 	} else if filepath.IsAbs(m.Entrypoint) {
-		add("entrypoint %q must be a relative path inside the integration directory", m.Entrypoint)
+		add("entrypoint %q must be a relative path inside the job directory", m.Entrypoint)
 	} else {
 		cleaned := filepath.Clean(filepath.FromSlash(m.Entrypoint))
 		if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-			add("entrypoint %q must not escape the integration directory", m.Entrypoint)
+			add("entrypoint %q must not escape the job directory", m.Entrypoint)
 		} else if m.Dir != "" {
 			info, err := os.Stat(filepath.Join(m.Dir, cleaned))
 			switch {

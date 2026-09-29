@@ -50,13 +50,17 @@ only guarantees what a matrix scenario exercises.
 
 ### v0.3.0
 
+Scheduled in [v0.3.0-release-plan.md](v0.3.0-release-plan.md), which turns the
+items below into workstreams and adds the operating-drill evidence the roadmap's
+exit gate requires. This table remains their intake record.
+
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
 | OT-001 | Fix documented retention SQL that filters on `runs.queued_at` | doc | `operations.md:507,529,549`; column is `created_at` (`migrations/0001_init.sql:28`) | open |
 | OT-002 | Retention must account for backlog-pinned release snapshots | design | `cli/release.go:645-685` pins digests held by `queued`/`running`/`retrying` runs | open |
 | OT-003 | `otter deploy` never prunes releases; `--keep` is opt-in | gap | `cli/release.go:397-409`; deploy passes no keep value | open |
 | OT-006 | Automatic retention for run logs and runs | feature | `runs.LogStore.DeleteOlderThan` exists (`runs/logs.go:280`) but is called only from a test | scheduled |
-| OT-004 | Expose queue age, per-integration depth, and last-success freshness | feature | `/health` reports counts only (`api/server.go:353-391`); no `created_at` age anywhere | open |
+| OT-004 | Expose queue age, per-job depth, and last-success freshness | feature | `/health` reports counts only (`api/server.go:353-391`); no `created_at` age anywhere | open |
 | OT-005 | Ship a `migration_applied` log line, or stop promising one | doc | promised at `operations.md:698`; `Migrate` has no logger and `schema_migrations` has no description column | open |
 | OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | open |
 | OT-011 | Prove queued and retry attempts retain their bound release and environment | test | [see below](#reproducible-releases-not-yet-proven) | open |
@@ -99,14 +103,14 @@ to intuition:
 
 - Every cron occurrence becomes its own run, unconditionally. Nothing is
   skipped because a previous execution is still going.
-- With the default `concurrency: 1` the runs serialize: a slow integration
+- With the default `concurrency: 1` the runs serialize: a slow job
   builds a catch-up backlog rather than overlapping.
 - **Downtime skips; slowness accumulates.** Occurrences missed while the daemon
   was down are never replayed, but occurrences during uptime always queue.
 - A deep backlog executes the release bound at *submission*, not the newest
   release, so queued work can run older code than what is active.
 - Raising `concurrency` to clear a backlog produces genuinely concurrent
-  executions of the same integration.
+  executions of the same job.
 
 The first three belong in [operations.md](operations.md) near the existing
 capacity section. The release-binding point belongs with the release docs.
@@ -121,11 +125,41 @@ capacity section. The release-binding point belongs with the release docs.
 
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| OT-007 | Decide the missed-occurrence policy for a busy integration | design | `cronTick` enqueues unconditionally (`daemon.go:750-771`); admission has no depth bound | open |
+| OT-007 | Decide the missed-occurrence policy for a busy job | design | `cronTick` enqueues unconditionally (`daemon.go:750-771`); admission has no depth bound | open |
+| OT-012 | Tracked references: answer "which runs touched this order/file?" | feature | [tracked-references-implementation-plan.md](tracked-references-implementation-plan.md) | scheduled |
 
 `OT-007` is the item most likely to graduate to a GitHub issue: it is a product
 promise about work preservation, not an implementation detail, and the default
-must not silently drop occurrences for event-driven integrations.
+must not silently drop occurrences for event-driven jobs.
+
+#### Tracked references
+
+Detail for `OT-012`. Raised by the question "a Shopify order or an audio file
+came through the job; which run contained it?" -- asked from the artifact
+backwards, while every existing command starts from a run id. The reverse index
+is designed in
+[tracked-references-implementation-plan.md](tracked-references-implementation-plan.md).
+
+- **What exists.** The webhook trigger body is already persisted into
+  `runs.metadata` (`internal/daemon/view.go:326`), and captured HTTP bodies are
+  already sanitized and stored (`internal/inspection/store.go:286`). Both hold
+  the identifiers that answer the question; neither is indexed or queryable.
+  `otter request <request-id>` (`migrations/0006_http_exchanges_request_id.sql`)
+  is the existing precedent for a lookup over a non-unique value.
+- **What is missing.** A `run_refs` index written at the two ingest points, an
+  explicit `ctx.track()` for what payloads cannot see (a local audio file), an
+  `otter track <ref>` read, and the cleanup and retention coupling that keeps the
+  index from outliving its runs.
+- **Why it is not in `v0.3.0`.** That plan's stated goal is
+  [no migration ships](v0.3.0-release-plan.md); a queryable index is a new table,
+  and no `v0.3.0` exit-gate step fails without it. It is also not `v0.4.0`, which
+  freezes the manifest, SDK, CLI JSON and HTTP API rather than adding surface.
+  `v0.5.0` is the first release that can carry a new manifest key and command
+  family without contradicting the release it lands in.
+- **Exit.** A webhook-triggered run whose body carries an order id is findable by
+  that id, a run that declared a local file path is findable by it, a value that
+  was never recorded is distinguished from one that was, and deleting a
+  job leaves no reference that still resolves.
 
 ## Where these came from
 

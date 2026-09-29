@@ -13,31 +13,31 @@ import (
 	"time"
 )
 
-// SharedTree is a shared directory captured alongside the integration.
+// SharedTree is a shared directory captured alongside the job.
 //
 // Source is the live directory; Name is where it lands in the release root,
 // slash-normalized, as computed by Plan. The two must reproduce the tree's
-// depth relative to the integration directory, or a manifest's relative
+// depth relative to the job directory, or a manifest's relative
 // python.path stops resolving after activation.
 type SharedTree struct {
 	Source string
 	Name   string
 }
 
-// StageWithLayout copies an integration and the shared code it imports into a
+// StageWithLayout copies a job and the shared code it imports into a
 // new release directory and publishes its metadata, using the placements Plan
 // computed.
 //
 // The copy happens into a temporary directory that is renamed into place, so a
 // release directory either exists complete or not at all. Two stagings of
 // identical inputs produce the same digest, so re-staging an unchanged
-// integration returns the existing release instead of creating a second copy.
+// job returns the existing release instead of creating a second copy.
 //
 // A declared shared tree that is missing or is not a directory is an error
 // rather than a skip: a release that silently drops a tree would import the
 // live copy on the machine that made it and fail on the machine that runs it.
-func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, environmentDigest string) (Metadata, error) {
-	if err := validName(integration); err != nil {
+func (m Manager) StageWithLayout(job, sourceDir string, layout Layout, environmentDigest string) (Metadata, error) {
+	if err := validName(job); err != nil {
 		return Metadata{}, err
 	}
 	if _, err := os.Stat(filepath.Join(sourceDir, "otter.yaml")); err != nil {
@@ -60,7 +60,7 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 	if err != nil {
 		return Metadata{}, err
 	}
-	final, err := m.Dir(integration, digest)
+	final, err := m.Dir(job, digest)
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -74,13 +74,13 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 	if err != nil {
 		return Metadata{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, integration), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, job), 0o700); err != nil {
 		return Metadata{}, err
 	}
 
 	// A partial directory from an interrupted staging is removed only while
 	// holding nothing else: it has no metadata, so no release references it.
-	tmp, err := os.MkdirTemp(filepath.Join(root, integration), ".staging-")
+	tmp, err := os.MkdirTemp(filepath.Join(root, job), ".staging-")
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -88,7 +88,7 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 
 	// A captured tree that contains the staging directory would copy the
 	// release into itself. That happens when the data directory lives inside
-	// the integration directory -- an integration at the workspace root with
+	// the job directory -- a job at the workspace root with
 	// the default data location is the common case -- so it is refused
 	// explicitly rather than left to run out of disk.
 	captured := make([]string, 0, len(layout.Trees)+1)
@@ -100,7 +100,7 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 		if within(tmp, live) {
 			return Metadata{}, fmt.Errorf(
 				"release: the data directory %s is inside %s, so a snapshot would copy itself; "+
-					"release with a data directory outside the integration", filepath.Dir(root), live)
+					"release with a data directory outside the job", filepath.Dir(root), live)
 		}
 	}
 
@@ -109,12 +109,12 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 	// machine or a dangling link on the host.
 	roots := captured
 
-	src, err := safeJoin(tmp, layout.IntegrationPath)
+	src, err := safeJoin(tmp, layout.JobPath)
 	if err != nil {
 		return Metadata{}, err
 	}
 	if err := copyTree(sourceDir, src, roots); err != nil {
-		return Metadata{}, fmt.Errorf("stage %s: %w", integration, err)
+		return Metadata{}, fmt.Errorf("stage %s: %w", job, err)
 	}
 	for _, tree := range layout.Trees {
 		dest, err := safeJoin(tmp, tree.Name)
@@ -128,14 +128,14 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 
 	git := ReadGitState(context.Background(), sourceDir)
 	meta := Metadata{
-		Integration:     integration,
-		Digest:          digest,
-		IntegrationPath: layout.IntegrationPath,
-		Environment:     environmentDigest,
-		Source:          sourceDir,
-		CreatedAt:       time.Now().UTC(),
-		GitRevision:     git.Revision,
-		GitDirty:        git.Dirty,
+		Job:         job,
+		Digest:      digest,
+		JobPath:     layout.JobPath,
+		Environment: environmentDigest,
+		Source:      sourceDir,
+		CreatedAt:   time.Now().UTC(),
+		GitRevision: git.Revision,
+		GitDirty:    git.Dirty,
 	}
 	if err := writeMetadata(tmp, meta); err != nil {
 		return Metadata{}, err
@@ -152,7 +152,7 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 	return meta, nil
 }
 
-// Activate switches an integration to a staged release.
+// Activate switches a job to a staged release.
 //
 // The switch is a symlink replacement, performed by creating the replacement
 // under a temporary name and renaming it over the previous link: rename(2) is
@@ -160,8 +160,8 @@ func (m Manager) StageWithLayout(integration, sourceDir string, layout Layout, e
 // missing path. A process that has already imported its modules is unaffected
 // because the kernel keeps the old files open, which is what makes it safe to
 // activate while an attempt is running.
-func (m Manager) Activate(integration, digest string) error {
-	dir, err := m.Dir(integration, digest)
+func (m Manager) Activate(job, digest string) error {
+	dir, err := m.Dir(job, digest)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func (m Manager) Activate(integration, digest string) error {
 		return fmt.Errorf("refusing to activate an incomplete release: %w", err)
 	}
 
-	link, err := m.ActivePath(integration)
+	link, err := m.ActivePath(job)
 	if err != nil {
 		return err
 	}
@@ -191,11 +191,11 @@ func (m Manager) Activate(integration, digest string) error {
 
 // safeJoin joins a relative release path onto a release root, refusing anything
 // that would escape it. A manifest's python.path and a release's recorded
-// IntegrationPath are both untrusted by the time they are read back, so they
+// JobPath are both untrusted by the time they are read back, so they
 // must not be able to reach outside the snapshot.
 //
-// The root itself (".") is allowed: an integration can sit at the release root
-// when the discovery root is the integration directory.
+// The root itself (".") is allowed: a job can sit at the release root
+// when the discovery root is the job directory.
 func safeJoin(root, name string) (string, error) {
 	clean := filepath.Clean(filepath.FromSlash(name))
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -211,20 +211,20 @@ func safeJoin(root, name string) (string, error) {
 // Release is one staged release on disk.
 type Release struct {
 	Metadata
-	// Active reports whether this release is the one an integration serves.
+	// Active reports whether this release is the one a job serves.
 	Active bool
 }
 
-// List returns every staged release for an integration, newest first.
-func (m Manager) List(integration string) ([]Release, error) {
-	if err := validName(integration); err != nil {
+// List returns every staged release for a job, newest first.
+func (m Manager) List(job string) ([]Release, error) {
+	if err := validName(job); err != nil {
 		return nil, err
 	}
 	root, err := m.Root()
 	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(root, integration)
+	base := filepath.Join(root, job)
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -234,7 +234,7 @@ func (m Manager) List(integration string) ([]Release, error) {
 	}
 
 	active := ""
-	if meta, ok, err := m.Active(integration); err == nil && ok {
+	if meta, ok, err := m.Active(job); err == nil && ok {
 		active = meta.Digest
 	}
 
@@ -258,11 +258,11 @@ func (m Manager) List(integration string) ([]Release, error) {
 //
 // It never removes the active release, and it never removes the newest
 // inactive one, so a rollback always has somewhere to go.
-func (m Manager) Retain(integration string, keep int, referenced map[string]bool) ([]string, error) {
+func (m Manager) Retain(job string, keep int, referenced map[string]bool) ([]string, error) {
 	if keep < 1 {
 		keep = 1
 	}
-	releases, err := m.List(integration)
+	releases, err := m.List(job)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +277,7 @@ func (m Manager) Retain(integration string, keep int, referenced map[string]bool
 		if kept <= keep || referenced[rel.Digest] {
 			continue
 		}
-		dir, err := m.Dir(integration, rel.Digest)
+		dir, err := m.Dir(job, rel.Digest)
 		if err != nil {
 			return removed, err
 		}

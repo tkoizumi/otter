@@ -12,7 +12,7 @@ import (
 // This file renders the request body for each supported format.
 //
 // The shapes are dictated by the receiving service, so they live here rather
-// than in an integration: a named format can be tested against the contract the
+// than in a job: a named format can be tested against the contract the
 // service publishes, while a template supplied by an operator could not be
 // checked at all, and an alerting path that fails silently fails exactly when
 // it is needed.
@@ -41,13 +41,13 @@ func (n *Notifier) body(payload Payload) ([]byte, error) {
 
 // chatMessage is the one-line human summary used by Slack and Discord.
 //
-// It deliberately leads with the integration and the integration's own last
+// It deliberately leads with the job and the job's own last
 // log line, because that is the difference between "exit code 1" and "12
 // customers failed to write" -- the thing an operator can act on.
 func chatMessage(p Payload) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "%s *%s* %s", statusEmoji(p.Status), p.Integration, p.Status)
+	fmt.Fprintf(&b, "%s *%s* %s", statusEmoji(p.Status), p.Job, p.Status)
 	if p.Attempt > 1 {
 		fmt.Fprintf(&b, " (attempt %d)", p.Attempt)
 	}
@@ -105,7 +105,7 @@ func shortID(id string) string {
 // Workflows URL needs a bridge, which is documented rather than guessed at.
 func teamsCard(p Payload) map[string]any {
 	facts := []map[string]string{
-		{"name": "Integration", "value": p.Integration},
+		{"name": "Job", "value": p.Job},
 		{"name": "Status", "value": p.Status},
 	}
 	if p.Attempt > 1 {
@@ -139,8 +139,8 @@ func teamsCard(p Payload) map[string]any {
 			"failed":    "D93F0B",
 			"timed_out": "E36209",
 		}[p.Status],
-		"summary": fmt.Sprintf("%s %s", p.Integration, p.Status),
-		"title":   fmt.Sprintf("%s %s", p.Integration, p.Status),
+		"summary": fmt.Sprintf("%s %s", p.Job, p.Status),
+		"title":   fmt.Sprintf("%s %s", p.Job, p.Status),
 		"text":    text,
 		"sections": []map[string]any{
 			{"facts": facts},

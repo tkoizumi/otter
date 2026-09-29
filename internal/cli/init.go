@@ -11,14 +11,14 @@ import (
 	"strings"
 )
 
-// `otter init` scaffolds a workspace: the directory that holds integrations and
+// `otter init` scaffolds a workspace: the directory that holds jobs and
 // the state a runtime keeps for them. Everything it writes is a plain file a
 // developer is expected to edit, and nothing it writes is load-bearing for the
 // runtime -- with one exception, the workspace marker, which is what
 // `otter start` and the CLI's discovery walk look for.
 //
 // What it deliberately does not do: fetch anything, validate credentials,
-// touch a daemon, or offer a gallery of vendor templates. An integration is a
+// touch a daemon, or offer a gallery of vendor templates. A job is a
 // directory with a manifest and a Python file, so the scaffold is small on
 // purpose.
 
@@ -41,13 +41,13 @@ const workspaceEnvFileName = "otter.env.example"
 // one, because appending to a project's ignore rules is not a scaffold's job.
 const gitignoreFileName = ".gitignore"
 
-// integrationNamePattern is the runtime's own manifest name rule, verbatim:
+// jobNamePattern is the runtime's own manifest name rule, verbatim:
 // lowercase letters, digits, dot, dash and underscore, starting and ending
 // alphanumeric. It is duplicated here rather than shared because init has to
 // reject a name before writing a manifest that validation would reject -- but
 // it must not be *stricter* than validation, or init refuses names the runtime
 // accepts.
-var integrationNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
+var jobNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
 
 // scaffoldFile is one file `init` may write.
 type scaffoldFile struct {
@@ -55,7 +55,7 @@ type scaffoldFile struct {
 	content string
 	mode    os.FileMode
 	// skipIfPresent is for files that belong to the workspace rather than to
-	// the integration: an existing .gitignore or env file is the developer's.
+	// the job: an existing .gitignore or env file is the developer's.
 	skipIfPresent bool
 }
 
@@ -66,14 +66,14 @@ func (a *App) cmdInit(args []string) int {
 	force := fs.Bool("force", false, "overwrite files that already exist")
 	fs.Usage = func() {
 		fmt.Fprintf(a.Stderr, "Usage: otter init [--force] [name]\n\n")
-		fmt.Fprintf(a.Stderr, "Creates a workspace and one integration in it:\n")
+		fmt.Fprintf(a.Stderr, "Creates a workspace and one job in it:\n")
 		fmt.Fprintf(a.Stderr, "  .otter/           the marker, and the runtime version that made it\n")
 		fmt.Fprintf(a.Stderr, "  <name>/otter.yaml the manifest\n")
 		fmt.Fprintf(a.Stderr, "  <name>/main.py    the entrypoint\n")
 		fmt.Fprintf(a.Stderr, "  <name>/logic.py   pure logic, testable without a runtime\n")
 		fmt.Fprintf(a.Stderr, "  <name>/tests/     `python3 -m unittest discover -s tests`\n\n")
 		fmt.Fprintf(a.Stderr, "The name defaults to the current directory's name. Run it inside an existing\n")
-		fmt.Fprintf(a.Stderr, "workspace to add another integration to it.\n\n")
+		fmt.Fprintf(a.Stderr, "workspace to add another job to it.\n\n")
 		fmt.Fprintf(a.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -102,8 +102,8 @@ func (a *App) cmdInit(args []string) int {
 	if name == "" {
 		name = filepath.Base(wd)
 	}
-	if !integrationNamePattern.MatchString(name) {
-		fmt.Fprintf(a.Stderr, "otter: %q is not a usable integration name\n", name)
+	if !jobNamePattern.MatchString(name) {
+		fmt.Fprintf(a.Stderr, "otter: %q is not a usable job name\n", name)
 		fmt.Fprintf(a.Stderr, "otter: use lowercase letters, digits, dot, dash or underscore,\n")
 		fmt.Fprintf(a.Stderr, "otter: starting and ending with a letter or digit (for example tshirt-company)\n")
 		return 2
@@ -114,10 +114,10 @@ func (a *App) cmdInit(args []string) int {
 		return code
 	}
 
-	integrationDir := filepath.Join(root, name)
-	if entries, err := os.ReadDir(integrationDir); err == nil && !*force {
+	jobDir := filepath.Join(root, name)
+	if entries, err := os.ReadDir(jobDir); err == nil && !*force {
 		fmt.Fprintf(a.Stderr, "otter: %s already exists (%d entr%s)\n",
-			relTo(root, integrationDir), len(entries), plural(len(entries), "y", "ies"))
+			relTo(root, jobDir), len(entries), plural(len(entries), "y", "ies"))
 		fmt.Fprintf(a.Stderr, "otter: pick another name, or pass --force to write over the scaffolded files\n")
 		return 1
 	}
@@ -133,7 +133,7 @@ func (a *App) cmdInit(args []string) int {
 	} else {
 		fmt.Fprintf(a.Stdout, "workspace          %s (existing)\n", root)
 	}
-	fmt.Fprintf(a.Stdout, "integration        %s\n", name)
+	fmt.Fprintf(a.Stdout, "job                %s\n", name)
 	fmt.Fprintf(a.Stdout, "runtime version    %s\n", a.Version)
 	for _, path := range written {
 		fmt.Fprintf(a.Stdout, "wrote              %s\n", relTo(root, path))
@@ -148,16 +148,16 @@ func (a *App) cmdInit(args []string) int {
 	fmt.Fprintf(a.Stdout, "  otter run %s\n", name)
 	fmt.Fprintf(a.Stdout, "  otter stop\n")
 	if _, running := runningURL(serveDir(root, "")); running {
-		fmt.Fprintf(a.Stdout, "\nnote: a runtime is already serving this workspace; it discovered integrations\n")
+		fmt.Fprintf(a.Stdout, "\nnote: a runtime is already serving this workspace; it discovered jobs\n")
 		fmt.Fprintf(a.Stdout, "note: when it started, so run `otter reload` to pick this one up without\n")
-		fmt.Fprintf(a.Stdout, "note: interrupting the integrations already running.\n")
+		fmt.Fprintf(a.Stdout, "note: interrupting the jobs already running.\n")
 	}
 	return 0
 }
 
 // initTarget decides where a scaffold goes.
 //
-// Inside an existing workspace it adds an integration to that workspace without
+// Inside an existing workspace it adds a job to that workspace without
 // touching the marker. Outside one, it takes over the current directory -- but
 // only if that directory is empty apart from dotfiles. Scaffolding into the
 // middle of someone's repository would bury four files among their own, and
@@ -181,7 +181,7 @@ func initTarget(stderr io.Writer, wd string) (root string, created bool, code in
 	return wd, true, 0
 }
 
-// writeScaffold writes the workspace marker and one integration. It returns the
+// writeScaffold writes the workspace marker and one job. It returns the
 // paths written and the paths it left alone because they already existed.
 func writeScaffold(root, name, version string, force bool) (written, skipped []string, err error) {
 	files := []scaffoldFile{
@@ -190,7 +190,7 @@ func writeScaffold(root, name, version string, force bool) (written, skipped []s
 			content: version + "\n",
 			mode:    0o644,
 			// The runtime that created the workspace is a fact about the first
-			// init and does not change when an integration is added.
+			// init and does not change when a job is added.
 			skipIfPresent: true,
 		},
 		{
@@ -303,12 +303,12 @@ func manifestTemplate(name string) string {
 		"version: 1\n" +
 		"\n" +
 		"name: " + name + "\n" +
-		"description: What this integration does.\n" +
+		"description: What this job does.\n" +
 		"\n" +
 		"entrypoint: main.py\n" +
 		"\n" +
 		"# No trigger: manual runs only, so nothing fires while you work. Add one when\n" +
-		"# the integration is ready, then restart the runtime to register it:\n" +
+		"# the job is ready, then restart the runtime to register it:\n" +
 		"#\n" +
 		"# trigger:\n" +
 		"#   cron: \"*/5 * * * *\"\n" +
@@ -334,7 +334,7 @@ func manifestTemplate(name string) string {
 }
 
 // secretName renders the name of a plausible secret for the scaffolded
-// integration, so the commented example reads as a real one.
+// job, so the commented example reads as a real one.
 func secretName(name string) string {
 	return strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_TOKEN"
 }
@@ -363,7 +363,7 @@ const logicTemplate = `"""Pure logic: no I/O, no environment reads, no SDK impor
 
 Keeping decisions here is what lets tests/test_logic.py run under plain
 python3, with no runtime and no daemon. Add vendor clients and mapping code in
-this directory as the integration grows; main.py stays the wiring.
+this directory as the job grows; main.py stays the wiring.
 """
 
 
@@ -402,11 +402,11 @@ func workspaceEnvExample() string {
 	return `# Credentials for the runtime daemon, loaded by otter start.
 #
 # One file for the whole workspace, because the daemon's environment is one
-# process environment. An integration receives only the names its own manifest
+# process environment. A job receives only the names its own manifest
 # lists under secrets:.
 #
 # Copy to otter.env (gitignored) and fill in. Never put a value here that you
-# would paste into a chat log, and never in an integration's otter.yaml --
+# would paste into a chat log, and never in a job's otter.yaml --
 # otter inspect prints that in full.
 #
 # ACME_TOKEN=
@@ -417,7 +417,7 @@ func gitignoreTemplate() string {
 	return `# Runtime state: SQLite, extracted SDK, the serve record and its log
 .otter/
 
-# Integration identity markers. The runtime writes one per integration; it names
+# Job identity markers. The runtime writes one per job; it names
 # this checkout's instance, so a fresh clone registering its own is intended.
 .otter-id
 .otter-id.tmp-*

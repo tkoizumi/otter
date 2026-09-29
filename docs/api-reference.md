@@ -8,7 +8,7 @@ is a thin client for this same API, so anything `otter` can do you can do with
 - [Authentication](#authentication)
 - [Error responses](#error-responses)
 - [Health](#health)
-- [Integrations](#integrations)
+- [Jobs](#jobs)
 - [Identity and lifecycle](#identity-and-lifecycle)
 - [Runs](#runs)
 - [Run logs](#run-logs)
@@ -26,7 +26,7 @@ is a thin client for this same API, so anything `otter` can do you can do with
 - All timestamps are RFC 3339 UTC, e.g. `"2024-06-01T12:00:03Z"`.
 - Durations in responses are integers in **seconds** (`timeout_seconds`), because
   machine consumers prefer them to strings.
-- Ids: an integration id is the durable identity the runtime mints, not the
+- Ids: a job id is the durable identity the runtime mints, not the
   manifest label. Run ids look like
   `run_01HZY3QW8K2M4P6R8T0V2X4Z6B`.
 - An unknown path returns `404` with the standard error envelope; an unsupported
@@ -52,8 +52,8 @@ There are three credential types, with different audiences.
 | Credential | Header | Used by | Scope |
 | --- | --- | --- | --- |
 | Daemon API token | `Authorization: Bearer <token>` | CLI, operators, automation | The whole control-plane API. |
-| Run state token | `Authorization: Bearer <run token>` | Child Python processes (the SDK) | The state, log and capture-ingestion endpoints for **that run's** integration and run. |
-| Webhook token | `X-Otter-Token: <token>` or `?token=<token>` | External systems calling a hook | Only `POST /v1/hooks/{integration}` for one integration. |
+| Run state token | `Authorization: Bearer <run token>` | Child Python processes (the SDK) | The state, log and capture-ingestion endpoints for **that run's** job and run. |
+| Webhook token | `X-Otter-Token: <token>` or `?token=<token>` | External systems calling a hook | Only `POST /v1/hooks/{job}` for one job. |
 
 ### Loopback vs non-loopback
 
@@ -71,43 +71,43 @@ There are three credential types, with different audiences.
 
 - When `OTTER_API_TOKEN` **is** set, it is required on every `/v1` request even
   on loopback. A missing or wrong token returns `401`. Never expose an
-  unauthenticated daemon to a network: `POST /v1/integrations/{id}/runs` is
+  unauthenticated daemon to a network: `POST /v1/jobs/{id}/runs` is
   arbitrary code execution on the host.
 
 ### Run state tokens
 
 When the executor starts a child process it mints a short-lived token for that
 run and puts it in `OTTER_STATE_TOKEN`. The SDK uses it for state read/write and
-log writes for that run's integration. The token is scoped to one integration
-and one run: it can address the state endpoints for its own integration and the
+log writes for that run's job. The token is scoped to one job
+and one run: it can address the state endpoints for its own job and the
 log endpoints for its own run, and nothing else. Control-plane operations
-(starting runs, cancelling runs, listing integrations or runs) reject it with
+(starting runs, cancelling runs, listing jobs or runs) reject it with
 `403`, which is why the Python SDK needs no daemon token and why a leaked token
-from one integration cannot drive another.
+from one job cannot drive another.
 
 | Endpoint | Admin token | Run state token |
 | --- | --- | --- |
 | `GET /health` | yes | yes (open on loopback) |
-| `GET /v1/integrations`, `GET /v1/runs` | yes | **no** (`403`) |
-| `POST /v1/integrations/{id}/runs`, `POST /v1/runs/{id}/cancel` | yes | **no** (`403`) |
+| `GET /v1/jobs`, `GET /v1/runs` | yes | **no** (`403`) |
+| `POST /v1/jobs/{id}/runs`, `POST /v1/runs/{id}/cancel` | yes | **no** (`403`) |
 | `POST /v1/reload` | yes | **no** (`403`) |
-| `GET /v1/integrations/{id}` | any integration | only its own integration |
+| `GET /v1/jobs/{id}` | any job | only its own job |
 | `GET /v1/runs/{id}`, `GET/POST /v1/runs/{id}/logs` | any run | only its own run |
 | `POST /v1/runs/{id}/requests/events` | any run | only its own run |
 | `GET /v1/runs/{id}/requests[/{request_id}]` | any run | **no** (`403`) |
 | `GET /v1/runs/{id}/timeline` | any run | **no** (`403`) |
 | `GET /v1/requests/{request_id}` | any run | **no** (`403`) |
-| `GET/PUT/DELETE /v1/integrations/{id}/state[/{key}]` | any integration | only its own integration |
-| `POST /v1/hooks/{integration}` | n/a — webhook token only | n/a |
+| `GET/PUT/DELETE /v1/jobs/{id}/state[/{key}]` | any job | only its own job |
+| `POST /v1/hooks/{job}` | n/a — webhook token only | n/a |
 
 ### Webhook tokens
 
-Each integration with `trigger.webhook.enabled: true` gets a token generated on
+Each job with `trigger.webhook.enabled: true` gets a token generated on
 first start, persisted in SQLite, and returned by
-`GET /v1/integrations/{id}` as `webhook_token`. Send it as `X-Otter-Token`, or as
+`GET /v1/jobs/{id}` as `webhook_token`. Send it as `X-Otter-Token`, or as
 a `?token=` query parameter when the caller cannot set headers. A bad or missing
 token returns `401`; the hook is the one place a non-dashboard caller touches the
-API, and it can only enqueue runs for the one integration whose token it holds.
+API, and it can only enqueue runs for the one job whose token it holds.
 
 ## Error responses
 
@@ -126,16 +126,16 @@ Every error uses the same envelope:
 | --- | --- | --- |
 | `400` | `invalid_request` | Malformed body, invalid query parameter, invalid state key or value, body over the 1 MiB read limit. |
 | `401` | `unauthorized` | Missing or wrong bearer token, or missing/wrong webhook token. |
-| `403` | `forbidden` | Valid credential without permission for the target (a run state token used for another integration or run, or any run token on a control-plane endpoint). |
-| `404` | `not_found` | Unknown path, unknown integration or run, unset state key, or a hook for an integration without a webhook trigger. |
+| `403` | `forbidden` | Valid credential without permission for the target (a run state token used for another job or run, or any run token on a control-plane endpoint). |
+| `404` | `not_found` | Unknown path, unknown job or run, unset state key, or a hook for a job without a webhook trigger. |
 | `405` | *(empty body)* | Known path, unsupported method — the router answers this itself. |
 | `409` | `conflict` | Cancel on a run that is already terminal, or capture ingestion for a run with no capture configuration. |
 | `500` | `internal_error` | Unexpected server error; details are in the daemon log. |
-| `503` | `unavailable` | The daemon is shutting down and is not accepting new work, an autonomous trigger arrived for a paused integration, or a bounded timeline read did not finish in time (see `GET /v1/runs/{id}/timeline`). |
+| `503` | `unavailable` | The daemon is shutting down and is not accepting new work, an autonomous trigger arrived for a paused job, or a bounded timeline read did not finish in time (see `GET /v1/runs/{id}/timeline`). |
 
 Error `message` strings are for humans; branch on `code`. Note that the same
 `code` covers several conditions (there is one `not_found` for paths,
-integrations, runs and state keys), so use the status plus the endpoint to
+jobs, runs and state keys), so use the status plus the endpoint to
 disambiguate.
 
 ## Health
@@ -160,7 +160,7 @@ caller, since no token is configured — receives the full payload:
   "status": "ok",
   "version": "0.4.1",
   "uptime_seconds": 81234.5,
-  "integrations": {"total": 7, "valid": 6, "invalid": 1},
+  "jobs": {"total": 7, "valid": 6, "invalid": 1},
   "queue_depth": 2,
   "runs": {"queued": 2, "running": 2, "succeeded": 1043, "failed": 17, "retrying": 1, "cancelled": 0, "timed_out": 3}
 }
@@ -168,14 +168,14 @@ caller, since no token is configured — receives the full payload:
 
 When an API token **is** configured and the request carries no token or a wrong
 one, the response is a minimal liveness payload with the operational counters
-omitted, so a token-protected deployment does not disclose integration and run
+omitted, so a token-protected deployment does not disclose job and run
 counts to the network:
 
 ```json
 {"status": "ok", "version": "0.4.1", "uptime_seconds": 81234.5}
 ```
 
-`integrations` reports how many manifests were discovered and how many of them
+`jobs` reports how many manifests were discovered and how many of them
 are valid, `queue_depth` is the number of runs waiting to be claimed, and `runs`
 is a count per status. `status` is `ok` whenever the process is serving
 requests. A `200` means the process is up and SQLite is readable; there is no
@@ -189,28 +189,28 @@ hint that the daemon requires a token, which is how a typo in
 
 The systemd examples in [operations.md](operations.md) poll this endpoint.
 
-## Integrations
+## Jobs
 
-### `GET /v1/integrations`
+### `GET /v1/jobs`
 
-List every integration found under the integrations root, **including invalid
-ones** (so the API is a superset of `otter integrations`, which prints only valid
-names unless `--all` is passed).
+List every job found under the jobs root, **including invalid
+ones** (so the API is a superset of the live half of `otter jobs`, which hides
+invalid jobs and non-active identities unless `--all` is passed).
 
 No parameters.
 
 ```bash
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs"
 ```
 
 ```json
 {
-  "integrations": [
+  "jobs": [
     {
       "id": "shopify-to-erp",
       "name": "shopify-to-erp",
       "description": "Sync Shopify orders into ERP.",
-      "path": "/srv/otter/integrations/shopify-to-erp",
+      "path": "/srv/otter/jobs/shopify-to-erp",
       "entrypoint": "main.py",
       "python_executable": "python3",
       "timeout_seconds": 300,
@@ -235,7 +235,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations"
     {
       "id": "broken-one",
       "name": "broken-one",
-      "path": "/srv/otter/integrations/broken-one",
+      "path": "/srv/otter/jobs/broken-one",
       "entrypoint": "main.py",
       "python_executable": "python3",
       "timeout_seconds": 300,
@@ -249,7 +249,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations"
       },
       "triggers": {"webhook_enabled": false},
       "valid": false,
-      "error": "entrypoint \"main.py\" not found in /srv/otter/integrations/broken-one"
+      "error": "entrypoint \"main.py\" not found in /srv/otter/jobs/broken-one"
     }
   ]
 }
@@ -260,21 +260,21 @@ Field notes:
 - `retry.attempts` is what the manifest declared; `max_attempts` is the effective
   total including the first attempt (`attempts: 0` becomes `max_attempts: 1`).
 - Durations in `retry` are strings, since they come straight from the manifest.
-- `next_run_at` appears only for integrations with a cron trigger.
+- `next_run_at` appears only for jobs with a cron trigger.
 - `webhook_url` appears when the webhook trigger is enabled.
 - **`webhook_token` is never included in this listing** — only in the
-  single-integration response, so a list call cannot spill credentials.
+  single-job response, so a list call cannot spill credentials.
 
-### `GET /v1/integrations/{id}`
+### `GET /v1/jobs/{id}`
 
-Full detail for one integration. This is where you read the **webhook token**.
+Full detail for one job. This is where you read the **webhook token**.
 
 | Parameter | In | Description |
 | --- | --- | --- |
-| `id` | path | Integration `name` from the manifest. |
+| `id` | path | Job `name` from the manifest. |
 
 ```bash
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs/shopify-to-erp"
 ```
 
 ```json
@@ -282,7 +282,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp"
   "id": "shopify-to-erp",
   "name": "shopify-to-erp",
   "description": "Sync Shopify orders into ERP.",
-  "path": "/srv/otter/integrations/shopify-to-erp",
+  "path": "/srv/otter/jobs/shopify-to-erp",
   "entrypoint": "main.py",
   "python_executable": "python3",
   "timeout_seconds": 300,
@@ -311,28 +311,28 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp"
 `secrets` returns names only, never values. `webhook_token` is absent when the
 webhook trigger is disabled.
 
-A paused integration adds `triggers.paused` and `triggers.paused_at`, and omits
-`next_run_at`: a paused integration has no next fire time. See
-`POST /v1/integrations/{id}/pause`.
+A paused job adds `triggers.paused` and `triggers.paused_at`, and omits
+`next_run_at`: a paused job has no next fire time. See
+`POST /v1/jobs/{id}/pause`.
 
 Errors: `404 not_found`.
 
 ### `POST /v1/reload`
 
-Re-reads the integrations directory against the running daemon. This is the
+Re-reads the jobs directory against the running daemon. This is the
 restart-free alternative to bouncing `otterd` after adding or editing an
-integration.
+job.
 
 No request body. Responses are `200` with a summary of what changed.
 
 | Field | Description |
 | --- | --- |
-| `added` | Integrations the daemon did not know about before. |
-| `removed` | Integrations that are no longer in the directory. |
-| `changed` | Known integrations whose manifest differs. |
-| `invalid` | Integrations present but not runnable. |
+| `added` | Jobs the daemon did not know about before. |
+| `removed` | Jobs that are no longer in the directory. |
+| `changed` | Known jobs whose manifest differs. |
+| `invalid` | Jobs present but not runnable. |
 | `total`, `valid` | Counts after the reload. |
-| `runs_cancelled` | Queued runs of removed integrations that were ended. |
+| `runs_cancelled` | Queued runs of removed jobs that were ended. |
 
 ```bash
 curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/reload"
@@ -352,38 +352,38 @@ curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/reload"
 
 The daemon is not restarted. The API listener, the worker pool and every
 executing run are left alone, and a cron trigger whose expression did not change
-keeps its next fire time. Only the registry, the per-integration concurrency
+keeps its next fire time. Only the registry, the per-job concurrency
 limits and the cron triggers are replaced.
 
 Discovery happens before any shared state is touched, so a slow walk of a large
-integrations directory is invisible to everything already running, and a failed
+jobs directory is invisible to everything already running, and a failed
 walk leaves the previous set intact rather than half-applied.
 
-Reload does not stage a release: a newly visible integration still answers `409`
-from `POST /v1/integrations/{id}/runs` until `otter release` has run. Removing an
-integration ends its **queued** runs, counted in `runs_cancelled`; runs already
+Reload does not stage a release: a newly visible job still answers `409`
+from `POST /v1/jobs/{id}/runs` until `otter release` has run. Removing an
+job ends its **queued** runs, counted in `runs_cancelled`; runs already
 executing are allowed to finish.
 
 Errors: `409 conflict` (a reload is already in progress), `403 forbidden` (the
-caller is not an admin), `500 internal_error` (the integrations directory could
+caller is not an admin), `500 internal_error` (the jobs directory could
 not be read).
 
-### `POST /v1/integrations/{id}/runs`
+### `POST /v1/jobs/{id}/runs`
 
 Start a manual run. This bypasses triggers entirely — it works for cron-only,
-webhook-only and manual-only integrations alike. The run is **queued**, not run
-inline: `--workers` and the integration's `concurrency` still apply.
+webhook-only and manual-only jobs alike. The run is **queued**, not run
+inline: `--workers` and the job's `concurrency` still apply.
 
 | Parameter | In | Description |
 | --- | --- | --- |
-| `id` | path | Integration `name`. |
+| `id` | path | Job `name`. |
 | `body` | JSON body, optional | `{"body": <any JSON>, "headers": {"X-Requested-By": "ops"}}` attached to the run's `metadata` and exposed as `ctx.trigger`. Omit it (or send `{}`) for a plain manual run. |
-| `capture` | query | HTTP capture level for this run: `off`, `metadata` or `full`. Omitting it is not the same as naming a level: the integration's `capture:` field applies, then the deployment's `--capture-default`, then the built-in default of `full`. The option is a query parameter, not part of the trigger body, so the body stays byte-for-byte the trigger JSON. An unknown value is a `400`. |
+| `capture` | query | HTTP capture level for this run: `off`, `metadata` or `full`. Omitting it is not the same as naming a level: the job's `capture:` field applies, then the deployment's `--capture-default`, then the built-in default of `full`. The option is a query parameter, not part of the trigger body, so the body stays byte-for-byte the trigger JSON. An unknown value is a `400`. |
 
 ```bash
 curl -s -X POST -H "$(auth)" -H 'Content-Type: application/json' \
   -d '{"body":{"reason":"manual backfill"},"headers":{"X-Requested-By":"ops"}}' \
-  "$OTTER_API_URL/v1/integrations/shopify-to-erp/runs"
+  "$OTTER_API_URL/v1/jobs/shopify-to-erp/runs"
 ```
 
 The response is deliberately minimal — enough to track the run, nothing more.
@@ -397,10 +397,10 @@ The response is deliberately minimal — enough to track the run, nothing more.
 ```
 
 Fetch `GET /v1/runs/{run_id}` for the full record. On a terminal, `otter run
-<integration>` waits for the whole retry chain to settle, then prints
+<job>` waits for the whole retry chain to settle, then prints
 `status: <status>` and the run's own output, exiting non-zero when the run
 failed. A failed or timed-out attempt ends the chain once it has used the
-integration's last allowed attempt (`max_attempts` below); until then the
+job's last allowed attempt (`max_attempts` below); until then the
 command keeps watching for the retry. When stdout is not a terminal, or with
 `--no-wait` or `--json`, the command prints only the `run_id`, which makes it
 scriptable:
@@ -410,76 +410,76 @@ RUN_ID=$(otter run shopify-to-erp)
 otter run-status "$RUN_ID"
 ```
 
-Errors: `404 not_found`, `400 invalid_request` (the integration is invalid and
+Errors: `404 not_found`, `400 invalid_request` (the job is invalid and
 cannot be run, or the body is not valid JSON), `403 forbidden` (a run state token
 was used), `503 unavailable`.
 
 ## Identity and lifecycle
 
-An integration is addressed by its durable identity. The CLI resolves a label,
+A job is addressed by its durable identity. The CLI resolves a label,
 a path or an explicit `id:` reference through the daemon, so it never reads the
 registry itself.
 
-### `GET /v1/integrations/resolve`
+### `GET /v1/jobs/resolve`
 
-Resolve a reference to the integration it names.
+Resolve a reference to the job it names.
 
 | Parameter | Description |
 | --- | --- |
 | `ref` | A label, a filesystem path, or `id:<id>`. Required. |
 
-Returns the integration view. A reference that matches nothing is `404`; a label
-carried by more than one active integration is `409` with the candidate ids and
+Returns the job view. A reference that matches nothing is `404`; a label
+carried by more than one active job is `409` with the candidate ids and
 paths in the message.
 
 ```bash
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/resolve?ref=counter"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs/resolve?ref=counter"
 ```
 
-### `POST /v1/integrations`
+### `POST /v1/jobs`
 
 Register a source directory explicitly. Idempotent when the binding already
 matches; it clears a deletion suppression and mints a fresh identity.
 
 ```json
-{"path": "/srv/otter/integrations/counter"}
+{"path": "/srv/otter/jobs/counter"}
 ```
 
 Errors: `400 invalid_request` (the path has no valid manifest),
 `409 conflict` (the path is owned with a different marker; use reset).
 
-### `POST /v1/integrations/{id}/reset`
+### `POST /v1/jobs/{id}/reset`
 
 Retire the identity and mint a fresh one at the same path. The old identity's
 data is kept for inspection or deletion, and its release is not reused.
 
 ```json
-{"old_id": "counter", "new_id": "0195a7c2-...", "name": "counter", "path": "/srv/otter/integrations/counter"}
+{"old_id": "counter", "new_id": "0195a7c2-...", "name": "counter", "path": "/srv/otter/jobs/counter"}
 ```
 
 Errors: `400 invalid_request`, `404 not_found`.
 
-### `POST /v1/integrations/{id}/move`
+### `POST /v1/jobs/{id}/move`
 
 Preserve an identity across a same-filesystem directory rename.
 
 ```json
-{"destination": "/srv/otter/integrations/counter-v2"}
+{"destination": "/srv/otter/jobs/counter-v2"}
 ```
 
 Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (the destination
 already exists or is owned, the paths nest, or the identity is not active).
 
-### `POST /v1/integrations/{id}/pause`
+### `POST /v1/jobs/{id}/pause`
 
-Suspend an integration's autonomous triggers. Cron stops firing and the webhook
+Suspend a job's autonomous triggers. Cron stops firing and the webhook
 refuses a trigger; the identity, state, run history, webhook token and releases
-are untouched, and a manual run through `POST /v1/integrations/{id}/runs` still
+are untouched, and a manual run through `POST /v1/jobs/{id}/runs` still
 works. No request body.
 
 ```json
 {
-  "integration_id": "0195a7c2-...",
+  "job_id": "0195a7c2-...",
   "name": "shopify-to-erp",
   "paused": true,
   "changed": true,
@@ -492,7 +492,7 @@ Pausing is idempotent: repeating it answers `200` with `changed: false`.
 Errors: `404 not_found`, `409 conflict` (the identity is retired or deleted and
 accepts no work at all).
 
-### `POST /v1/integrations/{id}/resume`
+### `POST /v1/jobs/{id}/resume`
 
 Re-arm the triggers a pause suspended. The cron expression is taken from the
 live manifest and the next fire time is computed from now; runs that were
@@ -500,19 +500,19 @@ missed while paused are **not** replayed. No request body.
 
 ```json
 {
-  "integration_id": "0195a7c2-...",
+  "job_id": "0195a7c2-...",
   "name": "shopify-to-erp",
   "paused": false,
   "changed": true
 }
 ```
 
-Resuming an integration that was not paused is a successful no-op with
+Resuming a job that was not paused is a successful no-op with
 `changed: false`.
 
 Errors: `404 not_found`, `409 conflict`.
 
-### `DELETE /v1/integrations/{id}`
+### `DELETE /v1/jobs/{id}`
 
 Purge the identity's state, run history and logs, queue rows, webhook token and
 releases. Source files are left in place and the path is suppressed so a scan
@@ -520,7 +520,7 @@ cannot silently re-register it. The identity row survives as a tombstone and is
 never reused.
 
 ```json
-{"deleted": true, "integration": "counter"}
+{"deleted": true, "job": "counter"}
 ```
 
 Errors: `400 invalid_request`, `404 not_found`.
@@ -533,14 +533,14 @@ List runs, newest first.
 
 | Query parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `integration_id` | string | unset | Filter to one integration. Accepts a manifest label, a source path, or `id:<id>` -- resolved to the durable identity -- as well as the identity itself. An unknown reference is a `404`. |
+| `job_id` | string | unset | Filter to one job. Accepts a manifest label, a source path, or `id:<id>` -- resolved to the durable identity -- as well as the identity itself. An unknown reference is a `404`. |
 | `status` | string | unset | One of `queued`, `running`, `succeeded`, `failed`, `retrying`, `cancelled`, `timed_out`. An unknown value is a `400`. |
 | `parent_run_id` | string | unset | Return the attempts that retry a given run — the rest of a retry chain. |
 | `limit` | integer | `50` | Maximum rows to return; must be a positive integer. |
 | `offset` | integer | `0` | Skip this many rows, for paging. Must be `>= 0`. |
 
 ```bash
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs?integration_id=shopify-to-erp&status=failed&limit=20"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs?job_id=shopify-to-erp&status=failed&limit=20"
 ```
 
 ```json
@@ -548,8 +548,8 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs?integration_id=shopify-to-erp&statu
   "runs": [
     {
       "id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
-      "integration_id": "0195a7c2-4f3b-7d21-9c88-1e2f3a4b5c6d",
-      "integration_name": "shopify-to-erp",
+      "job_id": "0195a7c2-4f3b-7d21-9c88-1e2f3a4b5c6d",
+      "job_name": "shopify-to-erp",
       "trigger_type": "cron",
       "status": "failed",
       "attempt": 1,
@@ -571,7 +571,7 @@ the scheduled time live inside `metadata`. A run that has not started yet has
 `started_at: null` and `exit_code: null`.
 
 Errors: `400 invalid_request` for an unknown `status` value or a non-numeric
-`limit`; `404 not_found` when `integration_id` names no integration.
+`limit`; `404 not_found` when `job_id` names no job.
 
 ### `GET /v1/runs/{id}`
 
@@ -588,7 +588,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0"
 ```json
 {
   "id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
-  "integration_id": "shopify-to-erp",
+  "job_id": "shopify-to-erp",
   "trigger_type": "cron",
   "status": "retrying",
   "attempt": 2,
@@ -618,9 +618,9 @@ Field notes:
   this endpoint only, not in the list response.
 - `latest_status` is the status of the newest attempt in the chain, which is what
   you usually want to display for `root_run_id`.
-- `max_attempts` is the retry ceiling the integration's manifest currently
+- `max_attempts` is the retry ceiling the job's manifest currently
   allows, including the first attempt (`retry.attempts: 0` means `1`). It is
-  **omitted** when the integration is no longer registered, because there is no
+  **omitted** when the job is no longer registered, because there is no
   manifest left to resolve it from. A client watching a chain can use it to tell
   a failure that has given up (`latest_status` is `failed` and the newest
   attempt's `attempt` is already at the ceiling) from one whose retry has not
@@ -676,7 +676,7 @@ non-positive `limit`.
 
 ### `POST /v1/runs/{id}/logs`
 
-Used by the Python SDK to append runtime log entries from inside an integration
+Used by the Python SDK to append runtime log entries from inside a job
 (`ctx.log.info(...)`). Authenticate with the **run state token** from
 `OTTER_STATE_TOKEN`, not the daemon token.
 
@@ -711,7 +711,7 @@ A run's outgoing HTTP exchanges are recorded from inside the child and read back
 over these endpoints. Capture levels, coverage, redaction, limits and
 retention are documented in [http-capture.md](http-capture.md); this section
 covers the API only. A per-run level is selected at submission with `?capture=`
-on `POST /v1/integrations/{id}/runs`; when it is omitted, the integration's
+on `POST /v1/jobs/{id}/runs`; when it is omitted, the job's
 `capture:` field and then the deployment's `--capture-default` decide, and the
 shipped default is `full`.
 
@@ -719,7 +719,7 @@ shipped default is `full`.
 
 The running child submits a bounded batch of capture events here. Authenticate
 with the **run state token** from `OTTER_STATE_TOKEN`, or the daemon token. The
-run's integration identity is inferred from the run record, never from the
+run's job identity is inferred from the run record, never from the
 caller, so a token scoped to one run cannot attribute traffic to another.
 Delivery is idempotent: a duplicate batch is reported, not double-counted, and a
 stale update cannot regress a finalized exchange.
@@ -756,7 +756,7 @@ curl -s -X POST -H "Authorization: Bearer $OTTER_STATE_TOKEN" \
 
 A quota rejection is **not** an error. It appears as `quota_rejected` in this
 body because capture is diagnostic: exceeding a limit drops capture rather than
-failing an integration. A malformed or oversized batch is `400 invalid_request`;
+failing a job. A malformed or oversized batch is `400 invalid_request`;
 a run with no capture configuration is `409 conflict`. The response never
 contains payloads or credentials.
 
@@ -925,8 +925,8 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/time
   "context": {
     "schema_version": 1,
     "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
-    "integration_id": "int_01HZY5M4N6P7Q8R9S0T1U2V3W4",
-    "integration_name": "shopify-to-erp",
+    "job_id": "int_01HZY5M4N6P7Q8R9S0T1U2V3W4",
+    "job_name": "shopify-to-erp",
     "status": "failed",
     "attempt": 1,
     "trigger_type": "manual",
@@ -963,14 +963,14 @@ Every event carries `kind`, `at`, `source`, `id` and `run_id`:
 | Kind | `source` | Additional fields |
 | --- | --- | --- |
 | `lifecycle` | `run_logs` | `stream` (`otter`) and `message`, the stored line verbatim. The runtime's own narration about the run. |
-| `log` | `run_logs` | `stream` and `message`. Everything the integration produced: `stdout`, `stderr`, and its `ctx.log` output. |
+| `log` | `run_logs` | `stream` and `message`. Everything the job produced: `stdout`, `stderr`, and its `ctx.log` output. |
 | `http` | `http_exchanges` | `http`, the exchange summary. |
 
 The `otter` stream carries **both** `lifecycle` and `log` events. The runtime
 narrates a run's lifecycle there, and the SDK's structured logger writes the
-integration's own `ctx.log` calls to the same stream, so `kind` is decided by who
+job's own `ctx.log` calls to the same stream, so `kind` is decided by who
 wrote the line rather than by the stream. A `ctx.log` line is a `log`: it is the
-integration's output, carrying the fields the integration passed.
+job's output, carrying the fields the job passed.
 
 An `http` object carries `request_id`, `method`, `url` (sanitized), `status_code`
 or `transport_error_class`, `duration_total_ms`, `phase`, `complete`, `payloads`,
@@ -1041,7 +1041,7 @@ curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O
 
 Ctrl-C on a foreground `otterd` (or `systemctl stop`) cancels
 nothing — it triggers graceful shutdown instead, which waits for running
-integrations and only then terminates them. Use this endpoint when you want a
+jobs and only then terminates them. Use this endpoint when you want a
 specific run to stop now, or `otter cancel <run-id>` from the CLI.
 
 Errors: `404 not_found`, `409 conflict` (the run is already `succeeded`,
@@ -1049,19 +1049,19 @@ Errors: `404 not_found`, `409 conflict` (the run is already `succeeded`,
 
 ## State
 
-State is a per-integration JSON key/value store, durable in SQLite, readable and
+State is a per-job JSON key/value store, durable in SQLite, readable and
 writable both from Python (`ctx.state`) and over HTTP. Values are arbitrary
 JSON. Keys must match `[A-Za-z0-9._:-]{1,128}`.
 
 The SDK uses a run state token for these endpoints; operators use the daemon
-token. Both are accepted, and the daemon token can address any integration.
+token. Both are accepted, and the daemon token can address any job.
 
-### `GET /v1/integrations/{id}/state`
+### `GET /v1/jobs/{id}/state`
 
 Return the whole state map.
 
 ```bash
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp/state"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs/shopify-to-erp/state"
 ```
 
 ```json
@@ -1075,19 +1075,19 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp/state"
 ```
 
 `state` is a real JSON object: string, number, boolean, `null`, array and object
-values all round-trip unchanged. An integration with no state returns
+values all round-trip unchanged. A job with no state returns
 `{"state": {}}`.
 
 Errors: `404 not_found`, `403 forbidden` (a run state token for another
-integration).
+job).
 
-### `GET /v1/integrations/{id}/state/{key}`
+### `GET /v1/jobs/{id}/state/{key}`
 
 Read one key. **The response body is the raw JSON value with no envelope**, which
-is what makes `otter state get <integration> <key>` printable verbatim:
+is what makes `otter state get <job> <key>` printable verbatim:
 
 ```bash
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp/state/cursor"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs/shopify-to-erp/state/cursor"
 ```
 
 ```json
@@ -1098,17 +1098,17 @@ A number round-trips as a number (`12`), an object as an object
 (`{"runs":17}`); there is no double encoding. The `Content-Type` is
 `application/json; charset=utf-8`.
 
-Errors: `404 not_found` (integration or key missing), `400 invalid_request` (the
+Errors: `404 not_found` (job or key missing), `400 invalid_request` (the
 key does not match `[A-Za-z0-9._:-]{1,128}`), `403 forbidden`.
 
-### `PUT /v1/integrations/{id}/state/{key}`
+### `PUT /v1/jobs/{id}/state/{key}`
 
 Create or replace one key. This is an upsert, so it works for new and existing
 keys.
 
 ```bash
 curl -s -X PUT -H "$(auth)" -H 'Content-Type: application/json' \
-  -d '"123"' "$OTTER_API_URL/v1/integrations/shopify-to-erp/state/cursor"
+  -d '"123"' "$OTTER_API_URL/v1/jobs/shopify-to-erp/state/cursor"
 ```
 
 Request body: any JSON value. To store the string `123` send `"123"` (with
@@ -1116,7 +1116,7 @@ quotes); to store the number 123 send `123`.
 
 ```json
 {
-  "integration_id": "shopify-to-erp",
+  "job_id": "shopify-to-erp",
   "key": "cursor",
   "value": "123",
   "updated_at": "2024-06-01T12:40:11Z"
@@ -1126,18 +1126,18 @@ quotes); to store the number 123 send `123`.
 Errors: `400 invalid_request` (empty or invalid JSON body, or an invalid key),
 `404 not_found`, `403 forbidden`.
 
-### `DELETE /v1/integrations/{id}/state/{key}`
+### `DELETE /v1/jobs/{id}/state/{key}`
 
 Delete one key.
 
 ```bash
 curl -s -X DELETE -H "$(auth)" \
-  "$OTTER_API_URL/v1/integrations/shopify-to-erp/state/cursor"
+  "$OTTER_API_URL/v1/jobs/shopify-to-erp/state/cursor"
 ```
 
 ```json
 {
-  "integration_id": "shopify-to-erp",
+  "job_id": "shopify-to-erp",
   "key": "cursor",
   "deleted": true
 }
@@ -1150,9 +1150,9 @@ Errors: `400 invalid_request` (invalid key), `404 not_found`, `403 forbidden`.
 
 ## Webhooks
 
-### `POST /v1/hooks/{integration}`
+### `POST /v1/hooks/{job}`
 
-Enqueue a run from an external system. Requires the integration's webhook token
+Enqueue a run from an external system. Requires the job's webhook token
 (`X-Otter-Token` header preferred, `?token=` accepted), **not** the daemon
 token. Available only when `trigger.webhook.enabled: true` in the manifest; the
 endpoint returns `404` otherwise, so disabled hooks are indistinguishable from
@@ -1160,7 +1160,7 @@ nonexistent ones.
 
 | Parameter | In | Description |
 | --- | --- | --- |
-| `integration` | path | Integration `name`. |
+| `job` | path | Job `name`. |
 | body | request body, optional | Recorded on the run's `metadata` and exposed as `ctx.trigger.body`. JSON is stored as-is; a non-JSON body is stored as a JSON string so `ctx.trigger.body` still returns something usable. |
 | `token` | query, optional | Alternative to the header. |
 
@@ -1181,8 +1181,8 @@ curl -s -X POST \
 }
 ```
 
-A hook does not run the integration inline and does not wait for it: it enqueues
-a run and returns immediately, so a slow integration cannot make a webhook caller
+A hook does not run the job inline and does not wait for it: it enqueues
+a run and returns immediately, so a slow job cannot make a webhook caller
 time out. The request headers are recorded on the run for `ctx.trigger.headers`,
 **except** `Authorization` and `X-Otter-Token`, which are never persisted.
 
@@ -1191,10 +1191,10 @@ Errors:
 | Status | `code` | Cause |
 | --- | --- | --- |
 | `401` | `unauthorized` | Missing or wrong `X-Otter-Token` / `token`. |
-| `404` | `not_found` | Unknown integration, or its webhook trigger is disabled (deliberately identical, so the endpoint cannot enumerate integrations). |
-| `503` | `unavailable` | The integration is paused. The caller already holds a valid token, so naming the pause leaks nothing; `404` here would look like a configuration error. Resume with `otter resume` to accept triggers again. |
+| `404` | `not_found` | Unknown job, or its webhook trigger is disabled (deliberately identical, so the endpoint cannot enumerate jobs). |
+| `503` | `unavailable` | The job is paused. The caller already holds a valid token, so naming the pause leaks nothing; `404` here would look like a configuration error. Resume with `otter resume` to accept triggers again. |
 | `403` | `forbidden` | A daemon or run token was used on the hook route. |
-| `400` | `invalid_request` | Empty integration path segment. |
+| `400` | `invalid_request` | Empty job path segment. |
 | `500` | `internal_error` | The run could not be enqueued. |
 
 ## End-to-end curl walkthrough
@@ -1206,12 +1206,12 @@ auth() { [ -n "$OTTER_API_TOKEN" ] && printf 'Authorization: Bearer %s' "$OTTER_
 # 1. Is it alive?
 curl -s "$OTTER_API_URL/health"
 
-# 2. What integrations exist?
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations" | python3 -m json.tool
+# 2. What jobs exist?
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs" | python3 -m json.tool
 
 # 3. Start one manually and capture the run id.
 RUN_ID=$(curl -s -X POST -H "$(auth)" -H 'Content-Type: application/json' -d '{}' \
-  "$OTTER_API_URL/v1/integrations/shopify-to-erp/runs" \
+  "$OTTER_API_URL/v1/jobs/shopify-to-erp/runs" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
 echo "$RUN_ID"
 
@@ -1226,16 +1226,16 @@ for row in json.load(sys.stdin)["logs"]:
     print(f"{row[\"stream\"]:>6} | {row[\"message\"]}")'
 
 # 6. Inspect and mutate state.
-curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/shopify-to-erp/state"
+curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs/shopify-to-erp/state"
 curl -s -X PUT -H "$(auth)" -H 'Content-Type: application/json' \
   -d '"2024-06-01T00:00:00Z"' \
-  "$OTTER_API_URL/v1/integrations/shopify-to-erp/state/backfill_after"
+  "$OTTER_API_URL/v1/jobs/shopify-to-erp/state/backfill_after"
 
 # 7. Cancel it if it is still going.
 curl -s -X POST -H "$(auth)" "$OTTER_API_URL/v1/runs/$RUN_ID/cancel"
 
 # 8. Fire a webhook.
-TOKEN=$(curl -s -H "$(auth)" "$OTTER_API_URL/v1/integrations/order-events" \
+TOKEN=$(curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs/order-events" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["webhook_token"])')
 curl -s -X POST -H "X-Otter-Token: $TOKEN" -H 'Content-Type: application/json' \
   -d '{"order_id": 4242}' "$OTTER_API_URL/v1/hooks/order-events"
@@ -1250,7 +1250,7 @@ The same actions through the CLI:
 
 ```bash
 otter status
-otter integrations
+otter jobs
 otter inspect shopify-to-erp
 otter run shopify-to-erp
 otter runs shopify-to-erp --status failed --limit 20
@@ -1259,7 +1259,7 @@ otter logs <run-id> --follow
 otter state get shopify-to-erp cursor
 otter state set shopify-to-erp cursor '"123"'
 otter state delete shopify-to-erp cursor
-otter validate my-integration
+otter validate my-job
 ```
 
 Add `--json` to any CLI command for raw JSON instead of the human-readable

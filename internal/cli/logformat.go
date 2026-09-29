@@ -39,7 +39,7 @@ func isTerminal(w io.Writer) bool {
 // logRecord is one line of machine-readable `otter logs` output.
 //
 // Text and Fields are split rather than merged so a field named "level" or
-// "run_id" inside an integration's payload cannot collide with the envelope.
+// "run_id" inside a job's payload cannot collide with the envelope.
 type logRecord struct {
 	RunID     string         `json:"run_id"`
 	Timestamp time.Time      `json:"timestamp"`
@@ -49,12 +49,12 @@ type logRecord struct {
 }
 
 // splitStructured separates a stored log line into its human text and, when the
-// line carries one, the structured fields the integration logged.
+// line carries one, the structured fields the job logged.
 //
 // The SDK writes `ctx.log.info("sync starting", store=...)` as
 // `sync starting {"level":"info","store":...}`, so the JSON is a *suffix* of the
 // line rather than the whole thing. Anything that does not parse as a JSON
-// object is left alone, which keeps a traceback or an integration printing raw
+// object is left alone, which keeps a traceback or a job printing raw
 // JSONL from being mangled.
 func splitStructured(message string) (string, map[string]any) {
 	trimmed := strings.TrimRight(message, "\n")

@@ -1,15 +1,15 @@
 # HTTP request inspection
 
-Otter records a run's outgoing HTTP exchanges so a failing integration can be
-diagnosed without adding logging statements to integration code. `otter requests`
+Otter records a run's outgoing HTTP exchanges so a failing job can be
+diagnosed without adding logging statements to job code. `otter requests`
 lists what a run sent, and `otter request` shows one exchange with its sanitized
 headers and bodies.
 
 Capture is on by default. A run records headers and JSON bodies unless its
-integration or its deployment says otherwise, because the failure worth
+job or its deployment says otherwise, because the failure worth
 debugging is the unattended one: a cron run at 3am has no operator to have
 enabled payload capture beforehand, and capture observes live traffic, so it
-cannot be turned on after the fact. An integration that must not store payloads
+cannot be turned on after the fact. A job that must not store payloads
 turns capture down in its own manifest, and an operator can lower the default for
 a whole deployment.
 
@@ -23,7 +23,7 @@ otter request <run-id> <request-id>     # detail; use this to disambiguate
 ```
 
 `--capture` is an override for one run, not the way capture is normally turned
-on: a bare `otter run .` already records the integration's configured policy. It
+on: a bare `otter run .` already records the job's configured policy. It
 accepts `off`, `metadata` or `full`.
 Both inspection commands support `--json` (the global flag) and `--pretty`; when
 stdout is not a terminal they emit JSON automatically, following the existing
@@ -108,7 +108,7 @@ otter trace <run-id> --no-http          # omit exchanges from the timeline
 ```
 
 ```
-integration: orders-sync   status: failed   attempt: 1
+job: orders-sync   status: failed   attempt: 1
 release: 8c1d4f0a...   trigger: manual   duration: 41ms
 error: process exited with code 1
 retry context: otter run-status 3f2a91c4-...
@@ -182,7 +182,7 @@ and `--json` all receive plain text. `--no-color` forces plain output, and the
 never before, so an escape sequence cannot shift a column.
 
 A `log` line is shown exactly as it was stored, one row per event. An
-integration's `ctx.log` output therefore includes the JSON suffix the SDK
+job's `ctx.log` output therefore includes the JSON suffix the SDK
 appends, and a line long enough to exceed the terminal wraps.
 
 Splitting that suffix into `key=value` pairs was tried and reverted: it read
@@ -193,11 +193,11 @@ still renders the compact form when a single line per log is what you want.
 
 The `KIND` column names the event kind, not the stream it was stored on. A
 `lifecycle` line is the runtime's own narration: queued, started, cancelled,
-timed out, and the terminal summary. A `log` line is anything the integration
+timed out, and the terminal summary. A `log` line is anything the job
 produced — its `stdout`, its `stderr` (marked `[stderr]` in the detail column),
 and its `ctx.log` output. The `ctx.log` case matters because the SDK posts it to
 the same `otter` stream the runtime narrates on: the merged view distinguishes
-them by who wrote the line, so an integration's own message is never presented as
+them by who wrote the line, so a job's own message is never presented as
 runtime narration, and never labelled `otter`.
 
 The HTTP line is a summary, not an event pair. It sits at the exchange's first
@@ -271,10 +271,10 @@ the trace leaves the header to the run's own context.
 Precedence, highest first:
 
 1. `--capture` on `otter run`, or `?capture=` on a submission. One run only.
-2. `capture` in the integration's `otter.yaml`. Applies to every run of that
-   integration, including the cron and webhook triggers that cannot pass a flag.
+2. `capture` in the job's `otter.yaml`. Applies to every run of that
+   job, including the cron and webhook triggers that cannot pass a flag.
 3. `--capture-default` on the daemon (or `OTTER_CAPTURE_DEFAULT`). Applies to
-   every integration that does not declare its own policy.
+   every job that does not declare its own policy.
 4. `full`, the built-in default.
 
 ```yaml
@@ -283,19 +283,19 @@ capture: off        # or metadata, or full
 ```
 
 An omitted `capture` is not the same as `capture: off`: omitted means the
-integration has no opinion and the deployment default applies, while `off`
-refuses to record anything for that integration.
+job has no opinion and the deployment default applies, while `off`
+refuses to record anything for that job.
 
-The integration's declaration is read from its live manifest, not from the active
+The job's declaration is read from its live manifest, not from the active
 release, so turning capture down takes effect on the next `otter reload` without
-waiting for `otter release`. `otter inspect <integration>` reports the policy a
+waiting for `otter release`. `otter inspect <job>` reports the policy a
 new run would use, spelled out, so payload storage is never silent:
 
 ```
 capture:       full (request and response headers and JSON bodies are stored)
 ```
 
-Cron and webhook runs use whatever the integration and deployment resolve to;
+Cron and webhook runs use whatever the job and deployment resolve to;
 they have no per-run flag of their own. A retry inherits the policy its parent
 run was submitted with, and each attempt owns its own recording.
 
@@ -303,11 +303,11 @@ run was submitted with, and each attempt owns its own recording.
 
 | Level | Records | When it applies |
 | --- | --- | --- |
-| `off` | Nothing. No instrumentation is installed in the child process. | Explicit choice by the integration or the deployment. |
-| `metadata` | Request summaries: method, sanitized URL, status, duration, transport-error class and call site. Never a header or a body. | Chosen by the integration or the deployment. |
-| `full` | Everything `metadata` records, plus permitted headers and bounded, sanitized JSON bodies. | The default. An integration or deployment can turn it down. |
+| `off` | Nothing. No instrumentation is installed in the child process. | Explicit choice by the job or the deployment. |
+| `metadata` | Request summaries: method, sanitized URL, status, duration, transport-error class and call site. Never a header or a body. | Chosen by the job or the deployment. |
+| `full` | Everything `metadata` records, plus permitted headers and bounded, sanitized JSON bodies. | The default. A job or deployment can turn it down. |
 
-Cron and webhook runs use the policy their integration and deployment resolve to.
+Cron and webhook runs use the policy their job and deployment resolve to.
 A retry inherits the policy its parent was
 submitted with, and each attempt owns its own recording, so an attempt's requests
 are never merged with its parent's.
@@ -337,9 +337,9 @@ interpreter, and reports exactly which ones it installed:
   is `Session.send`, so `requests.get`, a reused `Session` and a prepared
   request all funnel through it.
 - `httpx` — when `httpx` is importable, for both `Client` and `AsyncClient`, so
-  asynchronous integrations are covered too.
+  asynchronous jobs are covered too.
 
-The launcher installs the instrumentation before integration code is imported,
+The launcher installs the instrumentation before job code is imported,
 so requests made at import time are covered. Coverage is reported per run from
 what the child actually installed — `urllib`, or `urllib, httpx`, and so on —
 never as "all HTTP". That distinction is why the coverage line `otter requests`
@@ -386,9 +386,9 @@ reading it would change what the request sends.
 ## Limits and retention
 
 Capture is on by default, so the size of the recording is a deployment concern
-rather than an opt-in one. A frequently scheduled integration stores a payload
+rather than an opt-in one. A frequently scheduled job stores a payload
 for every run; shorten the window with `--capture-retention`, or have that
-integration choose `capture: metadata` when its bodies are not worth keeping.
+job choose `capture: metadata` when its bodies are not worth keeping.
 
 - 256 KiB buffered per request or response body.
 - 10 MiB persisted capture data per run, including serialized metadata.
@@ -397,8 +397,8 @@ integration choose `capture: metadata` when its bodies are not worth keeping.
 - Seven days of capture retention by default, configurable with the daemon's
   `--capture-retention` flag. `--capture-retention 0` disables automatic expiry.
 - Capture is delivered in the background with a bounded queue, short timeouts and
-  bounded retries. Queue pressure drops capture rather than blocking an
-  integration's network calls. Shutdown flushes within a two-second deadline.
+  bounded retries. Queue pressure drops capture rather than blocking a
+  job's network calls. Shutdown flushes within a two-second deadline.
 
 Retention removes payloads but keeps a small per-run summary, so an expired
 recording is never mistaken for one that observed nothing.
@@ -422,7 +422,7 @@ storage. The mandatory rules cannot be weakened by a caller.
   submits can weaken them.
 
 Field-based redaction does not discover every secret or personal value in
-arbitrary data. That is why an integration handling regulated or personal data
+arbitrary data. That is why a job handling regulated or personal data
 should choose `capture: metadata` or `capture: off`, and why bodies are only
 stored when they can be safely processed. Redaction and URL sanitizing apply in
 `metadata` mode too, although `metadata` stores no headers or bodies.
@@ -435,8 +435,8 @@ stored when they can be safely processed. Redaction and URL sanitizing apply in
   capture off before that was recorded — is reported as `unavailable`, never as a
   recording containing zero requests. A complete recording that observed nothing
   says so explicitly.
-- Capture failures (queue pressure, delivery outage) never change an
-  integration's return values, exceptions or exit status.
+- Capture failures (queue pressure, delivery outage) never change a
+  job's return values, exceptions or exit status.
 - `otter trace` does not show state changes. `ctx.state.get`/`set`/`delete` are
   not recorded as timeline events in this version, so a trace cannot yet answer
   "what had the checkpoint moved to by this point". `otter state get` reads the

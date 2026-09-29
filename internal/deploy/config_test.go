@@ -228,10 +228,10 @@ func TestConnectHintOnlyForSSHFailures(t *testing.T) {
 	}
 }
 
-// A limited deploy must name exactly one integration, must refuse an unknown
-// one, and must be flagged so the push protects the integrations it is not
+// A limited deploy must name exactly one job, must refuse an unknown
+// one, and must be flagged so the push protects the jobs it is not
 // carrying.
-func TestIntegrationFilter(t *testing.T) {
+func TestJobFilter(t *testing.T) {
 	newRepo := func(t *testing.T) string {
 		t.Helper()
 		repo := t.TempDir()
@@ -239,7 +239,7 @@ func TestIntegrationFilter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"alpha", "beta"} {
-			dir := filepath.Join(repo, "integrations", name)
+			dir := filepath.Join(repo, "jobs", name)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -264,33 +264,33 @@ func TestIntegrationFilter(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cfg.Integrations) != 2 {
-			t.Errorf("deployed %v, want both integrations", cfg.Integrations)
+		if len(cfg.Jobs) != 2 {
+			t.Errorf("deployed %v, want both jobs", cfg.Jobs)
 		}
 		if cfg.Limited {
 			t.Error("an unfiltered deploy reported itself as limited")
 		}
 	})
 
-	t.Run("a named integration is the only one", func(t *testing.T) {
+	t.Run("a named job is the only one", func(t *testing.T) {
 		repo := newRepo(t)
-		cfg, err := load(t, repo, &Flags{Integration: "beta", set: map[string]bool{}})
+		cfg, err := load(t, repo, &Flags{Job: "beta", set: map[string]bool{}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cfg.Integrations) != 1 || cfg.Integrations[0].Name != "beta" {
-			t.Errorf("deployed %v, want just beta", cfg.Integrations)
+		if len(cfg.Jobs) != 1 || cfg.Jobs[0].Name != "beta" {
+			t.Errorf("deployed %v, want just beta", cfg.Jobs)
 		}
 		if !cfg.Limited {
-			t.Error("a single-integration deploy should be marked limited")
+			t.Error("a single-job deploy should be marked limited")
 		}
 	})
 
-	t.Run("an unknown integration is an error", func(t *testing.T) {
+	t.Run("an unknown job is an error", func(t *testing.T) {
 		repo := newRepo(t)
-		_, err := load(t, repo, &Flags{Integration: "gamma", set: map[string]bool{}})
+		_, err := load(t, repo, &Flags{Job: "gamma", set: map[string]bool{}})
 		if err == nil {
-			t.Fatal("an unknown integration was accepted")
+			t.Fatal("an unknown job was accepted")
 		}
 		// The error should list what is available, so a typo is obvious.
 		for _, want := range []string{"gamma", "alpha", "beta"} {
@@ -309,7 +309,7 @@ func TestPlatformIsNotCarriedBetweenHosts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(repo, "integrations", "one")
+	dir := filepath.Join(repo, "jobs", "one")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestExplicitPlatformWins(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(repo, "integrations", "one")
+	dir := filepath.Join(repo, "jobs", "one")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestDaemonEnvResolution(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(repo, "integrations", "one")
+	dir := filepath.Join(repo, "jobs", "one")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -433,15 +433,15 @@ func TestDaemonEnvResolution(t *testing.T) {
 	}
 }
 
-// An integration named "daemon" would write to the same remote path as the
+// A job named "daemon" would write to the same remote path as the
 // daemon-wide environment file, so the name is reserved.
-func TestDaemonIntegrationNameIsReserved(t *testing.T) {
+func TestDaemonJobNameIsReserved(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"one", "daemon"} {
-		dir := filepath.Join(repo, "integrations", name)
+		dir := filepath.Join(repo, "jobs", name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -454,17 +454,17 @@ func TestDaemonIntegrationNameIsReserved(t *testing.T) {
 	}
 
 	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{}); err == nil {
-		t.Error("an integration named 'daemon' was accepted")
+		t.Error("a job named 'daemon' was accepted")
 	} else if !strings.Contains(err.Error(), "reserved") {
 		t.Errorf("error does not explain the reservation: %v", err)
 	}
 
 	// Every other name is fine.
-	if err := os.RemoveAll(filepath.Join(repo, "integrations", "daemon")); err != nil {
+	if err := os.RemoveAll(filepath.Join(repo, "jobs", "daemon")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{}); err != nil {
-		t.Errorf("a checkout without a 'daemon' integration should load: %v", err)
+		t.Errorf("a checkout without a 'daemon' job should load: %v", err)
 	}
 }
 
@@ -477,7 +477,7 @@ func TestOnlyLayoutTravelsToADifferentHost(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(repo, "integrations", "one")
+	dir := filepath.Join(repo, "jobs", "one")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestOnlyLayoutTravelsToADifferentHost(t *testing.T) {
 }
 
 // The shared credentials file is optional, lives at the repository root, and is
-// the only environment file a deploy reads. Per-integration .env files are
+// the only environment file a deploy reads. Per-job .env files are
 // deliberately ignored: the daemon's environment is a single process
 // environment, so they isolated nothing while turning one rotated credential
 // into an N-file edit.
@@ -551,7 +551,7 @@ func TestSharedEnvResolution(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(repo, "integrations", "one")
+	dir := filepath.Join(repo, "jobs", "one")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -561,8 +561,8 @@ func TestSharedEnvResolution(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A per-integration .env exists, and must not be picked up.
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SHOPIFY_CLIENT_ID=per-integration\n"), 0o600); err != nil {
+	// A per-job .env exists, and must not be picked up.
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SHOPIFY_CLIENT_ID=per-job\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -572,7 +572,7 @@ func TestSharedEnvResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.SharedEnv != "" {
-		t.Errorf("SharedEnv = %q, want empty; a per-integration .env must not be used", cfg.SharedEnv)
+		t.Errorf("SharedEnv = %q, want empty; a per-job .env must not be used", cfg.SharedEnv)
 	}
 
 	// Present at the default location.
@@ -602,15 +602,15 @@ func TestSharedEnvResolution(t *testing.T) {
 	}
 }
 
-// A missing credential is reported once, naming every integration that needs
-// it: the file is shared, so the same absence cannot be fixed per integration.
-func TestMissingSecretsNamesEveryIntegration(t *testing.T) {
+// A missing credential is reported once, naming every job that needs
+// it: the file is shared, so the same absence cannot be fixed per job.
+func TestMissingSecretsNamesEveryJob(t *testing.T) {
 	shared := filepath.Join(t.TempDir(), SharedEnvFileName)
 	if err := os.WriteFile(shared, []byte("SHOPIFY_CLIENT_ID=abc\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg := Config{SharedEnv: shared, Integrations: []Integration{
+	cfg := Config{SharedEnv: shared, Jobs: []Job{
 		{Name: "alpha", Label: "alpha"},
 		{Name: "beta", Label: "beta"},
 	}}
@@ -636,9 +636,9 @@ func TestMissingSecretsNamesEveryIntegration(t *testing.T) {
 }
 
 // With no shared file, the report points at the file that is missing rather
-// than at a per-integration path that no longer exists.
+// than at a per-job path that no longer exists.
 func TestMissingSecretsPointsAtTheSharedFile(t *testing.T) {
-	cfg := Config{Integrations: []Integration{{Name: "alpha", Label: "alpha"}}}
+	cfg := Config{Jobs: []Job{{Name: "alpha", Label: "alpha"}}}
 	missing := cfg.MissingSecrets(map[string][]string{"alpha": {"SHOPIFY_CLIENT_ID"}})
 
 	if len(missing) != 1 {
@@ -658,7 +658,7 @@ func TestLegacyStateDoesNotLeakTheFlatLayout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(repo, "integrations", "one")
+	dir := filepath.Join(repo, "jobs", "one")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

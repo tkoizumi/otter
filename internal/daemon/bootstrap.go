@@ -69,7 +69,7 @@ func (d *Daemon) ensureIdentityBootstrap(ctx context.Context) error {
 	}
 	legacy = pending
 
-	scan, err := config.Observe(d.cfg.IntegrationsDir, nil)
+	scan, err := config.Observe(d.cfg.JobsDir, nil)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (d *Daemon) ensureIdentityBootstrap(ctx context.Context) error {
 // source is not the directory that now owns the identity. A release staged
 // from a different tree would run the wrong code against the owner's state;
 // the staged snapshot is kept, only the activation pointer is removed, so the
-// integration refuses to run until it is released again.
+// job refuses to run until it is released again.
 func (d *Daemon) quarantineMismatchedReleases(assigned []identity.Assignment) {
 	manager := release.Manager{DataDir: d.cfg.DataDir}
 	for _, asg := range assigned {
@@ -122,7 +122,7 @@ func (d *Daemon) quarantineMismatchedReleases(assigned []identity.Assignment) {
 			continue
 		}
 		d.log.Warn("release_quarantined",
-			"integration", asg.Name,
+			"job", asg.Name,
 			"id", asg.ID,
 			"digest", meta.Digest,
 			"staged_from", source,
@@ -136,11 +136,11 @@ func (d *Daemon) quarantineMismatchedReleases(assigned []identity.Assignment) {
 			fmt.Sprintf("release %s was quarantined during identity migration: it was staged from a different source than the identity's owner; re-release and resubmit", shortDigest(meta.Digest)))
 		cancel()
 		if err != nil {
-			d.log.Error("release_quarantine_cancel_failed", err, "integration", asg.Name, "id", asg.ID)
+			d.log.Error("release_quarantine_cancel_failed", err, "job", asg.Name, "id", asg.ID)
 			continue
 		}
 		if cancelled > 0 {
-			d.log.Warn("release_quarantine_cancelled_runs", "integration", asg.Name, "id", asg.ID, "count", cancelled)
+			d.log.Warn("release_quarantine_cancelled_runs", "job", asg.Name, "id", asg.ID, "count", cancelled)
 		}
 	}
 }

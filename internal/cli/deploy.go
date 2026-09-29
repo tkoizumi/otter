@@ -51,10 +51,10 @@ Examples:
   otter deploy --host root@203.0.113.10
   otter deploy --host droplet --platform linux/arm64 --dry-run
   otter deploy --host droplet --env-file ~/.otter/shopify-prod.env
-  otter deploy --host droplet --integration shopify-product-to-salesforce-product
+  otter deploy --host droplet --job shopify-product-to-salesforce-product
   otter deploy --host droplet --binaries ./bin --platform linux/amd64
   ssh -N -L 7337:127.0.0.1:7337 droplet &
-  otter --api http://127.0.0.1:7337 --token "$OTTER_TOKEN" integrations
+  otter --api http://127.0.0.1:7337 --token "$OTTER_TOKEN" jobs
 `)
 	}
 
@@ -158,7 +158,7 @@ Examples:
 }
 
 // confirmDestroy guards the one irreversible action. Deleting the data
-// directory discards every integration's watermark, and re-deriving it means
+// directory discards every job's watermark, and re-deriving it means
 // rescanning the source system.
 func (a *App) confirmDestroy(cfg deploy.Config) bool {
 	fmt.Fprintf(a.Stderr, "This stops %s on %s and removes workspace %s:\n",
@@ -297,7 +297,7 @@ func (a *App) printDeployResult(r *deploy.Result) {
 	}
 	fmt.Fprintf(a.Stdout, "%s %s to %s (%s)\n", verb, r.Version, r.Host, r.Platform)
 	fmt.Fprintf(a.Stdout, "workspace:     %s\n", r.Workspace)
-	fmt.Fprintf(a.Stdout, "integrations:  %s\n", strings.Join(r.Integrations, ", "))
+	fmt.Fprintf(a.Stdout, "jobs:          %s\n", strings.Join(r.Jobs, ", "))
 	fmt.Fprintf(a.Stdout, "install:       %s\n", r.RemoteDir)
 
 	for _, warning := range r.Warnings {
@@ -326,7 +326,7 @@ func (a *App) printDeployResult(r *deploy.Result) {
 //
 // It is deliberately not "the nearest go.mod". A deploy target is a project,
 // and most projects are Python: requiring a Go module made the command usable
-// only from the runtime's own checkout, which is not where integrations live.
+// only from the runtime's own checkout, which is not where jobs live.
 func findProjectRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {

@@ -37,7 +37,7 @@ type BootstrapConflict struct {
 type BootstrapResult struct {
 	Assigned []Assignment
 	// Reserved lists legacy keys kept as retired instances because no source
-	// directory claims them. Reserving them is what stops a future integration
+	// directory claims them. Reserving them is what stops a future job
 	// from reusing a name that still has state and history.
 	Reserved []ID
 	// Fresh lists directories that had no legacy key and will register new.
@@ -45,17 +45,17 @@ type BootstrapResult struct {
 	Conflicts []BootstrapConflict
 }
 
-// LegacyKeys inventories every integration key durable rows already use. It is
+// LegacyKeys inventories every job key durable rows already use. It is
 // inventory, not ownership: the values are the previous model's manifest
 // names, and every one of them has to be accounted for -- assigned to a source
 // or reserved -- before the registry can be trusted.
 func LegacyKeys(ctx context.Context, db *sql.DB) ([]string, error) {
 	seen := map[string]bool{}
 	for _, query := range []string{
-		`SELECT DISTINCT integration_id FROM integration_state`,
-		`SELECT DISTINCT integration_id FROM runs`,
-		`SELECT DISTINCT integration_id FROM run_queue`,
-		`SELECT DISTINCT integration_id FROM webhook_tokens`,
+		`SELECT DISTINCT job_id FROM job_state`,
+		`SELECT DISTINCT job_id FROM runs`,
+		`SELECT DISTINCT job_id FROM run_queue`,
+		`SELECT DISTINCT job_id FROM webhook_tokens`,
 	} {
 		rows, err := db.QueryContext(ctx, query)
 		if err != nil {
@@ -109,7 +109,7 @@ func (e *BootstrapConflictError) Error() string {
 //
 // It writes markers and creates instances but does not reconcile the rest of
 // the tree: the caller's ordinary scan does that afterwards, so an extra copy
-// of a legacy integration is registered fresh rather than stealing the
+// of a legacy job is registered fresh rather than stealing the
 // original's data.
 func (s *Service) BootstrapLegacy(ctx context.Context, scan Scan, legacyKeys []string, assignments map[string]string, dryRun bool) (BootstrapResult, error) {
 	s.mu.Lock()
@@ -244,7 +244,7 @@ func (s *Service) assignLegacy(ctx context.Context, id ID, name string, obs Obse
 }
 
 // reserveLegacy keeps a key that no directory claims, so its state and history
-// stay addressable and the key can never be handed to a new integration.
+// stay addressable and the key can never be handed to a new job.
 func (s *Service) reserveLegacy(ctx context.Context, id ID, name string) error {
 	now := time.Now().UTC()
 	return s.store.CreateInstance(ctx, Instance{

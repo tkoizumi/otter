@@ -51,7 +51,7 @@ type RunCapture struct {
 	// State is derived on load and is part of the wire representation, so a
 	// reader never has to re-derive "recorded nothing" from a zero count.
 	State           CaptureState `json:"state"`
-	IntegrationID   string       `json:"integration_id"`
+	JobID           string       `json:"job_id"`
 	Policy          Policy       `json:"policy"`
 	SchemaVersion   int          `json:"schema_version"`
 	PolicyVersion   int          `json:"policy_version"`
@@ -102,23 +102,23 @@ func (c *RunCapture) deriveState() CaptureState {
 // CaptureSettings is what a run records when it is submitted. Only the server
 // resolves these; the child is told the result and cannot widen it.
 type CaptureSettings struct {
-	RunID         string
-	IntegrationID string
-	Policy        Policy
-	Adapters      []string
-	Coverage      string
+	RunID    string
+	JobID    string
+	Policy   Policy
+	Adapters []string
+	Coverage string
 }
 
 // Exchange is one stored HTTP exchange, complete with payloads.
 type Exchange struct {
-	ID            int64     `json:"id"`
-	RunID         string    `json:"run_id"`
-	RequestID     string    `json:"request_id"`
-	IntegrationID string    `json:"integration_id"`
-	ProducerSeq   int64     `json:"producer_seq"`
-	OccurredAt    time.Time `json:"occurred_at"`
-	IngestedAt    time.Time `json:"ingested_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID          int64     `json:"id"`
+	RunID       string    `json:"run_id"`
+	RequestID   string    `json:"request_id"`
+	JobID       string    `json:"job_id"`
+	ProducerSeq int64     `json:"producer_seq"`
+	OccurredAt  time.Time `json:"occurred_at"`
+	IngestedAt  time.Time `json:"ingested_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 
 	Phase    Phase `json:"phase"`
 	Complete bool  `json:"complete"`
@@ -253,11 +253,11 @@ func (s *Store) Begin(ctx context.Context, settings CaptureSettings) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO run_capture
-		   (run_id, integration_id, policy, schema_version, policy_version,
+		   (run_id, job_id, policy, schema_version, policy_version,
 		    adapters, coverage, started_at, finalization)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run_id) DO NOTHING`,
-		settings.RunID, settings.IntegrationID, string(settings.Policy),
+		settings.RunID, settings.JobID, string(settings.Policy),
 		SchemaVersion, PolicyVersion, string(encoded), coverage,
 		database.FormatTime(time.Now().UTC()), string(FinalizationPending))
 	if err != nil {
@@ -586,22 +586,22 @@ func (s *Store) DeleteForRun(ctx context.Context, runID string) (int64, error) {
 	return removed, nil
 }
 
-// DeleteForIntegration removes every capture record owned by one integration
+// DeleteForJob removes every capture record owned by one job
 // identity, for `otter delete`.
-func (s *Store) DeleteForIntegration(ctx context.Context, integrationID string) (int64, error) {
+func (s *Store) DeleteForJob(ctx context.Context, jobID string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("inspection: begin delete: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `DELETE FROM http_exchanges WHERE integration_id = ?`, integrationID)
+	res, err := tx.ExecContext(ctx, `DELETE FROM http_exchanges WHERE job_id = ?`, jobID)
 	if err != nil {
-		return 0, fmt.Errorf("inspection: delete exchanges for %s: %w", integrationID, err)
+		return 0, fmt.Errorf("inspection: delete exchanges for %s: %w", jobID, err)
 	}
 	removed, _ := res.RowsAffected()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM run_capture WHERE integration_id = ?`, integrationID); err != nil {
-		return 0, fmt.Errorf("inspection: delete capture for %s: %w", integrationID, err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_capture WHERE job_id = ?`, jobID); err != nil {
+		return 0, fmt.Errorf("inspection: delete capture for %s: %w", jobID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("inspection: commit delete: %w", err)
@@ -691,13 +691,13 @@ func (s *Store) MarkStalePending(ctx context.Context, olderThan time.Time) (int6
 
 // ------------------------------------------------------------------ internals
 
-const captureColumns = `run_id, integration_id, policy, schema_version, policy_version,
+const captureColumns = `run_id, job_id, policy, schema_version, policy_version,
 	adapters, coverage, started_at, finalized_at, finalization,
 	request_count, completed_count, failed_count, incomplete_count,
 	dropped_events, dropped_bytes, stored_bytes, redaction_count,
 	last_sequence, payloads_expired, expired_at, note`
 
-const exchangeColumns = `id, run_id, request_id, integration_id, producer_seq,
+const exchangeColumns = `id, run_id, request_id, job_id, producer_seq,
 	occurred_at, ingested_at, updated_at, phase, complete,
 	method, sanitized_url, initial_url, final_url, call_site,
 	status_code, transport_error, transport_error_class,
@@ -716,7 +716,7 @@ func scanCapture(sc interface{ Scan(...any) error }) (*RunCapture, error) {
 		expiredAt       database.NullableTime
 		payloadsExpired int
 	)
-	err := sc.Scan(&c.RunID, &c.IntegrationID, &policy, &c.SchemaVersion, &c.PolicyVersion,
+	err := sc.Scan(&c.RunID, &c.JobID, &policy, &c.SchemaVersion, &c.PolicyVersion,
 		&adapters, &c.Coverage, &started, &finalized, &finalization,
 		&c.RequestCount, &c.CompletedCount, &c.FailedCount, &c.IncompleteCount,
 		&c.DroppedEvents, &c.DroppedBytes, &c.StoredBytes, &c.RedactionCount,
@@ -759,7 +759,7 @@ func scanExchange(sc interface{ Scan(...any) error }) (*Exchange, error) {
 		reqBody    string
 		resBody    string
 	)
-	err := sc.Scan(&e.ID, &e.RunID, &e.RequestID, &e.IntegrationID, &e.ProducerSeq,
+	err := sc.Scan(&e.ID, &e.RunID, &e.RequestID, &e.JobID, &e.ProducerSeq,
 		&occurred, &ingested, &updated, &phase, &complete,
 		&e.Method, &e.URL, &e.InitialURL, &e.FinalURL, &e.CallSite,
 		&status, &e.TransportError, &e.TransportClass,
@@ -837,11 +837,11 @@ func mergeExchange(existing *Exchange, event RequestEvent, capture *RunCapture, 
 	out := Exchange{}
 	if isNew {
 		out = Exchange{
-			RunID:         capture.RunID,
-			RequestID:     event.RequestID,
-			IntegrationID: capture.IntegrationID, // authoritative, never the client's
-			OccurredAt:    event.OccurredAt,
-			IngestedAt:    now,
+			RunID:      capture.RunID,
+			RequestID:  event.RequestID,
+			JobID:      capture.JobID, // authoritative, never the client's
+			OccurredAt: event.OccurredAt,
+			IngestedAt: now,
 		}
 		if out.OccurredAt.IsZero() {
 			out.OccurredAt = now
@@ -942,14 +942,14 @@ func insertExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO http_exchanges
-		   (run_id, request_id, integration_id, producer_seq, occurred_at, ingested_at, updated_at,
+		   (run_id, request_id, job_id, producer_seq, occurred_at, ingested_at, updated_at,
 		    phase, complete, method, sanitized_url, initial_url, final_url, call_site,
 		    status_code, transport_error, transport_error_class,
 		    duration_to_headers_ms, duration_body_ms, duration_total_ms,
 		    request_headers, response_headers, request_body, response_body, payloads,
 		    response_error_code, response_error)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.RunID, e.RequestID, e.IntegrationID, e.ProducerSeq,
+		e.RunID, e.RequestID, e.JobID, e.ProducerSeq,
 		database.FormatTime(e.OccurredAt), database.FormatTime(e.IngestedAt), database.FormatTime(e.UpdatedAt),
 		string(e.Phase), boolInt(e.Complete), e.Method, e.URL, e.InitialURL, e.FinalURL, e.CallSite,
 		database.NullableInt(e.StatusCode), e.TransportError, e.TransportClass,
@@ -982,7 +982,7 @@ func updateExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 
 	_, err = tx.ExecContext(ctx,
 		`UPDATE http_exchanges SET
-		   integration_id = ?, producer_seq = ?, occurred_at = ?, updated_at = ?,
+		   job_id = ?, producer_seq = ?, occurred_at = ?, updated_at = ?,
 		   phase = ?, complete = ?, method = ?, sanitized_url = ?, initial_url = ?,
 		   final_url = ?, call_site = ?, status_code = ?, transport_error = ?,
 		   transport_error_class = ?, duration_to_headers_ms = ?, duration_body_ms = ?,
@@ -990,7 +990,7 @@ func updateExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		   request_body = ?, response_body = ?, payloads = ?,
 		   response_error_code = ?, response_error = ?
 		 WHERE run_id = ? AND request_id = ?`,
-		e.IntegrationID, e.ProducerSeq, database.FormatTime(e.OccurredAt), database.FormatTime(e.UpdatedAt),
+		e.JobID, e.ProducerSeq, database.FormatTime(e.OccurredAt), database.FormatTime(e.UpdatedAt),
 		string(e.Phase), boolInt(e.Complete), e.Method, e.URL, e.InitialURL,
 		e.FinalURL, e.CallSite, database.NullableInt(e.StatusCode), e.TransportError,
 		e.TransportClass, nullableInt64(e.DurationToHeadersMS), nullableInt64(e.DurationBodyMS),

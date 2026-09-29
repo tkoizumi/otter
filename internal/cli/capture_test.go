@@ -37,7 +37,7 @@ func TestInspectReportsCapturePolicy(t *testing.T) {
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(api.IntegrationView{
+		_ = json.NewEncoder(w).Encode(api.JobView{
 			ID:               "billing-sync",
 			Name:             "billing-sync",
 			Path:             "/tmp/billing-sync",

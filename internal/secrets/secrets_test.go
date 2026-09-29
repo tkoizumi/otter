@@ -132,8 +132,8 @@ func TestResolveFailsAtomicallyWhenAnySecretIsMissing(t *testing.T) {
 	if !errors.As(err, &missing) {
 		t.Fatalf("error type = %T, want *MissingError", err)
 	}
-	if missing.IntegrationID != "shopify-to-erp" {
-		t.Errorf("integration = %q, want shopify-to-erp", missing.IntegrationID)
+	if missing.JobID != "shopify-to-erp" {
+		t.Errorf("job = %q, want shopify-to-erp", missing.JobID)
 	}
 	if len(missing.Keys) != 2 {
 		t.Fatalf("missing keys = %v, want two", missing.Keys)
@@ -148,7 +148,7 @@ func TestResolveFailsAtomicallyWhenAnySecretIsMissing(t *testing.T) {
 		t.Errorf("message = %q, want the missing keys sorted", message)
 	}
 	if !strings.Contains(message, "shopify-to-erp") {
-		t.Errorf("message = %q, want it to name the integration", message)
+		t.Errorf("message = %q, want it to name the job", message)
 	}
 }
 

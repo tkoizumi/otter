@@ -16,9 +16,9 @@ import (
 
 // runTokenRegistry hands out short-lived bearer tokens to child processes.
 //
-// A child gets a token scoped to exactly one run and one integration: enough
-// to read its trigger, read and write its integration's state, and append its
-// own logs. It cannot list integrations, trigger other runs or cancel
+// A child gets a token scoped to exactly one run and one job: enough
+// to read its trigger, read and write its job's state, and append its
+// own logs. It cannot list jobs, trigger other runs or cancel
 // anything. Tokens live only in memory, which is correct: child processes do
 // not survive a daemon restart either.
 type runTokenRegistry struct {
@@ -38,7 +38,7 @@ func newRunTokenRegistry() *runTokenRegistry {
 // Issue creates a token for a run, replacing any previous token for that run.
 // Generation is the identity generation the run was authorized against; it is
 // checked again when the token is used to mutate state.
-func (r *runTokenRegistry) Issue(runID, integrationID string, generation int64) (string, error) {
+func (r *runTokenRegistry) Issue(runID, jobID string, generation int64) (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("generate run token: %w", err)
@@ -50,7 +50,7 @@ func (r *runTokenRegistry) Issue(runID, integrationID string, generation int64) 
 	if existing, ok := r.byRun[runID]; ok {
 		delete(r.byToken, existing)
 	}
-	r.byToken[token] = api.RunToken{RunID: runID, IntegrationID: integrationID, Generation: generation}
+	r.byToken[token] = api.RunToken{RunID: runID, JobID: jobID, Generation: generation}
 	r.byRun[runID] = token
 	return token, nil
 }
@@ -84,45 +84,45 @@ func (r *runTokenRegistry) Len() int {
 	return len(r.byToken)
 }
 
-// ensureWebhookToken returns the persisted webhook token for an integration,
+// ensureWebhookToken returns the persisted webhook token for a job,
 // generating one on first use.
-func (d *Daemon) ensureWebhookToken(ctx context.Context, integrationID string) (string, error) {
+func (d *Daemon) ensureWebhookToken(ctx context.Context, jobID string) (string, error) {
 	var token string
 	err := d.db.QueryRowContext(ctx,
-		`SELECT token FROM webhook_tokens WHERE integration_id = ?`, integrationID).Scan(&token)
+		`SELECT token FROM webhook_tokens WHERE job_id = ?`, jobID).Scan(&token)
 	if err == nil {
 		return token, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("read webhook token for %s: %w", integrationID, err)
+		return "", fmt.Errorf("read webhook token for %s: %w", jobID, err)
 	}
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate webhook token for %s: %w", integrationID, err)
+		return "", fmt.Errorf("generate webhook token for %s: %w", jobID, err)
 	}
 	token = hex.EncodeToString(buf)
 
 	// DO NOTHING keeps a concurrent writer's token rather than replacing it.
 	if _, err := d.db.ExecContext(ctx,
-		`INSERT INTO webhook_tokens (integration_id, token, created_at) VALUES (?, ?, ?)
-		 ON CONFLICT(integration_id) DO NOTHING`,
-		integrationID, token, database.FormatTime(time.Now().UTC())); err != nil {
-		return "", fmt.Errorf("store webhook token for %s: %w", integrationID, err)
+		`INSERT INTO webhook_tokens (job_id, token, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(job_id) DO NOTHING`,
+		jobID, token, database.FormatTime(time.Now().UTC())); err != nil {
+		return "", fmt.Errorf("store webhook token for %s: %w", jobID, err)
 	}
 
 	if err := d.db.QueryRowContext(ctx,
-		`SELECT token FROM webhook_tokens WHERE integration_id = ?`, integrationID).Scan(&token); err != nil {
-		return "", fmt.Errorf("reread webhook token for %s: %w", integrationID, err)
+		`SELECT token FROM webhook_tokens WHERE job_id = ?`, jobID).Scan(&token); err != nil {
+		return "", fmt.Errorf("reread webhook token for %s: %w", jobID, err)
 	}
 	return token, nil
 }
 
 // rotateWebhookToken forces a new webhook token, invalidating the old one.
-func (d *Daemon) rotateWebhookToken(ctx context.Context, integrationID string) (string, error) {
+func (d *Daemon) rotateWebhookToken(ctx context.Context, jobID string) (string, error) {
 	if _, err := d.db.ExecContext(ctx,
-		`DELETE FROM webhook_tokens WHERE integration_id = ?`, integrationID); err != nil {
-		return "", fmt.Errorf("clear webhook token for %s: %w", integrationID, err)
+		`DELETE FROM webhook_tokens WHERE job_id = ?`, jobID); err != nil {
+		return "", fmt.Errorf("clear webhook token for %s: %w", jobID, err)
 	}
-	return d.ensureWebhookToken(ctx, integrationID)
+	return d.ensureWebhookToken(ctx, jobID)
 }

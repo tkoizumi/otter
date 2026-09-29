@@ -51,8 +51,8 @@ func TestPrintReloadResultSaysWhenNothingChanged(t *testing.T) {
 	app.printReloadResult(&api.ReloadResult{Total: 3, Valid: 3})
 
 	got := out.String()
-	if !strings.Contains(got, "no changes") || !strings.Contains(got, "3 integration(s)") {
-		t.Errorf("output = %q, want a no-changes line naming 3 integrations", got)
+	if !strings.Contains(got, "no changes") || !strings.Contains(got, "3 job(s)") {
+		t.Errorf("output = %q, want a no-changes line naming 3 jobs", got)
 	}
 	if strings.Contains(got, "otter release") {
 		t.Errorf("a reload with nothing added should not suggest a release:\n%s", got)
@@ -82,7 +82,7 @@ func TestReloadCommandPostsAndPrintsTheResult(t *testing.T) {
 		t.Errorf("request = %s %s, want POST /v1/reload", method, path)
 	}
 	if got := out.String(); !strings.Contains(got, "added        fresh") {
-		t.Errorf("output = %q, want the added integration named", got)
+		t.Errorf("output = %q, want the added job named", got)
 	}
 }
 

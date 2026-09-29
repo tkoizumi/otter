@@ -7,7 +7,7 @@ Run with::
 No daemon and no third-party packages are required. Every test talks to a fake
 in-process HTTP server (``http.server`` on ``127.0.0.1:0``) that emulates the
 part of the Otter API the SDK uses, or to a subprocess running a tiny
-integration script.
+job script.
 """
 
 import io
@@ -37,8 +37,8 @@ from otter.trigger import Trigger  # noqa: E402
 RUN_ID = "11111111-2222-3333-4444-555555555555"
 # The identity and the label are deliberately different values, so a test that
 # confuses them fails.
-INTEGRATION_ID = "0195a7c2-8e31-7b64-9f02-6dcb482ea510"
-INTEGRATION_NAME = "counter"
+JOB_ID = "0195a7c2-8e31-7b64-9f02-6dcb482ea510"
+JOB_NAME = "counter"
 TOKEN = "secret-token"
 
 
@@ -59,7 +59,7 @@ class FakeDaemon:
         self.state = {}
         self.run = {
             "id": RUN_ID,
-            "integration_id": INTEGRATION_ID,
+            "job_id": JOB_ID,
             "trigger_type": "webhook",
             "status": "running",
             "attempt": 1,
@@ -154,12 +154,12 @@ class FakeDaemon:
                 return 500, {"error": {"code": "internal", "message": "log sink down"}}
             self.logs.append(body)
             return 201, {"status": "logged"}
-        if segments[:2] == ["v1", "integrations"] and len(segments) >= 4 and segments[3] == "state":
+        if segments[:2] == ["v1", "jobs"] and len(segments) >= 4 and segments[3] == "state":
             if self.fail_state:
                 return 500, {"error": {"code": "internal", "message": "state store down"}}
-            integration_id = segments[2]
+            job_id = segments[2]
             if len(segments) == 4 and method == "GET":
-                return 200, {"integration_id": integration_id, "state": dict(self.state)}
+                return 200, {"job_id": job_id, "state": dict(self.state)}
             if len(segments) == 5:
                 key = segments[4]
                 if method == "GET":
@@ -171,7 +171,7 @@ class FakeDaemon:
                 if method == "PUT":
                     self.state[key] = body
                     return 200, {
-                        "integration_id": integration_id,
+                        "job_id": job_id,
                         "key": key,
                         "value": body,
                         "updated_at": "2024-01-01T00:00:00Z",
@@ -180,7 +180,7 @@ class FakeDaemon:
                     if key in self.state:
                         del self.state[key]
                         return 200, {
-                            "integration_id": integration_id,
+                            "job_id": job_id,
                             "key": key,
                             "deleted": True,
                         }
@@ -214,13 +214,13 @@ class SDKTestCase(unittest.TestCase):
 
     def env(self, **overrides):
         values = {
-            "OTTER_INTEGRATION_ID": INTEGRATION_ID,
-            "OTTER_INTEGRATION_NAME": INTEGRATION_NAME,
+            "OTTER_JOB_ID": JOB_ID,
+            "OTTER_JOB_NAME": JOB_NAME,
             "OTTER_RUN_ID": RUN_ID,
             "OTTER_API_URL": self.daemon.url,
             "OTTER_STATE_TOKEN": TOKEN,
             "OTTER_TRIGGER_TYPE": "webhook",
-            "OTTER_INTEGRATION_DIR": "/tmp/counter",
+            "OTTER_JOB_DIR": "/tmp/counter",
         }
         values.update(overrides)
         return values
@@ -297,17 +297,17 @@ class StateTests(SDKTestCase):
 class ClientTests(SDKTestCase):
     def test_retries_transient_500(self):
         self.daemon.fail_state = True
-        status, body = self.client.get_json("/v1/integrations/%s/state/x" % INTEGRATION_ID)
+        status, body = self.client.get_json("/v1/jobs/%s/state/x" % JOB_ID)
         self.assertEqual(status, 500)
         self.assertEqual(body["error"]["code"], "internal")
-        self.assertEqual(self.daemon.count("/v1/integrations/%s/state/x" % INTEGRATION_ID), 3)
+        self.assertEqual(self.daemon.count("/v1/jobs/%s/state/x" % JOB_ID), 3)
 
     def test_does_not_retry_404(self):
-        status, body = self.client.get_json("/v1/integrations/%s/state/missing" % INTEGRATION_ID)
+        status, body = self.client.get_json("/v1/jobs/%s/state/missing" % JOB_ID)
         self.assertEqual(status, 404)
         self.assertEqual(body["error"]["code"], "not_found")
         self.assertEqual(
-            self.daemon.count("/v1/integrations/%s/state/missing" % INTEGRATION_ID), 1
+            self.daemon.count("/v1/jobs/%s/state/missing" % JOB_ID), 1
         )
 
     def test_transport_failure_raises_ottererror(self):
@@ -387,7 +387,7 @@ class LoggerTests(SDKTestCase):
             {
                 "stream": "otter",
                 "message": "Counter executed",
-                # "logger" marks the line as the integration's own output: the
+                # "logger" marks the line as the job's own output: the
                 # runtime narrates the run's lifecycle on the same stream.
                 "fields": {"count": 1, "level": "info", "logger": "otter"},
             },
@@ -402,7 +402,7 @@ class LoggerTests(SDKTestCase):
         levels = [entry["fields"]["level"] for entry in self.daemon.logs]
         self.assertEqual(levels, ["debug", "info", "warning", "warning", "error"])
 
-    def test_log_lines_are_marked_as_the_integrations_own(self):
+    def test_log_lines_are_marked_as_the_jobs_own(self):
         # The runtime narrates a run's lifecycle on the same stream, so the line
         # itself has to say which writer produced it.
         self.ctx.log.info("sync starting", page_size=100)
@@ -438,7 +438,7 @@ class LoggerTests(SDKTestCase):
                 "level": "error",
                 "message": "boom",
                 # The fallback keeps the marker, so a reader can still tell the
-                # integration wrote this rather than the runtime.
+                # job wrote this rather than the runtime.
                 "fields": {"code": 500, "level": "error", "logger": "otter"},
                 # ...and says why the record is here instead of in the daemon.
                 "delivery_error": "log sink down (HTTP 500)",
@@ -498,29 +498,29 @@ class ContextTests(SDKTestCase):
     def test_from_environment(self):
         ctx = Context.from_environment(self.env())
         self.assertEqual(ctx.run_id, RUN_ID)
-        self.assertEqual(ctx.integration_id, INTEGRATION_ID)
-        self.assertEqual(ctx.name, INTEGRATION_NAME)
+        self.assertEqual(ctx.job_id, JOB_ID)
+        self.assertEqual(ctx.name, JOB_NAME)
         self.assertEqual(ctx.api_url, self.daemon.url)
-        self.assertEqual(ctx.integration_dir, "/tmp/counter")
+        self.assertEqual(ctx.job_dir, "/tmp/counter")
         self.assertEqual(ctx.trigger.type, "webhook")
 
     def test_name_falls_back_to_the_identity(self):
-        """A daemon that predates OTTER_INTEGRATION_NAME still yields a label."""
+        """A daemon that predates OTTER_JOB_NAME still yields a label."""
         env = self.env()
-        del env["OTTER_INTEGRATION_NAME"]
+        del env["OTTER_JOB_NAME"]
         ctx = Context.from_environment(env)
-        self.assertEqual(ctx.name, INTEGRATION_ID)
+        self.assertEqual(ctx.name, JOB_ID)
 
     def test_state_is_namespaced_by_the_identity_not_the_label(self):
         ctx = Context.from_environment(self.env())
         ctx.state.set("count", 1)
         paths = self.daemon.paths()
         self.assertTrue(
-            any(INTEGRATION_ID in path for path in paths),
+            any(JOB_ID in path for path in paths),
             "state was not addressed by the identity: %r" % (paths,),
         )
         self.assertFalse(
-            any(path.endswith("/integrations/%s/state/count" % INTEGRATION_NAME) for path in paths),
+            any(path.endswith("/jobs/%s/state/count" % JOB_NAME) for path in paths),
             "state was addressed by the label: %r" % (paths,),
         )
 
@@ -539,7 +539,7 @@ class ContextTests(SDKTestCase):
 
     def test_invalid_api_url_raises_ottererror(self):
         with self.assertRaises(OtterError):
-            Context(run_id=RUN_ID, integration_id=INTEGRATION_ID, api_url="")
+            Context(run_id=RUN_ID, job_id=JOB_ID, api_url="")
 
 
 class RunDecoratorTests(SDKTestCase):
@@ -558,13 +558,13 @@ class RunDecoratorTests(SDKTestCase):
 
     def _subprocess(self, source, **env_overrides):
         env = {
-            "OTTER_INTEGRATION_ID": INTEGRATION_ID,
-            "OTTER_INTEGRATION_NAME": INTEGRATION_NAME,
+            "OTTER_JOB_ID": JOB_ID,
+            "OTTER_JOB_NAME": JOB_NAME,
             "OTTER_RUN_ID": RUN_ID,
             "OTTER_API_URL": self.daemon.url,
             "OTTER_STATE_TOKEN": TOKEN,
             "OTTER_TRIGGER_TYPE": "manual",
-            "OTTER_INTEGRATION_DIR": HERE,
+            "OTTER_JOB_DIR": HERE,
             "PYTHONPATH": SDK_ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""),
             "PATH": os.environ.get("PATH", ""),
         }
@@ -642,7 +642,7 @@ class RunDecoratorTests(SDKTestCase):
     def test_helpers_defined_below_main_are_available(self):
         # Regression: executing at decoration time made any name defined
         # further down the file unavailable, which is a very natural way to
-        # write an integration.
+        # write a job.
         result = self._subprocess(
             "from otter import run\n"
             "@run\n"
@@ -659,15 +659,15 @@ class RunDecoratorTests(SDKTestCase):
             "from otter import run\n"
             "@run\n"
             "def main(ctx):\n"
-            "    print('INTEGRATION')\n"
+            "    print('JOB')\n"
             "print('MODULE-BODY')\n"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("MODULE-BODY", result.stdout)
-        self.assertIn("INTEGRATION", result.stdout)
+        self.assertIn("JOB", result.stdout)
         self.assertLess(
             result.stdout.index("MODULE-BODY"),
-            result.stdout.index("INTEGRATION"),
+            result.stdout.index("JOB"),
             "the decorated function must run after the module body completes",
         )
 

@@ -41,15 +41,15 @@ func capture(t *testing.T, format string, payload Payload) map[string]any {
 func samplePayload() Payload {
 	exit := 1
 	return Payload{
-		Integration: "shopify-to-salesforce",
-		RunID:       "42e84cd5-bd93-4def-ade1",
-		Status:      "failed",
-		Attempt:     3,
-		Error:       "process exited with code 1",
-		Detail:      `sync finished {"failed":12,"written":88}`,
-		DurationMS:  1840,
-		ExitCode:    &exit,
-		Release:     "3c850cfa6c9cb5c6",
+		Job:        "shopify-to-salesforce",
+		RunID:      "42e84cd5-bd93-4def-ade1",
+		Status:     "failed",
+		Attempt:    3,
+		Error:      "process exited with code 1",
+		Detail:     `sync finished {"failed":12,"written":88}`,
+		DurationMS: 1840,
+		ExitCode:   &exit,
+		Release:    "3c850cfa6c9cb5c6",
 	}
 }
 
@@ -95,9 +95,9 @@ func TestTeamsFormatIsAMessageCard(t *testing.T) {
 	if summary, _ := body["summary"].(string); summary == "" {
 		t.Error("a MessageCard needs a summary")
 	}
-	// The integration's own last line should reach the reader.
+	// The job's own last line should reach the reader.
 	if text, _ := body["text"].(string); !strings.Contains(text, "failed\":12") {
-		t.Errorf("teams text lost the integration's summary: %q", text)
+		t.Errorf("teams text lost the job's summary: %q", text)
 	}
 }
 
@@ -107,7 +107,7 @@ func TestJSONFormatIsTheDefaultAndUnchanged(t *testing.T) {
 	body := capture(t, "", samplePayload())
 
 	for _, key := range []string{
-		"integration", "run_id", "status", "attempt",
+		"job", "run_id", "status", "attempt",
 		"error", "detail", "duration_ms", "exit_code", "release",
 	} {
 		if _, ok := body[key]; !ok {
@@ -132,9 +132,9 @@ func TestUnknownFormatFails(t *testing.T) {
 // A timeout should not read like a failure, and a cancel should not read like
 // either: the operator action and the crash are different events.
 func TestChatMessageDistinguishesStatuses(t *testing.T) {
-	failed := chatMessage(Payload{Integration: "i", Status: "failed"})
-	timedOut := chatMessage(Payload{Integration: "i", Status: "timed_out"})
-	cancelled := chatMessage(Payload{Integration: "i", Status: "cancelled"})
+	failed := chatMessage(Payload{Job: "i", Status: "failed"})
+	timedOut := chatMessage(Payload{Job: "i", Status: "timed_out"})
+	cancelled := chatMessage(Payload{Job: "i", Status: "cancelled"})
 
 	if failed == timedOut || timedOut == cancelled {
 		t.Error("statuses render identically, so the message does not distinguish them")
@@ -143,8 +143,8 @@ func TestChatMessageDistinguishesStatuses(t *testing.T) {
 
 // A single-attempt run should not claim an attempt number it does not have.
 func TestChatMessageOmitsTheAttemptWhenThereIsOnlyOne(t *testing.T) {
-	one := chatMessage(Payload{Integration: "i", Status: "failed", Attempt: 1})
-	three := chatMessage(Payload{Integration: "i", Status: "failed", Attempt: 3})
+	one := chatMessage(Payload{Job: "i", Status: "failed", Attempt: 1})
+	three := chatMessage(Payload{Job: "i", Status: "failed", Attempt: 3})
 
 	if strings.Contains(one, "attempt") {
 		t.Errorf("a first attempt mentioned an attempt number: %q", one)

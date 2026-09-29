@@ -1,4 +1,4 @@
-"""Structured logging for Otter integrations.
+"""Structured logging for Otter jobs.
 
 Every call sends one synchronous JSON record to the daemon:
 
@@ -11,8 +11,8 @@ severity is carried inside ``fields`` under the ``level`` key.
 Logging is best effort by design: field values JSON cannot represent are
 rendered with ``str()`` rather than dropped. When a record still cannot be
 delivered it is written to stderr as a single JSON line carrying a
-``delivery_error`` that names the reason, and the integration continues. A
-logging failure must never crash an integration -- and must never be invisible
+``delivery_error`` that names the reason, and the job continues. A
+logging failure must never crash a job -- and must never be invisible
 either: a degraded record that looks like an ordinary one is worse than no
 record, because it is trusted.
 """
@@ -26,7 +26,7 @@ from ._client import Client, describe_api_failure, encode_path_segment
 
 __all__ = ["Logger"]
 
-#: Marks a line as having come from the integration's logger rather than from the
+#: Marks a line as having come from the job's logger rather than from the
 #: runtime's own narration, which shares the same log stream.
 _LOGGER_NAME = "otter"
 
@@ -75,7 +75,7 @@ class Logger:
         payload_fields["level"] = level
         # The stream alone does not identify the writer: the daemon narrates a
         # run's lifecycle on the same stream. This marker states that the line
-        # came from the integration's own logger, so a reader never has to guess
+        # came from the job's own logger, so a reader never has to guess
         # from the payload's shape.
         payload_fields["logger"] = _LOGGER_NAME
         path = "/v1/runs/%s/logs" % encode_path_segment(self._run_id)
@@ -89,7 +89,7 @@ class Logger:
         """Send one record; return ``None`` on success, else why it was not sent.
 
         Every failure is turned into a reason string rather than an exception,
-        because a log call must never break the integration. The reason is not
+        because a log call must never break the job. The reason is not
         discarded: it is what tells the fallback reader that this record was
         degraded, and why.
         """
@@ -103,7 +103,7 @@ class Logger:
                 {"stream": "otter", "message": text, "fields": payload_fields},
                 default=str,
             )
-        except Exception as exc:  # never let logging break the integration
+        except Exception as exc:  # never let logging break the job
             return "%s: %s" % (type(exc).__name__, exc)
         if 200 <= status < 300:
             return None

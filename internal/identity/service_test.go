@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// seedIntegration writes a minimal but real integration directory.
-func seedIntegration(t *testing.T, root, rel, name string) string {
+// seedJob writes a minimal but real job directory.
+func seedJob(t *testing.T, root, rel, name string) string {
 	t.Helper()
 	dir := filepath.Join(root, rel)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -26,8 +26,8 @@ func seedIntegration(t *testing.T, root, rel, name string) string {
 	return dir
 }
 
-// observeIntegration describes a directory the way discovery would.
-func observeIntegration(t *testing.T, dir, name string) Observation {
+// observeJob describes a directory the way discovery would.
+func observeJob(t *testing.T, dir, name string) Observation {
 	t.Helper()
 	canonical, err := Canonical(dir)
 	if err != nil {
@@ -74,9 +74,9 @@ func newService(t *testing.T) (*Service, context.Context, string) {
 
 func TestServiceRegistersAndPreservesIdentity(t *testing.T) {
 	svc, ctx, root := newService(t)
-	dir := seedIntegration(t, root, "a", "a")
+	dir := seedJob(t, root, "a", "a")
 
-	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "a")}})
+	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "a")}})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestServiceRegistersAndPreservesIdentity(t *testing.T) {
 	}
 
 	// A second scan of an unchanged tree preserves the identity.
-	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "a")}})
+	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "a")}})
 	if err != nil {
 		t.Fatalf("second Reconcile: %v", err)
 	}
@@ -100,9 +100,9 @@ func TestServiceRegistersAndPreservesIdentity(t *testing.T) {
 
 func TestServiceCopyGetsFreshIdentityAndOriginalKeepsItsOwn(t *testing.T) {
 	svc, ctx, root := newService(t)
-	a := seedIntegration(t, root, "a", "counter")
+	a := seedJob(t, root, "a", "counter")
 
-	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, a, "counter")}})
+	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, a, "counter")}})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -112,8 +112,8 @@ func TestServiceCopyGetsFreshIdentityAndOriginalKeepsItsOwn(t *testing.T) {
 	copyDir(t, a, b)
 
 	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{
-		observeIntegration(t, a, "counter"),
-		observeIntegration(t, b, "counter"),
+		observeJob(t, a, "counter"),
+		observeJob(t, b, "counter"),
 	}})
 	if err != nil {
 		t.Fatalf("Reconcile after copy: %v", err)
@@ -139,8 +139,8 @@ func TestServiceCopyGetsFreshIdentityAndOriginalKeepsItsOwn(t *testing.T) {
 
 func TestServiceCopyThenRemoveOriginalLeavesCopyFresh(t *testing.T) {
 	svc, ctx, root := newService(t)
-	a := seedIntegration(t, root, "a", "counter")
-	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, a, "counter")}})
+	a := seedJob(t, root, "a", "counter")
+	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, a, "counter")}})
 	original := res.Registered[0]
 
 	b := filepath.Join(root, "b")
@@ -150,7 +150,7 @@ func TestServiceCopyThenRemoveOriginalLeavesCopyFresh(t *testing.T) {
 	}
 
 	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{
-		observeIntegration(t, b, "counter"),
+		observeJob(t, b, "counter"),
 		{Path: mustCanonical(t, a), Exists: false},
 	}})
 	if err != nil {
@@ -166,15 +166,15 @@ func TestServiceCopyThenRemoveOriginalLeavesCopyFresh(t *testing.T) {
 
 func TestServiceReplacementRetiresOldIdentity(t *testing.T) {
 	svc, ctx, root := newService(t)
-	dir := seedIntegration(t, root, "a", "counter")
-	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}})
+	dir := seedJob(t, root, "a", "counter")
+	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}})
 	original := res.Registered[0]
 
 	// Someone replaced the tree: the marker is gone.
 	if err := RemoveMarker(dir); err != nil {
 		t.Fatalf("remove marker: %v", err)
 	}
-	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}})
+	res, err := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -192,8 +192,8 @@ func TestServiceReplacementRetiresOldIdentity(t *testing.T) {
 
 func TestServiceDeleteSuppressesButKeepsSource(t *testing.T) {
 	svc, ctx, root := newService(t)
-	dir := seedIntegration(t, root, "a", "counter")
-	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}})
+	dir := seedJob(t, root, "a", "counter")
+	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}})
 	id := res.Registered[0]
 
 	if err := svc.Delete(ctx, id, nil); err != nil {
@@ -212,7 +212,7 @@ func TestServiceDeleteSuppressesButKeepsSource(t *testing.T) {
 	}
 
 	// The source is still there, but discovery must not resurrect it.
-	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}})
+	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}})
 	if err != nil {
 		t.Fatalf("Reconcile after delete: %v", err)
 	}
@@ -235,8 +235,8 @@ func TestServiceDeleteSuppressesButKeepsSource(t *testing.T) {
 
 func TestServiceMovePreservesIdentity(t *testing.T) {
 	svc, ctx, root := newService(t)
-	dir := seedIntegration(t, root, "a", "counter")
-	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}})
+	dir := seedJob(t, root, "a", "counter")
+	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}})
 	id := res.Registered[0]
 
 	dest := filepath.Join(root, "moved")
@@ -258,7 +258,7 @@ func TestServiceMovePreservesIdentity(t *testing.T) {
 		t.Fatalf("source directory still exists after move")
 	}
 	// A plain scan of the moved tree preserves the identity.
-	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dest, "counter")}})
+	res, err = svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dest, "counter")}})
 	if err != nil {
 		t.Fatalf("Reconcile after move: %v", err)
 	}
@@ -269,10 +269,10 @@ func TestServiceMovePreservesIdentity(t *testing.T) {
 
 func TestServiceMoveRejectsOccupiedDestination(t *testing.T) {
 	svc, ctx, root := newService(t)
-	a := seedIntegration(t, root, "a", "a")
-	b := seedIntegration(t, root, "b", "b")
+	a := seedJob(t, root, "a", "a")
+	b := seedJob(t, root, "b", "b")
 	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{
-		observeIntegration(t, a, "a"), observeIntegration(t, b, "b"),
+		observeJob(t, a, "a"), observeJob(t, b, "b"),
 	}})
 	if len(res.Registered) != 2 {
 		t.Fatalf("registered = %v, want both", res.Registered)
@@ -284,8 +284,8 @@ func TestServiceMoveRejectsOccupiedDestination(t *testing.T) {
 
 func TestServiceResetMintsFreshIdentityAtSamePath(t *testing.T) {
 	svc, ctx, root := newService(t)
-	dir := seedIntegration(t, root, "a", "counter")
-	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}})
+	dir := seedJob(t, root, "a", "counter")
+	res, _ := svc.Reconcile(ctx, Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}})
 	old := res.Registered[0]
 
 	fresh, err := svc.Reset(ctx, old, "counter")
@@ -307,7 +307,7 @@ func TestServiceResetMintsFreshIdentityAtSamePath(t *testing.T) {
 func TestServiceRecoversHalfFinishedRegistration(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	dir := seedIntegration(t, root, "a", "counter")
+	dir := seedJob(t, root, "a", "counter")
 	canonical := mustCanonical(t, dir)
 	svc := NewService(store, root)
 
@@ -356,7 +356,7 @@ func TestServiceRecoversHalfFinishedRegistration(t *testing.T) {
 func TestServiceRecoveryRefusesChangedMarker(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	dir := seedIntegration(t, root, "a", "counter")
+	dir := seedJob(t, root, "a", "counter")
 	canonical := mustCanonical(t, dir)
 	svc := NewService(store, root)
 

@@ -1,6 +1,6 @@
 // Package scheduler registers cron triggers.
 //
-// Cron schedules come from integration manifests and are reconciled from disk
+// Cron schedules come from job manifests and are reconciled from disk
 // on every daemon start and on every reload, so a restart never loses a future
 // schedule and a reload never disturbs one whose expression did not change.
 // Occurrences missed while the daemon was down are deliberately not replayed.
@@ -17,7 +17,7 @@ import (
 	"github.com/tkoizumi/otter/internal/logging"
 )
 
-// Scheduler wraps a cron runner keyed by integration id.
+// Scheduler wraps a cron runner keyed by job id.
 type Scheduler struct {
 	logger *logging.Logger
 	cron   *cron.Cron
@@ -53,7 +53,7 @@ func Parse(spec string) (cron.Schedule, error) {
 	return parser.Parse(spec)
 }
 
-// Replace makes an integration's cron trigger match spec: adding one when it
+// Replace makes a job's cron trigger match spec: adding one when it
 // has none, leaving an unchanged one exactly as it is, or swapping a changed
 // one.
 //
@@ -61,56 +61,56 @@ func Parse(spec string) (cron.Schedule, error) {
 // cron runner computes an entry's next fire time when the entry is added, so
 // re-adding an unchanged schedule would recompute it from the moment of the
 // call and can skip an occurrence that was about to fire. Reload calls Replace
-// for every integration on every pass, so this is the common path.
-func (s *Scheduler) Replace(integrationID, spec string, fn func()) error {
+// for every job on every pass, so this is the common path.
+func (s *Scheduler) Replace(jobID, spec string, fn func()) error {
 	if spec == "" {
-		return fmt.Errorf("scheduler: empty cron expression for %s", integrationID)
+		return fmt.Errorf("scheduler: empty cron expression for %s", jobID)
 	}
 	if fn == nil {
-		return fmt.Errorf("scheduler: nil job for %s", integrationID)
+		return fmt.Errorf("scheduler: nil job for %s", jobID)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if entryID, exists := s.ids[integrationID]; exists {
-		if s.specs[integrationID] == spec {
+	if entryID, exists := s.ids[jobID]; exists {
+		if s.specs[jobID] == spec {
 			return nil
 		}
 		s.cron.Remove(entryID)
-		delete(s.ids, integrationID)
-		delete(s.specs, integrationID)
+		delete(s.ids, jobID)
+		delete(s.specs, jobID)
 	}
 
-	entryID, err := s.cron.AddFunc(spec, s.wrap(integrationID, fn))
+	entryID, err := s.cron.AddFunc(spec, s.wrap(jobID, fn))
 	if err != nil {
-		return fmt.Errorf("scheduler: register %s (%s): %w", integrationID, spec, err)
+		return fmt.Errorf("scheduler: register %s (%s): %w", jobID, spec, err)
 	}
 
-	s.ids[integrationID] = entryID
-	s.specs[integrationID] = spec
+	s.ids[jobID] = entryID
+	s.specs[jobID] = spec
 	return nil
 }
 
-// Unregister drops an integration's cron trigger.
+// Unregister drops a job's cron trigger.
 //
-// Unregistering an integration that has none is not an error: a reload
+// Unregistering a job that has none is not an error: a reload
 // reconciles the whole set against the manifests, and "already absent" is the
 // state it was trying to reach.
-func (s *Scheduler) Unregister(integrationID string) {
+func (s *Scheduler) Unregister(jobID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entryID, exists := s.ids[integrationID]
+	entryID, exists := s.ids[jobID]
 	if !exists {
 		return
 	}
 	s.cron.Remove(entryID)
-	delete(s.ids, integrationID)
-	delete(s.specs, integrationID)
+	delete(s.ids, jobID)
+	delete(s.specs, jobID)
 }
 
-// IDs returns every integration that currently has a cron trigger.
+// IDs returns every job that currently has a cron trigger.
 func (s *Scheduler) IDs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,11 +123,11 @@ func (s *Scheduler) IDs() []string {
 }
 
 // wrap recovers from panics so one bad job cannot take down the cron runner.
-func (s *Scheduler) wrap(integrationID string, fn func()) func() {
+func (s *Scheduler) wrap(jobID string, fn func()) func() {
 	return func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.logger.Error("cron_job_panic", fmt.Errorf("panic: %v", r), "integration", integrationID)
+				s.logger.Error("cron_job_panic", fmt.Errorf("panic: %v", r), "job", jobID)
 			}
 		}()
 		fn()
@@ -149,10 +149,10 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 	}
 }
 
-// Next returns the next scheduled fire time for an integration.
-func (s *Scheduler) Next(integrationID string) (time.Time, bool) {
+// Next returns the next scheduled fire time for a job.
+func (s *Scheduler) Next(jobID string) (time.Time, bool) {
 	s.mu.Lock()
-	entryID, ok := s.ids[integrationID]
+	entryID, ok := s.ids[jobID]
 	s.mu.Unlock()
 	if !ok {
 		return time.Time{}, false
@@ -164,11 +164,11 @@ func (s *Scheduler) Next(integrationID string) (time.Time, bool) {
 	return entry.Next.UTC(), true
 }
 
-// Spec returns the registered cron expression for an integration.
-func (s *Scheduler) Spec(integrationID string) (string, bool) {
+// Spec returns the registered cron expression for a job.
+func (s *Scheduler) Spec(jobID string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	spec, ok := s.specs[integrationID]
+	spec, ok := s.specs[jobID]
 	return spec, ok
 }
 
@@ -179,7 +179,7 @@ func (s *Scheduler) Count() int {
 	return len(s.ids)
 }
 
-// Entries returns every registered integration id with its next fire time.
+// Entries returns every registered job id with its next fire time.
 func (s *Scheduler) Entries() map[string]time.Time {
 	s.mu.Lock()
 	ids := make(map[string]cron.EntryID, len(s.ids))

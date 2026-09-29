@@ -30,7 +30,7 @@ func newTestStore(t *testing.T) (*Store, *database.DB, context.Context) {
 	return store, db, ctx
 }
 
-// An integration with no row is enabled, and that is the zero State rather than
+// A job with no row is enabled, and that is the zero State rather than
 // an error: "never paused" is the common case, not a missing record.
 func TestGetWithoutARowIsEnabled(t *testing.T) {
 	store, _, _ := newTestStore(t)
@@ -40,7 +40,7 @@ func TestGetWithoutARowIsEnabled(t *testing.T) {
 		t.Errorf("Get() = %+v, want enabled", state)
 	}
 	if store.Paused("never-paused") {
-		t.Error("Paused() = true for an integration with no row")
+		t.Error("Paused() = true for a job with no row")
 	}
 	if store.Len() != 0 {
 		t.Errorf("Len() = %d, want 0", store.Len())
@@ -56,7 +56,7 @@ func TestSetPauseRecordsWhenItBegan(t *testing.T) {
 		t.Fatalf("Set() error = %v", err)
 	}
 	if !changed {
-		t.Error("pausing an enabled integration should report a change")
+		t.Error("pausing an enabled job should report a change")
 	}
 	if !state.Paused {
 		t.Error("state should be paused")
@@ -98,7 +98,7 @@ func TestSetResumeIsIdempotent(t *testing.T) {
 	store, _, ctx := newTestStore(t)
 
 	if _, changed, err := store.Set(ctx, "int-1", false); err != nil || changed {
-		t.Fatalf("resuming a never-paused integration = changed %v, err %v; want a no-op", changed, err)
+		t.Fatalf("resuming a never-paused job = changed %v, err %v; want a no-op", changed, err)
 	}
 
 	if _, _, err := store.Set(ctx, "int-1", true); err != nil {
@@ -110,7 +110,7 @@ func TestSetResumeIsIdempotent(t *testing.T) {
 		t.Fatalf("Set() error = %v", err)
 	}
 	if !changed {
-		t.Error("resuming a paused integration should report a change")
+		t.Error("resuming a paused job should report a change")
 	}
 	if state.Paused || !state.Since.IsZero() {
 		t.Errorf("state after resume = %+v, want the zero State", state)
@@ -167,7 +167,7 @@ func TestDeleteForgetsAPause(t *testing.T) {
 		t.Error("the deleted pause came back from the table")
 	}
 
-	// Deleting an integration that was never paused is the common purge path,
+	// Deleting a job that was never paused is the common purge path,
 	// so it must not be an error.
 	if err := store.Delete(ctx, "never-paused"); err != nil {
 		t.Errorf("deleting a pause that does not exist: %v", err)

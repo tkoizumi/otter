@@ -1,6 +1,6 @@
 // Package release stages and activates immutable source snapshots.
 //
-// A release is a self-contained copy of an integration plus the shared code it
+// A release is a self-contained copy of a job plus the shared code it
 // imports, placed under a directory named after a digest of its contents. The
 // point is that a running or queued attempt executes a known snapshot instead
 // of whatever happens to be on disk when it starts, and that activating a new
@@ -10,40 +10,40 @@
 // layout rather than flattening it. The placement rule is one base shared by
 // everything a release carries:
 //
-//	base = the closest common ancestor of the integrations discovery root,
-//	       the integration directory and every captured shared tree
+//	base = the closest common ancestor of the jobs discovery root,
+//	       the job directory and every captured shared tree
 //
-// The integration lands at rel(base, integrationDir) and each shared tree at
+// The job lands at rel(base, jobDir) and each shared tree at
 // rel(base, liveTreeDir). The release root plays the part of base, so every
 // relative declaration in the manifest resolves exactly as it does in the
 // checkout. For the canonical layout that means:
 //
 //	<data dir>/.releases/<identity>/<release-digest>/
-//	├── integrations/<integration>/     the snapshot
+//	├── jobs/<job>/     the snapshot
 //	├── lib/                            shared code, at the same relative depth
 //	└── otter-release.json              metadata, including the environment digest
 //
 // but the rule is the same for the other shapes a workspace can have: a flat
-// workspace places the integration at <name> and shared code beside it, and a
+// workspace places the job at <name> and shared code beside it, and a
 // grouped workspace at group/<name> and group/lib/python. `otter deploy` does
-// not change the rule: it stages each integration at
-// `<remote>/integrations/<name>` and every declared tree at the depth the
+// not change the rule: it stages each job at
+// `<remote>/jobs/<name>` and every declared tree at the depth the
 // manifest names from there, so where the base falls follows from the manifest
 // rather than from a hardcoded layout.
 //
-// The activation links live at <data dir>/.releases/active/<integration>. They
-// sit outside the integrations tree on purpose: `otter deploy` rsyncs that tree
+// The activation links live at <data dir>/.releases/active/<job>. They
+// sit outside the jobs tree on purpose: `otter deploy` rsyncs that tree
 // with --delete, and a symlink inside it would be replaced by a directory, or
 // worse, written through into the snapshot.
 //
 // Nothing has to be rewritten to activate a release: the manifest travels
 // verbatim and a manifest that works locally works in a release. The live
-// integrations tree stays exactly as it was pushed -- discovery and every
+// jobs tree stays exactly as it was pushed -- discovery and every
 // path-derived behaviour (the working directory, the SDK's relative
 // resolution, `otter inspect`) keep using it -- while each run resolves the
 // digest to execute through the activation link of its own identity.
 // The releases root is dot-prefixed, which the existing discovery walk already
-// skips, so snapshots are never discovered as integrations themselves.
+// skips, so snapshots are never discovered as jobs themselves.
 package release
 
 import (
@@ -70,33 +70,33 @@ const activeDirName = "active"
 
 // ActiveDirName is the activation directory inside the releases root. It is
 // exported so callers enumerating the releases root can tell it apart from an
-// integration directory.
+// job directory.
 const ActiveDirName = activeDirName
 
 // ManifestFileName is the metadata file written inside a release.
 const ManifestFileName = "otter-release.json"
 
-// IntegrationRoot is where an integration was placed by releases staged before
-// Metadata.IntegrationPath existed. It is only a fallback: every release staged
+// JobRoot is where a job was placed by releases staged before
+// Metadata.JobPath existed. It is only a fallback: every release staged
 // today records its real placement.
-const IntegrationRoot = "integrations"
+const JobRoot = "jobs"
 
-// DefaultKeep is how many inactive releases per integration are retained.
+// DefaultKeep is how many inactive releases per job are retained.
 // Retention is bounded so a long-lived install cannot grow without limit, and
 // a release referenced by queued or running work is never removed.
 const DefaultKeep = 3
 
 // Metadata describes a staged release.
 type Metadata struct {
-	Integration string `json:"integration"`
-	Digest      string `json:"digest"`
-	// IntegrationPath is the integration directory inside the release,
+	Job    string `json:"job"`
+	Digest string `json:"digest"`
+	// JobPath is the job directory inside the release,
 	// slash-normalized and relative to the release root. It is the single
 	// source of truth for where the snapshot's code lives, because the
-	// placement depends on where the integration and its shared code sat in the
+	// placement depends on where the job and its shared code sat in the
 	// checkout. Empty on releases staged before this field existed; the
-	// resolver then assumes IntegrationRoot/<integration>.
-	IntegrationPath string `json:"integration_path,omitempty"`
+	// resolver then assumes JobRoot/<job>.
+	JobPath string `json:"job_path,omitempty"`
 	// Environment is the prepared Python environment digest this release was
 	// validated against. It is recorded rather than implied so a report can
 	// answer "what did this release run on?".
@@ -114,31 +114,59 @@ type Metadata struct {
 	GitDirty    bool   `json:"git_dirty,omitempty"`
 }
 
-// IntegrationRel returns the integration's placement inside a release,
+// UnmarshalJSON reads historical release metadata without rewriting snapshots.
+// New metadata is always written with job fields.
+func (m *Metadata) UnmarshalJSON(data []byte) error {
+	type current Metadata
+	var wire struct {
+		current
+		LegacyJob  string `json:"integration"`
+		LegacyPath string `json:"integration_path"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*m = Metadata(wire.current)
+	if m.Job == "" {
+		m.Job = wire.LegacyJob
+	}
+	if m.JobPath == "" {
+		m.JobPath = wire.LegacyPath
+	}
+	if m.JobPath == "" && wire.LegacyJob != "" {
+		if err := validName(m.Job); err != nil {
+			return err
+		}
+		m.JobPath = filepath.ToSlash(filepath.Join("integrations", m.Job))
+	}
+	return nil
+}
+
+// JobRel returns the job's placement inside a release,
 // validated: relative, no "..", and with the fallback for metadata written
 // before the field existed.
-func (m Metadata) IntegrationRel() (string, error) {
-	raw := strings.TrimSpace(m.IntegrationPath)
+func (m Metadata) JobRel() (string, error) {
+	raw := strings.TrimSpace(m.JobPath)
 	if raw == "" {
-		if err := validName(m.Integration); err != nil {
+		if err := validName(m.Job); err != nil {
 			return "", err
 		}
-		return filepath.ToSlash(filepath.Join(IntegrationRoot, m.Integration)), nil
+		return filepath.ToSlash(filepath.Join(JobRoot, m.Job)), nil
 	}
 	clean := filepath.Clean(filepath.FromSlash(raw))
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("release: integration_path %q escapes the release root", raw)
+		return "", fmt.Errorf("release: job_path %q escapes the release root", raw)
 	}
 	return filepath.ToSlash(clean), nil
 }
 
-// SourceDir resolves the integration directory inside the release directory
-// releaseRoot. It is THE resolver: staging writes IntegrationPath, and
+// SourceDir resolves the job directory inside the release directory
+// releaseRoot. It is THE resolver: staging writes JobPath, and
 // preparation, `--list`, `--activate`, ActiveSourceDir and the worker all read
 // the placement back through here, so a hand-edited or escaping value is
 // rejected exactly once, in one place.
 func (m Metadata) SourceDir(releaseRoot string) (string, error) {
-	rel, err := m.IntegrationRel()
+	rel, err := m.JobRel()
 	if err != nil {
 		return "", err
 	}
@@ -165,8 +193,8 @@ func (m Manager) Root() (string, error) {
 }
 
 // Dir returns the directory of one release.
-func (m Manager) Dir(integration, digest string) (string, error) {
-	if err := validName(integration); err != nil {
+func (m Manager) Dir(job, digest string) (string, error) {
+	if err := validName(job); err != nil {
 		return "", err
 	}
 	if len(digest) != 64 {
@@ -176,29 +204,29 @@ func (m Manager) Dir(integration, digest string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, integration, digest), nil
+	return filepath.Join(root, job, digest), nil
 }
 
-// ActivePath returns the activation symlink for an integration.
-func (m Manager) ActivePath(integration string) (string, error) {
-	if err := validName(integration); err != nil {
+// ActivePath returns the activation symlink for a job.
+func (m Manager) ActivePath(job string) (string, error) {
+	if err := validName(job); err != nil {
 		return "", err
 	}
 	root, err := m.Root()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, activeDirName, integration), nil
+	return filepath.Join(root, activeDirName, job), nil
 }
 
-// Active resolves the release an integration is currently serving.
+// Active resolves the release a job is currently serving.
 //
-// A missing symlink means the integration has never been released, which is
-// the normal state for an integration that does not use managed Python. The
+// A missing symlink means the job has never been released, which is
+// the normal state for a job that does not use managed Python. The
 // second return value reports whether a release exists, so callers can
 // distinguish "not released" from "broken".
-func (m Manager) Active(integration string) (Metadata, bool, error) {
-	path, err := m.ActivePath(integration)
+func (m Manager) Active(job string) (Metadata, bool, error) {
+	path, err := m.ActivePath(job)
 	if err != nil {
 		return Metadata{}, false, err
 	}
@@ -207,7 +235,7 @@ func (m Manager) Active(integration string) (Metadata, bool, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Metadata{}, false, nil
 		}
-		return Metadata{}, false, fmt.Errorf("resolve active release for %s: %w", integration, err)
+		return Metadata{}, false, fmt.Errorf("resolve active release for %s: %w", job, err)
 	}
 	meta, err := readMetadata(dir)
 	if err != nil {
@@ -217,55 +245,55 @@ func (m Manager) Active(integration string) (Metadata, bool, error) {
 }
 
 // Metadata reads one release's metadata.
-func (m Manager) Metadata(integration, digest string) (Metadata, error) {
-	dir, err := m.Dir(integration, digest)
+func (m Manager) Metadata(job, digest string) (Metadata, error) {
+	dir, err := m.Dir(job, digest)
 	if err != nil {
 		return Metadata{}, err
 	}
 	return readMetadata(dir)
 }
 
-// DeleteAll removes every staged release belonging to one integration and its
+// DeleteAll removes every staged release belonging to one job and its
 // activation pointer. It is used when an identity is deleted; releases of any
-// other integration are never touched, and removal is by identity directory
+// other job are never touched, and removal is by identity directory
 // rather than a glob.
-func (m Manager) DeleteAll(integration string) error {
-	if err := validName(integration); err != nil {
+func (m Manager) DeleteAll(job string) error {
+	if err := validName(job); err != nil {
 		return err
 	}
 	root, err := m.Root()
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(root, integration)); err != nil {
-		return fmt.Errorf("release: remove releases for %s: %w", integration, err)
+	if err := os.RemoveAll(filepath.Join(root, job)); err != nil {
+		return fmt.Errorf("release: remove releases for %s: %w", job, err)
 	}
-	active, err := m.ActivePath(integration)
+	active, err := m.ActivePath(job)
 	if err != nil {
 		return err
 	}
 	if err := os.Remove(active); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("release: remove active pointer for %s: %w", integration, err)
+		return fmt.Errorf("release: remove active pointer for %s: %w", job, err)
 	}
 	return nil
 }
 
 // SourceDir resolves the directory one staged release's code lives in.
 func (m Manager) SourceDir(meta Metadata) (string, error) {
-	dir, err := m.Dir(meta.Integration, meta.Digest)
+	dir, err := m.Dir(meta.Job, meta.Digest)
 	if err != nil {
 		return "", err
 	}
 	return meta.SourceDir(dir)
 }
 
-// ActiveSourceDir resolves the directory an integration should execute from,
+// ActiveSourceDir resolves the directory a job should execute from,
 // given a data directory. The second return value is false when the
-// integration has never been released, so the caller can fall back to the live
-// source tree for integrations that did not opt in.
-func ActiveSourceDir(dataDir, integration string) (string, string, bool, error) {
+// job has never been released, so the caller can fall back to the live
+// source tree for jobs that did not opt in.
+func ActiveSourceDir(dataDir, job string) (string, string, bool, error) {
 	manager := Manager{DataDir: dataDir}
-	meta, ok, err := manager.Active(integration)
+	meta, ok, err := manager.Active(job)
 	if err != nil || !ok {
 		return "", "", false, err
 	}
@@ -350,7 +378,7 @@ func skip(path string, d fs.DirEntry) bool {
 	case name == ".env" || strings.HasSuffix(name, ".env"):
 		return true
 	case strings.HasSuffix(name, ".graphql"):
-		// A query document is run-time input: the integration reads it while it
+		// A query document is run-time input: the job reads it while it
 		// runs. The pulled schema beside it is tooling -- editors and tests read
 		// it, the runtime never does -- and it is large (3.5 MB for Shopify), so
 		// carrying it in every release would grow .releases for nothing. The
@@ -393,12 +421,12 @@ func writeMetadata(dir string, meta Metadata) error {
 	return os.Rename(tmp, filepath.Join(dir, ManifestFileName))
 }
 
-func validName(integration string) error {
-	if strings.TrimSpace(integration) == "" {
-		return errors.New("release: integration name is empty")
+func validName(job string) error {
+	if strings.TrimSpace(job) == "" {
+		return errors.New("release: job name is empty")
 	}
-	if strings.ContainsAny(integration, `/\`) || integration == "." || integration == ".." {
-		return fmt.Errorf("release: invalid integration name %q", integration)
+	if strings.ContainsAny(job, `/\`) || job == "." || job == ".." {
+		return fmt.Errorf("release: invalid job name %q", job)
 	}
 	return nil
 }

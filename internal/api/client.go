@@ -63,10 +63,10 @@ func NewClient(baseURL, token string) *Client {
 
 // RunsQuery narrows a run listing.
 type RunsQuery struct {
-	IntegrationID string
-	Status        string
-	Limit         int
-	Offset        int
+	JobID  string
+	Status string
+	Limit  int
+	Offset int
 }
 
 // Health returns the daemon health summary.
@@ -78,108 +78,108 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	return &out, nil
 }
 
-// ListIntegrations returns every discovered integration.
-func (c *Client) ListIntegrations(ctx context.Context) ([]IntegrationView, error) {
+// ListJobs returns every discovered job.
+func (c *Client) ListJobs(ctx context.Context) ([]JobView, error) {
 	var out struct {
-		Integrations []IntegrationView `json:"integrations"`
+		Jobs []JobView `json:"jobs"`
 	}
-	if err := c.get(ctx, "/v1/integrations", nil, &out); err != nil {
+	if err := c.get(ctx, "/v1/jobs", nil, &out); err != nil {
 		return nil, err
 	}
-	return out.Integrations, nil
+	return out.Jobs, nil
 }
 
-// GetIntegration returns a single integration.
-func (c *Client) GetIntegration(ctx context.Context, id string) (*IntegrationView, error) {
-	var out IntegrationView
-	if err := c.get(ctx, "/v1/integrations/"+url.PathEscape(id), nil, &out); err != nil {
+// GetJob returns a single job.
+func (c *Client) GetJob(ctx context.Context, id string) (*JobView, error) {
+	var out JobView
+	if err := c.get(ctx, "/v1/jobs/"+url.PathEscape(id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// ResolveIntegration resolves a label, a path or an id to the integration it
+// ResolveJob resolves a label, a path or an id to the job it
 // names. It is the only reference resolution the CLI performs for daemon
 // commands: the daemon owns the registry, so it owns the answer.
-func (c *Client) ResolveIntegration(ctx context.Context, ref string) (*IntegrationView, error) {
+func (c *Client) ResolveJob(ctx context.Context, ref string) (*JobView, error) {
 	values := url.Values{}
 	values.Set("ref", ref)
-	var out IntegrationView
-	if err := c.get(ctx, "/v1/integrations/resolve", values, &out); err != nil {
+	var out JobView
+	if err := c.get(ctx, "/v1/jobs/resolve", values, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// RegisterIntegration registers a source path explicitly.
-func (c *Client) RegisterIntegration(ctx context.Context, path string) (*IntegrationView, error) {
+// RegisterJob registers a source path explicitly.
+func (c *Client) RegisterJob(ctx context.Context, path string) (*JobView, error) {
 	body, err := json.Marshal(RegisterRequest{Path: path})
 	if err != nil {
 		return nil, err
 	}
-	var out IntegrationView
-	if err := c.do(ctx, http.MethodPost, "/v1/integrations", body, &out); err != nil {
+	var out JobView
+	if err := c.do(ctx, http.MethodPost, "/v1/jobs", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// ResetIntegration retires an identity and mints a fresh one at the same path.
-func (c *Client) ResetIntegration(ctx context.Context, ref string) (*ResetView, error) {
+// ResetJob retires an identity and mints a fresh one at the same path.
+func (c *Client) ResetJob(ctx context.Context, ref string) (*ResetView, error) {
 	var out ResetView
-	path := "/v1/integrations/" + url.PathEscape(ref) + "/reset"
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/reset"
 	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// MoveIntegration preserves an identity across a daemon-performed rename.
-func (c *Client) MoveIntegration(ctx context.Context, ref, destination string) (*IntegrationView, error) {
+// MoveJob preserves an identity across a daemon-performed rename.
+func (c *Client) MoveJob(ctx context.Context, ref, destination string) (*JobView, error) {
 	body, err := json.Marshal(MoveRequest{Destination: destination})
 	if err != nil {
 		return nil, err
 	}
-	var out IntegrationView
-	path := "/v1/integrations/" + url.PathEscape(ref) + "/move"
+	var out JobView
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/move"
 	if err := c.do(ctx, http.MethodPost, path, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// PauseIntegration suspends an integration's autonomous triggers: cron stops
+// PauseJob suspends a job's autonomous triggers: cron stops
 // firing and the webhook refuses a trigger. Manual runs are unaffected.
-func (c *Client) PauseIntegration(ctx context.Context, ref string) (*PauseView, error) {
+func (c *Client) PauseJob(ctx context.Context, ref string) (*PauseView, error) {
 	var out PauseView
-	path := "/v1/integrations/" + url.PathEscape(ref) + "/pause"
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/pause"
 	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// ResumeIntegration re-arms the triggers a pause suspended.
-func (c *Client) ResumeIntegration(ctx context.Context, ref string) (*PauseView, error) {
+// ResumeJob re-arms the triggers a pause suspended.
+func (c *Client) ResumeJob(ctx context.Context, ref string) (*PauseView, error) {
 	var out PauseView
-	path := "/v1/integrations/" + url.PathEscape(ref) + "/resume"
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/resume"
 	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// DeleteIntegration purges an identity's durable artifacts.
-func (c *Client) DeleteIntegration(ctx context.Context, ref string) (*DeletedView, error) {
+// DeleteJob purges an identity's durable artifacts.
+func (c *Client) DeleteJob(ctx context.Context, ref string) (*DeletedView, error) {
 	var out DeletedView
-	path := "/v1/integrations/" + url.PathEscape(ref)
+	path := "/v1/jobs/" + url.PathEscape(ref)
 	if err := c.do(ctx, http.MethodDelete, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// Reload asks the daemon to re-read its integrations directory. The daemon
+// Reload asks the daemon to re-read its jobs directory. The daemon
 // keeps running: this returns what changed, not a new process.
 func (c *Client) Reload(ctx context.Context) (*ReloadResult, error) {
 	var out ReloadResult
@@ -190,17 +190,17 @@ func (c *Client) Reload(ctx context.Context) (*ReloadResult, error) {
 }
 
 // SubmitRun queues a run with default submission options and returns its run id.
-func (c *Client) SubmitRun(ctx context.Context, integrationID string, body json.RawMessage) (string, error) {
-	return c.SubmitRunWithOptions(ctx, integrationID, body, "")
+func (c *Client) SubmitRun(ctx context.Context, jobID string, body json.RawMessage) (string, error) {
+	return c.SubmitRunWithOptions(ctx, jobID, body, "")
 }
 
 // SubmitRunWithOptions queues a run and returns its run id.
 //
 // capture is the HTTP capture policy for the run and travels as a query option
 // rather than in the body: the body is the trigger JSON, recorded and handed to
-// integration code verbatim. An empty value means the daemon's default.
-func (c *Client) SubmitRunWithOptions(ctx context.Context, integrationID string, body json.RawMessage, capture string) (string, error) {
-	path := "/v1/integrations/" + url.PathEscape(integrationID) + "/runs"
+// job code verbatim. An empty value means the daemon's default.
+func (c *Client) SubmitRunWithOptions(ctx context.Context, jobID string, body json.RawMessage, capture string) (string, error) {
+	path := "/v1/jobs/" + url.PathEscape(jobID) + "/runs"
 	if capture != "" {
 		path += "?capture=" + url.QueryEscape(capture)
 	}
@@ -297,8 +297,8 @@ func (c *Client) CancelRun(ctx context.Context, runID string) error {
 // ListRuns lists runs.
 func (c *Client) ListRuns(ctx context.Context, q RunsQuery) ([]*runs.Run, error) {
 	values := url.Values{}
-	if q.IntegrationID != "" {
-		values.Set("integration_id", q.IntegrationID)
+	if q.JobID != "" {
+		values.Set("job_id", q.JobID)
 	}
 	if q.Status != "" {
 		values.Set("status", q.Status)
@@ -347,10 +347,10 @@ func (c *Client) GetLogs(ctx context.Context, runID string, afterID int64, limit
 	return out.Logs, nil
 }
 
-// AllState returns every state key for an integration.
-func (c *Client) AllState(ctx context.Context, integrationID string) (map[string]json.RawMessage, error) {
+// AllState returns every state key for a job.
+func (c *Client) AllState(ctx context.Context, jobID string) (map[string]json.RawMessage, error) {
 	var out StateResponse
-	if err := c.get(ctx, "/v1/integrations/"+url.PathEscape(integrationID)+"/state", nil, &out); err != nil {
+	if err := c.get(ctx, "/v1/jobs/"+url.PathEscape(jobID)+"/state", nil, &out); err != nil {
 		return nil, err
 	}
 	return out.State, nil
@@ -358,8 +358,8 @@ func (c *Client) AllState(ctx context.Context, integrationID string) (map[string
 
 // GetState returns the raw JSON value of one state key. It returns
 // ErrStateNotFound when the key is unset.
-func (c *Client) GetState(ctx context.Context, integrationID, key string) (json.RawMessage, error) {
-	raw, err := c.raw(ctx, http.MethodGet, statePath(integrationID, key), nil)
+func (c *Client) GetState(ctx context.Context, jobID, key string) (json.RawMessage, error) {
+	raw, err := c.raw(ctx, http.MethodGet, statePath(jobID, key), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -367,24 +367,24 @@ func (c *Client) GetState(ctx context.Context, integrationID, key string) (json.
 }
 
 // SetState writes one state key.
-func (c *Client) SetState(ctx context.Context, integrationID, key string, value json.RawMessage) (*SetStateResponse, error) {
+func (c *Client) SetState(ctx context.Context, jobID, key string, value json.RawMessage) (*SetStateResponse, error) {
 	if !json.Valid(value) {
 		return nil, fmt.Errorf("state value must be valid JSON")
 	}
 	var out SetStateResponse
-	if err := c.do(ctx, http.MethodPut, statePath(integrationID, key), value, &out); err != nil {
+	if err := c.do(ctx, http.MethodPut, statePath(jobID, key), value, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // DeleteState removes one state key.
-func (c *Client) DeleteState(ctx context.Context, integrationID, key string) error {
-	return c.do(ctx, http.MethodDelete, statePath(integrationID, key), nil, nil)
+func (c *Client) DeleteState(ctx context.Context, jobID, key string) error {
+	return c.do(ctx, http.MethodDelete, statePath(jobID, key), nil, nil)
 }
 
-func statePath(integrationID, key string) string {
-	return "/v1/integrations/" + url.PathEscape(integrationID) + "/state/" + url.PathEscape(key)
+func statePath(jobID, key string) string {
+	return "/v1/jobs/" + url.PathEscape(jobID) + "/state/" + url.PathEscape(key)
 }
 
 // ------------------------------------------------------------- transport

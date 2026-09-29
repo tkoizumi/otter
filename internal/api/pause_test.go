@@ -11,16 +11,16 @@ import (
 // trigger state rather than just "ok", so a caller can log what changed.
 func TestPauseEndpointRoundTrip(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
-	// Admin-only: pause changes what every trigger of an integration does.
-	anonymous := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/pause", nil, nil)
+	// Admin-only: pause changes what every trigger of a job does.
+	anonymous := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/pause", nil, nil)
 	wantStatus(t, anonymous, http.StatusUnauthorized)
 
-	paused := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/pause", nil, adminHeaders())
+	paused := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/pause", nil, adminHeaders())
 	wantStatus(t, paused, http.StatusOK)
 
 	var view PauseView
@@ -28,24 +28,24 @@ func TestPauseEndpointRoundTrip(t *testing.T) {
 	if !view.Paused || !view.Changed {
 		t.Fatalf("pause response = %+v, want paused and changed", view)
 	}
-	if view.IntegrationID != "int-A" {
+	if view.JobID != "int-A" {
 		t.Errorf("pause response = %+v, want int-A", view)
 	}
 	if view.Since == nil {
 		t.Error("pause response should say when the pause began")
 	}
 
-	// The single-integration endpoint carries the state a reader needs.
-	got := do(t, http.MethodGet, srv.URL+"/v1/integrations/int-A", nil, adminHeaders())
+	// The single-job endpoint carries the state a reader needs.
+	got := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A", nil, adminHeaders())
 	wantStatus(t, got, http.StatusOK)
-	var integration IntegrationView
-	got.decode(t, &integration)
-	if !integration.Triggers.Paused {
-		t.Errorf("integration triggers = %+v, want the pause", integration.Triggers)
+	var job JobView
+	got.decode(t, &job)
+	if !job.Triggers.Paused {
+		t.Errorf("job triggers = %+v, want the pause", job.Triggers)
 	}
 
 	// Repeating the pause is a successful no-op.
-	repeated := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/pause", nil, adminHeaders())
+	repeated := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/pause", nil, adminHeaders())
 	wantStatus(t, repeated, http.StatusOK)
 	var repeatView PauseView
 	repeated.decode(t, &repeatView)
@@ -53,7 +53,7 @@ func TestPauseEndpointRoundTrip(t *testing.T) {
 		t.Error("a repeated pause should report changed false")
 	}
 
-	resumed := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/resume", nil, adminHeaders())
+	resumed := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/resume", nil, adminHeaders())
 	wantStatus(t, resumed, http.StatusOK)
 	var resumeView PauseView
 	resumed.decode(t, &resumeView)
@@ -61,55 +61,55 @@ func TestPauseEndpointRoundTrip(t *testing.T) {
 		t.Fatalf("resume response = %+v, want enabled and changed", resumeView)
 	}
 	if resumeView.Since != nil {
-		t.Error("an enabled integration should not report a pause instant")
+		t.Error("an enabled job should not report a pause instant")
 	}
 }
 
 // Neither verb takes a body, and one that is sent anyway is simply not read:
-// the request still means "pause this integration".
+// the request still means "pause this job".
 func TestPauseEndpointIgnoresABody(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
-	r := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/pause",
+	r := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/pause",
 		[]byte(`{"reason":"ignored"}`), adminHeaders())
 	wantStatus(t, r, http.StatusOK)
 }
 
 func TestPauseEndpointMapsBackendErrors(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
-	missing := do(t, http.MethodPost, srv.URL+"/v1/integrations/ghost/pause", nil, adminHeaders())
+	missing := do(t, http.MethodPost, srv.URL+"/v1/jobs/ghost/pause", nil, adminHeaders())
 	wantStatus(t, missing, http.StatusNotFound)
 
 	// A retired identity is a conflict: the request is well formed and the
-	// integration exists, but it cannot carry this control.
+	// job exists, but it cannot carry this control.
 	b.pauseErr = ErrConflict
-	refused := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/pause", nil, adminHeaders())
+	refused := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/pause", nil, adminHeaders())
 	wantStatus(t, refused, http.StatusConflict)
 	if code := refused.errorEnvelope(t).Error.Code; code != CodeConflict {
 		t.Errorf("error code = %q, want %q", code, CodeConflict)
 	}
 }
 
-// A paused integration is not accepting autonomous triggers, so the webhook is
-// 503 -- the route exists and the caller is authorized, but this integration is
+// A paused job is not accepting autonomous triggers, so the webhook is
+// 503 -- the route exists and the caller is authorized, but this job is
 // not taking work. A manual run is the operator asking for one and still works.
 func TestPausedWebhookIsUnavailableButManualRunsStillWork(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("hooked", true, "webhook-token")
+	b.addJob("hooked", true, "webhook-token")
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
-	pause := do(t, http.MethodPost, srv.URL+"/v1/integrations/hooked/pause", nil, adminHeaders())
+	pause := do(t, http.MethodPost, srv.URL+"/v1/jobs/hooked/pause", nil, adminHeaders())
 	wantStatus(t, pause, http.StatusOK)
 
 	before := b.submissionCount()
@@ -123,7 +123,7 @@ func TestPausedWebhookIsUnavailableButManualRunsStillWork(t *testing.T) {
 		t.Error("a paused webhook still reached SubmitRun")
 	}
 
-	manual := do(t, http.MethodPost, srv.URL+"/v1/integrations/hooked/runs", []byte(`{}`), adminHeaders())
+	manual := do(t, http.MethodPost, srv.URL+"/v1/jobs/hooked/runs", []byte(`{}`), adminHeaders())
 	wantStatus(t, manual, http.StatusAccepted)
 	var accepted SubmitRunResponse
 	manual.decode(t, &accepted)

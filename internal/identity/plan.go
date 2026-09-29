@@ -17,7 +17,7 @@ const (
 )
 
 // Observation is what one scan learned about one directory. A scan produces an
-// observation for every discovered integration directory and for every known
+// observation for every discovered job directory and for every known
 // registered path, so that a registered path missing from the manifest walk is
 // still described explicitly rather than inferred from absence.
 type Observation struct {
@@ -43,7 +43,7 @@ type Observation struct {
 	ScanError string
 }
 
-// Scan is one walk of the integrations root.
+// Scan is one walk of the jobs root.
 type Scan struct {
 	// Complete is false when any directory or manifest could not be read. An
 	// incomplete scan is evidence of a failed observation, never of deletion.
@@ -174,7 +174,7 @@ func BuildPlan(scan Scan, instances []Instance, paths []PathRecord, mint func() 
 					Path:   path,
 					Owner:  rec.OwnerID,
 					Name:   obs.Name,
-					Reason: "integrations scan was incomplete; source cannot be verified",
+					Reason: "jobs scan was incomplete; source cannot be verified",
 				})
 			}
 		}

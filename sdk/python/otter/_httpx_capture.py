@@ -6,7 +6,7 @@ httpx follows redirects internally by calling ``_send_single_request`` rather th
 ``send``, so one wrapper per client records each user-visible exchange exactly
 once.
 
-Async support is not an afterthought: an integration that uses ``AsyncClient``
+Async support is not an afterthought: a job that uses ``AsyncClient``
 must be captured the same way. The response is observed through its async read
 paths, and the buffered body of a non-streamed response is inspected without
 touching the stream again.

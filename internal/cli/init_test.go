@@ -23,7 +23,7 @@ func initIn(t *testing.T, dir, version string, args ...string) (stdout, stderr s
 	return out.String(), errOut.String(), code
 }
 
-func TestInitScaffoldsAWorkspaceAndIntegration(t *testing.T) {
+func TestInitScaffoldsAWorkspaceAndJob(t *testing.T) {
 	dir := t.TempDir()
 
 	stdout, stderr, code := initIn(t, dir, "0.1.0", "acme-sync")
@@ -55,7 +55,7 @@ func TestInitScaffoldsAWorkspaceAndIntegration(t *testing.T) {
 	// reason the template omits it.
 	manifest := readFile(t, filepath.Join(dir, "acme-sync", "otter.yaml"))
 	if !strings.Contains(manifest, "name: acme-sync") {
-		t.Errorf("manifest does not name the integration:\n%s", manifest)
+		t.Errorf("manifest does not name the job:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "\ntrigger:") {
 		t.Errorf("manifest has an active trigger:\n%s", manifest)
@@ -77,7 +77,7 @@ func TestInitScaffoldsAWorkspaceAndIntegration(t *testing.T) {
 	}
 }
 
-// Running init inside an existing workspace adds an integration to it and
+// Running init inside an existing workspace adds a job to it and
 // leaves the workspace's own files alone.
 func TestInitAddsToAnExistingWorkspace(t *testing.T) {
 	dir := t.TempDir()
@@ -94,7 +94,7 @@ func TestInitAddsToAnExistingWorkspace(t *testing.T) {
 		t.Errorf("the second init claimed to create the workspace:\n%s", stdout)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "second", "otter.yaml")); err != nil {
-		t.Errorf("the second integration was not written: %v", err)
+		t.Errorf("the second job was not written: %v", err)
 	}
 	// The version records the workspace's origin, not the last init.
 	if got := readFile(t, filepath.Join(dir, stateDirName, versionFileName)); got != "0.1.0\n" {
@@ -159,7 +159,7 @@ func TestInitGitignoreCoversEnvTemplates(t *testing.T) {
 	}
 }
 
-func TestInitRefusesAnExistingIntegration(t *testing.T) {
+func TestInitRefusesAnExistingJob(t *testing.T) {
 	dir := t.TempDir()
 	if _, stderr, code := initIn(t, dir, "0.1.0", "acme-sync"); code != 0 {
 		t.Fatalf("first init failed: %s", stderr)
@@ -216,7 +216,7 @@ func TestInitNameDefaultsToTheDirectory(t *testing.T) {
 		t.Fatalf("init failed: %s", stderr)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "invoice-sync", "otter.yaml")); err != nil {
-		t.Errorf("the integration was not named after the directory: %v", err)
+		t.Errorf("the job was not named after the directory: %v", err)
 	}
 }
 

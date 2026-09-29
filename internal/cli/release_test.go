@@ -19,8 +19,8 @@ import (
 	"github.com/tkoizumi/otter/internal/release"
 )
 
-// releaseWorkspace lays out a workspace with one integration and returns the
-// workspace root and the integration directory.
+// releaseWorkspace lays out a workspace with one job and returns the
+// workspace root and the job directory.
 func releaseWorkspace(t *testing.T, name string) (root, dir string) {
 	t.Helper()
 	root = t.TempDir()
@@ -31,12 +31,12 @@ func releaseWorkspace(t *testing.T, name string) (root, dir string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeIntegrationFixture(t, dir, name, "print('ok')\n")
+	writeJobFixture(t, dir, name, "print('ok')\n")
 	return root, dir
 }
 
-// writeIntegrationFixture writes a minimal valid external-Python integration.
-func writeIntegrationFixture(t *testing.T, dir, name, python string) {
+// writeJobFixture writes a minimal valid external-Python job.
+func writeJobFixture(t *testing.T, dir, name, python string) {
 	t.Helper()
 	manifest := "version: 1\nname: " + name + "\nentrypoint: main.py\n"
 	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte(manifest), 0o644); err != nil {
@@ -61,7 +61,7 @@ func otterIn(t *testing.T, dir string, args ...string) (stdout, stderr string, c
 
 // `cd counter && otter release` releases counter: identity follows the working
 // directory, the way `otter run` already does.
-func TestReleaseFromInsideTheIntegrationDirectory(t *testing.T) {
+func TestReleaseFromInsideTheJobDirectory(t *testing.T) {
 	root, dir := releaseWorkspace(t, "counter")
 
 	stdout, stderr, code := otterIn(t, dir, "release")
@@ -102,13 +102,13 @@ func TestReleaseAcceptsAPathReference(t *testing.T) {
 }
 
 // A bare name works from anywhere in the workspace, and --all covers every
-// integration in it.
+// job in it.
 func TestReleaseByNameAndAll(t *testing.T) {
 	root, _ := releaseWorkspace(t, "one")
 	if err := os.MkdirAll(filepath.Join(root, "group", "two"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeIntegrationFixture(t, filepath.Join(root, "group", "two"), "two", "print('two')\n")
+	writeJobFixture(t, filepath.Join(root, "group", "two"), "two", "print('two')\n")
 
 	if stdout, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
 		t.Fatalf("release one exited %d: %s", code, stderr)
@@ -190,7 +190,7 @@ func TestReleaseActivateRefusesAnUnknownDigest(t *testing.T) {
 }
 
 // Outside a workspace a release has nowhere to go, and says so instead of
-// scanning a relative ./integrations that is not there.
+// scanning a relative ./jobs that is not there.
 func TestReleaseRefusesOutsideAWorkspace(t *testing.T) {
 	dir := t.TempDir()
 
@@ -206,7 +206,7 @@ func TestReleaseRefusesOutsideAWorkspace(t *testing.T) {
 	}
 }
 
-// Naming one integration and also asking for all of them is a contradiction,
+// Naming one job and also asking for all of them is a contradiction,
 // not a silently ignored flag.
 func TestReleaseRejectsAllWithAName(t *testing.T) {
 	_, dir := releaseWorkspace(t, "counter")
@@ -222,9 +222,9 @@ func TestReleaseRejectsAllWithAName(t *testing.T) {
 
 // --- layout coverage --------------------------------------------------------
 
-// writeSharedIntegration lays a minimal external integration with python.path
+// writeSharedJob lays a minimal external job with python.path
 // relative to its own directory, plus the shared tree it names.
-func writeSharedIntegration(t *testing.T, dir, name, pythonPath string, sharedRel string) string {
+func writeSharedJob(t *testing.T, dir, name, pythonPath string, sharedRel string) string {
 	t.Helper()
 	manifest := "version: 1\nname: " + name + "\nentrypoint: main.py\npython:\n  mode: external\n  path:\n    - " + pythonPath + "\n"
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -246,7 +246,7 @@ func writeSharedIntegration(t *testing.T, dir, name, pythonPath string, sharedRe
 	return shared
 }
 
-// idFor reads the durable identity the runtime assigned to an integration
+// idFor reads the durable identity the runtime assigned to a job
 // directory. Releases and environments are keyed by it, not by the manifest
 // label, so a test that looks one up must ask the marker.
 func idFor(t *testing.T, dir string) string {
@@ -258,7 +258,7 @@ func idFor(t *testing.T, dir string) string {
 	return id.String()
 }
 
-// activeSource resolves the code directory of an integration's active release.
+// activeSource resolves the code directory of a job's active release.
 func activeSource(t *testing.T, manager release.Manager, dir string) (release.Metadata, string) {
 	t.Helper()
 	id := idFor(t, dir)
@@ -283,8 +283,8 @@ func assertManifestResolves(t *testing.T, sourceDir string) {
 	}
 }
 
-// The flat workspace: the integration sits at the workspace root and its shared
-// tree beside it. This is the shape the old hardcoded integrations/<name>
+// The flat workspace: the job sits at the workspace root and its shared
+// tree beside it. This is the shape the old hardcoded jobs/<name>
 // placement broke.
 func TestReleaseFlatWorkspaceImportsSharedCode(t *testing.T) {
 	root := t.TempDir()
@@ -292,19 +292,19 @@ func TestReleaseFlatWorkspaceImportsSharedCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(root, "demo")
-	writeSharedIntegration(t, dir, "demo", "../lib/python", "../lib/python")
+	writeSharedJob(t, dir, "demo", "../lib/python", "../lib/python")
 
 	if _, stderr, code := otterIn(t, root, "release", "demo"); code != 0 {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
 	meta, src := activeSource(t, manager, dir)
-	if meta.IntegrationPath != "demo" {
-		t.Errorf("IntegrationPath = %q, want demo", meta.IntegrationPath)
+	if meta.JobPath != "demo" {
+		t.Errorf("JobPath = %q, want demo", meta.JobPath)
 	}
 	assertManifestResolves(t, src)
 	if _, err := os.Stat(filepath.Join(filepath.Dir(src), "lib", "python", "greet", "__init__.py")); err != nil {
-		t.Errorf("the shared tree was not captured beside the integration: %v", err)
+		t.Errorf("the shared tree was not captured beside the job: %v", err)
 	}
 }
 
@@ -314,37 +314,37 @@ func TestReleaseCanonicalLayoutImportsSharedCode(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "integrations", "demo")
-	writeSharedIntegration(t, dir, "demo", "../../lib/python", "../../lib/python")
+	dir := filepath.Join(root, "jobs", "demo")
+	writeSharedJob(t, dir, "demo", "../../lib/python", "../../lib/python")
 
 	if _, stderr, code := otterIn(t, root, "release", "demo"); code != 0 {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
 	meta, src := activeSource(t, manager, dir)
-	if meta.IntegrationPath != "integrations/demo" {
-		t.Errorf("IntegrationPath = %q, want integrations/demo", meta.IntegrationPath)
+	if meta.JobPath != "jobs/demo" {
+		t.Errorf("JobPath = %q, want jobs/demo", meta.JobPath)
 	}
 	assertManifestResolves(t, src)
 }
 
-// A grouped integration: the tree is placed relative to the same base as the
-// integration, so ../lib/python resolves from group/<name>.
+// A grouped job: the tree is placed relative to the same base as the
+// job, so ../lib/python resolves from group/<name>.
 func TestReleaseGroupedLayoutImportsSharedCode(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(root, "group", "demo")
-	writeSharedIntegration(t, dir, "demo", "../lib/python", "../lib/python")
+	writeSharedJob(t, dir, "demo", "../lib/python", "../lib/python")
 
 	if _, stderr, code := otterIn(t, root, "release", "demo"); code != 0 {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
 	meta, src := activeSource(t, manager, dir)
-	if meta.IntegrationPath != "group/demo" {
-		t.Errorf("IntegrationPath = %q, want group/demo", meta.IntegrationPath)
+	if meta.JobPath != "group/demo" {
+		t.Errorf("JobPath = %q, want group/demo", meta.JobPath)
 	}
 	assertManifestResolves(t, src)
 }
@@ -356,16 +356,16 @@ func TestReleasePlacementUsesTheDirectoryNotTheName(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "integrations", "dir-name")
-	writeSharedIntegration(t, dir, "other-name", "../../lib", "../../lib")
+	dir := filepath.Join(root, "jobs", "dir-name")
+	writeSharedJob(t, dir, "other-name", "../../lib", "../../lib")
 
-	if _, stderr, code := otterIn(t, root, "release", filepath.Join("integrations", "dir-name")); code != 0 {
+	if _, stderr, code := otterIn(t, root, "release", filepath.Join("jobs", "dir-name")); code != 0 {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
 	meta, src := activeSource(t, manager, dir)
-	if meta.IntegrationPath != "integrations/dir-name" {
-		t.Errorf("IntegrationPath = %q, want integrations/dir-name", meta.IntegrationPath)
+	if meta.JobPath != "jobs/dir-name" {
+		t.Errorf("JobPath = %q, want jobs/dir-name", meta.JobPath)
 	}
 	assertManifestResolves(t, src)
 }
@@ -378,15 +378,15 @@ func TestReleaseSourceOutsideTheDiscoveryRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(root, "other", "demo")
-	writeSharedIntegration(t, dir, "demo", "../../lib/python", "../../lib/python")
+	writeSharedJob(t, dir, "demo", "../../lib/python", "../../lib/python")
 
 	if _, stderr, code := otterIn(t, root, "release", "--source", "other/demo"); code != 0 {
 		t.Fatalf("release exited %d: %s", code, stderr)
 	}
 	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
 	meta, src := activeSource(t, manager, dir)
-	if meta.IntegrationPath != "other/demo" {
-		t.Errorf("IntegrationPath = %q, want other/demo", meta.IntegrationPath)
+	if meta.JobPath != "other/demo" {
+		t.Errorf("JobPath = %q, want other/demo", meta.JobPath)
 	}
 	assertManifestResolves(t, src)
 }
@@ -426,7 +426,7 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 	// (2) Validation fails: an absolute python.path passes on this machine but
 	// cannot be reproduced in a release.
 	absolute := t.TempDir()
-	writeIntegrationFixture(t, dir, "counter", "print('ok')\n")
+	writeJobFixture(t, dir, "counter", "print('ok')\n")
 	manifest := "version: 1\nname: counter\nentrypoint: main.py\npython:\n  mode: external\n  path:\n    - " + absolute + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "otter.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
@@ -446,10 +446,10 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(release.Metadata{
-		Integration:     idFor(t, dir),
-		Digest:          digest,
-		IntegrationPath: "../escape",
-		Source:          dir,
+		Job:     idFor(t, dir),
+		Digest:  digest,
+		JobPath: "../escape",
+		Source:  dir,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +458,7 @@ func TestFailedReleasePreservesTheActiveRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, stderr, code := otterIn(t, dir, "release", "--activate", digest[:12]); code == 0 {
-		t.Fatal("activated a release whose integration path escapes it")
+		t.Fatal("activated a release whose job path escapes it")
 	} else if !strings.Contains(stderr, "escapes the release root") {
 		t.Errorf("activation failure does not explain itself:\n%s", stderr)
 	}
@@ -526,7 +526,7 @@ func TestActivateRefusesAnUnpreparedManagedRelease(t *testing.T) {
 
 	// Hand-build a managed snapshot with no prepared environment.
 	digest := strings.Repeat("e", 64)
-	source := filepath.Join(dataDir, release.DirName, idFor(t, dir), digest, "integrations", "counter")
+	source := filepath.Join(dataDir, release.DirName, idFor(t, dir), digest, "jobs", "counter")
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -543,10 +543,10 @@ func TestActivateRefusesAnUnpreparedManagedRelease(t *testing.T) {
 		}
 	}
 	meta := release.Metadata{
-		Integration:     idFor(t, dir),
-		Digest:          digest,
-		IntegrationPath: "integrations/counter",
-		Source:          dir,
+		Job:     idFor(t, dir),
+		Digest:  digest,
+		JobPath: "jobs/counter",
+		Source:  dir,
 	}
 	body, err := json.Marshal(meta)
 	if err != nil {
@@ -605,7 +605,7 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 	now := database.FormatTime(time.Now().UTC())
 	insert := func(id, status, digest string) {
 		if _, err := db.ExecContext(ctx,
-			`INSERT INTO runs (id, integration_id, trigger_type, status, attempt, created_at, release_digest)
+			`INSERT INTO runs (id, job_id, trigger_type, status, attempt, created_at, release_digest)
 			 VALUES (?, ?, 'manual', ?, 1, ?, ?)`,
 			id, "int-1", status, now, digest); err != nil {
 			t.Fatalf("insert %s: %v", id, err)
@@ -630,16 +630,16 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 	}
 }
 
-// The cross-integration view answers "what has a release, and what is missing
+// The cross-job view answers "what has a release, and what is missing
 // one?", which is the question behind a submission that refuses because an
-// integration was never released.
+// job was never released.
 func TestReleaseListAllReportsReleasesAndGaps(t *testing.T) {
 	root, _ := releaseWorkspace(t, "one")
 	two := filepath.Join(root, "two")
 	if err := os.MkdirAll(two, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeIntegrationFixture(t, two, "two", "print('two')\n")
+	writeJobFixture(t, two, "two", "print('two')\n")
 
 	// Release only one of them; registering "two" happens as a side effect of
 	// the reconcile the release performs.
@@ -651,7 +651,7 @@ func TestReleaseListAllReportsReleasesAndGaps(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("release --list --all exited %d: %s", code, stderr)
 	}
-	if !strings.Contains(stdout, "INTEGRATION") || !strings.Contains(stdout, "ACTIVE") {
+	if !strings.Contains(stdout, "JOB") || !strings.Contains(stdout, "ACTIVE") {
 		t.Fatalf("no table header:\n%s", stdout)
 	}
 
@@ -669,7 +669,7 @@ func TestReleaseListAllReportsReleasesAndGaps(t *testing.T) {
 		t.Fatalf("one does not show an active release: %q", oneLine)
 	}
 	if !strings.Contains(twoLine, "active") {
-		t.Fatalf("two is not shown as a registered integration: %q", twoLine)
+		t.Fatalf("two is not shown as a registered job: %q", twoLine)
 	}
 	if !strings.Contains(twoLine, " 0 ") {
 		t.Fatalf("two is not shown as having no release: %q", twoLine)
@@ -707,7 +707,7 @@ func TestReleaseListAllJSON(t *testing.T) {
 	}
 }
 
-// Orphan releases are the leftovers of an integration removed outside the
+// Orphan releases are the leftovers of a job removed outside the
 // registry. Pruning them is explicit, previewed by default, and refuses to act
 // until the registry is bootstrapped, because with no registry every release
 // would look like an orphan.
@@ -715,7 +715,7 @@ func TestReleasePruneRemovesOnlyUnregisteredReleases(t *testing.T) {
 	root, _ := releaseWorkspace(t, "one")
 	dataDir := filepath.Join(root, stateDirName, "data")
 
-	// Bootstrap the registry, then release the one registered integration.
+	// Bootstrap the registry, then release the one registered job.
 	if _, stderr, code := otterIn(t, root, "identity", "migrate", "--apply"); code != 0 {
 		t.Fatalf("migrate exited %d: %s", code, stderr)
 	}
@@ -752,11 +752,11 @@ func TestReleasePruneRemovesOnlyUnregisteredReleases(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, release.DirName, "ghost")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the orphan release survived: %v", err)
 	}
-	// The registered integration is untouched. Its releases are keyed by its
+	// The registered job is untouched. Its releases are keyed by its
 	// durable identity, not by its directory name.
 	keptID := idFor(t, filepath.Join(root, "one"))
 	if _, err := os.Stat(filepath.Join(dataDir, release.DirName, keptID)); err != nil {
-		t.Fatalf("prune removed a registered integration's releases: %v", err)
+		t.Fatalf("prune removed a registered job's releases: %v", err)
 	}
 }
 
@@ -782,7 +782,7 @@ func TestReleasePruneRefusesBeforeBootstrap(t *testing.T) {
 
 // A deleted identity with no releases left is a tombstone. The registry keeps
 // it so the id is never reused, but it is not a release and does not belong in
-// the release view; `otter identity list --all` is where it is shown.
+// the release view; `otter jobs --all` is where it is shown.
 func TestReleaseListAllHidesTombstonesWithoutReleases(t *testing.T) {
 	root, _ := releaseWorkspace(t, "one")
 	dataDir := filepath.Join(root, stateDirName, "data")
@@ -823,11 +823,11 @@ func TestReleaseListAllHidesTombstonesWithoutReleases(t *testing.T) {
 	}
 
 	// It is still recorded, and --all is how you see it.
-	stdout, stderr, code := otterIn(t, root, "identity", "list", "--all")
+	stdout, stderr, code := otterIn(t, root, "jobs", "--all")
 	if code != 0 {
-		t.Fatalf("identity list --all exited %d: %s", code, stderr)
+		t.Fatalf("jobs --all exited %d: %s", code, stderr)
 	}
 	if !strings.Contains(stdout, "ghost-id") || !strings.Contains(stdout, "deleted") {
-		t.Fatalf("the tombstone is not reported by identity list --all:\n%s", stdout)
+		t.Fatalf("the tombstone is not reported by jobs --all:\n%s", stdout)
 	}
 }

@@ -11,7 +11,7 @@ import (
 // to kill it if the daemon dies first.
 //
 // The daemon is the child's parent, so `kill -9`, an OOM kill or a panic would
-// otherwise leave the integration running behind a restart that has already
+// otherwise leave the job running behind a restart that has already
 // marked its run failed and retried it: the same work running twice, with its
 // external effects duplicated. Pdeathsig closes that window on the platform
 // Otter is deployed on. SIGKILL is the signal because the daemon is gone --
@@ -19,7 +19,7 @@ import (
 //
 // Two limits are deliberate:
 //
-//   - It covers the direct child only. A grandchild the integration spawns is
+//   - It covers the direct child only. A grandchild the job spawns is
 //     reparented, not signalled. The graceful paths -- timeout, cancellation
 //     and shutdown -- signal the whole group, so this only concerns abrupt
 //     daemon death.

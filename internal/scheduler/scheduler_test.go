@@ -31,7 +31,7 @@ func TestReplaceAndInspect(t *testing.T) {
 		t.Errorf("spec = %q (ok=%v), want */5 * * * *", spec, ok)
 	}
 	if _, ok := s.Spec("missing"); ok {
-		t.Error("an unregistered integration should not report a spec")
+		t.Error("an unregistered job should not report a spec")
 	}
 	if _, ok := s.Next("shopify"); ok {
 		t.Error("Next should be unknown before the scheduler starts")
@@ -60,7 +60,7 @@ func TestReplaceRejectsBadInput(t *testing.T) {
 
 // Replacing with the same expression must keep the live entry, because the
 // entry carries the already-computed next fire time. A reload passes every
-// integration through Replace, and re-adding an unchanged schedule would move
+// job through Replace, and re-adding an unchanged schedule would move
 // that time and could skip an occurrence.
 func TestReplaceKeepsAnUnchangedEntry(t *testing.T) {
 	s := New(testLogger())
@@ -122,7 +122,7 @@ func TestReplaceSwapsAChangedEntryAndUnregisterRemovesIt(t *testing.T) {
 		t.Errorf("count = %d after unregister, want 0", s.Count())
 	}
 	if _, ok := s.Spec("ticker"); ok {
-		t.Error("an unregistered integration should not report a spec")
+		t.Error("an unregistered job should not report a spec")
 	}
 
 	// Removing something that is not there is the state a reload wanted, so it

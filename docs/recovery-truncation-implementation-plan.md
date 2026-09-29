@@ -42,7 +42,7 @@ receives the 50 oldest and a nil error.
 | --- | --- | --- |
 | `recoverRuns` (`recovery.go:22-64`) | `running` | Runs beyond the first 50 stay `running` forever: no queue row, no terminal state, no retry successor |
 | `reconcileQueue` (`recovery.go:70-102`) | `queued`, `retrying` | Orphaned runs beyond the first 50 keep no queue row and are never claimed |
-| `cancelRunsOfRemoved` (`daemon.go:702-746`) | `queued`, `retrying` | After a reload removes an integration, runs beyond the first 50 are never cancelled, keep their queue rows, and later execute from a release the operator intended to retire |
+| `cancelRunsOfRemoved` (`daemon.go:702-746`) | `queued`, `retrying` | After a reload removes a job, runs beyond the first 50 are never cancelled, keep their queue rows, and later execute from a release the operator intended to retire |
 
 The third caller has a consequence the first two do not: the work is not merely
 stranded, it is **executed after the operator asked for it to stop**.
@@ -51,7 +51,7 @@ stranded, it is **executed after the operator asked for it to stop**.
 
 A workspace has 200 runs in `running` when the daemon is killed with `kill -9`.
 This is reachable whenever the queue is deep and workers are busy: a
-backlogged integration, `concurrency` raised above 1, or several integrations
+backlogged job, `concurrency` raised above 1, or several jobs
 executing at once.
 
 **Startup 1.** `recoverRuns` executes before triggers and workers start
@@ -109,7 +109,7 @@ rather than being papered over and revisited.
 Two distinct kinds of read are currently conflated:
 
 - **Bounded display reads** — "the newest 20 runs", "the last 5 for this
-  integration". A default is appropriate, and `List`'s coercion is harmless.
+  job". A default is appropriate, and `List`'s coercion is harmless.
 - **Exhaustive semantic reads** — "every run in this status", used by recovery
   and reconciliation. Completeness is the entire point; a default is a defect.
 
@@ -209,7 +209,7 @@ passes before the change, it is not exercising the defect.
 **Supporting tests.**
 
 - `cancelRunsOfRemoved` with more than 50 queued runs for a removed
-  integration: every one is `cancelled` and has no queue row.
+  job: every one is `cancelled` and has no queue row.
 - `reconcileQueue` with more than 50 orphaned `queued`/`retrying` rows: every
   one is re-enqueued exactly once.
 - Pagination boundary: a page ending mid-tie (several rows sharing

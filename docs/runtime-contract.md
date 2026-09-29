@@ -98,7 +98,7 @@ The daemon only ever produces these transitions. Anything else is a defect.
 | — | `retrying` | Successor of a failed attempt the policy allows, written with the terminal state. | `daemon/workers.go` `planRetry` / `persistOutcome` |
 | `queued` | `running` | Atomic claim, then `MarkRunning`. | `queue.Claim`, `runs.MarkRunning`, `daemon/workers.go` |
 | `queued` | `cancelled` | Cancelled before execution, an identity that no longer accepts work, or a release quarantine. | `daemon/view.go` `CancelRun`, `daemon/workers.go`, `runs.CancelPinnedToRelease` |
-| `queued` | `failed` | The integration or its bound release disappeared, or its environment could not be resolved, before the child started. | `daemon/workers.go` `executeRun` |
+| `queued` | `failed` | The job or its bound release disappeared, or its environment could not be resolved, before the child started. | `daemon/workers.go` `executeRun` |
 | `retrying` | `running` | Claim after `available_at`, then `MarkRunning`. | `queue.Claim`, `runs.MarkRunning` |
 | `retrying` | `cancelled` | Cancelled during backoff, or quarantined. | `daemon/view.go` `CancelRun`, `runs.CancelPinnedToRelease` |
 | `running` | `succeeded` | Child exited 0. | `daemon/workers.go` `classifyOutcome` |
@@ -134,8 +134,8 @@ submission returns successfully. The submitting endpoints are:
 
 | Trigger | Entry point |
 | --- | --- |
-| Manual / CLI | `POST /v1/integrations/{id}/runs` |
-| Webhook | `POST /v1/hooks/{integration}` |
+| Manual / CLI | `POST /v1/jobs/{id}/runs` |
+| Webhook | `POST /v1/hooks/{job}` |
 | Cron | the in-process scheduler, one run per occurrence |
 
 Guarantees of acceptance:
@@ -150,7 +150,7 @@ Guarantees of acceptance:
   re-enqueues every `queued`/`retrying` attempt that lost its queue row,
   exactly once. *Scenario FM-01.*
 - **Refusal is explicit and inspectable.** A refused request returns a typed
-  error — unknown or invalid integration, no active release, paused for
+  error — unknown or invalid job, no active release, paused for
   cron/webhook, or a draining daemon — rather than a silent no-op. *Scenario
   FM-01.*
 - **Every accepted attempt reaches a terminal status.** It either finishes, or
@@ -160,7 +160,7 @@ Guarantees of acceptance:
 What acceptance does **not** promise:
 
 - when execution starts (the queue is FIFO among *eligible* work, and a
-  saturated integration or worker pool defers it);
+  saturated job or worker pool defers it);
 - that the attempt succeeds;
 - that the attempt runs only once (see [§5](#5-retries-and-external-effects));
 - that two submissions are collapsed into one ([§3](#3-schedules-deliveries-and-duplicates)).
@@ -176,7 +176,7 @@ one run carrying its `scheduled_at` in the run metadata. Occurrences that fall
 during downtime are **not** replayed at startup. The scheduler's own package
 documents this as deliberate; there is no catch-up pass.
 
-An integration that needs catch-up semantics must model it as durable state —
+A job that needs catch-up semantics must model it as durable state —
 for example a `last_processed_at` checkpoint written from `ctx.state` — and
 reconcile the gap on its next run.
 
@@ -202,14 +202,14 @@ Two related consequences:
 
 *Explicit non-guarantee.*
 
-Every authenticated `POST /v1/hooks/{integration}` creates a new attempt. Otter
+Every authenticated `POST /v1/hooks/{job}` creates a new attempt. Otter
 has no delivery id, no idempotency key and no dedup table, so a redelivery — a
 retrying sender, an at-least-once queue, a human clicking twice — produces a
-second run and therefore a second execution of the integration's effects.
+second run and therefore a second execution of the job's effects.
 
 The `202` response carries the new run id so the caller can correlate its
 delivery with what ran. Deduplication is the caller's responsibility; make the
-integration's external effects idempotent
+job's external effects idempotent
 ([§5.3](#53-idempotency-guidance)) or set `concurrency: 1` and checkpoint the
 last processed delivery id in state.
 
@@ -221,9 +221,9 @@ Exactly-once is not promised anywhere in this document.
 
 ## 4. State-write concurrency
 
-`ctx.state` is a durable per-integration key/value store in SQLite, reached by
+`ctx.state` is a durable per-job key/value store in SQLite, reached by
 the child over HTTP with a short-lived per-run token. Keys are namespaced by the
-durable integration identity, so a recreated integration does not inherit a
+durable job identity, so a recreated job does not inherit a
 previous one's values.
 
 Guarantees:
@@ -250,15 +250,15 @@ fencing is not a value CAS; it only rejects a token minted for a different
 identity generation.
 
 Because of this, and because the same hazard applies to any checkpoint an
-integration keeps in state:
+job keeps in state:
 
-- **`concurrency: 1` is the safe default** for any integration whose state is
+- **`concurrency: 1` is the safe default** for any job whose state is
   read-modify-write, including counters, cursors and checkpoints. It is also the
   manifest default.
 - Safe patterns at `concurrency > 1` are limited to writes that cannot conflict:
   a disjoint key per attempt, or append-only/unique-key records. A shared
   counter or a single checkpoint key must stay at `concurrency: 1`, or be
-  protected by a lock the integration owns outside `ctx.state`.
+  protected by a lock the job owns outside `ctx.state`.
 
 The operational form of this guidance is in
 [operations.md](operations.md#capacity-and-concurrency-tuning); the manifest
@@ -329,7 +329,7 @@ chain, so a caller can see exactly which attempts ran.
 
 ### 5.3 Idempotency guidance
 
-Because exactly-once is not promised, integrations should be written so a repeat
+Because exactly-once is not promised, jobs should be written so a repeat
 is harmless:
 
 - **Upsert by a stable external id** rather than inserting. This is the same
@@ -359,7 +359,7 @@ Guarantees that hold on **every** supported platform:
 
 - Each run is its own process group, so timeout, cancellation and graceful
   shutdown signal the whole group (SIGTERM, a ~5s grace, then SIGKILL). An
-  integration that spawns its own children does not leave them behind on these
+  job that spawns its own children does not leave them behind on these
   paths. *Scenario FM-03 / FM-05.*
 - Cancellation marks the attempt `cancelled` and does not retry it. *Scenario
   FM-05.*
@@ -369,7 +369,7 @@ The one platform-specific guarantee:
 - **Linux: the direct child cannot outlive an abruptly killed daemon.** The
   child is launched with `Pdeathsig: SIGKILL`, so `kill -9`, an OOM kill or a
   panic on the daemon kills it before its retry can overlap it. This covers the
-  direct child only; a grandchild the integration spawned is reparented and is
+  direct child only; a grandchild the job spawned is reparented and is
   covered only by the graceful group paths. *Scenario FM-03.*
 
 ### 6.1 macOS abrupt-death exposure
@@ -380,7 +380,7 @@ Darwin has no parent-death signal: `syscall.SysProcAttr` has no `Pdeathsig`
 field and XNU has no equivalent of `PR_SET_PDEATHSIG`. After an abrupt daemon
 death on macOS the in-flight child is reparented and keeps running, while
 startup marks its attempt failed and retries it. The same work can therefore run
-twice, concurrently, and an integration whose external effects are not
+twice, concurrently, and a job whose external effects are not
 idempotent can be duplicated. Closing this needs a supervisor process or a
 death-watch pipe inside the child; persisting a process group is not enough,
 because a startup sweep is post-crash cleanup and cannot portably distinguish a
@@ -408,13 +408,13 @@ which is this document's. Evidence status is deliberately literal:
 
 | ID | Scenario | Evidence | Anchor tests |
 | --- | --- | --- | --- |
-| FM-01 | SIGKILL the daemon mid-run; every interrupted run reaches a terminal state or is re-enqueued; >50 at once | **Simulated** | `TestCrashRecoveryMarksRunningRunsFailedAndRetries`, `TestCrashRecoveryHandlesMoreThanOneListingPage` (240 seeded rows), `TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed`, `TestStartupFailClosedOnIncompleteRecovery`, `TestReconcileQueueReenqueuesMoreThanOneListingPage`. Admission/refusal: `TestSubmitRunRejectsUnknownAndInvalidIntegrations`, `TestUnreleasedIntegrationIsRefused`, `TestDrainingRuntimeRejectsNewRuns`, `TestPausedWebhookIsUnavailableButManualRunsStillWork`. A real SIGKILL, and a submit→close→reopen→read durability test: none. |
+| FM-01 | SIGKILL the daemon mid-run; every interrupted run reaches a terminal state or is re-enqueued; >50 at once | **Simulated** | `TestCrashRecoveryMarksRunningRunsFailedAndRetries`, `TestCrashRecoveryHandlesMoreThanOneListingPage` (240 seeded rows), `TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed`, `TestStartupFailClosedOnIncompleteRecovery`, `TestReconcileQueueReenqueuesMoreThanOneListingPage`. Admission/refusal: `TestSubmitRunRejectsUnknownAndInvalidJobs`, `TestUnreleasedJobIsRefused`, `TestDrainingRuntimeRejectsNewRuns`, `TestPausedWebhookIsUnavailableButManualRunsStillWork`. A real SIGKILL, and a submit→close→reopen→read durability test: none. |
 | FM-02 | SIGKILL the daemon between finish and retry; no terminal failure without its retry | **Simulated** | `TestFinishRunPersistsOutcomeAndSuccessorAtomically`, `TestFinishCommitFailureLeavesNoPartialOutcome`, `TestFallbackJournalIsAppliedOnRestart`, `TestUnreadableFallbackJournalDoesNotReRunRunningRuns`. Retry release/environment retention: none (`OT-011`). |
 | FM-03 | Kill the child, leave the daemon; attempt recorded, descendants do not survive | **Partial** | Linux direct child: `TestChildDiesWhenDaemonIsKilled` (real SIGKILL of a stand-in, no DB). In-process child death: `TestTimeoutMarksRunTimedOut`, `TestTimeoutIsRetriedWhenPolicyAllows`. Attempt-recorded-under-a-real-kill: none. |
 | FM-04 | Crash during retry backoff; retry claimable after `available_at`, backoff preserved | **Partial** | `TestClaimRespectsAvailableAt`, `TestRetryPolicyRetriesUntilSuccess`, `TestClaimedRunIsRequeuedWhenMarkRunningFails`. A real restart mid-backoff: none. |
 | FM-05 | Cancel a running run; process group dies, status `cancelled`, not retried | **Partial** | `TestCancelRunningRunIsNotRetried`, `TestCancelQueuedRunRemovesItFromTheQueue`. Process-group death under cancel: none. |
 | FM-06 | Two processes claim concurrently; no run executed twice | **Simulated** | `TestClaimConcurrentNoDoubleExecution` (8 goroutines, one `MaxOpenConns(1)` connection). A second process or connection: none. |
-| FM-07 | `concurrency: N` state updates match documented behavior | **Partial** | Parallelism observed: `TestConcurrencyLimitSerializesRuns`, `TestConcurrencyAboveOneRunsInParallel`, `TestWorkerPoolLimitCapsGlobalConcurrency`, `TestCapacityReserveRelease`, `TestClaimCapacityIsPerIntegration`. State: `TestConcurrentWriters` (distinct keys), `TestStateEndpoints`, `TestStateWriteRefusesAStaleGeneration`, `TestStateAPIRoundTripAndNamespacing`. A same-key read-modify-write race: none. |
+| FM-07 | `concurrency: N` state updates match documented behavior | **Partial** | Parallelism observed: `TestConcurrencyLimitSerializesRuns`, `TestConcurrencyAboveOneRunsInParallel`, `TestWorkerPoolLimitCapsGlobalConcurrency`, `TestCapacityReserveRelease`, `TestClaimCapacityIsPerJob`. State: `TestConcurrentWriters` (distinct keys), `TestStateEndpoints`, `TestStateWriteRefusesAStaleGeneration`, `TestStateAPIRoundTripAndNamespacing`. A same-key read-modify-write race: none. |
 | FM-08 | Disk exhaustion / oversized output; failures visible, bounded, recoverable | **Partial** | Bounded output/input: `TestRunTruncatesVeryLongLines` (`internal/executor`), `TestRequestBodyTooLarge`. Disk exhaustion (ENOSPC) and recovery: none. |
 | FM-09 | The attempt state machine admits only legal transitions; a terminal attempt is never resurrected | **Partial** | Classification: `TestStatusSemantics`, `TestCreateRejectsAnInvalidStatus`, `TestSetStatus`. Guards: `TestMarkRunningOnlyTransitionsClaimableRuns` (terminal and `running` not claimable), `TestFinishRecordsOutcome`, `TestFinishTxJoinsTheCallersTransaction` (non-terminal finish rejected). A terminal row being overwritten: none — the store primitive is unguarded (see the caveat in §1). |
 

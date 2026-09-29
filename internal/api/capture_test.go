@@ -35,7 +35,7 @@ func newFakeCapture() *fakeCapture {
 	}
 }
 
-func (c *fakeCapture) begin(runID, integrationID string, policy inspection.Policy) {
+func (c *fakeCapture) begin(runID, jobID string, policy inspection.Policy) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// The submitted policy is remembered so a test can assert what the
@@ -44,7 +44,7 @@ func (c *fakeCapture) begin(runID, integrationID string, policy inspection.Polic
 	c.summaries[runID] = &inspection.RunCapture{
 		RunID:         runID,
 		State:         inspection.CapturePending,
-		IntegrationID: integrationID,
+		JobID:         jobID,
 		Policy:        policy,
 		SchemaVersion: inspection.SchemaVersion,
 		PolicyVersion: inspection.PolicyVersion,
@@ -93,11 +93,11 @@ func (c *fakeCapture) ingest(runID string, batch inspection.EventBatch) (*inspec
 		// Merge the event into the exchange rather than replacing it, so the
 		// started/response/completed lifecycle behaves as the real store does.
 		exchange := inspection.Exchange{
-			RunID:         runID,
-			RequestID:     event.RequestID,
-			IntegrationID: summary.IntegrationID,
-			OccurredAt:    event.OccurredAt,
-			Phase:         inspection.PhaseInProgress,
+			RunID:      runID,
+			RequestID:  event.RequestID,
+			JobID:      summary.JobID,
+			OccurredAt: event.OccurredAt,
+			Phase:      inspection.PhaseInProgress,
 		}
 		if index >= 0 {
 			exchange = existing[index]
@@ -269,8 +269,8 @@ func (f *fakeBackend) hasRun(runID string) bool {
 
 // SubmitRunWithOptions records the submission option and creates the per-run
 // capture summary, exactly as the daemon does at submission time.
-func (f *fakeBackend) SubmitRunWithOptions(ctx context.Context, integrationID string, payload TriggerPayload, opts SubmitRunOptions) (string, error) {
-	runID, err := f.SubmitRun(ctx, integrationID, payload)
+func (f *fakeBackend) SubmitRunWithOptions(ctx context.Context, jobID string, payload TriggerPayload, opts SubmitRunOptions) (string, error) {
+	runID, err := f.SubmitRun(ctx, jobID, payload)
 	if err != nil {
 		return "", err
 	}
@@ -278,7 +278,7 @@ func (f *fakeBackend) SubmitRunWithOptions(ctx context.Context, integrationID st
 	if !policy.Valid() {
 		policy = inspection.DefaultPolicy
 	}
-	f.capture.begin(runID, integrationID, policy)
+	f.capture.begin(runID, jobID, policy)
 	return runID, nil
 }
 
@@ -323,10 +323,10 @@ func captureStart(requestID string, seq int64) inspection.RequestEvent {
 	}
 }
 
-func seedCapturedRun(t *testing.T, b *fakeBackend, runID, integrationID string, policy inspection.Policy) {
+func seedCapturedRun(t *testing.T, b *fakeBackend, runID, jobID string, policy inspection.Policy) {
 	t.Helper()
-	b.addRun(&runs.Run{ID: runID, IntegrationID: integrationID, Status: runs.StatusRunning})
-	b.capture.begin(runID, integrationID, policy)
+	b.addRun(&runs.Run{ID: runID, JobID: jobID, Status: runs.StatusRunning})
+	b.capture.begin(runID, jobID, policy)
 }
 
 // --------------------------------------------------------------------- tests
@@ -335,7 +335,7 @@ func TestCaptureIngestIsRunScoped(t *testing.T) {
 	b := newFakeBackend()
 	seedCapturedRun(t, b, "run-A", "int-A", inspection.PolicyMetadata)
 	seedCapturedRun(t, b, "run-B", "int-A", inspection.PolicyMetadata)
-	b.runTokens["token-A"] = RunToken{RunID: "run-A", IntegrationID: "int-A"}
+	b.runTokens["token-A"] = RunToken{RunID: "run-A", JobID: "int-A"}
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
@@ -396,7 +396,7 @@ func TestCaptureIngestValidatesTheBatch(t *testing.T) {
 func TestCaptureIngestOnUnconfiguredRunIsAConflict(t *testing.T) {
 	b := newFakeBackend()
 	// The run exists but was submitted before capture, so there is no summary.
-	b.addRun(&runs.Run{ID: "run-old", IntegrationID: "int-A", Status: runs.StatusSucceeded})
+	b.addRun(&runs.Run{ID: "run-old", JobID: "int-A", Status: runs.StatusSucceeded})
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
@@ -408,7 +408,7 @@ func TestCaptureIngestOnUnconfiguredRunIsAConflict(t *testing.T) {
 func TestCaptureReadsRequireOperatorAuthorization(t *testing.T) {
 	b := newFakeBackend()
 	seedCapturedRun(t, b, "run-A", "int-A", inspection.PolicyMetadata)
-	b.runTokens["token-A"] = RunToken{RunID: "run-A", IntegrationID: "int-A"}
+	b.runTokens["token-A"] = RunToken{RunID: "run-A", JobID: "int-A"}
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
@@ -497,7 +497,7 @@ func TestCaptureListAndDetail(t *testing.T) {
 func TestCaptureLookupByRequestIDAlone(t *testing.T) {
 	b := newFakeBackend()
 	seedCapturedRun(t, b, "run-A", "int-A", inspection.PolicyMetadata)
-	b.runTokens["token-A"] = RunToken{RunID: "run-A", IntegrationID: "int-A"}
+	b.runTokens["token-A"] = RunToken{RunID: "run-A", JobID: "int-A"}
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
@@ -561,7 +561,7 @@ func TestCaptureLookupByRequestIDAmbiguousAcrossRuns(t *testing.T) {
 func TestCaptureUnavailableIsReportedNotImpliedEmpty(t *testing.T) {
 	b := newFakeBackend()
 	// A historical run: it exists but predates capture entirely.
-	b.addRun(&runs.Run{ID: "run-old", IntegrationID: "int-A", Status: runs.StatusSucceeded})
+	b.addRun(&runs.Run{ID: "run-old", JobID: "int-A", Status: runs.StatusSucceeded})
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
@@ -624,12 +624,12 @@ func TestCaptureListPaginates(t *testing.T) {
 
 func TestSubmitRunCaptureOption(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
 	// The default for a normal run is metadata.
-	r := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs",
+	r := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs",
 		[]byte(`{"customer_id":123}`), adminHeaders())
 	wantStatus(t, r, http.StatusAccepted)
 	if got := b.submittedPolicy(); got != inspection.DefaultPolicy {
@@ -637,7 +637,7 @@ func TestSubmitRunCaptureOption(t *testing.T) {
 	}
 
 	// An explicit policy is resolved and recorded.
-	r = do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs?capture=full", nil, adminHeaders())
+	r = do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs?capture=full", nil, adminHeaders())
 	wantStatus(t, r, http.StatusAccepted)
 	if got := b.submittedPolicy(); got != inspection.PolicyFull {
 		t.Errorf("policy = %q, want full", got)
@@ -645,7 +645,7 @@ func TestSubmitRunCaptureOption(t *testing.T) {
 
 	// An unknown policy is a client error and queues nothing.
 	queued := len(b.submitted)
-	r = do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs?capture=everything", nil, adminHeaders())
+	r = do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs?capture=everything", nil, adminHeaders())
 	wantStatus(t, r, http.StatusBadRequest)
 	if len(b.submitted) != queued {
 		t.Errorf("an invalid policy must not queue a run")

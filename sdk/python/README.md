@@ -1,10 +1,10 @@
 # Otter Python SDK
 
 A thin, **standard-library-only** client for writing [Otter](../../README.md)
-integrations in Python 3.8+.
+jobs in Python 3.8+.
 
-The `otterd` daemon runs each integration as a child process
-(`python3 main.py` inside the integration directory) and exposes a small local
+The `otterd` daemon runs each job as a child process
+(`python3 main.py` inside the job directory) and exposes a small local
 HTTP API. The SDK wraps that API. It is deliberately thin: **the daemon is the
 single source of truth** for state, run metadata and logs — nothing is cached
 except the run metadata the SDK reads lazily for the trigger payload.
@@ -33,16 +33,16 @@ The daemon sets these variables for every child process:
 
 | Variable                 | Meaning                                              |
 | ------------------------ | ---------------------------------------------------- |
-| `OTTER_INTEGRATION_ID`   | Durable integration identity; namespaces state.       |
-| `OTTER_INTEGRATION_NAME`  | Manifest label, e.g. `counter`; for logs and messages. |
+| `OTTER_JOB_ID`   | Durable job identity; namespaces state.       |
+| `OTTER_JOB_NAME`  | Manifest label, e.g. `counter`; for logs and messages. |
 | `OTTER_RUN_ID`           | UUID of the current run.                             |
 | `OTTER_API_URL`          | Base URL of the daemon API, e.g. `http://127.0.0.1:7337`. |
-| `OTTER_STATE_TOKEN`      | Per-run bearer token, scoped to this run/integration. |
+| `OTTER_STATE_TOKEN`      | Per-run bearer token, scoped to this run/job. |
 | `OTTER_TRIGGER_TYPE`     | `manual`, `cron` or `webhook`.                       |
-| `OTTER_INTEGRATION_DIR`  | Absolute path of the integration directory.          |
+| `OTTER_JOB_DIR`  | Absolute path of the job directory.          |
 | `OTTER_CAPTURE_POLICY`   | `off`, `metadata` or `full`; unset means capture is off. |
 
-The child's working directory is the integration directory. Ports are never
+The child's working directory is the job directory. Ports are never
 hardcoded — always read `OTTER_API_URL`.
 
 ## Quick start
@@ -96,16 +96,16 @@ from otter import Context, run, OtterError
 ```python
 ctx = Context.from_environment()   # reads the OTTER_* variables
 ctx.run_id                         # str
-ctx.integration_id                 # str
+ctx.job_id                 # str
 ctx.trigger                        # Trigger
 ctx.state                          # State
 ctx.log                            # Logger
 ctx.api_url                        # str
-ctx.integration_dir                # str (absolute integration directory)
+ctx.job_dir                # str (absolute job directory)
 ```
 
 `Context.from_environment()` raises `OtterError` when `OTTER_API_URL`,
-`OTTER_RUN_ID` or `OTTER_INTEGRATION_ID` is missing.
+`OTTER_RUN_ID` or `OTTER_JOB_ID` is missing.
 
 ### `ctx.state` — daemon-owned key/value state
 
@@ -113,7 +113,7 @@ ctx.integration_dir                # str (absolute integration directory)
 ctx.state.get(key, default=None)   # JSON value, or default on HTTP 404
 ctx.state.set(key, value)          # persist any JSON-serializable value
 ctx.state.delete(key)              # True if it existed, False if it did not
-ctx.state.all()                    # {key: value} for the whole integration
+ctx.state.all()                    # {key: value} for the whole job
 ```
 
 * Keys must match `[A-Za-z0-9._:-]{1,128}`; other keys raise `OtterError`.
@@ -136,7 +136,7 @@ Each call synchronously `POST`s to `/v1/runs/{run_id}/logs` with
 `stream`/`message`/`fields`, so the severity travels inside `fields` as
 `"level"`. Fields are merged with (and cannot override) the level.
 
-Logging never raises and never crashes an integration. A field value JSON
+Logging never raises and never crashes a job. A field value JSON
 cannot represent (`pathlib.Path`, `datetime`, an arbitrary object) is rendered
 with `str()` rather than costing the record; state writes stay strict, so an
 unroundtrippable state value is still an error.
@@ -194,7 +194,7 @@ There are no third-party dependencies anywhere in the SDK.
 ## HTTP capture
 
 When the daemon sets `OTTER_CAPTURE_POLICY` to `metadata` or `full`, the SDK
-installs process-local instrumentation before integration code is imported, so
+installs process-local instrumentation before job code is imported, so
 requests made at import time are covered too. With any other value — or no value
 at all — capture is off and nothing is installed.
 
@@ -204,8 +204,8 @@ importable in the run's interpreter; an optional client that is not installed is
 never imported and never claimed. Each run reports the adapters it actually
 installed, which is what `otter requests` shows as coverage.
 
-Capture is diagnostic and never changes integration behaviour: it does not alter
-a request's destination, suppress a write, or change an integration's return
+Capture is diagnostic and never changes job behaviour: it does not alter
+a request's destination, suppress a write, or change a job's return
 values, exceptions or exit status. A failure to record is dropped rather than
 raised. `metadata` records request summaries; `full` also records permitted
 headers and bounded, sanitized JSON bodies. Redaction runs before delivery.
@@ -234,7 +234,7 @@ real subprocess.
 ## Examples
 
 The runtime ships no example catalog: `otter init` generates a working
-integration that uses this SDK, and `make smoke` in the runtime repository
+job that uses this SDK, and `make smoke` in the runtime repository
 exercises it end to end. [docs/examples.md](../../docs/examples.md) covers the
 manifest patterns — manual, cron-scheduled and webhook-triggered — that an
-integration is built from.
+job is built from.

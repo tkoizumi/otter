@@ -15,15 +15,15 @@ import (
 
 func newSeededBackend() *fakeBackend {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "wh-token")
+	b.addJob("int-A", true, "wh-token")
 	now := time.Now().UTC()
 	b.addRun(&runs.Run{
-		ID:            "run-1",
-		IntegrationID: "int-A",
-		TriggerType:   TriggerManual,
-		Status:        runs.StatusSucceeded,
-		Attempt:       1,
-		CreatedAt:     now,
+		ID:          "run-1",
+		JobID:       "int-A",
+		TriggerType: TriggerManual,
+		Status:      runs.StatusSucceeded,
+		Attempt:     1,
+		CreatedAt:   now,
 	})
 	b.addLogs("run-1",
 		runs.LogEntry{ID: 1, RunID: "run-1", Timestamp: now, Stream: runs.StreamOtter, Message: "first"},
@@ -31,7 +31,7 @@ func newSeededBackend() *fakeBackend {
 	)
 	b.seedState("int-A", "keep", `{"v":1}`)
 	b.seedState("int-A", "drop", `"bye"`)
-	b.runTokens["run-token"] = RunToken{RunID: "run-1", IntegrationID: "int-A"}
+	b.runTokens["run-token"] = RunToken{RunID: "run-1", JobID: "int-A"}
 	return b
 }
 
@@ -70,10 +70,10 @@ func TestClientRoundTrip(t *testing.T) {
 		}
 	})
 
-	t.Run("list integrations", func(t *testing.T) {
-		views, err := c.ListIntegrations(ctx)
+	t.Run("list jobs", func(t *testing.T) {
+		views, err := c.ListJobs(ctx)
 		if err != nil {
-			t.Fatalf("ListIntegrations: %v", err)
+			t.Fatalf("ListJobs: %v", err)
 		}
 		if len(views) != 1 || views[0].ID != "int-A" {
 			t.Fatalf("views = %+v", views)
@@ -83,10 +83,10 @@ func TestClientRoundTrip(t *testing.T) {
 		}
 	})
 
-	t.Run("get integration", func(t *testing.T) {
-		view, err := c.GetIntegration(ctx, "int-A")
+	t.Run("get job", func(t *testing.T) {
+		view, err := c.GetJob(ctx, "int-A")
 		if err != nil {
-			t.Fatalf("GetIntegration: %v", err)
+			t.Fatalf("GetJob: %v", err)
 		}
 		if view.ID != "int-A" || view.Triggers.WebhookToken != "wh-token" {
 			t.Fatalf("view = %+v", view)
@@ -105,7 +105,7 @@ func TestClientRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetRun(%s): %v", runID, err)
 		}
-		if view.ID != runID || view.IntegrationID != "int-A" {
+		if view.ID != runID || view.JobID != "int-A" {
 			t.Fatalf("run = %+v", view.Run)
 		}
 	})
@@ -127,7 +127,7 @@ func TestClientRoundTrip(t *testing.T) {
 	})
 
 	t.Run("list runs", func(t *testing.T) {
-		list, err := c.ListRuns(ctx, RunsQuery{IntegrationID: "int-A", Status: string(runs.StatusSucceeded), Limit: 10})
+		list, err := c.ListRuns(ctx, RunsQuery{JobID: "int-A", Status: string(runs.StatusSucceeded), Limit: 10})
 		if err != nil {
 			t.Fatalf("ListRuns: %v", err)
 		}
@@ -196,7 +196,7 @@ func TestClientRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SetState: %v", err)
 		}
-		if out.IntegrationID != "int-A" || out.Key != "new" || string(out.Value) != `[1,2,3]` {
+		if out.JobID != "int-A" || out.Key != "new" || string(out.Value) != `[1,2,3]` {
 			t.Fatalf("response = %+v", out)
 		}
 		if out.UpdatedAt.IsZero() {
@@ -234,10 +234,10 @@ func TestClientErrorMapping(t *testing.T) {
 	admin := NewClient(srv.URL, "admin-token")
 
 	t.Run("404 is not found", func(t *testing.T) {
-		_, err := admin.GetIntegration(ctx, "ghost")
+		_, err := admin.GetJob(ctx, "ghost")
 		assertAPIError(t, err, http.StatusNotFound)
 		if !isNotFound(err) {
-			t.Fatalf("GetIntegration error = %v, want IsNotFound()", err)
+			t.Fatalf("GetJob error = %v, want IsNotFound()", err)
 		}
 
 		if _, err := admin.GetRun(ctx, "ghost"); !isNotFound(err) {
@@ -250,10 +250,10 @@ func TestClientErrorMapping(t *testing.T) {
 
 	t.Run("401 without token", func(t *testing.T) {
 		anon := NewClient(srv.URL, "")
-		_, err := anon.ListIntegrations(ctx)
+		_, err := anon.ListJobs(ctx)
 		assertAPIError(t, err, http.StatusUnauthorized)
 		if !isUnauthorized(err) {
-			t.Fatalf("ListIntegrations error = %v, want IsUnauthorized()", err)
+			t.Fatalf("ListJobs error = %v, want IsUnauthorized()", err)
 		}
 	})
 
@@ -263,13 +263,13 @@ func TestClientErrorMapping(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Health: %v", err)
 		}
-		_, err = wrong.GetIntegration(ctx, "int-A")
+		_, err = wrong.GetJob(ctx, "int-A")
 		assertAPIError(t, err, http.StatusUnauthorized)
 	})
 
 	t.Run("403 for run token on admin route", func(t *testing.T) {
 		runScoped := NewClient(srv.URL, "run-token")
-		_, err := runScoped.ListIntegrations(ctx)
+		_, err := runScoped.ListJobs(ctx)
 		assertAPIError(t, err, http.StatusForbidden)
 		if !isUnauthorized(err) {
 			t.Fatalf("IsUnauthorized() should cover 403")

@@ -42,9 +42,9 @@ type Builder interface {
 // not compiled from source.
 //
 // It exists because a deploy target is a project, not necessarily a Go
-// checkout: a workspace that holds only Python integrations has no cmd/otterd
+// checkout: a workspace that holds only Python jobs has no cmd/otterd
 // to build, and requiring a copy of the runtime repository to deploy would make
-// the split between the runtime and its integrations a fiction.
+// the split between the runtime and its jobs a fiction.
 type BinarySource interface {
 	// Binaries puts otterd and otter for goos/goarch into binDir.
 	Binaries(ctx context.Context, goos, goarch, binDir string) error
@@ -203,34 +203,34 @@ func writerOr(w io.Writer, fallback io.Writer) io.Writer {
 	return w
 }
 
-// Stage copies the runtime tree into outDir: every integration and the shared
-// trees those integrations declare, and nothing else.
+// Stage copies the runtime tree into outDir: every job and the shared
+// trees those jobs declare, and nothing else.
 //
-// The result is the layout the host releases from. An integration lands at
-// <remote>/integrations/<name>, and a shared tree lands at the relative depth
+// The result is the layout the host releases from. A job lands at
+// <remote>/jobs/<name>, and a shared tree lands at the relative depth
 // its manifest declares, measured from that same directory. A manifest saying
-// `../lib/python` therefore puts the tree at <remote>/integrations/lib/python
+// `../lib/python` therefore puts the tree at <remote>/jobs/lib/python
 // and one saying `../../lib/python` puts it at <remote>/lib/python. Either way
 // the declaration resolves verbatim on the host, because the placement rule
 // preserves the geometry rather than hardcoding one repository's shape.
 //
 // What is left out matters as much as what is included. Tests are not needed
-// to run an integration, and bytecode caches must never be shipped: a stale
+// to run a job, and bytecode caches must never be shipped: a stale
 // .pyc compiled for a different Python would shadow the real module.
 func (b *LocalBuilder) Stage(cfg Config, outDir string) error {
 	placed := map[string]string{}
-	for _, integ := range cfg.Integrations {
-		dst := filepath.Join(outDir, LocalIntegrationsDir, integ.Name)
+	for _, integ := range cfg.Jobs {
+		dst := filepath.Join(outDir, cfg.Target.jobsLayout(), integ.Name)
 		if err := copyTree(integ.Dir, dst, stageSkip); err != nil {
 			return err
 		}
 
 		for _, tree := range integ.Trees {
-			rel, err := TreePlacement(integ, tree)
+			rel, err := treePlacement(cfg.Target.jobsLayout(), integ, tree)
 			if err != nil {
 				return err
 			}
-			// Two integrations may legitimately share one library. Two
+			// Two jobs may legitimately share one library. Two
 			// different libraries claiming one path is a collision the host
 			// could not resolve, so it is refused here while both sources are
 			// still known.
@@ -250,22 +250,26 @@ func (b *LocalBuilder) Stage(cfg Config, outDir string) error {
 }
 
 // TreePlacement is where one shared tree lands, relative to the remote install
-// root, for one integration.
+// root, for one job.
 //
 // It is the same rule release.Plan applies on the host: preserve the relative
-// geometry between the integration and the code it imports, because that is
-// what a relative python.path depends on. The integration is placed at
-// integrations/<name>, so a declaration of ../lib/python becomes
-// integrations/lib/python while ../../lib/python becomes lib/python.
-func TreePlacement(integ Integration, tree string) (string, error) {
+// geometry between the job and the code it imports, because that is
+// what a relative python.path depends on. The job is placed at
+// jobs/<name>, so a declaration of ../lib/python becomes
+// jobs/lib/python while ../../lib/python becomes lib/python.
+func TreePlacement(integ Job, tree string) (string, error) {
+	return treePlacement(LocalJobsDir, integ, tree)
+}
+
+func treePlacement(layout string, integ Job, tree string) (string, error) {
 	rel, err := filepath.Rel(integ.Dir, tree)
 	if err != nil {
 		return "", fmt.Errorf("place shared tree %s relative to %s: %w", tree, integ.Dir, err)
 	}
-	placed := filepath.ToSlash(filepath.Join(LocalIntegrationsDir, integ.Name, rel))
+	placed := filepath.ToSlash(filepath.Join(layout, integ.Name, rel))
 	if placed == "." || placed == ".." || strings.HasPrefix(placed, "../") || strings.HasPrefix(placed, "/") {
 		return "", fmt.Errorf(
-			"shared tree %s cannot be placed from integration %s: %s escapes the install root",
+			"shared tree %s cannot be placed from job %s: %s escapes the install root",
 			tree, integ.Name, filepath.ToSlash(rel))
 	}
 	return placed, nil

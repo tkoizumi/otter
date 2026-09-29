@@ -1,7 +1,7 @@
 # Otter — contributor build and packaging tasks.
 #
 # This repository is the Otter runtime: the daemon, the CLI, the embedded Python
-# SDK and their contracts. It is not an integration project.
+# SDK and their contracts. It is not a job project.
 #
 # To *use* Otter, install it and work in your own directory — `otter init`,
 # `otter start`, `otter run`. To work *on* Otter, these targets are the
@@ -57,7 +57,7 @@ help:
 	@echo ""
 	@grep -hE '^## ' $(MAKEFILE_LIST) | sed -e 's/^## //' | awk -F': ' '{ printf "  %-18s %s\n", $$1, $$2 }'
 	@echo ""
-	@echo "This checkout is the runtime, not an integration project. Using Otter"
+	@echo "This checkout is the runtime, not a job project. Using Otter"
 	@echo "means installing it and running it in your own directory: otter init,"
 	@echo "otter release, otter start, otter run, otter status, otter stop."
 

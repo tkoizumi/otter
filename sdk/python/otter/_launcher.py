@@ -1,4 +1,4 @@
-"""Execute an integration module, then its optional @run entrypoint."""
+"""Execute a job module, then its optional @run entrypoint."""
 
 import runpy
 import sys
@@ -13,13 +13,13 @@ def main() -> None:
     entrypoint = sys.argv[1]
     sys.argv = sys.argv[1:]
 
-    # Instrument before the integration is imported, so a request made at module
+    # Instrument before the job is imported, so a request made at module
     # level is covered as well as one made inside the entrypoint.
     _capture.install_from_environment()
     try:
         runpy.run_path(entrypoint, run_name="__main__")
     except BaseException:
-        # A failure in module-level code, or in an integration that uses
+        # A failure in module-level code, or in a job that uses
         # Context directly, never reaches the runner's handler. Capture is
         # flushed here before the traceback propagates and the interpreter
         # exits, so the recording is not silently left pending.

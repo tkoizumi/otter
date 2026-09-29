@@ -82,7 +82,7 @@ class _CaptureSink(BaseHTTPRequestHandler):
 
 
 class _OriginHandler(BaseHTTPRequestHandler):
-    """A stand-in for the API an integration calls."""
+    """A stand-in for the API a job calls."""
 
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/redirect"):
@@ -252,7 +252,7 @@ class RedactionTests(CaptureTestCase):
 
 class InstrumentationTests(CaptureTestCase):
     def test_get_is_captured_and_the_caller_result_is_unchanged(self):
-        # Without capture: the baseline the integration should keep seeing.
+        # Without capture: the baseline the job should keep seeing.
         with urllib.request.urlopen(self.origin_url + "/json") as response:
             baseline = (response.status, json.loads(response.read().decode("utf-8")))
 
@@ -511,7 +511,7 @@ class InstrumentationTests(CaptureTestCase):
         self.assertIsNotNone(started, "a custom opener using the base implementation must be covered")
         self.assertEqual(self.origin_url + "/json", started["url"])
 
-    def test_delivery_outage_does_not_fail_the_integration(self):
+    def test_delivery_outage_does_not_fail_the_job(self):
         # Nothing is listening on this port, so capture cannot be delivered.
         capture = _capture.Capture(
             run_id="run-1", api_url="http://127.0.0.1:1", token="tok", policy="full"
@@ -520,7 +520,7 @@ class InstrumentationTests(CaptureTestCase):
         try:
             with urllib.request.urlopen(self.origin_url + "/json") as response:
                 body = response.read()
-            self.assertTrue(body, "the integration's own request must still succeed")
+            self.assertTrue(body, "the job's own request must still succeed")
         finally:
             capture.shutdown()
 

@@ -29,7 +29,7 @@ func inWorkspace(t *testing.T, dir string, fn func()) {
 func TestDaemonCommandsRefuseOutsideAWorkspace(t *testing.T) {
 	dir := t.TempDir() // no .otter, no .git, no go.mod
 
-	for _, command := range []string{"status", "integrations", "runs", "run", "logs", "state", "inspect"} {
+	for _, command := range []string{"status", "jobs", "runs", "run", "logs", "state", "inspect"} {
 		inWorkspace(t, dir, func() {
 			t.Setenv("OTTER_API_URL", "")
 			var out, errOut bytes.Buffer
@@ -268,34 +268,34 @@ func TestWorkspaceDataRefusesOutsideAWorkspaceWithoutAFlag(t *testing.T) {
 	})
 }
 
-// The integrations root defaults to the workspace, so a local command works
-// wherever an integration sits under it, and refuses outside one rather than
-// scanning a relative ./integrations that probably is not there.
-func TestIntegrationsRootDefaultsToTheWorkspace(t *testing.T) {
+// The jobs root defaults to the workspace, so a local command works
+// wherever a job sits under it, and refuses outside one rather than
+// scanning a relative ./jobs that probably is not there.
+func TestJobsRootDefaultsToTheWorkspace(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, stateDirName), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	inWorkspace(t, filepath.Join(root, "group"), func() {
 		var errOut bytes.Buffer
-		got, code := resolveIntegrationsRoot(&errOut, config.DefaultIntegrations, false)
+		got, code := resolveJobsRoot(&errOut, config.DefaultJobs, false)
 		if code != 0 {
 			t.Fatalf("exited %d: %s", code, errOut.String())
 		}
 		if got != root {
-			t.Errorf("integrations root = %q, want the workspace root %q", got, root)
+			t.Errorf("jobs root = %q, want the workspace root %q", got, root)
 		}
 		// An explicit flag is still honoured: deploy names a path on a host
 		// that has no workspace marker of its own.
-		if got, code := resolveIntegrationsRoot(&errOut, "/srv/otter/integrations", true); code != 0 || got != "/srv/otter/integrations" {
-			t.Errorf("explicit --integrations = %q (code %d), want it honoured", got, code)
+		if got, code := resolveJobsRoot(&errOut, "/srv/otter/jobs", true); code != 0 || got != "/srv/otter/jobs" {
+			t.Errorf("explicit --jobs = %q (code %d), want it honoured", got, code)
 		}
 	})
 
 	outside := t.TempDir()
 	inWorkspace(t, outside, func() {
 		var errOut bytes.Buffer
-		if _, code := resolveIntegrationsRoot(&errOut, config.DefaultIntegrations, false); code == 0 {
+		if _, code := resolveJobsRoot(&errOut, config.DefaultJobs, false); code == 0 {
 			t.Fatal("a workspace-scoped command was allowed to guess outside a workspace")
 		}
 		if !strings.Contains(errOut.String(), "no workspace here") {

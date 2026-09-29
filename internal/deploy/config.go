@@ -22,20 +22,20 @@ type Config struct {
 
 	// ProjectRoot is the workspace being deployed: the nearest ancestor of the
 	// working directory carrying .otter, .git or go.mod. It is scanned
-	// recursively for integration manifests, and it is where otter.deploy.yaml,
+	// recursively for job manifests, and it is where otter.deploy.yaml,
 	// otter.env and .otter/ live.
 	//
 	// It is a project, not necessarily a Go checkout. A workspace that holds
-	// only Python integrations deploys from released binaries; one that
+	// only Python jobs deploys from released binaries; one that
 	// contains cmd/otterd is compiled from source.
 	ProjectRoot string
 
-	// Integrations is the ordered list of integrations to ship, each with the
+	// Jobs is the ordered list of jobs to ship, each with the
 	// local directory it lives in and the shared trees its manifest declares.
-	Integrations []Integration
+	Jobs []Job
 
 	// SharedEnv is the resolved environment file holding credentials that every
-	// integration may use. Empty means the checkout has none; the deploy
+	// job may use. Empty means the checkout has none; the deploy
 	// proceeds anyway, because the daemon reports a missing secret far more
 	// clearly than this command can.
 	SharedEnv string
@@ -48,7 +48,7 @@ type Config struct {
 	// it rebuilds environments.
 	UVVersion string
 
-	// Limited reports that the deploy covers a subset of the integrations, so
+	// Limited reports that the deploy covers a subset of the jobs, so
 	// the push must protect the ones it does not carry.
 	Limited bool
 
@@ -64,19 +64,19 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Integration is one integration to deploy, resolved from the workspace.
+// Job is one job to deploy, resolved from the workspace.
 //
 // It carries the two things staging needs and that a bare name cannot express:
-// where the integration lives locally, and which shared trees its manifest
-// imports. Deploy no longer assumes a single top-level integrations/ directory,
-// because a workspace is free to group integrations however it likes --
-// shopify_integrations/customer_sync is as valid as integrations/customer_sync.
-type Integration struct {
-	// Name is the directory name the integration is deployed under, inside
-	// <remote>/integrations. It is what the release command names.
+// where the job lives locally, and which shared trees its manifest
+// imports. Deploy no longer assumes a single top-level jobs/ directory,
+// because a workspace is free to group jobs however it likes --
+// shopify_jobs/customer_sync is as valid as jobs/customer_sync.
+type Job struct {
+	// Name is the directory name the job is deployed under, inside
+	// <remote>/jobs. It is what the release command names.
 	Name string
 	// Label is the manifest's own `name:`, which is what the runtime registers
-	// and what an operator sees in `otter integrations`. It may differ from the
+	// and what an operator sees in `otter jobs`. It may differ from the
 	// directory name.
 	Label string
 	// Dir is the absolute local directory holding the manifest and its code.
@@ -86,11 +86,11 @@ type Integration struct {
 	Trees []string
 }
 
-// IntegrationNames returns the deploy names in order, which is what the plan,
+// JobNames returns the deploy names in order, which is what the plan,
 // the release command and the recorded result all speak in.
-func (c Config) IntegrationNames() []string {
-	names := make([]string, 0, len(c.Integrations))
-	for _, integ := range c.Integrations {
+func (c Config) JobNames() []string {
+	names := make([]string, 0, len(c.Jobs))
+	for _, integ := range c.Jobs {
 		names = append(names, integ.Name)
 	}
 	return names
@@ -105,9 +105,9 @@ type Flags struct {
 	// DaemonEnv overrides the daemon environment file. Empty uses
 	// <repo>/otter.daemon.env.
 	DaemonEnv string
-	// Integration limits the deploy to one integration. Empty deploys all of
+	// Job limits the deploy to one job. Empty deploys all of
 	// them, which is the historical behavior.
-	Integration string
+	Job string
 	// Workspace names the workspace on the host to deploy into. Empty uses the
 	// project's own: the recorded one, or a new workspace named after it.
 	Workspace string
@@ -140,8 +140,8 @@ const ConfigFileName = "otter.deploy.yaml"
 
 // DaemonEnvFileName is the daemon-wide environment file at the repository
 // root. It is not committed, because a notification URL or an API token is a
-// credential, and it is not per-integration, because a setting such as the
-// notification endpoint belongs to the daemon rather than to one integration.
+// credential, and it is not per-job, because a setting such as the
+// notification endpoint belongs to the daemon rather than to one job.
 //
 // The name is deliberately visible rather than dotted. It is the primary
 // configuration surface an operator has to create and edit, so hiding it
@@ -151,17 +151,17 @@ const ConfigFileName = "otter.deploy.yaml"
 // actually keeps the credential out of git; the dot added nothing to that.
 //
 // Locally `make sync-up` sources it. At deploy it becomes
-// /etc/otter/daemon.env, which the unit loads alongside each integration's
+// /etc/otter/daemon.env, which the unit loads alongside each job's
 // secrets file, so one file has one meaning in both places.
 const DaemonEnvFileName = "otter.daemon.env"
 
 // SharedEnvFileName is the credentials file at the repository root, shared by
-// every integration.
+// every job.
 //
-// It is deliberately not per-integration. The daemon's environment is a single
+// It is deliberately not per-job. The daemon's environment is a single
 // process environment -- every EnvironmentFile= is merged into it -- and an
-// integration receives only the keys its own manifest declares. So a
-// per-integration file isolated nothing; it just turned one rotated credential
+// job receives only the keys its own manifest declares. So a
+// per-job file isolated nothing; it just turned one rotated credential
 // into an N-file edit and let those copies drift apart.
 //
 // Named without a leading dot for the same reason as otter.daemon.env: it is
@@ -169,9 +169,9 @@ const DaemonEnvFileName = "otter.daemon.env"
 // what actually keeps it out of git.
 const SharedEnvFileName = "otter.env"
 
-// DaemonEnvIntegrationName is reserved: an integration of this name would
+// DaemonEnvJobName is reserved: a job of this name would
 // write to the same remote path as the daemon-wide environment file.
-const DaemonEnvIntegrationName = "daemon"
+const DaemonEnvJobName = "daemon"
 
 // deployFile is the on-disk shape of otter.deploy.yaml.
 type deployFile struct {
@@ -207,9 +207,9 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.Target.Platform, "platform", "", "remote GOOS/GOARCH; detected over SSH when empty")
 	fs.BoolVar(&f.Target.RotateAPIToken, "rotate-token", false, "generate and install a fresh API token")
 	fs.StringVar(&f.Target.APIToken, "api-token", "", "use this API token instead of the stored or remote one")
-	fs.StringVar(&f.EnvFile, "env-file", "", "shared credentials file for every integration (default "+SharedEnvFileName+")")
+	fs.StringVar(&f.EnvFile, "env-file", "", "shared credentials file for every job (default "+SharedEnvFileName+")")
 	fs.StringVar(&f.DaemonEnv, "daemon-env", "", "daemon-wide environment file (default "+DaemonEnvFileName+")")
-	fs.StringVar(&f.Integration, "integration", "", "deploy only this integration, leaving the others untouched")
+	fs.StringVar(&f.Job, "job", "", "deploy only this job, leaving the others untouched")
 	fs.StringVar(&f.ConfigFor, "config", "", "deploy config file (default "+ConfigFileName+")")
 	fs.StringVar(&f.UV, "uv", "", "uv executable on the host for Python preparation (default the vendored copy)")
 	fs.BoolVar(&f.NoUV, "no-uv", false, "do not vendor uv; use one already present on the host")
@@ -235,13 +235,13 @@ func ParseDeployFlags(args []string, stderr io.Writer) (*Flags, error) {
 		fmt.Fprint(stderr, "No cloud API is involved: if you can ssh to it, you can deploy to it.\n")
 		fmt.Fprint(stderr, "Run it from a project: the directory (or nearest ancestor) holding\n")
 		fmt.Fprint(stderr, ".otter, .git or go.mod is scanned recursively for otter.yaml, so\n")
-		fmt.Fprint(stderr, "integrations may be nested however you like.\n")
+		fmt.Fprint(stderr, "jobs may be nested however you like.\n")
 		fmt.Fprint(stderr, "\nWhat it does, every time:\n")
 		fmt.Fprint(stderr, "  1. detect the remote platform over SSH\n")
 		fmt.Fprint(stderr, "  2. obtain otterd and otter for it -- compiled from source when this\n")
 		fmt.Fprint(stderr, "     project is a Go checkout, otherwise fetched from the matching release\n")
 		fmt.Fprint(stderr, "     (--build and --binaries override that choice)\n")
-		fmt.Fprint(stderr, "  3. rsync the binaries and the integration tree\n")
+		fmt.Fprint(stderr, "  3. rsync the binaries and the job tree\n")
 		fmt.Fprint(stderr, "  4. write the systemd unit and the secrets files\n")
 		fmt.Fprint(stderr, "  5. restart the service and wait for its health endpoint\n")
 		fmt.Fprint(stderr, "\nIt never touches the remote data directory: run history, watermarks\n")
@@ -346,7 +346,7 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 	cfg.Target.ApplyDefaults()
 
 	// 4. The daemon-wide environment file. It is optional: a deployment that
-	//    configures nothing beyond per-integration secrets does not need one.
+	//    configures nothing beyond per-job secrets does not need one.
 	daemonEnv := f.DaemonEnv
 	if daemonEnv == "" {
 		daemonEnv = filepath.Join(projectRoot, DaemonEnvFileName)
@@ -356,8 +356,8 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 		cfg.DaemonEnv = daemonEnv
 	}
 
-	// 5. The shared credentials file, which every integration draws from. Also
-	//    optional: an integration whose secrets all come from its own manifest
+	// 5. The shared credentials file, which every job draws from. Also
+	//    optional: a job whose secrets all come from its own manifest
 	//    needs none, and a deployment with no credentials at all is legal.
 	sharedEnv := f.EnvFile
 	if sharedEnv == "" {
@@ -368,17 +368,17 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 		cfg.SharedEnv = sharedEnv
 	}
 
-	if err := cfg.resolveIntegrations(f); err != nil {
+	if err := cfg.resolveJobs(f); err != nil {
 		return cfg, err
 	}
 
-	// The reservation applies to every integration being deployed, not only a
+	// The reservation applies to every job being deployed, not only a
 	// filtered one: a directory named `daemon` would be released to the same
 	// path the daemon-wide environment file occupies.
-	for _, integ := range cfg.Integrations {
-		if integ.Name == DaemonEnvIntegrationName {
-			return cfg, fmt.Errorf("integration name %q is reserved for the daemon-wide environment file; rename the integration",
-				DaemonEnvIntegrationName)
+	for _, integ := range cfg.Jobs {
+		if integ.Name == DaemonEnvJobName {
+			return cfg, fmt.Errorf("job name %q is reserved for the daemon-wide environment file; rename the job",
+				DaemonEnvJobName)
 		}
 	}
 	return cfg, nil
@@ -530,18 +530,18 @@ func mergeTarget(base, over Target) Target {
 	return base
 }
 
-// resolveIntegrations discovers the integrations to ship.
+// resolveJobs discovers the jobs to ship.
 //
 // Discovery walks the whole project, exactly as the runtime does, so a deploy
 // ships what `otter start` would serve. The old rule -- one hardcoded
-// integrations/ directory at the repository root -- only ever matched this
+// jobs/ directory at the repository root -- only ever matched this
 // repository's own layout, which is why a workspace that groups its
-// integrations any other way could not deploy at all.
+// jobs any other way could not deploy at all.
 //
 // Shared code is not discovered separately: each manifest's python.path is the
-// authoritative list of what that integration imports, and every declared tree
+// authoritative list of what that job imports, and every declared tree
 // is staged at the relative depth the declaration names.
-func (c *Config) resolveIntegrations(f *Flags) error {
+func (c *Config) resolveJobs(f *Flags) error {
 	items, err := config.Discover(c.ProjectRoot)
 	if err != nil {
 		return err
@@ -551,11 +551,11 @@ func (c *Config) resolveIntegrations(f *Flags) error {
 			config.ManifestFileName, c.ProjectRoot)
 	}
 
-	// A limited deploy names exactly one integration, by manifest label or by
+	// A limited deploy names exactly one job, by manifest label or by
 	// directory name. Selection happens before validation so that one broken
 	// manifest elsewhere in the project cannot block shipping a different,
-	// healthy integration.
-	want := strings.TrimSpace(f.Integration)
+	// healthy job.
+	want := strings.TrimSpace(f.Job)
 	selected := items
 	if want != "" {
 		selected = nil
@@ -565,7 +565,7 @@ func (c *Config) resolveIntegrations(f *Flags) error {
 			}
 		}
 		if len(selected) == 0 {
-			return fmt.Errorf("integration %q not found under %s (available: %s)",
+			return fmt.Errorf("job %q not found under %s (available: %s)",
 				want, c.ProjectRoot, strings.Join(discoveredNames(items), ", "))
 		}
 		if len(selected) > 1 {
@@ -573,11 +573,11 @@ func (c *Config) resolveIntegrations(f *Flags) error {
 			for _, item := range selected {
 				dirs = append(dirs, item.Dir)
 			}
-			return fmt.Errorf("integration %q is ambiguous: %s", want, strings.Join(dirs, ", "))
+			return fmt.Errorf("job %q is ambiguous: %s", want, strings.Join(dirs, ", "))
 		}
 	}
 
-	var all []Integration
+	var all []Job
 	byName := map[string]string{}
 	for _, item := range selected {
 		if !item.Valid {
@@ -585,15 +585,15 @@ func (c *Config) resolveIntegrations(f *Flags) error {
 			// cannot run. Stop and name the file instead.
 			return fmt.Errorf("%s: %s", item.Dir, item.Error)
 		}
-		integ, err := describeIntegration(item)
+		integ, err := describeJob(item)
 		if err != nil {
 			return err
 		}
 		// Two directories with the same basename would collide on the host,
-		// which names integrations by directory. Report both paths rather than
+		// which names jobs by directory. Report both paths rather than
 		// letting one silently overwrite the other.
 		if first, dup := byName[integ.Name]; dup {
-			return fmt.Errorf("two integrations are both named %q (%s and %s); rename one directory",
+			return fmt.Errorf("two jobs are both named %q (%s and %s); rename one directory",
 				integ.Name, first, integ.Dir)
 		}
 		byName[integ.Name] = integ.Dir
@@ -601,25 +601,25 @@ func (c *Config) resolveIntegrations(f *Flags) error {
 	}
 
 	c.Limited = want != ""
-	c.Integrations = all
+	c.Jobs = all
 	return nil
 }
 
-// describeIntegration reads one discovered manifest into the facts staging
+// describeJob reads one discovered manifest into the facts staging
 // needs.
-func describeIntegration(item *config.Integration) (Integration, error) {
+func describeJob(item *config.Job) (Job, error) {
 	manifest := item.Manifest
 	if manifest == nil {
-		return Integration{}, fmt.Errorf("%s: manifest could not be loaded", item.Dir)
+		return Job{}, fmt.Errorf("%s: manifest could not be loaded", item.Dir)
 	}
 	// A release can only carry a tree whose depth is expressed relative to the
-	// integration directory, so an absolute python.path is refused before
+	// job directory, so an absolute python.path is refused before
 	// anything is staged or pushed.
 	if err := manifest.ValidatePythonPathsForRelease(); err != nil {
-		return Integration{}, err
+		return Job{}, err
 	}
 
-	integ := Integration{
+	integ := Job{
 		Name:  filepath.Base(item.Dir),
 		Label: item.Name,
 		Dir:   item.Dir,
@@ -627,11 +627,11 @@ func describeIntegration(item *config.Integration) (Integration, error) {
 	for _, spec := range manifest.PythonPathEntries() {
 		info, err := os.Stat(spec.Resolved)
 		if err != nil {
-			return Integration{}, fmt.Errorf("python.path %q: shared directory %s does not exist",
+			return Job{}, fmt.Errorf("python.path %q: shared directory %s does not exist",
 				spec.Declared, spec.Resolved)
 		}
 		if !info.IsDir() {
-			return Integration{}, fmt.Errorf("python.path %q: %s is not a directory",
+			return Job{}, fmt.Errorf("python.path %q: %s is not a directory",
 				spec.Declared, spec.Resolved)
 		}
 		integ.Trees = append(integ.Trees, spec.Resolved)
@@ -641,7 +641,7 @@ func describeIntegration(item *config.Integration) (Integration, error) {
 
 // discoveredNames renders what is available for an error message, sorted so the
 // list is stable regardless of discovery order.
-func discoveredNames(items []*config.Integration) []string {
+func discoveredNames(items []*config.Job) []string {
 	names := make([]string, 0, len(items))
 	for _, item := range items {
 		names = append(names, item.ID)
@@ -670,13 +670,13 @@ func (c *Config) Validate() error {
 // MissingSecrets lists the secret variables a deployment needs but could not
 // find, either in the shared credentials file or in the local environment.
 //
-// A missing key is reported once, naming every integration that needs it: the
-// file is shared, so the same absence cannot be fixed per integration.
+// A missing key is reported once, naming every job that needs it: the
+// file is shared, so the same absence cannot be fixed per job.
 func (c *Config) MissingSecrets(required map[string][]string) []string {
 	neededBy := map[string][]string{}
 	var order []string
 
-	for _, integ := range c.Integrations {
+	for _, integ := range c.Jobs {
 		for _, key := range required[integ.Name] {
 			if _, ok := os.LookupEnv(key); ok {
 				continue
@@ -717,7 +717,7 @@ func (c *Config) MissingSecrets(required map[string][]string) []string {
 	return missing
 }
 
-// LoadSecrets reads one integration's secrets file.
+// LoadSecrets reads one job's secrets file.
 //
 // The format is deliberately the boring subset of shell that systemd's
 // `EnvironmentFile=` actually supports: KEY=value, one per line, optional
@@ -772,7 +772,7 @@ func LoadSecrets(path string) (map[string]string, error) {
 // provide.
 func (c *Config) RequiredSecrets() map[string][]string {
 	required := map[string][]string{}
-	for _, integ := range c.Integrations {
+	for _, integ := range c.Jobs {
 		path := filepath.Join(integ.Dir, config.ManifestFileName)
 		data, err := os.ReadFile(path)
 		if err != nil {

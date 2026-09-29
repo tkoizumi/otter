@@ -1,6 +1,6 @@
 """Otter Python SDK.
 
-A thin client for integrations that run as child processes of the ``otterd``
+A thin client for jobs that run as child processes of the ``otterd``
 daemon. Standard library only; the daemon owns all state.
 
 Public API::

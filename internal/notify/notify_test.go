@@ -25,14 +25,14 @@ func TestSendPostsThePayload(t *testing.T) {
 
 	n := New(config.NotifyConfig{URL: server.URL}, nil)
 	want := Payload{
-		Integration: "shopify-to-salesforce",
-		RunID:       "run-1",
-		Status:      "failed",
-		Attempt:     2,
-		Error:       "sync finished with failures",
-		Detail:      `sync finished {"failed":100,"written":0}`,
-		DurationMS:  1840,
-		Release:     "3c850cfa6c9c",
+		Job:        "shopify-to-salesforce",
+		RunID:      "run-1",
+		Status:     "failed",
+		Attempt:    2,
+		Error:      "sync finished with failures",
+		Detail:     `sync finished {"failed":100,"written":0}`,
+		DurationMS: 1840,
+		Release:    "3c850cfa6c9c",
 	}
 	if err := n.Send(context.Background(), want); err != nil {
 		t.Fatalf("Send: %v", err)

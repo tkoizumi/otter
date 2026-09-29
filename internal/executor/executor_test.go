@@ -66,7 +66,7 @@ func (c *collector) messages(stream string) []string {
 	return out
 }
 
-// writeScript creates an integration directory containing main.py.
+// writeScript creates a job directory containing main.py.
 func writeScript(t *testing.T, body string) (*config.Manifest, string) {
 	t.Helper()
 
@@ -251,14 +251,14 @@ time.sleep(300)
 func TestRunSetsOtterEnvironmentAndStripsDaemonSecrets(t *testing.T) {
 	requirePython(t)
 
-	// The daemon's own API token must never leak into integration code.
+	// The daemon's own API token must never leak into job code.
 	t.Setenv("OTTER_API_TOKEN", "super-secret-daemon-token")
 	t.Setenv("OUTER_VAR", "outer-value")
 
 	m, _ := writeScript(t, `
 import json, os
-keys = ["OTTER_INTEGRATION_ID", "OTTER_INTEGRATION_NAME", "OTTER_RUN_ID", "OTTER_API_URL",
-        "OTTER_TRIGGER_TYPE", "OTTER_INTEGRATION_DIR", "OTTER_STATE_TOKEN",
+keys = ["OTTER_JOB_ID", "OTTER_JOB_NAME", "OTTER_RUN_ID", "OTTER_API_URL",
+        "OTTER_TRIGGER_TYPE", "OTTER_JOB_DIR", "OTTER_STATE_TOKEN",
         "OTTER_API_TOKEN", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
         "MANIFEST_VAR", "SECRET_TOKEN", "EXPANDED", "OUTER_VAR", "PYTHONPATH"]
 print(json.dumps({k: os.environ.get(k) for k in keys}))
@@ -271,15 +271,15 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 
 	sink := &collector{}
 	res := New(testLogger(), "/tmp/fake-sdk").Run(context.Background(), &Request{
-		Manifest:        m,
-		IntegrationID:   "fixture-id",
-		IntegrationName: "fixture",
-		RunID:           "run-5",
-		TriggerType:     runs.TriggerWebhook,
-		APIURL:          "http://127.0.0.1:7337",
-		StateToken:      "scoped-run-token",
-		ExtraEnv:        map[string]string{"SECRET_TOKEN": "s3cr3t"},
-		Timeout:         30 * time.Second,
+		Manifest:    m,
+		JobID:       "fixture-id",
+		JobName:     "fixture",
+		RunID:       "run-5",
+		TriggerType: runs.TriggerWebhook,
+		APIURL:      "http://127.0.0.1:7337",
+		StateToken:  "scoped-run-token",
+		ExtraEnv:    map[string]string{"SECRET_TOKEN": "s3cr3t"},
+		Timeout:     30 * time.Second,
 	}, sink)
 	if res.StartError != nil {
 		t.Fatalf("start error: %v", res.StartError)
@@ -301,8 +301,8 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 	wantValues := map[string]string{
 		// The identity and the label are different values on purpose: the
 		// manifest name must never become the child's state namespace.
-		"OTTER_INTEGRATION_ID":    "fixture-id",
-		"OTTER_INTEGRATION_NAME":  "fixture",
+		"OTTER_JOB_ID":            "fixture-id",
+		"OTTER_JOB_NAME":          "fixture",
 		"OTTER_RUN_ID":            "run-5",
 		"OTTER_API_URL":           "http://127.0.0.1:7337",
 		"OTTER_TRIGGER_TYPE":      "webhook",
@@ -324,8 +324,8 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 		}
 	}
 
-	if got["OTTER_INTEGRATION_DIR"] == nil || *got["OTTER_INTEGRATION_DIR"] != m.Dir {
-		t.Errorf("OTTER_INTEGRATION_DIR = %v, want %q", got["OTTER_INTEGRATION_DIR"], m.Dir)
+	if got["OTTER_JOB_DIR"] == nil || *got["OTTER_JOB_DIR"] != m.Dir {
+		t.Errorf("OTTER_JOB_DIR = %v, want %q", got["OTTER_JOB_DIR"], m.Dir)
 	}
 
 	if got["OTTER_API_TOKEN"] != nil {

@@ -5,13 +5,13 @@ writing this document.
 
 ## Objective
 
-Recover an Otter runtime's integration state, queued work, identities, and
+Recover an Otter runtime's job state, queued work, identities, and
 required releases onto a clean replacement host after the original host and its
 disk are lost. Preserve ordinary Python execution and the single-daemon model.
 
 The operator supplies a committed recovery checkpoint, replacement-host
 configuration, and credentials. Otter restores and validates the runtime before
-allowing any integration to execute. The original checkout and original data
+allowing any job to execute. The original checkout and original data
 directory must not be required.
 
 This implements the recovery portion of the [product roadmap](product-roadmap.md).
@@ -42,7 +42,7 @@ replication, and zero-loss remote write acknowledgements are outside this change
 - Restoring old state can repeat an external effect even when its run appears
   queued or running in the checkpoint. A checkpoint cannot prove what happened
   after it was taken. Preserve run IDs and retry ancestry, explain ambiguity,
-  and require integration-level idempotency or reconciliation where needed.
+  and require job-level idempotency or reconciliation where needed.
 - Missed cron occurrences remain skipped, as today. Persisted queued cron runs
   are recovered; do not manufacture cron backfill during restore.
 - Automatic execution requires a supported runtime version, compatible platform,
@@ -94,7 +94,7 @@ ownership/fencing protocol. Do not present this workflow as automatic failover.
 | Startup recovery | `internal/daemon/recovery.go`: scans running/queued/retrying runs, with 10,000-row limits; missing queue rows get a new immediate deadline | Paginate to completion, retain original scheduling deadlines, make reconciliation idempotent and fail closed |
 | Startup order | `internal/daemon/daemon.go`: discovery and recovery happen in `New`; recovery errors are logged and startup continues | Gate admission and execution — worker pool, triggers, and submission mutators — before they start, while still running discovery and exposing the authenticated inspection API; refuse to release the hold on incomplete reconciliation. Gate execution, not discovery: discovery is how identities are reconciled, and the hold's own status surface lives behind the API server |
 | Releases | `internal/release/`: digest-addressed trees and filesystem activation links under `.releases/` | Export required trees, capture activation state, coordinate with activation and pruning, verify content |
-| Execution paths | Runs retain absolute `release_source_dir`; workers use it to load the manifest | Resolve executable paths from integration ID + release digest + validated relative layout on the new host |
+| Execution paths | Runs retain absolute `release_source_dir`; workers use it to load the manifest | Resolve executable paths from job ID + release digest + validated relative layout on the new host |
 | Identity | `internal/identity/`: UUIDs, generations, canonical paths, `.otter-id`, cross-filesystem operation journal | Restore identities without rediscovery minting replacements; remap paths through a recovery-specific transaction/journal |
 | Python | `internal/pyenv/`: environment identity includes interpreter, platform, libc, uv, recipe, and inputs | Rebuild the recorded environment identity; never substitute today's preparation policy silently |
 | Pause | `internal/pause/`: suspends cron/webhooks but permits manual runs and queued execution | Add a separate global recovery hold that blocks all execution and admission |
@@ -112,8 +112,8 @@ with active pointers or identity files from another.
 | --- | --- |
 | Database | Standalone SQLite snapshot containing state, runs, queue deadlines, identities, pause settings, webhook tokens, retained logs/capture, and schema metadata |
 | Releases | All active releases and every release needed by queued, retrying, or running attempts; include locally retained rollback releases in v1 for predictable recovery |
-| Activation | Explicit integration-ID-to-digest map; reconstruct links, rather than copying absolute symlinks |
-| Registration | Identity, generation, status, portable path mapping, and the effective registered manifest needed for discovery/scheduling, including integrations with no active release |
+| Activation | Explicit job-ID-to-digest map; reconstruct links, rather than copying absolute symlinks |
+| Registration | Identity, generation, status, portable path mapping, and the effective registered manifest needed for discovery/scheduling, including jobs with no active release |
 | Environment recipes | Per-required-environment recorded policy, input digest, Python pin, uv version, target ABI, and release reference |
 | Runtime requirements | Otter build/version, SDK identity, recovery format version, SQLite schema version, platform, supported feature flags |
 | Configuration requirements | Allowlisted non-secret daemon settings and names/references for externally supplied secrets and host dependencies |
@@ -161,7 +161,7 @@ remain held, not install a newer substitute. Mirroring interpreter distributions
 uv binaries, and locked wheels into recovery storage is a later enhancement for
 dependency-independent recovery. Do not copy virtualenvs between host paths.
 
-External Python integrations require operator provisioning of the interpreter,
+External Python jobs require operator provisioning of the interpreter,
 packages, native tools, and any external files. Inventory declared requirements;
 do not pretend to discover arbitrary dynamic imports or filesystem dependencies.
 An operator must acknowledge and validate these before execution is released.
@@ -184,7 +184,7 @@ otter-recovery/<runtime-id>/checkpoints/<checkpoint-id>/
   registration.json
   configuration.json
   environments.json
-  releases/<integration-id>/<release-digest>.tar
+  releases/<job-id>/<release-digest>.tar
   commit.json
 ```
 
@@ -229,7 +229,7 @@ re-proving the stopped case.
 
 Complete or refuse pending identity operations before inventory. Capture effective
 registration metadata through a shared exporter, without starting workers,
-registering new identities, running integrations, or minting webhook tokens. Refuse
+registering new identities, running jobs, or minting webhook tokens. Refuse
 an inconsistent or unresolved registration instead of guessing a mapping.
 
 Create the standalone database through an in-process SQLite snapshot mechanism
@@ -286,7 +286,7 @@ otter backup list --source s3://bucket/otter-recovery --json
 otter backup inspect <checkpoint-id> --source s3://bucket/otter-recovery
 otter backup verify <checkpoint-id> --source s3://bucket/otter-recovery
 otter restore <checkpoint-id> --source s3://bucket/otter-recovery \
-  --data /var/lib/otter --integrations /opt/otter/integrations
+  --data /var/lib/otter --jobs /opt/otter/jobs
 otter recovery status
 otter recovery resume --acknowledge-old-host-stopped
 ```
@@ -310,13 +310,13 @@ Restore sequence:
 4. Open the database offline and validate it. Preserve IDs, generations, state,
    pause intent, tokens, timestamps, and retry ancestry. Create a new restore ID
    while retaining the stable runtime ID and source checkpoint provenance.
-5. Remap canonical integration paths into the destination root and regenerate
+5. Remap canonical job paths into the destination root and regenerate
    `.otter-id` markers and discovery manifests. Materialize a separate writable
    workspace mirror of each active release, preserving its internal relative
    layout, then apply the captured registration manifest there. Do not alter the
    immutable release itself. Use per-identity mirrors to avoid collisions between
    different versions of shared trees; inventory exactly which directories are
-   discoverable so nested manifests cannot register unintended integrations. The
+   discoverable so nested manifests cannot register unintended jobs. The
    destination therefore has two distinct trees with different owners: the
    per-identity workspace mirror is the discovery/identity/state surface, while the
    release tree resolved by digest is the execution surface. Do not conflate them.
@@ -326,7 +326,7 @@ Restore sequence:
    entrypoints and declared Python paths exist. If a captured registration needs
    unpublished source absent from its release, preserve it as blocked and report
    the missing input; never invent source or silently change configuration.
-   Integrations with no active release remain non-runnable. Do remapping through a
+   Jobs with no active release remain non-runnable. Do remapping through a
    recovery-specific journal; ordinary identity move/reset must not invalidate
    queued generations. Keep old paths as provenance.
 6. Restore release trees and rebuild activation links by digest. Workers resolve
@@ -334,7 +334,7 @@ Restore sequence:
    as evidence rather than treating them as executable locations. Legacy runs
    without a complete release binding remain blocked for explicit reconciliation.
 7. Prepare managed environments under their recorded policies, validate external
-   prerequisites, and provision credentials. Never invoke integration entrypoints
+   prerequisites, and provision credentials. Never invoke job entrypoints
    as a readiness test. Apply a configuration allowlist; do not inherit the old
    listen address, API token, notification URL, or credential-bearing environment.
    Preserve webhook tokens from the database unless rotation is explicitly chosen.
@@ -348,7 +348,7 @@ Restore sequence:
    guard until both are installed and verified, and make each phase restartable.
 9. Start in recovery hold. Allow authenticated inspection, preparation, and recovery
    actions only. Block manual submissions, webhook admission, cron, worker claims,
-   and normal state/identity/release mutations. Preserve the original integration
+   and normal state/identity/release mutations. Preserve the original job
    pause settings independently. Suppress failure notifications caused solely by
    the restoration procedure.
 10. Display checkpoint age/coverage, ambiguous work, missing prerequisites, and
@@ -379,7 +379,7 @@ the hold itself:
 - Readiness is reported separately from liveness in both the API and the service
   status, so a supervisor restart loop cannot be mistaken for recovery progress.
 - Failure notifications caused solely by the hold or by the restoration procedure
-  are suppressed rather than reported as integration failures.
+  are suppressed rather than reported as job failures.
 
 ## 7. Queue and retry correctness
 
@@ -460,7 +460,7 @@ Assign concrete RPO/RTO targets for the pilot workload before milestone 6.
 ## 10. Validation matrix
 
 Tests should assert persisted outcomes and independently checked external effects,
-not only successful command exits. Use local fake services for integration effects
+not only successful command exits. Use local fake services for job effects
 and a real S3 bucket for the storage qualification drill.
 
 | Fault or scenario | Required result |

@@ -74,12 +74,12 @@ const pidRecordedEnvName = "OTTER_START_PID_RECORDED"
 // daemon, so the decision can be tested without binding a port or starting a
 // process.
 type startOptions struct {
-	ProjectRoot  string
-	Integrations string
-	Data         string
-	Listen       string
-	LogFormat    string
-	EnvFiles     []string
+	ProjectRoot string
+	Jobs        string
+	Data        string
+	Listen      string
+	LogFormat   string
+	EnvFiles    []string
 }
 
 // detectProjectRoot walks up from dir to the nearest directory carrying a
@@ -186,28 +186,28 @@ func loadEnvValues(path string) (map[string]string, error) {
 // resolveStart decides the four things a project-aware start needs, in the
 // order a developer expects: the project first, then what the project's own
 // files say, then anything the operator typed.
-func resolveStart(projectRoot string, fs *flag.FlagSet, integrations, data, listen string) (startOptions, error) {
+func resolveStart(projectRoot string, fs *flag.FlagSet, jobs, data, listen string) (startOptions, error) {
 	opts := startOptions{
-		ProjectRoot:  projectRoot,
-		Integrations: integrations,
-		Data:         data,
-		Listen:       listen,
+		ProjectRoot: projectRoot,
+		Jobs:        jobs,
+		Data:        data,
+		Listen:      listen,
 	}
 
 	// The data directory default belongs to the project, not to the process
 	// that happens to be running.
 	if !flagWasSet(fs, "data") && filepath.Clean(opts.Data) == filepath.Clean(config.DefaultDataDir) {
 		if projectRoot == "" {
-			return opts, errors.New("no project found (no .otter, .git or go.mod in this directory or above); pass --data and --integrations")
+			return opts, errors.New("no project found (no .otter, .git or go.mod in this directory or above); pass --data and --jobs")
 		}
 		opts.Data = filepath.Join(projectRoot, stateDirName, "data")
 	}
 
-	// Integrations default to the project root, which is what makes
-	// `otter start` work in an integrations project and in the Otter checkout
-	// without either one being told where its integrations live.
-	if !flagWasSet(fs, "integrations") && filepath.Clean(opts.Integrations) == filepath.Clean(config.DefaultIntegrations) && projectRoot != "" {
-		opts.Integrations = projectRoot
+	// Jobs default to the project root, which is what makes
+	// `otter start` work in a jobs project and in the Otter checkout
+	// without either one being told where its jobs live.
+	if !flagWasSet(fs, "jobs") && filepath.Clean(opts.Jobs) == filepath.Clean(config.DefaultJobs) && projectRoot != "" {
+		opts.Jobs = projectRoot
 	}
 
 	// An empty listen address is an answer, not an omission: the caller picks a
@@ -239,7 +239,7 @@ func projectEnvFiles(projectRoot string) []string {
 func (a *App) cmdStart(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	integrations := fs.String("integrations", config.DefaultIntegrations, "directory scanned recursively for "+config.ManifestFileName)
+	jobs := fs.String("jobs", config.DefaultJobs, "directory scanned recursively for "+config.ManifestFileName)
 	data := fs.String("data", config.DefaultDataDir, "data directory holding otter.db and the extracted SDK")
 	listen := fs.String("listen", "", "HTTP API listen address; default picks a free loopback port")
 	detach := fs.Bool("detach", false, "run in the background and return once the API answers")
@@ -248,11 +248,11 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	// re-deriving the daemon's defaults or keeping a second copy of them in
 	// step. Zero values mean "not set": daemonArgs forwards only what was
 	// actually typed, and the daemon fills the rest.
-	workers := fs.Int("workers", 0, "maximum number of concurrently running integrations")
+	workers := fs.Int("workers", 0, "maximum number of concurrently running jobs")
 	apiToken := fs.String("api-token", "", "bearer token required for API access")
 	logFormat := fs.String("log-format", "", "daemon log format: json or pretty")
 	logLevel := fs.String("log-level", "", "daemon log level: debug, info, warn or error")
-	shutdownGrace := fs.Duration("shutdown-grace", 0, "how long running integrations may finish after SIGTERM")
+	shutdownGrace := fs.Duration("shutdown-grace", 0, "how long running jobs may finish after SIGTERM")
 	sdkPath := fs.String("sdk-path", "", "directory prepended to the child PYTHONPATH")
 	notifyURL := fs.String("notify-url", "", "POST failed runs to this URL")
 	notifyFormat := fs.String("notify-format", "", "notification body format")
@@ -268,7 +268,7 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	fs.Usage = func() {
 		fmt.Fprintf(a.Stderr, "Usage: otter start [flags]\n\n")
 		fmt.Fprintf(a.Stderr, "Starts the runtime for the project containing the working directory:\n")
-		fmt.Fprintf(a.Stderr, "its integrations are the project, its state lives in .otter/data, and\n")
+		fmt.Fprintf(a.Stderr, "its jobs are the project, its state lives in .otter/data, and\n")
 		fmt.Fprintf(a.Stderr, "it records the address it binds so every other command finds it.\n\n")
 		fmt.Fprintf(a.Stderr, "otter.env and otter.daemon.env at the project root are loaded first;\n")
 		fmt.Fprintf(a.Stderr, "a variable already set in the environment wins over the file.\n\n")
@@ -287,7 +287,7 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	// whose complaint would arrive after a port had been chosen and recorded.
 	for _, arg := range passthrough {
 		if !strings.HasPrefix(arg, "-") {
-			fmt.Fprintf(a.Stderr, "otter: unexpected argument %q; daemon flags are forwarded, integration names are not\n", arg)
+			fmt.Fprintf(a.Stderr, "otter: unexpected argument %q; daemon flags are forwarded, job names are not\n", arg)
 			fs.Usage()
 			return 2
 		}
@@ -322,8 +322,8 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 
 	// Environment, then flags: an explicit flag beats a project file, and a
 	// project file beats the built-in default.
-	if v := os.Getenv("OTTER_INTEGRATIONS_DIR"); v != "" && !flagWasSet(fs, "integrations") {
-		*integrations = v
+	if v := os.Getenv("OTTER_JOBS_DIR"); v != "" && !flagWasSet(fs, "jobs") {
+		*jobs = v
 	}
 	if v := os.Getenv("OTTER_DATA_DIR"); v != "" && !flagWasSet(fs, "data") {
 		*data = v
@@ -332,7 +332,7 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 		*listen = v
 	}
 
-	opts, err := resolveStart(root, fs, *integrations, *data, *listen)
+	opts, err := resolveStart(root, fs, *jobs, *data, *listen)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
@@ -340,8 +340,8 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	// Absolute paths from here on. The daemon outlives this shell, and a
 	// detached child starts with a different working directory, so a relative
 	// watch root is wrong the moment it is written down.
-	if abs, err := filepath.Abs(opts.Integrations); err == nil {
-		opts.Integrations = abs
+	if abs, err := filepath.Abs(opts.Jobs); err == nil {
+		opts.Jobs = abs
 	}
 	if abs, err := filepath.Abs(opts.Data); err == nil {
 		opts.Data = abs
@@ -358,7 +358,7 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 		// Every decision was made by the parent; run the daemon and nothing
 		// else, so the two processes cannot diverge.
 		return RunDaemon(ctx, a.Version,
-			daemonArgs(fs, opts.Integrations, opts.Data, opts.Listen, passthrough), a.Stdout, a.Stderr)
+			daemonArgs(fs, opts.Jobs, opts.Data, opts.Listen, passthrough), a.Stdout, a.Stderr)
 	}
 	if root != "" {
 		opts.EnvFiles = projectEnvFiles(root)
@@ -395,7 +395,7 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 
 	printStartBanner(a.Stdout, opts, "foreground; Ctrl-C to stop")
 	return RunDaemon(ctx, a.Version,
-		daemonArgs(fs, opts.Integrations, opts.Data, opts.Listen, passthrough), a.Stdout, a.Stderr)
+		daemonArgs(fs, opts.Jobs, opts.Data, opts.Listen, passthrough), a.Stdout, a.Stderr)
 }
 
 // startDetached forks the same command, waits for the API to answer and
@@ -422,7 +422,7 @@ func (a *App) startDetached(opts startOptions, passthrough []string) int {
 	defer log.Close()
 
 	childArgs := []string{"start",
-		"--integrations", opts.Integrations,
+		"--jobs", opts.Jobs,
 		"--data", opts.Data,
 		"--listen", opts.Listen}
 	childArgs = append(childArgs, passthrough...)
@@ -692,9 +692,9 @@ func removeServeFiles(dataDir string) {
 
 // daemonArgs renders the flags the daemon will be given, so `start` runs the
 // same code path as `otterd` rather than a parallel one.
-func daemonArgs(fs *flag.FlagSet, integrations, data, listen string, passthrough []string) []string {
+func daemonArgs(fs *flag.FlagSet, jobs, data, listen string, passthrough []string) []string {
 	args := []string{
-		"--integrations", integrations,
+		"--jobs", jobs,
 		"--data", data,
 		"--listen", listen,
 	}
@@ -702,7 +702,7 @@ func daemonArgs(fs *flag.FlagSet, integrations, data, listen string, passthrough
 	// must survive the handover.
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "integrations", "data", "listen", "detach":
+		case "jobs", "data", "listen", "detach":
 			return
 		}
 		// A bool flag must be forwarded as --name=value. The flag package
@@ -723,7 +723,7 @@ func daemonArgs(fs *flag.FlagSet, integrations, data, listen string, passthrough
 func printStartBanner(w io.Writer, opts startOptions, note string) {
 	fmt.Fprintf(w, "project     %s\n", describeProject(opts))
 	fmt.Fprintf(w, "api         %s\n", listenAPIURL(opts.Listen))
-	fmt.Fprintf(w, "integrations %s\n", opts.Integrations)
+	fmt.Fprintf(w, "jobs        %s\n", opts.Jobs)
 	fmt.Fprintf(w, "data        %s\n", opts.Data)
 	fmt.Fprintf(w, "log         %s\n", filepath.Join(serveDir(opts.ProjectRoot, opts.Data), "serve.log"))
 	fmt.Fprintf(w, "%s\n", note)
@@ -733,7 +733,7 @@ func describeProject(opts startOptions) string {
 	if opts.ProjectRoot != "" {
 		return opts.ProjectRoot
 	}
-	return opts.Integrations
+	return opts.Jobs
 }
 
 // tailFile returns the last n lines of a file, for reporting why a detached

@@ -103,7 +103,7 @@ func TestTimelineRouteContract(t *testing.T) {
 		defer closeSrv()
 
 		b.mu.Lock()
-		b.runTokens["token-A"] = RunToken{RunID: "run-1", IntegrationID: "int-1"}
+		b.runTokens["token-A"] = RunToken{RunID: "run-1", JobID: "int-1"}
 		b.mu.Unlock()
 
 		r := do(t, http.MethodGet, base+"/v1/runs/run-1/timeline", nil, runTokenHeaders("token-A"))

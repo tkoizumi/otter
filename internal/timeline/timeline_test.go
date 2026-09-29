@@ -55,12 +55,12 @@ func (f *fixture) addRun(runID string, status runs.Status) {
 	f.t.Helper()
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	run := &runs.Run{
-		ID:            runID,
-		IntegrationID: "int-1",
-		TriggerType:   runs.TriggerManual,
-		Status:        status,
-		Attempt:       1,
-		CreatedAt:     now,
+		ID:          runID,
+		JobID:       "int-1",
+		TriggerType: runs.TriggerManual,
+		Status:      status,
+		Attempt:     1,
+		CreatedAt:   now,
 	}
 	if err := f.runs.Create(f.ctx, run); err != nil {
 		f.t.Fatalf("create run %s: %v", runID, err)
@@ -96,7 +96,7 @@ func (f *fixture) addExchange(runID, requestID string, at time.Time, method, url
 	ingested := at
 	res, err := f.db.ExecContext(f.ctx,
 		`INSERT INTO http_exchanges
-		   (run_id, request_id, integration_id, producer_seq, occurred_at, ingested_at,
+		   (run_id, request_id, job_id, producer_seq, occurred_at, ingested_at,
 		    updated_at, phase, complete, method, sanitized_url, status_code, payloads)
 		 VALUES (?, ?, 'int-1', 1, ?, ?, ?, 'completed', 1, ?, ?, ?, 'full')`,
 		runID, requestID, database.FormatTime(at), database.FormatTime(ingested),
@@ -117,9 +117,9 @@ func (f *fixture) beginCapture(runID string) {
 		return
 	}
 	if err := f.inspection.Begin(f.ctx, inspection.CaptureSettings{
-		RunID:         runID,
-		IntegrationID: "int-1",
-		Policy:        inspection.PolicyFull,
+		RunID:  runID,
+		JobID:  "int-1",
+		Policy: inspection.PolicyFull,
 	}); err != nil {
 		f.t.Fatalf("begin capture: %v", err)
 	}
@@ -782,7 +782,7 @@ var _ = sql.ErrNoRows
 
 // TestCtxLogIsNotALifecycleEvent is a regression test for a real
 // misclassification: the daemon's narration and the SDK's ctx.log output share
-// the `otter` stream, so classifying by stream alone labelled an integration's
+// the `otter` stream, so classifying by stream alone labelled a job's
 // own log line a lifecycle event.
 func TestCtxLogIsNotALifecycleEvent(t *testing.T) {
 	f := newFixture(t, false)

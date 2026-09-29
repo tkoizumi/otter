@@ -1,4 +1,4 @@
-"""Integration state, stored by the Otter daemon.
+"""Job state, stored by the Otter daemon.
 
 The daemon is the single source of truth for state; this class performs no
 caching and holds no local copy. Every call is one HTTP round trip.
@@ -21,11 +21,11 @@ _KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 class State:
-    """Key/value state scoped to one integration."""
+    """Key/value state scoped to one job."""
 
-    def __init__(self, client: Client, integration_id: str) -> None:
+    def __init__(self, client: Client, job_id: str) -> None:
         self._client = client
-        self._integration_id = integration_id
+        self._job_id = job_id
 
     # -- public API -----------------------------------------------------
 
@@ -61,10 +61,10 @@ class State:
         return True
 
     def all(self) -> Dict[str, Any]:
-        """Return every key/value pair for this integration as a dict."""
+        """Return every key/value pair for this job as a dict."""
         status, body = self._client.get_json(self._base_path())
         if status >= 400:
-            raise OtterError("could not list integration state: %s" % describe_api_failure(status, body))
+            raise OtterError("could not list job state: %s" % describe_api_failure(status, body))
         if isinstance(body, dict) and isinstance(body.get("state"), dict):
             return dict(body["state"])
         return {}
@@ -72,7 +72,7 @@ class State:
     # -- internals ------------------------------------------------------
 
     def _base_path(self) -> str:
-        return "/v1/integrations/%s/state" % encode_path_segment(self._integration_id)
+        return "/v1/jobs/%s/state" % encode_path_segment(self._job_id)
 
     def _key_path(self, key: str) -> str:
         if not isinstance(key, str) or not _KEY_PATTERN.match(key):

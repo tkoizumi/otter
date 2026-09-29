@@ -45,7 +45,7 @@ across independent streams that share no common view:
 
 | Recorded | Stored in | Read with today |
 | --- | --- | --- |
-| Integration stdout/stderr and daemon lifecycle lines | `run_logs` (streams `stdout`, `stderr`, `otter`) | `otter logs <run-id>` |
+| Job stdout/stderr and daemon lifecycle lines | `run_logs` (streams `stdout`, `stderr`, `otter`) | `otter logs <run-id>` |
 | HTTP exchanges, each with `occurred_at`, duration, call site and payloads | `http_exchanges` | `otter requests <run-id>`, `otter request <id>` |
 | Trigger body/headers, release digest, attempt and retry chain | `runs` row and `runs.metadata` | `otter run-status <run-id>` |
 
@@ -56,7 +56,7 @@ aligning two independent id spaces and two timestamp columns. That is exactly
 the work the HTTP capture milestone set out to remove, one level up.
 
 `otter trace` closes it: the failure, the exchange that preceded it, and the log
-line the integration wrote about it appear together in the order they were
+line the job wrote about it appear together in the order they were
 recorded, with the request line pointing at the exchange detail that holds the
 payloads. The trace reports that order; it does not label a request as the cause
 of a failure.
@@ -124,7 +124,7 @@ release digest, capture state, and the trigger **type** only. It also carries
 state the attempt's total duration: that answer comes from the run record, not
 from the events, so a page truncated by `--limit` cannot shorten it.
 
-The human form prints the integration name, status, attempt, release prefix,
+The human form prints the job name, status, attempt, release prefix,
 trigger, parent (only when there is one) and duration. It does not repeat the run
 id, which the operator just supplied, and does not restate the capture state on a
 page that has events; both remain in the JSON context, and the id appears in the
@@ -136,7 +136,7 @@ Kind-specific payloads:
   started`, `run cancelled`, `marked failed`, terminal status. These are the
   existing `otter`-stream log lines; the kind is derived from the stream, not
   stored separately.
-- **log** — an integration `stdout`/`stderr`/`ctx.log` line: stream, message,
+- **log** — a job `stdout`/`stderr`/`ctx.log` line: stream, message,
   and structured fields. Fields are not a column: the daemon appends them to the
   stored message as trailing JSON, and the CLI recovers them exactly as
   `splitStructured` already does for `otter logs`. The trace reuses that parsing
@@ -194,7 +194,7 @@ invalidate a cursor.
 ### Clock honesty
 
 Ordering is approximate chronology, not causality. `http_exchanges.occurred_at`
-is stamped by the integration process; `run_logs.timestamp` is stamped by the
+is stamped by the job process; `run_logs.timestamp` is stamped by the
 daemon. On the supported topology the child runs locally under the daemon, so
 the two usually share a host clock — but sharing a clock does not mean the events
 are *observed* in that order. Capture delivery is buffered and batched, so an
@@ -292,12 +292,12 @@ not in it:
 
 ## Acceptance scenario
 
-The existing HTTP-milestone fixture: an integration POSTs JSON, receives HTTP
+The existing HTTP-milestone fixture: a job POSTs JSON, receives HTTP
 400, reads the error body, and fails.
 
 1. `otter run .` fails and prints a run id.
 2. `otter trace <run-id>` shows, in order, `run queued`, `run started`, the
-   integration's log line, the `POST ... 400` exchange line with its call site,
+   job's log line, the `POST ... 400` exchange line with its call site,
    the error line, and the terminal `run failed` lifecycle line. The trigger type
    appears in the context header; no trigger payload is shown.
 3. The exchange line names the `otter request <request-id>` command that prints
@@ -308,7 +308,7 @@ The existing HTTP-milestone fixture: an integration POSTs JSON, receives HTTP
    gaps. There is no live follow in v1.
 
 The v1 feature is complete when that scenario works through the real CLI, daemon
-and database, with no manual log statements in the integration and no manual
+and database, with no manual log statements in the job and no manual
 correlation by the operator.
 
 ## Verification

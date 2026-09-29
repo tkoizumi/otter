@@ -9,10 +9,10 @@ import (
 func TestBootstrapLegacyAssignsAnUnambiguousKey(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	dir := seedIntegration(t, root, "counter", "counter")
+	dir := seedJob(t, root, "counter", "counter")
 	svc := NewService(store, root)
 
-	scan := Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}}
+	scan := Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}}
 	result, err := svc.BootstrapLegacy(ctx, scan, []string{"counter"}, nil, false)
 	if err != nil {
 		t.Fatalf("BootstrapLegacy: %v", err)
@@ -52,13 +52,13 @@ func TestBootstrapLegacyReservesAnOrphanKey(t *testing.T) {
 func TestBootstrapLegacyCollisionNeedsAnOwner(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	a := seedIntegration(t, root, "a", "shared")
-	b := seedIntegration(t, root, "b", "shared")
+	a := seedJob(t, root, "a", "shared")
+	b := seedJob(t, root, "b", "shared")
 	svc := NewService(store, root)
 
 	scan := Scan{Complete: true, Observations: []Observation{
-		observeIntegration(t, a, "shared"),
-		observeIntegration(t, b, "shared"),
+		observeJob(t, a, "shared"),
+		observeJob(t, b, "shared"),
 	}}
 
 	_, err := svc.BootstrapLegacy(ctx, scan, []string{"shared"}, nil, false)
@@ -110,10 +110,10 @@ func TestBootstrapLegacyCollisionNeedsAnOwner(t *testing.T) {
 func TestBootstrapLegacyDryRunWritesNothing(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	dir := seedIntegration(t, root, "counter", "counter")
+	dir := seedJob(t, root, "counter", "counter")
 	svc := NewService(store, root)
 
-	scan := Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}}
+	scan := Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}}
 	result, err := svc.BootstrapLegacy(ctx, scan, []string{"counter"}, nil, true)
 	if err != nil {
 		t.Fatalf("BootstrapLegacy dry run: %v", err)
@@ -132,9 +132,9 @@ func TestBootstrapLegacyDryRunWritesNothing(t *testing.T) {
 func TestBootstrapLegacyIsIdempotent(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	dir := seedIntegration(t, root, "counter", "counter")
+	dir := seedJob(t, root, "counter", "counter")
 	svc := NewService(store, root)
-	scan := Scan{Complete: true, Observations: []Observation{observeIntegration(t, dir, "counter")}}
+	scan := Scan{Complete: true, Observations: []Observation{observeJob(t, dir, "counter")}}
 
 	if _, err := svc.BootstrapLegacy(ctx, scan, []string{"counter"}, nil, false); err != nil {
 		t.Fatalf("first bootstrap: %v", err)
@@ -186,15 +186,15 @@ func mustCanonicalPath(t *testing.T, path string) string {
 func TestBootstrapLegacyCollisionAppliesNothing(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	a := seedIntegration(t, root, "a", "shared")
-	b := seedIntegration(t, root, "b", "shared")
-	solo := seedIntegration(t, root, "c", "solo")
+	a := seedJob(t, root, "a", "shared")
+	b := seedJob(t, root, "b", "shared")
+	solo := seedJob(t, root, "c", "solo")
 	svc := NewService(store, root)
 
 	scan := Scan{Complete: true, Observations: []Observation{
-		observeIntegration(t, a, "shared"),
-		observeIntegration(t, b, "shared"),
-		observeIntegration(t, solo, "solo"),
+		observeJob(t, a, "shared"),
+		observeJob(t, b, "shared"),
+		observeJob(t, solo, "solo"),
 	}}
 
 	// "shared" sorts before "solo", so the old order would have assigned the
@@ -225,18 +225,18 @@ func TestBootstrapLegacyCollisionAppliesNothing(t *testing.T) {
 func TestBootstrapLegacyResumesAPartiallyAppliedRegistry(t *testing.T) {
 	store, ctx := newTestStore(t)
 	root := t.TempDir()
-	solo := seedIntegration(t, root, "c", "solo")
-	other := seedIntegration(t, root, "d", "other")
+	solo := seedJob(t, root, "c", "solo")
+	other := seedJob(t, root, "d", "other")
 	svc := NewService(store, root)
 
 	// A previous run assigned "solo" and stopped before "other".
-	if err := svc.assignLegacy(ctx, MustParse("solo"), "solo", observeIntegration(t, solo, "solo")); err != nil {
+	if err := svc.assignLegacy(ctx, MustParse("solo"), "solo", observeJob(t, solo, "solo")); err != nil {
 		t.Fatalf("seed assignment: %v", err)
 	}
 
 	scan := Scan{Complete: true, Observations: []Observation{
-		observeIntegration(t, solo, "solo"),
-		observeIntegration(t, other, "other"),
+		observeJob(t, solo, "solo"),
+		observeJob(t, other, "other"),
 	}}
 	result, err := svc.BootstrapLegacy(ctx, scan, []string{"solo", "other"}, nil, false)
 	if err != nil {

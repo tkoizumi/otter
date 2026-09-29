@@ -20,7 +20,7 @@ import (
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
-// captureFixtureSource is the integration the acceptance scenario runs. It adds
+// captureFixtureSource is the job the acceptance scenario runs. It adds
 // no logging of its own: everything the operator needs must come from capture.
 //
 // It reads a cursor over HTTP, posts a transformed payload that the origin
@@ -59,7 +59,7 @@ except urllib.error.HTTPError as exc:
 
 // TestHTTPCaptureEndToEnd is the milestone's acceptance test: after a failed
 // JSON POST, the request list and the request detail reveal the read value, the
-// GET response, the POST body and the error response, without the integration
+// GET response, the POST body and the error response, without the job
 // having logged anything.
 func TestHTTPCaptureEndToEnd(t *testing.T) {
 	requirePython(t)
@@ -90,7 +90,7 @@ func TestHTTPCaptureEndToEnd(t *testing.T) {
 	defer origin.Close()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "capture-demo", fmt.Sprintf(`
+	writeJob(t, root, "capture-demo", fmt.Sprintf(`
 version: 1
 name: capture-demo
 entrypoint: main.py
@@ -152,7 +152,7 @@ env:
 		t.Fatalf("expected one GET and one POST, got %+v", requests)
 	}
 
-	// The read value: the GET response the integration consumed.
+	// The read value: the GET response the job consumed.
 	get, err := d.GetCaptureRequest(context.Background(), runID, getID)
 	if err != nil {
 		t.Fatalf("get request: %v", err)
@@ -166,7 +166,7 @@ env:
 	if got := string(get.ResponseBody.JSON); !strings.Contains(got, "cur-42") {
 		t.Errorf("GET response body = %s, want the cursor value", got)
 	}
-	// A credential-shaped field is redacted even though the integration saw it.
+	// A credential-shaped field is redacted even though the job saw it.
 	if got := string(get.ResponseBody.JSON); !strings.Contains(got, inspection.RedactedPlaceholder) {
 		t.Errorf("GET response body was not redacted: %s", got)
 	}
@@ -195,7 +195,7 @@ env:
 		t.Errorf("POST response body = %s, want the upstream error", got)
 	}
 
-	// The request-scoped credential the integration sent is redacted.
+	// The request-scoped credential the job sent is redacted.
 	var sawRedactedAuthorization bool
 	for _, header := range post.RequestHeaders {
 		if strings.EqualFold(header.Name, "Authorization") {
@@ -232,7 +232,7 @@ func TestCaptureMetadataStoresNoPayloads(t *testing.T) {
 	defer origin.Close()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "metadata-demo", fmt.Sprintf(`
+	writeJob(t, root, "metadata-demo", fmt.Sprintf(`
 version: 1
 name: metadata-demo
 entrypoint: main.py
@@ -302,7 +302,7 @@ func TestCaptureDefaultsToFull(t *testing.T) {
 	defer origin.Close()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "default-full-demo", fmt.Sprintf(`
+	writeJob(t, root, "default-full-demo", fmt.Sprintf(`
 version: 1
 name: default-full-demo
 entrypoint: main.py
@@ -371,14 +371,14 @@ except urllib.error.HTTPError as exc:
 	}
 }
 
-// TestManifestCaptureOffStopsRecording is the opt-out: the integration declares
+// TestManifestCaptureOffStopsRecording is the opt-out: the job declares
 // that its payloads must not be stored, and the deployment-wide default does not
 // override that decision.
 func TestManifestCaptureOffStopsRecording(t *testing.T) {
 	requirePython(t)
 
 	root := t.TempDir()
-	writeIntegration(t, root, "capture-off-demo", `
+	writeJob(t, root, "capture-off-demo", `
 version: 1
 name: capture-off-demo
 entrypoint: main.py
@@ -424,7 +424,7 @@ func TestCapturePolicyIsInheritedByRetries(t *testing.T) {
 	defer origin.Close()
 
 	root := t.TempDir()
-	writeIntegration(t, root, "retry-capture", fmt.Sprintf(`
+	writeJob(t, root, "retry-capture", fmt.Sprintf(`
 version: 1
 name: retry-capture
 entrypoint: main.py
@@ -510,7 +510,7 @@ func TestCaptureOverheadIsBounded(t *testing.T) {
 		inspection.PolicyOff, inspection.PolicyMetadata, inspection.PolicyFull,
 	} {
 		root := t.TempDir()
-		writeIntegration(t, root, "overhead", fmt.Sprintf(`
+		writeJob(t, root, "overhead", fmt.Sprintf(`
 version: 1
 name: overhead
 entrypoint: main.py
@@ -676,7 +676,7 @@ func requirePythonModule(t *testing.T, module string) {
 
 // A third-party client must be recorded exactly like urllib, and the run's
 // coverage must name the adapter that made that possible. Without the adapter
-// report, an integration using requests or httpx would show "coverage: urllib"
+// report, a job using requests or httpx would show "coverage: urllib"
 // next to an empty request list -- the most misleading answer capture can give.
 func TestCaptureCoversInstalledClientAdapters(t *testing.T) {
 	cases := []struct {
@@ -729,7 +729,7 @@ raise RuntimeError("upstream rejected the batch: %s" % response.json()["error"])
 			defer origin.Close()
 
 			root := t.TempDir()
-			writeIntegration(t, root, tc.name+"-demo", fmt.Sprintf(`
+			writeJob(t, root, tc.name+"-demo", fmt.Sprintf(`
 version: 1
 name: %s-demo
 entrypoint: main.py

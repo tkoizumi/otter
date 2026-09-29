@@ -97,7 +97,7 @@ homebrew_casks:
       # repository. The default GITHUB_TOKEN cannot push to another repo.
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/{{ .Env.GITHUB_REPOSITORY_OWNER }}/otter"
-    description: "Runtime for reliable Python integrations: scheduling, retries, state and logs"
+    description: "Runtime for reliable Python jobs: scheduling, retries, state and logs"
     # Both binaries, because the client and the daemon are separate programs.
     binaries:
       - otter
@@ -125,6 +125,6 @@ homebrew_casks:
 
         cd my-project && otter start
 
-      Python 3 is required by integrations that use the default external
-      Python mode. An integration that opts into `python.mode: managed`
+      Python 3 is required by jobs that use the default external
+      Python mode. A job that opts into `python.mode: managed`
       prepares its own interpreter and needs no host Python.

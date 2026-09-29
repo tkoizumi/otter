@@ -2,7 +2,7 @@
 // extracts it into the data directory at startup.
 //
 // Embedding is what makes Otter a genuinely single binary: `import otter`
-// works for every integration without a pip install, and the SDK version
+// works for every job without a pip install, and the SDK version
 // always matches the daemon version.
 package sdk
 
@@ -27,7 +27,7 @@ const Version = "0.1.0"
 //
 // The `all:` prefix is required: a bare directory pattern silently skips files
 // whose names begin with "." or "_", which would omit __init__.py and
-// _client.py and break `import otter` for every integration.
+// _client.py and break `import otter` for every job.
 //
 //go:embed all:python
 var FS embed.FS
@@ -35,8 +35,8 @@ var FS embed.FS
 // Extract writes the embedded SDK into <dataDir>/sdk/python and returns the
 // directory to prepend to PYTHONPATH.
 //
-// The returned path is absolute: integration processes run with their working
-// directory set to the integration directory, so a relative PYTHONPATH would
+// The returned path is absolute: job processes run with their working
+// directory set to the job directory, so a relative PYTHONPATH would
 // resolve somewhere else entirely.
 //
 // Files are only rewritten when their contents differ, so restarting the

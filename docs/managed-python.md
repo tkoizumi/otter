@@ -1,8 +1,8 @@
 # Managed Python Environments
 
-Otter can own the Python interpreter and the dependencies an integration runs
+Otter can own the Python interpreter and the dependencies a job runs
 with, instead of depending on whatever `python3` a host happens to have. This
-is opt-in, per integration, and additive: an integration that does not ask for
+is opt-in, per job, and additive: a job that does not ask for
 it behaves exactly as before.
 
 The feature exists because a host you do not control is a host you cannot
@@ -16,7 +16,7 @@ has an answer in the run record.
 | Interpreter | `python.executable`, or `python3` from `PATH` | Prepared under `<data dir>/python`, selected per environment |
 | Dependencies | Yours to provision | Installed from `uv.lock` into the environment |
 | When resolved | Every run | Once, when the run is submitted |
-| Isolation | Shared with the host | Private to the integration |
+| Isolation | Shared with the host | Private to the job |
 | Reproducibility | Whatever the host has today | Identified by a digest recorded on every run |
 
 Everything else is unchanged: the same Go process supervision, output capture,
@@ -31,14 +31,14 @@ timeouts, cancellation, retries, state and logs.
 | `managed` | must be omitted | Use only a prepared environment. |
 | `managed` | set | **Rejected.** The two ways of choosing an interpreter conflict. |
 
-A lock file alone never changes how an integration runs. Opting in is explicit,
-so adding `pyproject.toml` to an existing integration cannot silently move it
+A lock file alone never changes how a job runs. Opting in is explicit,
+so adding `pyproject.toml` to an existing job cannot silently move it
 onto a different interpreter.
 
 ## Required files
 
 ```
-my-integration/
+my-job/
 ├── otter.yaml
 ├── main.py
 ├── .python-version     exact CPython patch version, e.g. 3.13.5
@@ -51,9 +51,9 @@ my-integration/
   day it was built.
 - `python.path` works in managed mode. Each declared directory is captured into
   the release at the depth it has relative to the **release base** — the
-  closest common ancestor of the integrations discovery root, the
-  integration and every captured tree. A path like `../../lib/python` from
-  `integrations/<name>` therefore resolves inside the snapshot exactly as it does
+  closest common ancestor of the jobs discovery root, the
+  job and every captured tree. A path like `../../lib/python` from
+  `jobs/<name>` therefore resolves inside the snapshot exactly as it does
   in the checkout. Shared code that can be published as a package is better
   declared in `pyproject.toml`, because then it is locked and versioned with
   everything else.
@@ -67,7 +67,7 @@ my-integration/
   - **An absolute `python.path` is unsupported and refused.** It exists on the
     machine that releases and is a missing directory everywhere else, which is
     exactly the failure that is impossible to see locally. A tree that shares no
-    ancestor below the filesystem root with the integration has no relative
+    ancestor below the filesystem root with the job has no relative
     placement either, and is refused for the same reason.
   - **Symlinks are preserved only when they resolve inside a captured tree.**
     An internal link keeps working because every captured path is placed
@@ -77,25 +77,25 @@ my-integration/
 
 ## Releases
 
-Every integration executes an **immutable release** rather than its source
-tree: a snapshot of the integration plus the shared code it declares, copied
+Every job executes an **immutable release** rather than its source
+tree: a snapshot of the job plus the shared code it declares, copied
 under the data directory and addressed by a digest of its contents. A release
 is required before anything runs, for external and managed Python alike, and an
-edit is not live until the integration is released again.
+edit is not live until the job is released again.
 
 ```sh
-otter release                        # the integration in the working directory
-otter release <integration>          # by name, from anywhere in the workspace
-otter release --all                  # every integration in the workspace
-otter release --list <integration>   # what is staged, and which one is active
+otter release                        # the job in the working directory
+otter release <job>          # by name, from anywhere in the workspace
+otter release --all                  # every job in the workspace
+otter release --list <job>   # what is staged, and which one is active
 ```
 
-`otter deploy` runs this for every integration automatically, before the daemon
+`otter deploy` runs this for every job automatically, before the daemon
 restarts.
 
 What managed Python adds to a release is the environment: a pinned interpreter
 and a locked dependency set, prepared before activation. An external
-integration's release pins the code and nothing else -- it still runs the
+job's release pins the code and nothing else -- it still runs the
 interpreter its manifest names. The rest of this document is about that managed
 half.
 
@@ -114,44 +114,44 @@ identifies the exact snapshot it executed.
 ### The layout is mirrored, not flattened
 
 ```
-<data dir>/.releases/<integration>/<release-digest>/
-├── integrations/<integration>/   the snapshot, discovered as usual
+<data dir>/.releases/<job>/<release-digest>/
+├── jobs/<job>/   the snapshot, discovered as usual
 ├── lib/                          shared code at the same relative depth
 └── otter-release.json            placement, digest, environment, source, timestamp
 ```
 
-The integration and every shared tree land relative to **one base**: the
-closest common ancestor of the integrations discovery root, the
-integration directory and every captured tree. The release root plays the part
+The job and every shared tree land relative to **one base**: the
+closest common ancestor of the jobs discovery root, the
+job directory and every captured tree. The release root plays the part
 of that base, so every relative path resolves the same way before and after
-activation and nothing is rewritten to release an integration.
+activation and nothing is rewritten to release a job.
 
 One rule covers every workspace shape:
 
-| Workspace | Integration | Shared tree |
+| Workspace | Job | Shared tree |
 | --- | --- | --- |
-| `<root>/integrations/<name>` + `<root>/lib/python` | `integrations/<name>` | `lib/python` |
+| `<root>/jobs/<name>` + `<root>/lib/python` | `jobs/<name>` | `lib/python` |
 | `<root>/<name>` + `<root>/lib/python` | `<name>` | `lib/python` |
 | `<root>/group/<name>` + `<root>/group/lib/python` | `group/<name>` | `group/lib/python` |
-| Deploy: `/opt/otter/integrations/<name>` + `/opt/otter/lib/python` | `integrations/<name>` | `lib/python` |
+| Deploy: `/opt/otter/jobs/<name>` + `/opt/otter/lib/python` | `jobs/<name>` | `lib/python` |
 
 Deploy is the case that fixes the upper bound of the base. It releases with
-`--integrations /opt/otter/integrations` while shared code lives at
+`--jobs /opt/otter/jobs` while shared code lives at
 `/opt/otter/lib/python`, so the base is `/opt/otter`, not the discovery root —
 with the discovery root as the base there would be no way to spell
 `../lib/python` inside the release.
 
 The recorded placement is part of the release digest, together with each
-shared tree's destination name. Moving `lib` to `vendor`, or an integration from
-`integrations/<name>` to `<name>`, changes every relative import the integration
+shared tree's destination name. Moving `lib` to `vendor`, or a job from
+`jobs/<name>` to `<name>`, changes every relative import the job
 performs, so it produces a different release rather than reusing one.
 
 Releases staged before the placement was recorded default to
-`integrations/<name>`, so a snapshot already on disk keeps working after an
+`jobs/<name>`, so a snapshot already on disk keeps working after an
 upgrade.
 
-The activation link lives at `<data dir>/.releases/active/<integration>`,
-outside the integrations tree, so `otter deploy` can keep syncing sources
+The activation link lives at `<data dir>/.releases/active/<job>`,
+outside the jobs tree, so `otter deploy` can keep syncing sources
 normally without touching what is currently being served.
 
 ### Ordering
@@ -176,12 +176,12 @@ identical digest, so an existing release is reused.
 
 ### Upgrading
 
-Every integration must be released once after upgrading Otter. The digest format
+Every job must be released once after upgrading Otter. The digest format
 is versioned, and a new implementation deliberately does not reuse a snapshot
 laid out by an older one, even when the inputs look identical. Old snapshots are
 not deleted by the upgrade: they stay on disk until retention (`--keep`) prunes
 them, so a rollback to a pre-upgrade release still works. `otter deploy` performs
-the re-release for every integration as part of the deploy.
+the re-release for every job as part of the deploy.
 
 ### Traceability, not gating
 
@@ -216,7 +216,7 @@ move a queued or retried attempt onto different code, and a run keeps working
 while a deploy is in progress. An attempt whose snapshot has been removed fails
 with an explicit error instead of silently running something else.
 
-That is true of every integration. Managed mode binds one thing more: the
+That is true of every job. Managed mode binds one thing more: the
 interpreter and the dependency set, recorded on the run at submission, so a
 later dependency change cannot move a queued or retried attempt onto a different
 environment either.
@@ -240,8 +240,8 @@ Activate an older release by digest prefix, which is the way `--list` prints
 them:
 
 ```sh
-otter release --list my-integration                   # find the digest
-otter release --activate 3c850cfa6c9c my-integration  # point the active link at it
+otter release --list my-job                   # find the digest
+otter release --activate 3c850cfa6c9c my-job  # point the active link at it
 ```
 
 Rolling back means pointing the active link at a previous digest. The previous
@@ -258,11 +258,11 @@ serving.
 ## Layout on disk
 
 Everything derived lives under the data directory and can be deleted without
-losing integration state:
+losing job state:
 
 ```
 <data dir>/
-├── otter.db                          integration state, runs, logs
+├── otter.db                          job state, runs, logs
 ├── otter.lock                        exclusive ownership of this data directory
 ├── tools/uv/uv                       vendored uv, used only for preparation
 ├── python/<version>/                 shared interpreter installations
@@ -271,8 +271,8 @@ losing integration state:
 │   └── otter-ready.json              readiness marker; absence means "not ready"
 ├── cache/uv/                         uv's download cache
 ├── .releases/                        immutable source snapshots
-│   ├── <integration>/<digest>/       mirrored checkout: integrations/ + lib/
-│   └── active/<integration>          symlink to the release being served
+│   ├── <job>/<digest>/       mirrored checkout: jobs/ + lib/
+│   └── active/<job>          symlink to the release being served
 └── sdk/python/                       the embedded Otter SDK
 ```
 
@@ -283,7 +283,7 @@ watermarks; deleting `environments/` costs a re-preparation, nothing more.
 
 An environment is identified by a digest over:
 
-- **The declared inputs** — the integration's durable identity (not its label:
+- **The declared inputs** — the job's durable identity (not its label:
   environments are keyed by identity, so renaming a manifest reuses the
   environment it already built), the exact Python pin, and the contents of
   `.python-version`, `pyproject.toml` and `uv.lock`.
@@ -305,7 +305,7 @@ Runs record the identity they were submitted against, so a retry after a
 dependency or toolchain change still resolves the environment its parent
 selected rather than moving to the new one.
 
-Environments are content-addressed and may be shared by several integrations, so
+Environments are content-addressed and may be shared by several jobs, so
 `otter delete` never removes them: it purges only what the identity exclusively
 owns. Reclaiming environment disk is a separate, deliberate operation.
 
@@ -313,22 +313,22 @@ owns. Reclaiming environment disk is a separate, deliberate operation.
 
 ```sh
 otter release shopify-to-salesforce             # stage, prepare, activate
-otter prepare                                   # every managed integration
+otter prepare                                   # every managed job
 otter prepare shopify-to-salesforce             # just one
-otter prepare --integrations ./integrations --data /var/lib/otter
+otter prepare --jobs ./jobs --data /var/lib/otter
 ```
 
 For a local run, `otter release` is the one you want: the daemon executes the
-**active release**, so an integration that has never been released has nothing
+**active release**, so a job that has never been released has nothing
 to run -- managed or not. The daemon says so explicitly rather than falling
 back:
 
 ```
-integration shopify-to-salesforce has no active release;
+job shopify-to-salesforce has no active release;
 run otter release shopify-to-salesforce before submitting runs
 ```
 
-`otter prepare` on its own is still useful for a managed integration: it builds
+`otter prepare` on its own is still useful for a managed job: it builds
 and validates the environment without staging a release, which is what you want
 when diagnosing a dependency problem. It says so and does nothing for an
 external one, which has no environment to prepare.
@@ -336,9 +336,9 @@ external one, which has no environment to prepare.
 A typical session, using an installed Otter in your own project:
 
 ```sh
-otter release <integration>   # after changing code or dependencies
+otter release <job>   # after changing code or dependencies
 otter start --detach          # the runtime
-otter run <integration>       # queue a run and follow it
+otter run <job>       # queue a run and follow it
 otter stop
 ```
 
@@ -368,7 +368,7 @@ Preparation constraints, all deliberate:
 - No builds from source: the first release installs wheels only, so a
   dependency without a wheel for the target fails clearly instead of trying to
   compile.
-- No integration credentials reach the installer. Package-index credentials are
+- No job credentials reach the installer. Package-index credentials are
   configured separately, through the environment.
 
 ### uv
@@ -390,18 +390,18 @@ Managed children run with a deliberately constructed environment rather than
 inheriting the daemon's:
 
 - The prepared environment's interpreter, invoked directly. Otter never runs
-  the integration through `uv run`; preparation and execution stay separate so
+  the job through `uv run`; preparation and execution stay separate so
   the daemon supervises exactly one process.
 - `PYTHONHOME`, `PYTHONUSERBASE`, `VIRTUAL_ENV` and the host's `PYTHONPATH`
   removed, and user site-packages disabled.
 - The SDK prepended to the import path ahead of everything else.
 - The environment's `bin` directory prepended to `PATH`, so tools the
-  integration launches resolve to the matching interpreter.
+  job launches resolve to the matching interpreter.
 - `NO_PROXY` extended with `127.0.0.1`, `localhost` and `::1`, so the SDK's
   state and log calls to the daemon never go through an outbound proxy.
 - Only the declared `env` values and resolved `secrets`, plus a small
   allow-list of host variables: process basics (`HOME`, `LANG`, `TZ`, `TMPDIR`),
-  proxy settings, `SSL_CERT_FILE`, and the operational knobs an integration
+  proxy settings, `SSL_CERT_FILE`, and the operational knobs a job
   reads (`DRY_RUN`, `PAGE_SIZE`, `RUN_BUDGET_SECONDS`, `SYNC_ADDRESS`,
   `OVERLAP_SECONDS`, `MAX_PAGES_PER_RUN`, `SALESFORCE_BATCH_SIZE`,
   `SHOPIFY_SORT_KEY`).
@@ -410,9 +410,9 @@ inheriting the daemon's:
   so it stays auditable: the daemon's world does not become the child's, and no
   credential crosses sideways. The cost is that a *new* knob has to be added to
   it, which is why a setting that used to work can silently stop arriving. If a
-  managed integration ignores a variable you set, this list is the first thing
+  managed job ignores a variable you set, this list is the first thing
   to check -- `otter.yaml`'s `env:` block always works and is the better home
-  for anything an integration needs to read.
+  for anything a job needs to read.
 
 A run whose environment is missing or does not match its recorded identity
 fails with a clear error and **does not fall back to host Python**.
@@ -429,19 +429,19 @@ environment:   4b1f0c9e2a7d3f81...
 sdk:           0.1.0
 ```
 
-and in `otter inspect <integration>`, which reports `managed (prepared
+and in `otter inspect <job>`, which reports `managed (prepared
 environment)` instead of an executable path.
 
-The first thing to check when a managed integration will not start is whether
+The first thing to check when a managed job will not start is whether
 its environment is ready for the identity currently on disk:
 
 ```sh
-otter prepare <integration>     # prints the identity, or prepares it
+otter prepare <job>     # prints the identity, or prepares it
 ```
 
 ## Guarantees
 
-For every integration:
+For every job:
 
 - A run executes the snapshot it was submitted against, not the live tree.
 - A retry executes the same snapshot as the attempt it retries.
@@ -452,7 +452,7 @@ For every integration:
 - A failed stage, a failed validation, a failed preparation or a failed
   activation leaves the active release serving.
 
-Additionally, for a managed integration:
+Additionally, for a managed job:
 
 - Every run also records the environment digest it ran on.
 - A failed preparation leaves the active release serving.
@@ -485,6 +485,6 @@ Additionally, for a managed integration:
 ## What this does not promise
 
 Managed environments make the Python side reproducible. They do not make
-delivery exactly-once. Retries and crash recovery can still run an integration
-more than once, so an integration must be idempotent — upsert by an external
+delivery exactly-once. Retries and crash recovery can still run a job
+more than once, so a job must be idempotent — upsert by an external
 ID, as the shipped Shopify-to-Salesforce example does.

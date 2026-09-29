@@ -6,15 +6,15 @@ Date: 2026-09-24.
 ## Objective
 
 Build a development environment in which a coding agent can create, reproduce,
-test, and repair Python integrations running on Otter. The first useful outcome
-is: take a failed run, construct a reproducible case, repair the integration, and
+test, and repair Python jobs running on Otter. The first useful outcome
+is: take a failed run, construct a reproducible case, repair the job, and
 produce reviewable evidence that the change satisfies the intended behavior.
 
 The harness owns the development loop. Otter remains the execution runtime.
 Use existing coding agents through a skill and structured tools initially; a
 custom chat interface or model orchestration layer is not required for v1.
 
-Success means an integration author can answer three questions before release:
+Success means a job author can answer three questions before release:
 
 1. What records and fields will this code change?
 2. What happens when requests fail, repeat, or succeed without a response?
@@ -26,11 +26,11 @@ The implementation must build on these existing seams:
 
 | Existing code | Reuse or extension |
 | --- | --- |
-| `internal/api/`, `internal/cli/` | Integration resolution, run submission, inspection, state access, cancellation |
+| `internal/api/`, `internal/cli/` | Job resolution, run submission, inspection, state access, cancellation |
 | `internal/daemon/`, `internal/queue/`, `internal/runs/` | Real execution and retry semantics; release binding on each attempt |
 | `internal/release/`, `internal/pyenv/` | Immutable code snapshots, shared-tree layout, prepared Python environments |
 | `internal/executor/executor.go` | Child process launch and environment assembly |
-| `sdk/python/otter/_launcher.py` | Install instrumentation before integration imports |
+| `sdk/python/otter/_launcher.py` | Install instrumentation before job imports |
 | `sdk/python/otter/_*_capture.py` | Transport-specific observation for urllib, requests, and httpx |
 | `internal/inspection/` | Sanitized exchanges, capture completeness and omission reasons |
 | `internal/state/`, `internal/identity/` | Durable state and instance ownership |
@@ -41,8 +41,8 @@ state that existed before an old run; retries can repeat external effects.
 
 Follow `CONTRIBUTING.md`: build the harness in a separate `otter-harness`
 repository. Keep runtime contracts and SDK hooks here. Vendor clients, connector
-knowledge, integration contracts, and business scenarios belong in the harness
-or integration projects. This plan is the cross-repository implementation map.
+knowledge, job contracts, and business scenarios belong in the harness
+or job projects. This plan is the cross-repository implementation map.
 
 ## Architecture decisions
 
@@ -88,7 +88,7 @@ Python transport interception provides useful fixture matching and diagnostics;
 the container provides the external network boundary. Unsupported transports,
 raw sockets, subprocesses, redirects, and proxy settings must not escape that
 boundary. Missing isolation support is an infrastructure error, never a silent
-fallback to unrestricted host execution. This is isolation for integration
+fallback to unrestricted host execution. This is isolation for job
 testing, not a claim of protection from arbitrary hostile kernel exploits.
 
 ### Explicit versions and capability negotiation
@@ -101,12 +101,12 @@ remain unchanged when development options are absent.
 
 ## Project artifacts and command surface
 
-Proposed integration project layout:
+Proposed job project layout:
 
 ```text
-integration-project/
-  integrations/customer-sync/       # existing Otter integration
-  harness.yaml                      # integration paths and execution policy
+job-project/
+  jobs/customer-sync/       # existing Otter job
+  harness.yaml                      # job paths and execution policy
   contracts/customer-sync.yaml      # behavioral requirements and assertion IDs
   cases/customer-sync/
     duplicate-delivery/case.yaml
@@ -124,12 +124,12 @@ is not an executable assertion. Do not build a general workflow DSL.
 Proposed commands, all new:
 
 ```sh
-otter-harness init --integration ./integrations/customer-sync
+otter-harness init --job ./jobs/customer-sync
 otter-harness doctor
 otter-harness case import --runtime dev --run RUN_ID --name rejected-customer
 otter-harness case validate rejected-customer
 otter-harness test --case rejected-customer --json
-otter-harness test --integration customer-sync --json
+otter-harness test --job customer-sync --json
 otter-harness inspect RESULT_ID --json
 otter-harness compare BASE_RESULT CANDIDATE_RESULT --json
 otter-harness verify-release --evidence RESULT_ID --candidate RELEASE_BUNDLE
@@ -199,7 +199,7 @@ Use stateful fakes or sandbox accounts for those assertions.
 
 Supply a small generic record-store fake in harness tests; vendor-specific fakes
 remain project or connector packages. Its ledger tracks actual simulated record
-mutations independently of logs emitted by the integration.
+mutations independently of logs emitted by the job.
 
 Initial faults: 429 with Retry-After, transient 5xx, malformed response, timeout
 before commit, timeout after commit, and process termination at a named boundary.
@@ -208,7 +208,7 @@ and fake-system state persist across retries. Repeated delivery also preserves
 destination state so duplicate behavior can be asserted.
 
 Separate requested effects, committed fake effects, verified sandbox effects,
-and integration-reported events. An HTTP 200 or a self-reported success is not
+and job-reported events. An HTTP 200 or a self-reported success is not
 proof of the final destination state. Report field-level differences only when
 before/after records are available; otherwise report request differences and the
 missing evidence.
@@ -241,7 +241,7 @@ alongside code changes so weakening the expected behavior is visible in review.
 
 ### 5. Agent workflow
 
-Publish a portable skill with the CLI schema, integration patterns, fixture
+Publish a portable skill with the CLI schema, job patterns, fixture
 repair rules, and the workflow: inspect contract, reproduce, edit, test, compare,
 prepare release evidence. The agent uses the same commands as a human. An MCP
 facade is optional after CLI behavior stabilizes; it must not contain a second
@@ -276,7 +276,7 @@ data changes; data repair remains an explicit operation with its own evidence.
 
 | Milestone | Concrete deliverable | Acceptance gate |
 | --- | --- | --- |
-| M0: contracts and feasibility | Harness scaffold, schemas, capability handshake, isolation spike | Execute one temporary integration through real Otter in an offline container; unsupported host setup fails clearly |
+| M0: contracts and feasibility | Harness scaffold, schemas, capability handshake, isolation spike | Execute one temporary job through real Otter in an offline container; unsupported host setup fails clearly |
 | M1: isolated scenarios | Disposable daemon, trigger injection, state seeding, immutable candidate, JSON results | Two cases cannot share state; a case's retries do share state; cron cannot fire; cancellation kills descendants; production workspace is unchanged |
 | M2: replay and import | Adapter hooks, strict fixture matching, paginated capture importer | Imported complete JSON case runs offline; missing state/body yields incomplete; unmatched calls fail; raw sockets/subprocesses cannot reach external hosts |
 | M3: behavioral verification | Stateful fake, fault rules, assertions, effect/state diff | Timeout-after-commit reproduces a duplicate bug; fixing idempotency passes without changing expectations; crash recovery preserves checkpoint semantics |
@@ -348,7 +348,7 @@ not promised performance targets until a baseline exists.
 
 - Whether supported transport hooks are sufficient or a local replay proxy is
   needed for additional SDKs.
-- Which real integrations justify maintained stateful connector fakes.
+- Which real jobs justify maintained stateful connector fakes.
 - Whether opt-in pre-run state capture is worth its storage and concurrency cost.
 - Which Linux production environments should have first-class image parity.
 - Whether evidence inspection needs a local web UI before broader connection work.

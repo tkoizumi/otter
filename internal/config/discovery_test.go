@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// writeValidIntegration writes a valid manifest plus its entrypoint under
-// root/relDir and returns the integration directory.
-func writeValidIntegration(t *testing.T, root, relDir, name string) string {
+// writeValidJob writes a valid manifest plus its entrypoint under
+// root/relDir and returns the job directory.
+func writeValidJob(t *testing.T, root, relDir, name string) string {
 	t.Helper()
 	dir := filepath.Join(root, relDir)
 	writeManifest(t, dir, "version: 1\nname: "+name+"\nentrypoint: main.py\n")
@@ -20,16 +20,16 @@ func writeValidIntegration(t *testing.T, root, relDir, name string) string {
 func TestDiscoverRecursiveAndSortedByID(t *testing.T) {
 	root := t.TempDir()
 	// Directory order deliberately differs from id order.
-	writeValidIntegration(t, root, "zebra", "apple")
-	writeValidIntegration(t, root, "a/b/c", "banana")
-	writeValidIntegration(t, root, "mango", "cherry")
+	writeValidJob(t, root, "zebra", "apple")
+	writeValidJob(t, root, "a/b/c", "banana")
+	writeValidJob(t, root, "mango", "cherry")
 
 	got, err := Discover(root)
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
 	if len(got) != 3 {
-		t.Fatalf("Discover() returned %d integrations, want 3", len(got))
+		t.Fatalf("Discover() returned %d jobs, want 3", len(got))
 	}
 	want := []string{"apple", "banana", "cherry"}
 	for i, id := range want {
@@ -43,7 +43,7 @@ func TestDiscoverRecursiveAndSortedByID(t *testing.T) {
 			t.Errorf("got[%d] (%s) Manifest = nil, want parsed manifest", i, id)
 		}
 	}
-	// Results carry the integration directory and manifest path.
+	// Results carry the job directory and manifest path.
 	if got[0].ManifestPath != filepath.Join(got[0].Dir, ManifestFileName) {
 		t.Errorf("ManifestPath = %q, want %q", got[0].ManifestPath, filepath.Join(got[0].Dir, ManifestFileName))
 	}
@@ -59,7 +59,7 @@ func TestDiscoverUnparseableManifest(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("Discover() returned %d integrations, want 1", len(got))
+		t.Fatalf("Discover() returned %d jobs, want 1", len(got))
 	}
 	it := got[0]
 	if it.Valid {
@@ -78,7 +78,7 @@ func TestDiscoverUnparseableManifest(t *testing.T) {
 
 func TestDiscoverValidationFailureDoesNotPoisonSiblings(t *testing.T) {
 	root := t.TempDir()
-	writeValidIntegration(t, root, "good", "good-int")
+	writeValidJob(t, root, "good", "good-int")
 
 	// Parses fine but fails validation: schema version 2 is unsupported.
 	badDir := filepath.Join(root, "bad")
@@ -90,10 +90,10 @@ func TestDiscoverValidationFailureDoesNotPoisonSiblings(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("Discover() returned %d integrations, want 2", len(got))
+		t.Fatalf("Discover() returned %d jobs, want 2", len(got))
 	}
 
-	byID := map[string]*Integration{}
+	byID := map[string]*Job{}
 	for _, it := range got {
 		byID[it.ID] = it
 	}
@@ -123,15 +123,15 @@ func TestDiscoverValidationFailureDoesNotPoisonSiblings(t *testing.T) {
 
 func TestDiscoverDuplicateNames(t *testing.T) {
 	root := t.TempDir()
-	writeValidIntegration(t, root, "aaa", "duplicated")
-	writeValidIntegration(t, root, "bbb", "duplicated")
+	writeValidJob(t, root, "aaa", "duplicated")
+	writeValidJob(t, root, "bbb", "duplicated")
 
 	got, err := Discover(root)
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("Discover() returned %d integrations, want 2", len(got))
+		t.Fatalf("Discover() returned %d jobs, want 2", len(got))
 	}
 
 	var valid, invalid int
@@ -171,7 +171,7 @@ func TestDiscoverSkipsNoisyDirectories(t *testing.T) {
 	}
 	for i, rel := range skipped {
 		name := "hidden-int-" + string(rune('a'+i))
-		writeValidIntegration(t, root, rel, name)
+		writeValidJob(t, root, rel, name)
 	}
 
 	got, err := Discover(root)
@@ -179,7 +179,7 @@ func TestDiscoverSkipsNoisyDirectories(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("Discover() returned %d integrations, want 0: %+v", len(got), got)
+		t.Fatalf("Discover() returned %d jobs, want 0: %+v", len(got), got)
 	}
 }
 
@@ -213,6 +213,6 @@ func TestDiscoverEmptyDirectory(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("Discover() returned %d integrations, want 0", len(got))
+		t.Fatalf("Discover() returned %d jobs, want 0", len(got))
 	}
 }

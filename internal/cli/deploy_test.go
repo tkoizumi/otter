@@ -22,13 +22,13 @@ func tempRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test/otter\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "integrations", "counter"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "jobs", "counter"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "integrations", "counter", "otter.yaml"), []byte("version: 1\nname: counter\nentrypoint: main.py\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "jobs", "counter", "otter.yaml"), []byte("version: 1\nname: counter\nentrypoint: main.py\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "integrations", "counter", "main.py"), []byte("print(1)\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "jobs", "counter", "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -42,7 +42,7 @@ func tempProject(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(dir, ".otter"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	integ := filepath.Join(dir, "shopify_integrations", "customer_sync")
+	integ := filepath.Join(dir, "shopify_jobs", "customer_sync")
 	if err := os.MkdirAll(integ, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func tempProject(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(integ, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "shopify_integrations", "lib", "python"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "shopify_jobs", "lib", "python"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -137,7 +137,7 @@ func TestDeployStatusWithoutState(t *testing.T) {
 	}
 }
 
-func TestDeployWithoutIntegrationsFails(t *testing.T) {
+func TestDeployWithoutJobsFails(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test/otter\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestDeployWithoutIntegrationsFails(t *testing.T) {
 
 	code, _, stderr := runDeploy(t, "--host", "droplet")
 	if code == 0 {
-		t.Fatal("deploy succeeded with no integrations to ship")
+		t.Fatal("deploy succeeded with no jobs to ship")
 	}
 	if !strings.Contains(stderr, "no otter.yaml found") && !strings.Contains(stderr, "nothing to deploy") {
 		t.Errorf("stderr does not explain the empty project:\n%s", stderr)
@@ -164,11 +164,11 @@ func TestUsageDocumentsDeploy(t *testing.T) {
 }
 
 // sharedSourcesFor resolves the manifest's own declared python.path entries;
-// the release captures exactly what the integration imports, and --shared adds
+// the release captures exactly what the job imports, and --shared adds
 // trees the manifest cannot express.
 func TestSharedSourcesForUsesManifestPaths(t *testing.T) {
 	root := t.TempDir()
-	source := filepath.Join(root, "integrations", "foo")
+	source := filepath.Join(root, "jobs", "foo")
 	shared := filepath.Join(root, "lib")
 	inner := filepath.Join(source, "vendor")
 	for _, dir := range []string{source, shared, inner} {
@@ -185,8 +185,8 @@ func TestSharedSourcesForUsesManifestPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The integration-local entry is handed to Plan too, which drops it because
-	// the integration's own copy already carries it.
+	// The job-local entry is handed to Plan too, which drops it because
+	// the job's own copy already carries it.
 	if len(sources) != 2 {
 		t.Fatalf("resolved %d shared sources, want the declared lib and vendor: %+v", len(sources), sources)
 	}
@@ -196,7 +196,7 @@ func TestSharedSourcesForUsesManifestPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(layout.Trees) != 1 || layout.Trees[0].Name != "lib" {
-		t.Fatalf("layout = %+v, want only lib captured from outside the integration", layout.Trees)
+		t.Fatalf("layout = %+v, want only lib captured from outside the job", layout.Trees)
 	}
 
 	// An explicit --shared entry is additive and deduplicated.
@@ -217,7 +217,7 @@ func TestSharedSourcesForUsesManifestPaths(t *testing.T) {
 // that dropped it would run against live code here and fail on the host.
 func TestSharedSourcesForRefusesAMissingTree(t *testing.T) {
 	root := t.TempDir()
-	source := filepath.Join(root, "integrations", "foo")
+	source := filepath.Join(root, "jobs", "foo")
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestSharedSourcesForRefusesAMissingTree(t *testing.T) {
 // missing directory on the host. The release path refuses it up front.
 func TestAbsolutePythonPathIsRefusedForRelease(t *testing.T) {
 	root := t.TempDir()
-	source := filepath.Join(root, "integrations", "foo")
+	source := filepath.Join(root, "jobs", "foo")
 	shared := filepath.Join(root, "lib")
 	if err := os.MkdirAll(shared, 0o755); err != nil {
 		t.Fatal(err)
@@ -256,12 +256,12 @@ func TestAbsolutePythonPathIsRefusedForRelease(t *testing.T) {
 }
 
 // Deploy releases from a distinct discovery root while the shared library sits
-// beside it. The one base rule has to place the integration at
-// integrations/<name> and the tree at lib/python, which is what makes the
+// beside it. The one base rule has to place the job at
+// jobs/<name> and the tree at lib/python, which is what makes the
 // manifest's ../../lib/python resolve after activation.
 func TestDeployLayoutUsesTheRepositoryBase(t *testing.T) {
 	remote := t.TempDir()
-	root := filepath.Join(remote, "integrations")
+	root := filepath.Join(remote, "jobs")
 	name := "counter"
 	source := filepath.Join(root, name)
 	shared := filepath.Join(remote, "lib", "python")
@@ -275,8 +275,8 @@ func TestDeployLayoutUsesTheRepositoryBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if layout.IntegrationPath != "integrations/"+name {
-		t.Errorf("integration placed at %q, want integrations/%s", layout.IntegrationPath, name)
+	if layout.JobPath != "jobs/"+name {
+		t.Errorf("job placed at %q, want jobs/%s", layout.JobPath, name)
 	}
 	if len(layout.Trees) != 1 || layout.Trees[0].Name != "lib/python" {
 		t.Fatalf("shared tree placed at %+v, want lib/python", layout.Trees)
@@ -415,7 +415,7 @@ func TestBinarySourceSelection(t *testing.T) {
 // up from a subdirectory to the directory carrying the marker.
 func TestFindProjectRootWalksUpToAProject(t *testing.T) {
 	root := t.TempDir()
-	nested := filepath.Join(root, "shopify_integrations", "customer_sync")
+	nested := filepath.Join(root, "shopify_jobs", "customer_sync")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}

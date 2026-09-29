@@ -197,7 +197,7 @@ func TestGetReadyAcceptsARecordedIdentity(t *testing.T) {
 
 // recordedIdentityOf mirrors what the daemon stores on a run.
 func recordedIdentityOf(spec Spec) Spec {
-	return RecordedIdentity(spec.Integration, spec.Python, spec.Digest, spec.Policy)
+	return RecordedIdentity(spec.Job, spec.Python, spec.Digest, spec.Policy)
 }
 
 // A host that has lost its preparation toolchain must still be able to run an
@@ -227,7 +227,7 @@ func TestMissingUVDegradesToAbsentPolicy(t *testing.T) {
 
 // The daemon and `otter release` must resolve uv to the same binary, because
 // uv is part of the preparation policy and therefore of the environment
-// digest. A disagreement produces two environments for one integration, and
+// digest. A disagreement produces two environments for one job, and
 // the run then looks for one preparation never built.
 func TestUVPathPrefersTheVendoredCopy(t *testing.T) {
 	data := t.TempDir()

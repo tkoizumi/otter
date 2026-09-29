@@ -95,7 +95,7 @@ func TestPythonPathAcceptsAbsoluteEntries(t *testing.T) {
 // a dry run perform real writes, silently.
 func TestManagedHostVariables(t *testing.T) {
 	allowed := []string{
-		// Operational knobs documented for integrations.
+		// Operational knobs documented for jobs.
 		"DRY_RUN", "PAGE_SIZE", "MAX_PAGES_PER_RUN", "RUN_BUDGET_SECONDS",
 		"OVERLAP_SECONDS", "SALESFORCE_BATCH_SIZE", "SYNC_ADDRESS",
 		"SHOPIFY_SORT_KEY",
@@ -110,7 +110,7 @@ func TestManagedHostVariables(t *testing.T) {
 	}
 
 	// The point of the narrow environment: anything else stays out, above all
-	// the daemon's own credential and other integrations' secrets.
+	// the daemon's own credential and other jobs' secrets.
 	denied := []string{
 		"OTTER_API_TOKEN", "OTTER_STATE_TOKEN",
 		"SHOPIFY_CLIENT_SECRET", "SALESFORCE_CLIENT_SECRET",

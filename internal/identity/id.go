@@ -1,6 +1,6 @@
-// Package identity owns the durable identity of an integration instance.
+// Package identity owns the durable identity of a job instance.
 //
-// An integration is not identified by its manifest name or by its directory:
+// A job is not identified by its manifest name or by its directory:
 // both are things an operator edits or a `cp -r` duplicates. Identity is a
 // UUID minted once by the runtime, recorded in the registry, and mirrored into
 // a `.otter-id` marker inside the source directory so that the registry can
@@ -20,7 +20,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ManifestFileName is the integration manifest filename. It lives here as well
+// ManifestFileName is the job manifest filename. It lives here as well
 // as in internal/config because discovery produces identity observations, and
 // a shared constant is what keeps the two packages from drifting.
 const ManifestFileName = "otter.yaml"
@@ -30,9 +30,9 @@ const ManifestFileName = "otter.yaml"
 const MaxIDLength = 128
 
 // ErrInvalidID reports a value that cannot be an identifier.
-var ErrInvalidID = errors.New("identity: invalid integration id")
+var ErrInvalidID = errors.New("identity: invalid job id")
 
-// ID is an opaque integration instance identifier.
+// ID is an opaque job instance identifier.
 //
 // IDs are opaque strings, not UUID values: migration preserves the legacy
 // manifest name as the identifier so that existing state, history, tokens and

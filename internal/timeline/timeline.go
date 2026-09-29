@@ -205,23 +205,23 @@ type Request struct {
 // the log is prunable and the terminal line can be missing, but the run record
 // is authoritative.
 type Context struct {
-	SchemaVersion   int                    `json:"schema_version"`
-	RunID           string                 `json:"run_id"`
-	IntegrationID   string                 `json:"integration_id"`
-	IntegrationName string                 `json:"integration_name,omitempty"`
-	Status          string                 `json:"status"`
-	Attempt         int                    `json:"attempt"`
-	ParentRunID     string                 `json:"parent_run_id,omitempty"`
-	TriggerType     string                 `json:"trigger_type,omitempty"`
-	Error           string                 `json:"error,omitempty"`
-	ExitCode        *int                   `json:"exit_code,omitempty"`
-	ReleaseDigest   string                 `json:"release_digest,omitempty"`
-	CapturePolicy   string                 `json:"capture_policy,omitempty"`
-	CreatedAt       time.Time              `json:"created_at"`
-	StartedAt       *time.Time             `json:"started_at,omitempty"`
-	FinishedAt      *time.Time             `json:"finished_at,omitempty"`
-	Capture         *inspection.RunCapture `json:"capture"`
-	IncludeHTTP     bool                   `json:"include_http"`
+	SchemaVersion int                    `json:"schema_version"`
+	RunID         string                 `json:"run_id"`
+	JobID         string                 `json:"job_id"`
+	JobName       string                 `json:"job_name,omitempty"`
+	Status        string                 `json:"status"`
+	Attempt       int                    `json:"attempt"`
+	ParentRunID   string                 `json:"parent_run_id,omitempty"`
+	TriggerType   string                 `json:"trigger_type,omitempty"`
+	Error         string                 `json:"error,omitempty"`
+	ExitCode      *int                   `json:"exit_code,omitempty"`
+	ReleaseDigest string                 `json:"release_digest,omitempty"`
+	CapturePolicy string                 `json:"capture_policy,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+	StartedAt     *time.Time             `json:"started_at,omitempty"`
+	FinishedAt    *time.Time             `json:"finished_at,omitempty"`
+	Capture       *inspection.RunCapture `json:"capture"`
+	IncludeHTTP   bool                   `json:"include_http"`
 }
 
 // Event is one item on the timeline.
@@ -415,22 +415,22 @@ func (r *Reader) Page(ctx context.Context, req Request) (*Page, error) {
 		}
 		page.Events = merged
 		page.Context = Context{
-			SchemaVersion:   SchemaVersion,
-			RunID:           run.ID,
-			IntegrationID:   run.IntegrationID,
-			IntegrationName: run.IntegrationName,
-			Status:          string(run.Status),
-			Attempt:         run.Attempt,
-			TriggerType:     run.TriggerType,
-			Error:           derefString(run.Error),
-			ExitCode:        run.ExitCode,
-			ReleaseDigest:   run.ReleaseDigest,
-			CapturePolicy:   run.CapturePolicy,
-			CreatedAt:       run.CreatedAt,
-			StartedAt:       run.StartedAt,
-			FinishedAt:      run.FinishedAt,
-			Capture:         capture,
-			IncludeHTTP:     req.IncludeHTTP,
+			SchemaVersion: SchemaVersion,
+			RunID:         run.ID,
+			JobID:         run.JobID,
+			JobName:       run.JobName,
+			Status:        string(run.Status),
+			Attempt:       run.Attempt,
+			TriggerType:   run.TriggerType,
+			Error:         derefString(run.Error),
+			ExitCode:      run.ExitCode,
+			ReleaseDigest: run.ReleaseDigest,
+			CapturePolicy: run.CapturePolicy,
+			CreatedAt:     run.CreatedAt,
+			StartedAt:     run.StartedAt,
+			FinishedAt:    run.FinishedAt,
+			Capture:       capture,
+			IncludeHTTP:   req.IncludeHTTP,
 		}
 		if run.ParentRunID != nil {
 			page.Context.ParentRunID = *run.ParentRunID
@@ -549,8 +549,8 @@ func runFingerprint(run *runs.TimelineRun) string {
 	}
 	return strings.Join([]string{
 		run.ID,
-		run.IntegrationID,
-		run.IntegrationName,
+		run.JobID,
+		run.JobName,
 		string(run.Status),
 		strconv.Itoa(run.Attempt),
 		parent,
@@ -622,7 +622,7 @@ func (r *Reader) merge(runID string, logs []runs.LogEntry, exchanges []inspectio
 func logEvent(runID string, entry runs.LogEntry) Event {
 	// The kind comes from who wrote the line, not from the stream it landed on:
 	// the daemon's narration and the SDK's ctx.log output share the `otter`
-	// stream, and calling an integration's own log line a lifecycle event would
+	// stream, and calling a job's own log line a lifecycle event would
 	// misdescribe it.
 	kind := KindLog
 	if entry.IsLifecycle() {

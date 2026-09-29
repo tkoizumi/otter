@@ -35,16 +35,16 @@ type HostDeploy struct {
 	// Version is the build version shipped by the last deploy.
 	Version string `json:"version"`
 	// Revision is a hash of everything that was pushed: both binaries plus the
-	// integration and library trees. Equal revisions mean a no-op deploy.
+	// job and library trees. Equal revisions mean a no-op deploy.
 	Revision string `json:"revision"`
-	// SecretsRevision hashes the integration env files. It is tracked
+	// SecretsRevision hashes the job env files. It is tracked
 	// separately so that rotating a credential restarts the daemon without
 	// pretending the code changed.
 	SecretsRevision string `json:"secrets_revision,omitempty"`
 	// DeployedAt is when that revision landed.
 	DeployedAt time.Time `json:"deployed_at"`
 
-	// Bindings relates each deployed integration's label to the identity the
+	// Bindings relates each deployed job's label to the identity the
 	// destination runtime assigned it. The destination mints its own identity
 	// -- local and remote ids are independent -- so this record is the only
 	// place the two are related, and it is what lets a later deploy tell

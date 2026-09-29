@@ -2,8 +2,8 @@ package daemon
 
 import "sync"
 
-// capacity tracks how many runs of each integration are executing right now
-// and enforces the per-integration `concurrency` limit.
+// capacity tracks how many runs of each job are executing right now
+// and enforces the per-job `concurrency` limit.
 //
 // It implements queue.Capacity so the durable queue can reserve a slot in the
 // same transaction that claims a run. That is what makes "claim" and "start"
@@ -34,10 +34,10 @@ func (c *capacity) setLimits(limits map[string]int) {
 	c.limits = limits
 }
 
-// Reserve claims a slot for an integration. It returns false when the
-// integration is at its concurrency limit, when the runtime is draining, or
+// Reserve claims a slot for a job. It returns false when the
+// job is at its concurrency limit, when the runtime is draining, or
 // when the global worker limit is reached.
-func (c *capacity) Reserve(integrationID string) bool {
+func (c *capacity) Reserve(jobID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -45,31 +45,31 @@ func (c *capacity) Reserve(integrationID string) bool {
 		return false
 	}
 
-	limit := c.limits[integrationID]
+	limit := c.limits[jobID]
 	if limit < 1 {
 		limit = 1
 	}
-	if c.counts[integrationID] >= limit {
+	if c.counts[jobID] >= limit {
 		return false
 	}
 	if c.total >= c.maxWorkers {
 		return false
 	}
 
-	c.counts[integrationID]++
+	c.counts[jobID]++
 	c.total++
 	return true
 }
 
 // Release gives a slot back.
-func (c *capacity) Release(integrationID string) {
+func (c *capacity) Release(jobID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.counts[integrationID] > 0 {
-		c.counts[integrationID]--
-		if c.counts[integrationID] == 0 {
-			delete(c.counts, integrationID)
+	if c.counts[jobID] > 0 {
+		c.counts[jobID]--
+		if c.counts[jobID] == 0 {
+			delete(c.counts, jobID)
 		}
 	}
 	if c.total > 0 {
@@ -77,10 +77,10 @@ func (c *capacity) Release(integrationID string) {
 	}
 }
 
-func (c *capacity) running(integrationID string) int {
+func (c *capacity) running(jobID string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.counts[integrationID]
+	return c.counts[jobID]
 }
 
 func (c *capacity) totalRunning() int {
@@ -89,7 +89,7 @@ func (c *capacity) totalRunning() int {
 	return c.total
 }
 
-// snapshot returns the running count per integration.
+// snapshot returns the running count per job.
 func (c *capacity) snapshot() map[string]int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

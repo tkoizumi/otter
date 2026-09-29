@@ -15,7 +15,7 @@ import (
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
-// cronTicker is a cron-only integration. The descriptor form keeps the schedule
+// cronTicker is a cron-only job. The descriptor form keeps the schedule
 // far enough away that a test never races a real fire.
 const cronTicker = `
 version: 1
@@ -33,14 +33,14 @@ retry:
 // it back, because a resume that waited for the next reload would look broken.
 func TestPauseUnarmsCronAndResumeRearms(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "ticker", cronTicker, noopPython)
+	writeJob(t, root, "ticker", cronTicker, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 	id := runtimeID(t, d, "ticker")
 
 	if _, ok := d.sched.Spec(id); !ok {
-		t.Fatal("a cron integration should start armed")
+		t.Fatal("a cron job should start armed")
 	}
 
 	view, err := d.SetPaused(ctx, "ticker", true)
@@ -54,23 +54,23 @@ func TestPauseUnarmsCronAndResumeRearms(t *testing.T) {
 		t.Error("the pause view should say when the pause began")
 	}
 	if _, ok := d.sched.Spec(id); ok {
-		t.Error("a paused integration should not be armed")
+		t.Error("a paused job should not be armed")
 	}
 
-	// The view is what `otter inspect` and `otter integrations --schedule`
+	// The view is what `otter inspect` and `otter jobs --schedule`
 	// read, so it has to carry both the state and the absence of a next run.
-	got, ok := d.GetIntegration("ticker")
+	got, ok := d.GetJob("ticker")
 	if !ok {
-		t.Fatal("the paused integration disappeared from the registry")
+		t.Fatal("the paused job disappeared from the registry")
 	}
 	if !got.Triggers.Paused {
-		t.Error("the integration view does not report the pause")
+		t.Error("the job view does not report the pause")
 	}
 	if got.Triggers.PausedAt == nil {
 		t.Error("the view should report when the pause began")
 	}
 	if got.NextRunAt != nil {
-		t.Errorf("a paused integration still offers a next run: %s", got.NextRunAt)
+		t.Errorf("a paused job still offers a next run: %s", got.NextRunAt)
 	}
 
 	// A repeat is a no-op, which is what lets a deploy script call it
@@ -93,17 +93,17 @@ func TestPauseUnarmsCronAndResumeRearms(t *testing.T) {
 	if _, ok := d.sched.Spec(id); !ok {
 		t.Error("resume did not re-arm the cron trigger")
 	}
-	if got, _ := d.GetIntegration("ticker"); got.Triggers.Paused {
+	if got, _ := d.GetJob("ticker"); got.Triggers.Paused {
 		t.Error("the view still reports the pause after a resume")
 	}
 }
 
-// A pause suspends admission, not the integration. Cron and webhook triggers
+// A pause suspends admission, not the job. Cron and webhook triggers
 // are refused; a manual run is the operator asking for one, which is exactly
 // what pausing did not forbid.
 func TestPauseRefusesAutonomousTriggersButNotManualRuns(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "ticker", cronTicker, noopPython)
+	writeJob(t, root, "ticker", cronTicker, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -142,13 +142,13 @@ func TestPauseRefusesAutonomousTriggersButNotManualRuns(t *testing.T) {
 	}
 }
 
-// A webhook is an autonomous trigger, so a paused integration answers 503 --
+// A webhook is an autonomous trigger, so a paused job answers 503 --
 // "not accepting triggers right now" -- rather than 409 or 404. The caller
-// holds a valid token, so telling it the integration is paused leaks nothing,
+// holds a valid token, so telling it the job is paused leaks nothing,
 // while 404 would look like a configuration error.
 func TestPausedWebhookReturnsServiceUnavailable(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "hook", `
+	writeJob(t, root, "hook", `
 version: 1
 name: hook
 entrypoint: main.py
@@ -165,7 +165,7 @@ retry:
 
 	token, ok := d.WebhookTokenFor("hook")
 	if !ok || token == "" {
-		t.Fatal("a webhook-enabled integration should have a token")
+		t.Fatal("a webhook-enabled job should have a token")
 	}
 	url := "http://" + d.cfg.Listen + "/v1/hooks/hook"
 
@@ -213,10 +213,10 @@ retry:
 
 // The pause is durable and keyed by identity, so a daemon that comes back up
 // must not arm a trigger the operator paused before the restart.
-func TestPausedIntegrationStaysUnarmedAcrossARestart(t *testing.T) {
+func TestPausedJobStaysUnarmedAcrossARestart(t *testing.T) {
 	root := t.TempDir()
 	dataDir := t.TempDir()
-	writeIntegration(t, root, "ticker", cronTicker, noopPython)
+	writeJob(t, root, "ticker", cronTicker, noopPython)
 
 	// Learn the identity the way the daemon will, then write the pause the way
 	// a previous daemon would have left it.
@@ -230,7 +230,7 @@ func TestPausedIntegrationStaysUnarmedAcrossARestart(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := seed.ExecContext(ctx,
-		`INSERT INTO integration_pause (integration_id, paused_at) VALUES (?, ?)`,
+		`INSERT INTO job_pause (job_id, paused_at) VALUES (?, ?)`,
 		id, database.FormatTime(time.Now().UTC())); err != nil {
 		t.Fatalf("seed pause: %v", err)
 	}
@@ -241,11 +241,11 @@ func TestPausedIntegrationStaysUnarmedAcrossARestart(t *testing.T) {
 	d := newDaemon(t, root, dataDir, nil, nil)
 
 	if _, ok := d.sched.Spec(id); ok {
-		t.Error("a paused integration was armed at startup")
+		t.Error("a paused job was armed at startup")
 	}
-	view, ok := d.GetIntegration("ticker")
+	view, ok := d.GetJob("ticker")
 	if !ok {
-		t.Fatal("the paused integration is missing from the registry")
+		t.Fatal("the paused job is missing from the registry")
 	}
 	if !view.Triggers.Paused {
 		t.Errorf("trigger state after restart = %+v, want the seeded pause", view.Triggers)
@@ -254,10 +254,10 @@ func TestPausedIntegrationStaysUnarmedAcrossARestart(t *testing.T) {
 
 // A move preserves the identity, so it must preserve the pause. A reset mints a
 // fresh identity, so it must not inherit one: the operator is looking at a new
-// integration and it starts enabled.
+// job and it starts enabled.
 func TestPauseFollowsAMoveAndNotAReset(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", cronTicker, noopPython)
+	writeJob(t, root, "a", cronTicker, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -267,7 +267,7 @@ func TestPauseFollowsAMoveAndNotAReset(t *testing.T) {
 		t.Fatalf("pause: %v", err)
 	}
 
-	moved, err := d.MoveIntegration(ctx, "id:"+id, filepath.Join(root, "moved"))
+	moved, err := d.MoveJob(ctx, "id:"+id, filepath.Join(root, "moved"))
 	if err != nil {
 		t.Fatalf("move: %v", err)
 	}
@@ -278,17 +278,17 @@ func TestPauseFollowsAMoveAndNotAReset(t *testing.T) {
 		t.Error("the pause did not follow the identity across the move")
 	}
 	if _, ok := d.sched.Spec(id); ok {
-		t.Error("a moved integration that is paused should stay unarmed")
+		t.Error("a moved job that is paused should stay unarmed")
 	}
 
-	reset, err := d.ResetIntegration(ctx, "id:"+id)
+	reset, err := d.ResetJob(ctx, "id:"+id)
 	if err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	if reset.NewID == id {
 		t.Fatal("reset should mint a fresh identity")
 	}
-	after, ok := d.GetIntegration("id:" + reset.NewID)
+	after, ok := d.GetJob("id:" + reset.NewID)
 	if !ok {
 		t.Fatal("the fresh identity is missing from the registry")
 	}
@@ -304,7 +304,7 @@ func TestPauseFollowsAMoveAndNotAReset(t *testing.T) {
 // happened to reuse the row would come back paused for no visible reason.
 func TestDeletePurgesThePause(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "ticker", cronTicker, noopPython)
+	writeJob(t, root, "ticker", cronTicker, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -313,7 +313,7 @@ func TestDeletePurgesThePause(t *testing.T) {
 	if _, err := d.SetPaused(ctx, "id:"+id, true); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if _, err := d.DeleteIntegration(ctx, "id:"+id); err != nil {
+	if _, err := d.DeleteJob(ctx, "id:"+id); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if d.paused.Paused(id) {
@@ -322,7 +322,7 @@ func TestDeletePurgesThePause(t *testing.T) {
 
 	var rows int
 	if err := d.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM integration_pause WHERE integration_id = ?`, id).Scan(&rows); err != nil {
+		`SELECT COUNT(*) FROM job_pause WHERE job_id = ?`, id).Scan(&rows); err != nil {
 		t.Fatalf("count pause rows: %v", err)
 	}
 	if rows != 0 {
@@ -333,9 +333,9 @@ func TestDeletePurgesThePause(t *testing.T) {
 // A trigger that was already in flight when the pause landed must not become a
 // run. Unregistering the schedule is not the same instant as the operator's
 // decision, so the tick re-checks.
-func TestCronTickSkipsAPausedIntegration(t *testing.T) {
+func TestCronTickSkipsAPausedJob(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "ticker", cronTicker, noopPython)
+	writeJob(t, root, "ticker", cronTicker, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -349,7 +349,7 @@ func TestCronTickSkipsAPausedIntegration(t *testing.T) {
 	// queued before the pause.
 	d.cronTick(id, "@every 6h")
 
-	list, err := d.ListRuns(ctx, runs.Filter{IntegrationID: id})
+	list, err := d.ListRuns(ctx, runs.Filter{JobID: id})
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}

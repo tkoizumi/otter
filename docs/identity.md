@@ -1,6 +1,6 @@
-# Integration identity
+# Job identity
 
-Every registered integration has a durable identity that is separate from its
+Every registered job has a durable identity that is separate from its
 name and from the directory holding its source. This document explains the
 model, what it fixes, and how to operate it.
 
@@ -19,13 +19,13 @@ model, what it fixes, and how to operate it.
 
 ## Why
 
-Integration identity used to be the manifest `name`. That made a human-chosen,
+Job identity used to be the manifest `name`. That made a human-chosen,
 mutable, reusable string the primary key for state, run history, webhook tokens,
-releases and Python environments. Two integrations that declared the same name
-shared one identity, and deleting an integration did not retire its data, so a
-later integration created under the same name inherited it.
+releases and Python environments. Two jobs that declared the same name
+shared one identity, and deleting a job did not retire its data, so a
+later job created under the same name inherited it.
 
-The concrete failure: an integration was copied to a second directory, both
+The concrete failure: a job was copied to a second directory, both
 copies declared `name: counter`, and the copy read the original's accumulated
 state. A name is a label; it cannot be a key.
 
@@ -43,7 +43,7 @@ right now.
 
 ## The registry
 
-`integration_instances` in the data-directory database records one row per
+`job_instances` in the data-directory database records one row per
 identity that has ever been registered:
 
 - `id` — the durable identity, the primary key.
@@ -52,7 +52,7 @@ identity that has ever been registered:
 - `status` — `active`, `retired`, `deleting` or `deleted`.
 - `generation` — bumped whenever authority is revoked.
 
-`integration_paths` records the single current owner of each canonical path, and
+`job_paths` records the single current owner of each canonical path, and
 whether a path is suppressed because its identity was deleted.
 `identity_operations` is a journal that makes a change spanning SQLite and the
 filesystem recoverable across a crash.
@@ -76,14 +76,14 @@ work without the runtime having to guess:
 
 | Event | Marker | Result |
 | --- | --- | --- |
-| `cp -r counter integrations/counter` | copied to the new path | The copy is a **new instance**: fresh identity, empty state |
+| `cp -r counter jobs/counter` | copied to the new path | The copy is a **new instance**: fresh identity, empty state |
 | `mv counter counter-v2` (recorded in the registry) | unchanged | Same identity, same state |
 | `rm -rf counter` then recreate | gone | **New instance** on the next scan, even if the daemon was stopped |
 | replacing a tree with a different marker | different | The old identity is **retired**; the replacement registers fresh |
 | restore an exact backup at the same path | unchanged | Continuity; use `otter reset` for a deliberate fresh start |
 
 The registry is authoritative and the marker is a claim. A marker copied from
-another integration never grants access to that integration's state: the second
+another job never grants access to that job's state: the second
 path is a clone and gets its own identity.
 
 Markers are read without following symlinks, verified on the opened descriptor,
@@ -97,16 +97,16 @@ instance is what you want.
 
 ## What identity keys
 
-- `integration_state` rows
-- `runs.integration_id`, `run_queue.integration_id`
-- `webhook_tokens.integration_id`
+- `job_state` rows
+- `runs.job_id`, `run_queue.job_id`
+- `webhook_tokens.job_id`
 - release directories: `.releases/<id>/<digest>` and `.releases/active/<id>`
 - prepared Python environments and their recorded identity
 - per-run state tokens, and the child environment variable
-  `OTTER_INTEGRATION_ID`
+  `OTTER_JOB_ID`
 
-A run also records `integration_name` (the label at submission) and
-`integration_generation`. The generation is checked when a queued run is claimed
+A run also records `job_name` (the label at submission) and
+`job_generation`. The generation is checked when a queued run is claimed
 and again when a run token writes state, so a run authorized before a reset,
 move, retirement or deletion cannot execute or write afterwards.
 
@@ -114,17 +114,17 @@ Child processes receive both:
 
 | Variable | Value |
 | --- | --- |
-| `OTTER_INTEGRATION_ID` | the durable identity |
-| `OTTER_INTEGRATION_NAME` | the manifest label |
+| `OTTER_JOB_ID` | the durable identity |
+| `OTTER_JOB_NAME` | the manifest label |
 
 ## Resolving a reference
 
 One resolver is shared by the CLI and the API:
 
 - `otter run counter` — a bare label. It succeeds only when exactly one *active*
-  integration has that label. Two matches is a conflict that lists every
+  job has that label. Two matches is a conflict that lists every
   candidate id and path.
-- `otter run .`, `otter run ./integrations/counter` — a path. It is canonicalized
+- `otter run .`, `otter run ./jobs/counter` — a path. It is canonicalized
   and matched through path ownership, never by comparing manifest names. `.` and
   `..`, an absolute path, anything containing a path separator, or a literal
   `otter.yaml` are path references.
@@ -136,7 +136,7 @@ because a relative path means different things to the two processes.
 
 ## Reconciliation rules
 
-On every **complete** scan of the integrations root:
+On every **complete** scan of the jobs root:
 
 | Observation | Action |
 | --- | --- |
@@ -161,9 +161,9 @@ of a failed observation, never of deletion, so it retires nothing.
 | `otter reset <ref>` | Retire the identity and mint a fresh one at the same path. Old data is kept for inspection or deletion. |
 | `otter delete <ref>` | Purge state, run history and logs, webhook token, releases and queue rows. Source files are left in place; the path is suppressed so a scan cannot silently re-register it. |
 | `otter move <ref> <dest>` | Preserve the identity across a same-filesystem rename performed by the daemon. |
-| `otter identity list [--all]` | Print registrations. Reads the registry directly, so it works with the runtime stopped. `--all` includes retired and deleted identities. |
+| `otter jobs [--all]` | List jobs with their id, status and path. Reads the identity registry directly, so it works with the runtime stopped; a reachable daemon adds manifest validity and triggers. `--all` includes invalid jobs and retired or deleted identities. |
 
-### Removing an integration
+### Removing a job
 
 There are two separate acts, and they are deliberately not one command:
 
@@ -181,28 +181,28 @@ So:
 
 ```bash
 # Stop using it, keep its data. Reversible.
-rm -rf integrations/reporting
+rm -rf jobs/reporting
 
 # Retire and purge. The source may or may not still exist.
 otter delete reporting            # active, by label
-otter delete integrations/reporting  # active, by path
+otter delete jobs/reporting  # active, by path
 otter delete id:<id>              # always works, active or retired
 ```
 
 Order does not matter. `otter delete` resolves a retired identity from the
 registry, so deleting the directory first and the data second works; a bare
 label only resolves while the identity is active, which is what
-`otter identity list --all` is for — it shows the id of a retired identity so
+`otter jobs --all` is for — it shows the id of a retired identity so
 it can still be purged.
 
 ### Releases left behind
 
-`otter delete` removes an identity's releases, but an integration whose
+`otter delete` removes an identity's releases, but a job whose
 directory was deleted *outside* the registry leaves its release data with no
 identity at all. `otter release --list --all` shows those rows with no id:
 
 ```
-INTEGRATION     ID  ACTIVE RELEASE  REL  STATUS          PATH
+JOB     ID  ACTIVE RELEASE  REL  STATUS          PATH
 tshirt_company  -   1b23f2551adf    1    (no identity)   -
 ```
 
@@ -218,7 +218,7 @@ Pruning refuses to run until the identity registry is bootstrapped, because
 with an empty registry every release would look like an orphan.
 
 `otter delete` does not remove the directory, and it is not how a *label*
-collision is resolved: two active integrations sharing a label make the bare
+collision is resolved: two active jobs sharing a label make the bare
 label ambiguous, and the owner is chosen during migration with
 `otter identity migrate --assign`, not by deleting data.
 
@@ -242,7 +242,7 @@ directory is a collision: there is only one old state namespace, so the operator
 chooses its owner explicitly.
 
 ```bash
-otter identity migrate --apply --assign counter=./integrations/counter
+otter identity migrate --apply --assign counter=./jobs/counter
 ```
 
 Startup bootstraps an unambiguous workspace automatically. A collision stops the
@@ -254,23 +254,23 @@ the directory: stop the runtime, or run it against a copy.
 Before migrating, take a backup that includes the write-ahead log — the daemon
 checkpoints on a clean shutdown, so either stop it cleanly or copy the database
 and its `-wal`/`-shm` files together. Markers are the only files written into
-the integrations tree; the repository's own git history is the rollback for
+the jobs tree; the repository's own git history is the rollback for
 those.
 
 ## API
 
-Releases address integrations by identity. A reference is resolved once, with:
+Releases address jobs by identity. A reference is resolved once, with:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /v1/integrations/resolve?ref=<ref>` | Resolve a label, path or id. `404` for no match, `409` listing candidates when a label is ambiguous. |
-| `POST /v1/integrations` | Register a path: `{"path": "..."}`. |
-| `POST /v1/integrations/{id}/reset` | Retire and mint fresh; returns `old_id` and `new_id`. |
-| `POST /v1/integrations/{id}/move` | `{"destination": "..."}`. |
-| `DELETE /v1/integrations/{id}` | Purge the identity's durable artifacts. |
+| `GET /v1/jobs/resolve?ref=<ref>` | Resolve a label, path or id. `404` for no match, `409` listing candidates when a label is ambiguous. |
+| `POST /v1/jobs` | Register a path: `{"path": "..."}`. |
+| `POST /v1/jobs/{id}/reset` | Retire and mint fresh; returns `old_id` and `new_id`. |
+| `POST /v1/jobs/{id}/move` | `{"destination": "..."}`. |
+| `DELETE /v1/jobs/{id}` | Purge the identity's durable artifacts. |
 
-Integration views carry both `id` and `name`, plus `generation` and `status`.
-Run views carry `integration_id` and `integration_name`.
+Job views carry both `id` and `name`, plus `generation` and `status`.
+Run views carry `job_id` and `job_name`.
 
 ## Deployment
 
@@ -280,26 +280,26 @@ independent and need not match. `otter deploy`:
 - excludes `.otter-id` from the staged tree, so a local identity never travels;
 - excludes and protects `.otter-id` in the rsync step, so `--delete` cannot
   remove the destination's marker;
-- releases each integration by its destination path, never by a directory
+- releases each job by its destination path, never by a directory
   basename that could be read as a label;
-- records the destination identity of each integration in `.otter/deploy.json`,
+- records the destination identity of each job in `.otter/deploy.json`,
   which is what lets a later deploy tell "same instance, new code" from "a new
   instance", and prints them in `otter deploy --status`.
 
 The deployed tree must be writable by the runtime user, because registering a
-new integration writes its marker.
+new job writes its marker.
 
 ## Trust boundary
 
 The marker is a claim, not a credential. Anyone who can write into an
-integration directory can write a marker, and anyone who can also remove the
+job directory can write a marker, and anyone who can also remove the
 registered directory could have a replacement adopt a retired identity's path
 before the next scan. That is not an escalation: the same write access already
 lets them change the code the runtime executes. State isolation between
-integrations is protection against mistakes — a copy, a rename, a deletion and
+jobs is protection against mistakes — a copy, a rename, a deletion and
 recreation — not isolation from a hostile same-user process.
 
-Shared artifacts are not deleted with an integration. Prepared Python
-environments are content-addressed and may be shared by several integrations, so
+Shared artifacts are not deleted with a job. Prepared Python
+environments are content-addressed and may be shared by several jobs, so
 `otter delete` removes only what the identity exclusively owns: state, run
 history and logs, queue rows, its webhook token, and its release directories.

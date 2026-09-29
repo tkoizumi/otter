@@ -1,7 +1,7 @@
 # Otter Architecture
 
 Otter is a small runtime that turns a directory of Python scripts into a
-scheduled, observable, retrying set of integrations. This document explains how
+scheduled, observable, retrying set of jobs. This document explains how
 the pieces fit together. It should take about ten minutes to read.
 
 - [In one paragraph](#in-one-paragraph)
@@ -32,8 +32,8 @@ named fault-matrix scenario.
 
 `otterd` is a single Go binary. It scans a root directory for `otter.yaml`
 files, registers their triggers, and runs each triggered execution of an
-integration as a **separate child Python process** (`python3 main.py`).
-Everything durable — integration state, run history, captured logs, the pending
+job as a **separate child Python process** (`python3 main.py`).
+Everything durable — job state, run history, captured logs, the pending
 run queue, webhook tokens — lives in one SQLite database. There is no Postgres,
 no Redis, no Kafka, no message broker, no external scheduler and no UI. One
 process, one database file, one binary.
@@ -48,7 +48,7 @@ interpreter you would have started by hand:
 
 ```go
 exec.Command("python3", "main.py")   // literally this argv
-  Dir           = the integration's directory inside its active release
+  Dir           = the job's directory inside its active release
   Env           = the daemon's environment, minus every OTTER_* variable,
                   plus the per-run values and the manifest's env and secrets
   Stdout/Stderr = pipes the daemon reads line by line
@@ -85,9 +85,9 @@ attempts except what is in SQLite.
 | Is there an embedded interpreter? | No. The daemon has no Python dependency and no cgo. |
 | Is there a sandbox? | No. The child runs as the daemon's OS user with its full permissions — see [security.md](security.md). |
 | Container per run? | No. `execve`. No container runtime, no image pull, no warm pool. |
-| Which Python? | An external integration uses whatever `python.executable` resolves to (default `python3`), on `PATH` or absolute. A managed one uses the interpreter of the environment prepared for its release. |
+| Which Python? | An external job uses whatever `python.executable` resolves to (default `python3`), on `PATH` or absolute. A managed one uses the interpreter of the environment prepared for its release. |
 | Do runs share memory? | No. Separate processes; the only channels are the environment, the pipes and loopback HTTP. |
-| Can an integration read stdin? | No, it is `/dev/null`. An integration cannot prompt. |
+| Can a job read stdin? | No, it is `/dev/null`. A job cannot prompt. |
 | What does a run cost to start? | One interpreter start per attempt: a trivial run is ~75–150 ms end to end (measured for the bundled `counter`), plus your own imports. |
 | What breaks if it crashes? | Only the run. A segfault, an OOM kill or `os._exit()` in the child cannot take the daemon down. |
 
@@ -95,7 +95,7 @@ attempts except what is in SQLite.
 rather than a function call, it cannot reach the daemon's memory. So `ctx.state`
 and `ctx.log` are HTTP requests to `OTTER_API_URL`, authenticated with a
 short-lived bearer token (`OTTER_STATE_TOKEN`) scoped to that one run and
-integration. That is also why the *daemon* is the authority on state rather than
+job. That is also why the *daemon* is the authority on state rather than
 the SDK: the daemon is the only thing holding the database. The practical
 consequences are that state is durable even if the child is killed mid-write,
 and that the child needs no database driver at all.
@@ -105,9 +105,9 @@ signal it, see [Execution, timeouts and cancellation](#execution-timeouts-and-ca
 
 ### What runs is the release, not the tree
 
-The directory the child runs in is not the integration directory in your
-checkout: it is the integration's copy inside its **active release**, an
-immutable snapshot addressed by a digest of its contents. Every integration
+The directory the child runs in is not the job directory in your
+checkout: it is the job's copy inside its **active release**, an
+immutable snapshot addressed by a digest of its contents. Every job
 needs one before it can run -- external and managed Python alike -- and
 submission is where the binding happens: the digest is recorded on the run, so
 activating a newer release cannot move a queued or retried attempt onto
@@ -116,18 +116,18 @@ different code.
 `otter release` stages and activates a release (`otter deploy` does it on the
 host before the daemon restarts). What a release pins beyond the code depends on
 the mode: managed Python also binds a prepared interpreter and a locked
-dependency set, while an external integration runs the interpreter its manifest
+dependency set, while an external job runs the interpreter its manifest
 names. The mode and the environment binding are read from the **bound release's**
 manifest at submission, not from the live tree, so editing the source cannot
 change how an already-staged release executes.
 
 A release mirrors the workspace with one placement rule: the base is the
-closest common ancestor of the integrations discovery root, the integration
-directory and every captured shared tree, and the integration and each tree land
+closest common ancestor of the jobs discovery root, the job
+directory and every captured shared tree, and the job and each tree land
 at their path relative to that base. The release root plays the part of the
 base, so a manifest's relative `python.path` resolves verbatim. The discovery
 root takes part because deploy releases with
-`--integrations /opt/otter/integrations` while shared code lives at
+`--jobs /opt/otter/jobs` while shared code lives at
 `/opt/otter/lib/python`; without it the tree would have to be placed at
 `../lib/python`, which no release path can express. The normalized placement and
 each tree's destination name are part of the release digest, so a snapshot laid
@@ -146,17 +146,17 @@ nothing to run alongside it.
 ```
    child process                daemon                     otter.db  (WAL)
    ─────────────                ──────                     ──────────────────
-   ctx.state.set ─── HTTP ────▶ state manager ───────────▶ integration_state
+   ctx.state.set ─── HTTP ────▶ state manager ───────────▶ job_state
    ctx.log.info  ─── HTTP ────▶ log manager ─────────────▶ run_logs
    stdout/stderr ─── pipes ───▶ log manager ─────────────▶ run_logs
    exit code ─────── exec ────▶ retry manager ───────────▶ runs + run_queue
    cron / CLI / webhook ──────▶ trigger manager ─────────▶ runs + run_queue
-   `otter state set` ── HTTP ─▶ API ─────────────────────▶ integration_state
+   `otter state set` ── HTTP ─▶ API ─────────────────────▶ job_state
 ```
 
 What survives what:
 
-| Event | Integration state | Run history & logs | Pending queue |
+| Event | Job state | Run history & logs | Pending queue |
 | --- | --- | --- | --- |
 | Daemon restart (SIGTERM) | intact | intact | intact |
 | Daemon killed (SIGKILL) | intact | intact; the in-flight run is marked failed at next start and retried † | intact |
@@ -179,7 +179,7 @@ Schema details, the run lifecycle and the queue claim algorithm follow below.
 
 ## The developer experience
 
-An integration is just a directory:
+A job is just a directory:
 
 ```
 salesforce-to-netsuite/
@@ -201,7 +201,7 @@ data directory.
                           ┌────────────────────────────────────────────────┐
   otter.yaml files        │                                                │
   ┌──────────────┐        │  ┌────────────────┐    ┌──────────────────┐   │
-  │ integrations/│──walk──┼─▶│ Config loader  │───▶│ Discovery /      │   │
+  │ jobs/│──walk──┼─▶│ Config loader  │───▶│ Discovery /      │   │
   │  a/otter.yaml│        │  │ (parse+validate)│    │ registry         │   │
   │  b/otter.yaml│        │  └────────────────┘    └────────┬─────────┘   │
   └──────────────┘        │                                 │             │
@@ -236,7 +236,7 @@ data directory.
                           │                                            │  │
                           │  ┌───────────────┐   ┌──────────────────┐  │  │
   SDK ────────────────────┼─▶│ State manager │   │ HTTP API         │  │  │
-  (state get/set over     │  │ integration_  │◀──│ /health /v1/...  │  │  │
+  (state get/set over     │  │ job_  │◀──│ /health /v1/...  │  │  │
    HTTP with per-run      │  │ state table   │   │ bearer auth      │  │  │
    token)                 │  └───────────────┘   └────────┬─────────┘  │  │
                           │                               │            │  │
@@ -260,20 +260,20 @@ one transaction → notify.**
 The registry is read on startup and again on every `POST /v1/reload`. Reload is
 not a restart: the process, the API listener, the worker pool and every
 executing child are left alone. Only three things are replaced — the registry,
-the per-integration concurrency limits, and the cron triggers.
+the per-job concurrency limits, and the cron triggers.
 
 Discovery and webhook-token resolution run *before* any shared state is touched,
-so walking a large integrations directory is invisible to everything already
+so walking a large jobs directory is invisible to everything already
 running, and a failed walk leaves the previous set intact rather than
 half-applied. `registry.load` then swaps the whole map under its write lock, so
 a reader sees either the old set or the new one and never a torn intermediate
 state.
 
 Cron is reconciled by *diff*: `Scheduler.Replace` returns early when an
-integration's expression is unchanged. That matters because the cron runner
+job's expression is unchanged. That matters because the cron runner
 computes an entry's next fire time when the entry is added, so re-adding an
 unchanged schedule would move that time and could skip an occurrence. An
-integration that did not change therefore keeps its schedule across a reload,
+job that did not change therefore keeps its schedule across a reload,
 and the runner is never stopped.
 
 Reload is the unit tier; a restart is the host tier. Changing the binary, the
@@ -285,15 +285,15 @@ those are process-scoped — see [Graceful shutdown](#graceful-shutdown).
 | Subsystem | Responsibility |
 | --- | --- |
 | Config loader | Reads and strictly validates `otter.yaml`: schema version, name pattern, entrypoint containment, durations, retry policy, triggers, secrets list. Produces either a valid manifest or a structured validation error. |
-| Discovery / registry | Walks the integrations root recursively looking for files named exactly `otter.yaml`, builds the integration registry, enforces unique `name`s, and keeps an entry (valid *or* invalid) for every manifest found. Re-runs on start, and on demand from the CLI/API. |
-| Scheduler | Registers one cron entry per integration with `trigger.cron`, using the standard 5-field format. Fires `enqueue(run)` with `trigger_type=cron`. Cron occurrences missed while the daemon was offline are never replayed. |
+| Discovery / registry | Walks the jobs root recursively looking for files named exactly `otter.yaml`, builds the job registry, enforces unique `name`s, and keeps an entry (valid *or* invalid) for every manifest found. Re-runs on start, and on demand from the CLI/API. |
+| Scheduler | Registers one cron entry per job with `trigger.cron`, using the standard 5-field format. Fires `enqueue(run)` with `trigger_type=cron`. Cron occurrences missed while the daemon was offline are never replayed. |
 | Trigger manager | Accepts external triggers: webhook HTTP requests, manual runs from the CLI/API, and scheduler callbacks. Normalizes all of them into a run enqueue with a `trigger_type`, `trigger_body` and `trigger_headers`. Runs scheduled manually work regardless of the manifest's trigger configuration. |
 | Run queue | Durable FIFO in SQLite (`run_queue`). Enqueue inserts a row; the executor claims rows atomically. Because it is a table, queued work survives restarts and reboots. |
-| Workers / executor | A fixed pool of `--workers` goroutines (default: number of CPU cores, capped at 8). Each worker claims queued runs, checks per-integration `concurrency`, spawns the child Python process with the right environment, captures stdout/stderr line by line, applies the timeout, records the exit code and the terminal status. |
+| Workers / executor | A fixed pool of `--workers` goroutines (default: number of CPU cores, capped at 8). Each worker claims queued runs, checks per-job `concurrency`, spawns the child Python process with the right environment, captures stdout/stderr line by line, applies the timeout, records the exit code and the terminal status. |
 | Retry manager | Decides, from the manifest's `retry` policy and the failure class, whether to schedule another attempt, computes the backoff delay (`none`, `linear`, `exponential`), and creates the next run record with `parent_run_id`/`root_run_id`/`attempt`. |
-| State manager | Backs the SDK's `ctx.state` API and the `/v1/integrations/{id}/state` endpoints over the `integration_state` table. Values are arbitrary JSON; keys are validated against `[A-Za-z0-9._:-]{1,128}`. State belongs to the integration, not to a run, so it survives restarts. |
+| State manager | Backs the SDK's `ctx.state` API and the `/v1/jobs/{id}/state` endpoints over the `job_state` table. Values are arbitrary JSON; keys are validated against `[A-Za-z0-9._:-]{1,128}`. State belongs to the job, not to a run, so it survives restarts. |
 | Log manager | Writes captured child output into `run_logs` with a stream tag (`stdout`, `stderr`, `otter`), a monotonically increasing per-run sequence, and a timestamp. Serves `GET /v1/runs/{id}/logs` with `after_id`/`limit` for streaming. |
-| HTTP API | Loopback-first JSON API (`127.0.0.1:7337` by default): health, integrations, manual runs, run status, logs, cancel, state, webhooks. Bearer auth for the control plane; per-run state tokens for child processes; per-integration webhook tokens for hooks. |
+| HTTP API | Loopback-first JSON API (`127.0.0.1:7337` by default): health, jobs, manual runs, run status, logs, cancel, state, webhooks. Bearer auth for the control plane; per-run state tokens for child processes; per-job webhook tokens for hooks. |
 | CLI (`otter`) | Thin HTTP client over the same API. `otter serve` starts the daemon in the CLI process instead of talking to a remote one. |
 
 ## Storage layout and SQLite schema
@@ -315,17 +315,17 @@ The following is the schema the runtime expects. Column names are part of the
 storage contract — the API and CLI never expose them directly, but operational
 tooling (backups, retention jobs, troubleshooting) does.
 
-### `integration_state`
+### `job_state`
 
-One row per `(integration, key)`. The JSON value is stored as text.
+One row per `(job, key)`. The JSON value is stored as text.
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `integration_id` | TEXT NOT NULL | Integration `name` from the manifest. |
+| `job_id` | TEXT NOT NULL | Job `name` from the manifest. |
 | `key` | TEXT NOT NULL | Matches `[A-Za-z0-9._:-]{1,128}`. |
 | `value` | TEXT | Arbitrary JSON, stored as its JSON text encoding. |
 | `updated_at` | DATETIME NOT NULL | Last write. |
-| PRIMARY KEY | (`integration_id`, `key`) | |
+| PRIMARY KEY | (`job_id`, `key`) | |
 
 ### `runs`
 
@@ -334,7 +334,7 @@ One row per **attempt**. A retry is a new row, not a mutation of the old one.
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | TEXT PRIMARY KEY | Run id, e.g. `run_01HZY...`; printed by `otter run`. |
-| `integration_id` | TEXT NOT NULL | Integration `name`. |
+| `job_id` | TEXT NOT NULL | Job `name`. |
 | `trigger_type` | TEXT NOT NULL | `cron`, `webhook` or `manual`. |
 | `status` | TEXT NOT NULL | `queued`, `running`, `succeeded`, `failed`, `retrying`, `cancelled`, `timed_out`. |
 | `attempt` | INTEGER NOT NULL DEFAULT 1 | 1 for the first try, incremented on each retry. |
@@ -346,7 +346,7 @@ One row per **attempt**. A retry is a new row, not a mutation of the old one.
 | `error` | TEXT | Failure reason for `failed`/`timed_out`/`cancelled`. |
 | `metadata` | TEXT | JSON blob carrying the trigger payload (`body`, `headers`), the effective `timeout_seconds` and the scheduled time for cron runs. |
 
-Indexes: `(integration_id, created_at DESC)` for `otter runs <integration>`,
+Indexes: `(job_id, created_at DESC)` for `otter runs <job>`,
 `(status)` for status filters, `(parent_run_id)` for retry-chain walks,
 `(created_at DESC)` for the default newest-first listing.
 
@@ -376,7 +376,7 @@ claiming deletes it.
 | Column | Type | Notes |
 | --- | --- | --- |
 | `run_id` | TEXT PRIMARY KEY | The `runs.id` to execute. The primary key makes double-enqueue impossible. |
-| `integration_id` | TEXT NOT NULL | Denormalized for the per-integration concurrency check. |
+| `job_id` | TEXT NOT NULL | Denormalized for the per-job concurrency check. |
 | `available_at` | DATETIME NOT NULL | Earliest claim time; retry backoff is implemented by pushing this into the future. |
 | `created_at` | DATETIME NOT NULL | When the run entered the queue, used as the FIFO tiebreaker. |
 
@@ -384,11 +384,11 @@ Index: `(available_at, created_at)`.
 
 ### `webhook_tokens`
 
-Per-integration webhook credentials, generated on first start and persisted.
+Per-job webhook credentials, generated on first start and persisted.
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `integration_id` | TEXT PRIMARY KEY | Integration `name`. |
+| `job_id` | TEXT PRIMARY KEY | Job `name`. |
 | `token` | TEXT NOT NULL | Sent by callers as `X-Otter-Token` or `?token=`. |
 | `created_at` | DATETIME NOT NULL | Generation time. |
 
@@ -480,20 +480,20 @@ Every attempt is visible through `GET /v1/runs/{id}`:
 
 ## Queue claim algorithm
 
-Claiming must be safe even though "is this integration at its concurrency
+Claiming must be safe even though "is this job at its concurrency
 limit?" and "take the oldest eligible run" are two separate facts. Otter does
 the whole claim inside **one immediate SQLite transaction**, so a run can never
 be handed to two workers:
 
 ```text
 BEGIN IMMEDIATE
-  SELECT run_id, integration_id, available_at, created_at
+  SELECT run_id, job_id, available_at, created_at
     FROM run_queue
    WHERE available_at <= :now              -- backoff gate
    ORDER BY available_at ASC, created_at ASC, run_id ASC
    LIMIT 200                               -- candidate window
   FOR each candidate in order:
-      if capacity.Reserve(candidate.integration_id):
+      if capacity.Reserve(candidate.job_id):
           DELETE FROM run_queue WHERE run_id = candidate.run_id
           COMMIT; return candidate         -- slot reserved for this worker
   COMMIT; return ErrEmpty                  -- nothing claimable yet
@@ -508,10 +508,10 @@ UPDATE runs SET status = 'running', started_at = :now WHERE id = :run_id;
 
 The pieces that matter in practice:
 
-- **Per-integration `concurrency`** is enforced by an in-memory capacity
-  registry with an atomic `Reserve(integration_id) bool` / `Release(...)` pair,
+- **Per-job `concurrency`** is enforced by an in-memory capacity
+  registry with an atomic `Reserve(job_id) bool` / `Release(...)` pair,
   seeded from the manifests at startup. The reservation happens *inside* the
-  claim transaction, so "this integration has room" and "this worker takes that
+  claim transaction, so "this job has room" and "this worker takes that
   run" cannot be decided separately. A worker that cannot reserve a slot moves
   on to the next candidate instead of blocking.
 - **Global `--workers`** is enforced twice over: there are exactly `N` worker
@@ -541,28 +541,28 @@ The pieces that matter in practice:
 ## Execution, timeouts and cancellation
 
 Each run is a separate child process, so a crashing, hanging, memory-hungry or
-`os._exit()`-ing integration cannot take the daemon down.
+`os._exit()`-ing job cannot take the daemon down.
 
 The child is started as `python.executable` (default `python3`) with
 `main.py`'s directory as its working directory and this environment:
 
 | Variable | Value |
 | --- | --- |
-| `OTTER_INTEGRATION_ID` | Durable integration identity. |
-| `OTTER_INTEGRATION_NAME` | Manifest label. |
+| `OTTER_JOB_ID` | Durable job identity. |
+| `OTTER_JOB_NAME` | Manifest label. |
 | `OTTER_RUN_ID` | This attempt's run id. |
 | `OTTER_API_URL` | Base URL of the daemon API (e.g. `http://127.0.0.1:7337`). |
 | `OTTER_STATE_TOKEN` | Short-lived token authorizing state and log calls for this run. |
 | `OTTER_TRIGGER_TYPE` | `cron`, `webhook` or `manual`. |
-| `OTTER_INTEGRATION_DIR` | Absolute path of the integration directory. |
+| `OTTER_JOB_DIR` | Absolute path of the job directory. |
 
 plus every entry from `env` (with `${VAR}` expanded against the daemon's
 environment) and every name listed in `secrets` (read from the daemon's
 environment). Every inherited `OTTER_*` variable is **stripped** before the child
 environment is built, so the daemon's own `OTTER_API_TOKEN` can never leak into
-integration code; the child sees only the scoped, per-run values above.
+job code; the child sees only the scoped, per-run values above.
 `PYTHONUNBUFFERED=1` and `PYTHONDONTWRITEBYTECODE=1` are set so log lines arrive
-as they are written and integrations never need write access to their own
+as they are written and jobs never need write access to their own
 directory. `<data dir>/sdk/python` — or `--sdk-path` if set — is prepended to
 `PYTHONPATH`, so `from otter import run` works with no installation step.
 
@@ -574,7 +574,7 @@ The exit code and `started_at`/`finished_at` are recorded on the run.
 the child's process group, waits about 5 seconds for it to exit, then sends
 `SIGKILL` to the group. The run is marked `timed_out`, and the retry policy
 applies. Sending the signal to the process group matters: a naive
-`subprocess.run()` in an integration that has spawned its own children would
+`subprocess.run()` in a job that has spawned its own children would
 otherwise leave them behind. (This 5-second terminate grace is separate from
 `--shutdown-grace`, which is how long the daemon waits for runs to finish on its
 own before it starts terminating them at all.)
@@ -636,12 +636,12 @@ document that is not uniform across supported platforms.
   (`internal/executor/proc_linux.go`), so the kernel kills it when the daemon's
   parent thread exits. It cannot outlive the daemon beyond signal delivery, and
   the retry startup schedules cannot overlap it. This covers the direct child
-  only: a grandchild the integration spawned is reparented, not signalled.
+  only: a grandchild the job spawned is reparented, not signalled.
 - **macOS.** Darwin has no parent-death signal. `syscall.SysProcAttr` there has
   no `Pdeathsig` field, and XNU offers no equivalent of Linux's
   `PR_SET_PDEATHSIG` (`internal/executor/proc_darwin.go`). The child is
   reparented and keeps running, while startup marks its run failed and retries
-  it, so an integration whose external effects are not idempotent can be
+  it, so a job whose external effects are not idempotent can be
   duplicated. Closing this needs a supervisor process or a death-watch pipe
   inside the child; persisting the child's process group does not, because a
   startup sweep is post-crash cleanup rather than prevention and cannot portably
@@ -655,7 +655,7 @@ orphan, and only on macOS. The Linux half is asserted by
 the guarantee does not exist there. The limitation was tracked as `OT-009` and
 is stated here.
 
-Integration state, run history, logs and webhook tokens all survive restarts and
+Job state, run history, logs and webhook tokens all survive restarts and
 reboots because they are rows in `otter.db`, not memory.
 
 ## Graceful shutdown
@@ -664,7 +664,7 @@ On `SIGTERM` (systemd stop, container stop) or `SIGINT` (Ctrl-C), `otterd`:
 
 1. Stops the scheduler so no new cron occurrences fire.
 2. Stops claiming queued runs, so the queue drains to zero workers in flight.
-3. Gives every running integration up to `--shutdown-grace` (default `15s`) to
+3. Gives every running job up to `--shutdown-grace` (default `15s`) to
    finish on its own.
 4. Terminates whatever is still running (SIGTERM to the process group, then
    SIGKILL after ~5s) and marks those runs `failed` with the error
@@ -683,14 +683,14 @@ owns rotation.
 - Default format is structured JSON, one object per line:
 
   ```json
-  {"level":"info","event":"run_started","integration":"shopify-to-erp","run_id":"run_01HZY3","timestamp":"2024-06-01T12:00:03Z"}
+  {"level":"info","event":"run_started","job":"shopify-to-erp","run_id":"run_01HZY3","timestamp":"2024-06-01T12:00:03Z"}
   ```
 
 - `--log-format pretty` switches to human-readable lines for local development.
 - `--log-level debug|info|warn|error` (default `info`) filters output.
 - Access logs for the HTTP API are emitted as `event: "http_request"` records.
 
-Integration output is a separate concern: it is captured into the `run_logs`
+Job output is a separate concern: it is captured into the `run_logs`
 table and read back with `otter logs <run-id>` / `GET /v1/runs/{id}/logs`. That
 data grows without bound unless you prune it — see the retention example in
 [operations.md](operations.md).
@@ -775,7 +775,7 @@ is chosen over a row count deliberately. It is two covering-index seeks, whereas
 `COUNT(*)` is O(rows) per page and would make the tenth page of a large run cost
 about ten times the first. The pair is also sufficient: it detects every mutation
 the log store can perform. An append raises `MAX(id)`, and all three deletion
-paths — `DeleteForRun`, `DeleteOlderThan` and the per-integration cascade —
+paths — `DeleteForRun`, `DeleteOlderThan` and the per-job cascade —
 remove whole rows, so each changes `MIN(id)` or clears both. Log rows are never
 updated, and `run_logs.id` is `AUTOINCREMENT`, so a deleted id is never reused
 and cannot reappear below a raised `MAX`. An in-place edit, or a write to the
@@ -847,26 +847,26 @@ A trace event is one of three kinds:
 
 - **lifecycle** — the runtime's own narration about the run: queued, started,
   cancelled, timed out, and the terminal summary.
-- **log** — anything the integration produced: captured `stdout`, `stderr`, and
+- **log** — anything the job produced: captured `stdout`, `stderr`, and
   its `ctx.log` output.
 - **http** — a captured exchange summary placed at its `occurred_at`: method,
   sanitized URL, status or transport-error class, duration, phase, payload
   completeness, request id and call site. Never a payload.
 
 The first two both live in `run_logs`, and the `otter` stream carries both: the
-daemon narrates there, and the SDK's structured logger posts an integration's
+daemon narrates there, and the SDK's structured logger posts a job's
 `ctx.log` lines there too. Classifying by stream alone therefore labelled an
-integration's own log line a lifecycle event, which is why `run_logs` records an
+job's own log line a lifecycle event, which is why `run_logs` records an
 `origin` (`daemon` or `child`) written at the call site
 (`migrations/0008_run_logs_origin.sql`). The kind is derived from that fact, not
 from the stream and not by parsing the message in normal operation. Rows written
 before the column existed fall back to `runs.LooksLikeDaemonNarration`, which
 recognises the fixed shapes of the narration and treats anything unrecognised as
-the integration's; that fallback is deliberately conservative, because
+the job's; that fallback is deliberately conservative, because
 presenting a child's output as runtime narration is the more misleading error.
 
 State mutations are **not** on the timeline in this version.
-`integration_state` keeps no history table, so there is nothing to place on a
+`job_state` keeps no history table, so there is nothing to place on a
 chronology; adding one is a separate feature with its own capture path. Until
 then a trace says nothing about state rather than implying a read or write
 happened at a time it did not record.
@@ -881,7 +881,7 @@ signalling and timeout handling without a helper library. A single process is
 also the simplest thing to supervise.
 
 **Why SQLite.** A self-hosted runtime must not require an operator to run
-Postgres and Redis before their first integration works. SQLite is embedded, has
+Postgres and Redis before their first job works. SQLite is embedded, has
 no network hop, is transactional, and in WAL mode handles "one writer, many
 readers" perfectly for this workload. The pure-Go driver means no cgo and no
 libsqlite3 on the target host. Durability is a file-level property: back up one
@@ -889,7 +889,7 @@ file, and state, history and queue all move with it.
 
 **Why child processes (rather than an in-process Python embed or a
 container-per-run).** Child processes give the three properties that matter
-most: a hard crash boundary (an integration that segfaults or calls
+most: a hard crash boundary (a job that segfaults or calls
 `os._exit()` cannot take `otterd` down), a hard timeout (`SIGKILL` a process
 group); and an ordinary developer workflow (run `python3 main.py` by hand,
 debug it normally, no embedded interpreter to match versions with). Containers
@@ -898,14 +898,14 @@ this design keeps a Raspberry Pi viable as a target.
 
 ## What is deliberately NOT here
 
-- **No DAG engine.** Integrations are independent units. If you need
+- **No DAG engine.** Jobs are independent units. If you need
   orchestration, sequence it inside one Python program or trigger the next
-  integration over the API.
+  job over the API.
 - **No distributed consensus / multi-node clustering.** One daemon owns one
   SQLite file. Run a second daemon with its own data directory if you need a
   second host.
 - **No connectors.** There is no Salesforce/Shopify/NetSuite adapter layer, by
-  design. The integration *is* the connector, written in Python with whatever
+  design. The job *is* the connector, written in Python with whatever
   HTTP client the developer likes.
 - **No UI.** The CLI and the HTTP API are the interfaces; JSON out means you can
   pipe it anywhere.

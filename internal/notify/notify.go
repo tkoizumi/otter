@@ -3,7 +3,7 @@
 // It exists so a failure stops being something you discover by looking. The
 // daemon is the only component that sees every run reach a terminal state --
 // cron, manual, webhook, retry, timeout, shutdown -- so it is the only place
-// that can report uniformly. Integrations keep the job of deciding *whether*
+// that can report uniformly. Jobs keep the job of deciding *whether*
 // they failed; the runtime keeps the job of telling someone.
 //
 // Delivery is deliberately best-effort. A bounded in-process retry covers a
@@ -34,12 +34,12 @@ const (
 // Payload is what a failure reports. It carries enough to act on without
 // opening the host.
 type Payload struct {
-	Integration string `json:"integration"`
-	RunID       string `json:"run_id"`
-	Status      string `json:"status"`
-	Attempt     int    `json:"attempt"`
-	Error       string `json:"error,omitempty"`
-	// Detail is the integration's own last log line, which is usually the
+	Job     string `json:"job"`
+	RunID   string `json:"run_id"`
+	Status  string `json:"status"`
+	Attempt int    `json:"attempt"`
+	Error   string `json:"error,omitempty"`
+	// Detail is the job's own last log line, which is usually the
 	// most informative field: it is the difference between "process exited
 	// with code 1" and the actual reason.
 	Detail     string `json:"detail,omitempty"`
@@ -136,7 +136,7 @@ func (n *Notifier) Send(ctx context.Context, payload Payload) error {
 		}
 		if n.log != nil {
 			n.log.Debug("notification_sent",
-				"integration", payload.Integration,
+				"job", payload.Job,
 				"run_id", payload.RunID,
 				"status", payload.Status,
 				"attempt", attempt)

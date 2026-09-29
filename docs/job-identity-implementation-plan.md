@@ -1,4 +1,4 @@
-# Integration identity: implementation handoff
+# Job identity: implementation handoff
 
 > **Historical.** This is the implementation plan for the identity redesign,
 > written before the work landed. It is kept for the reasoning and the
@@ -19,7 +19,7 @@ Deliver working implementation, meaningful tests, documentation, and a final sum
 
 ## 2. Problem and required invariants
 
-Today `config.Integration.ID` is the manifest name. It selects database state, history, queues, webhook tokens, releases, environments, and child-process identity. Discovery marks a later duplicate invalid but returns no error. Local path-based release resolution can independently select that same name and activate another directory's code against existing state.
+Today `config.Job.ID` is the manifest name. It selects database state, history, queues, webhook tokens, releases, environments, and child-process identity. Discovery marks a later duplicate invalid but returns no error. Local path-based release resolution can independently select that same name and activate another directory's code against existing state.
 
 Required invariants:
 
@@ -30,7 +30,7 @@ Required invariants:
 5. A marker copied from B into A never grants A access to B's state. A replacement never silently keeps A's old state either.
 6. Editing only `name` preserves ID and state. Two active instances may share a label; bare-label lookup then errors.
 7. Only an explicit `move` operation transfers an existing path binding while preserving identity.
-8. Retired, deleting, or deleted identities cannot receive new work or accept integration-originated state writes. Outstanding credentials cannot defeat retirement.
+8. Retired, deleting, or deleted identities cannot receive new work or accept job-originated state writes. Outstanding credentials cannot defeat retirement.
 9. Discovery errors are not evidence of deletion. No partially observed scan changes ownership.
 10. Legacy state/history survives migration unchanged unless the operator explicitly requests purge later.
 11. Deployment preserves destination identity and never imports local identity.
@@ -45,9 +45,9 @@ Add a dedicated identity package (suggested `internal/identity`) with persistenc
 
 Suggested persistent records:
 
-- `integration_instances`: `id` primary key, `name`, `canonical_path` (current or last source path), `status`, `generation`, timestamps, optional retirement reason.
+- `job_instances`: `id` primary key, `name`, `canonical_path` (current or last source path), `status`, `generation`, timestamps, optional retirement reason.
 - Status values: `pending`, `active`, `retired`, `deleting`, `deleted`. Manifest validity and temporary execution blocking are separate from ownership status.
-- `integration_paths`: canonical path primary key, current owner ID or null, suppression flag/reason. This table reserves paths during pending operations and suppresses deleted sources. Keep historical paths in instance/operation records; do not let history impose uniqueness on future instances.
+- `job_paths`: canonical path primary key, current owner ID or null, suppression flag/reason. This table reserves paths during pending operations and suppresses deleted sources. Keep historical paths in instance/operation records; do not let history impose uniqueness on future instances.
 - `identity_operations`: operation ID, kind, phase, affected IDs/paths, expected marker observations, chosen new ID where applicable, and structured operation-specific recovery data.
 - Identity initialization/migration metadata separate from SQL schema version.
 
@@ -129,7 +129,7 @@ Use typed references internally: label, path, or ID. Suggested user syntax:
 
 ```sh
 otter run counter
-otter run ./integrations/counter
+otter run ./jobs/counter
 otter run id:counter
 otter run id:550e8400-e29b-41d4-a716-446655440000
 ```
@@ -142,13 +142,13 @@ otter run id:550e8400-e29b-41d4-a716-446655440000
 - Relative paths are interpreted against the caller's working directory. Across a remote API, do not silently canonicalize a local directory as a server path; use typed server-path references or prefer label/ID. Deployment constructs destination paths on the remote host.
 - Root containment must use path-aware checks, not string prefixes. Reject source aliases through symlinks outside the configured root. Avoid following directory symlink cycles. Detect same-file aliases where practical; do not promise bind-mount or network-filesystem identity equivalence.
 
-Preserve existing ID-based resource routes for SDK state access. Add an admin-only resolver and lifecycle endpoints using structured JSON; CLI convenience resolution happens through these. Do not make every existing `/integrations/{id}` route guess whether its segment is a label or ID. Define 404 for no match, 409 for ambiguity/lifecycle conflicts, and validation errors consistently with existing API conventions.
+Preserve existing ID-based resource routes for SDK state access. Add an admin-only resolver and lifecycle endpoints using structured JSON; CLI convenience resolution happens through these. Do not make every existing `/jobs/{id}` route guess whether its segment is a label or ID. Define 404 for no match, 409 for ambiguity/lifecycle conflicts, and validation errors consistently with existing API conventions.
 
-Pass resolved ID and generation through submission, queue, run records, worker claims, retries, and run tokens. New executor request fields must explicitly contain integration ID and label; stop constructing `OTTER_INTEGRATION_ID` from `Manifest.Name`. Reserved runtime environment variables must not be overridden by manifest or extra environment inputs.
+Pass resolved ID and generation through submission, queue, run records, worker claims, retries, and run tokens. New executor request fields must explicitly contain job ID and label; stop constructing `OTTER_JOB_ID` from `Manifest.Name`. Reserved runtime environment variables must not be overridden by manifest or extra environment inputs.
 
-Check current active status and generation when claiming work, scheduling retries, resolving run credentials, and mutating state. Carry token generation through the authorization boundary into state mutation; an authentication check followed by an unguarded write has a race. Use a shared transaction/conditional write for the generation/status check and state mutation. Admin inspection of historical data may remain available, but integration credentials must be revoked on retirement.
+Check current active status and generation when claiming work, scheduling retries, resolving run credentials, and mutating state. Carry token generation through the authorization boundary into state mutation; an authentication check followed by an unguarded write has a race. Use a shared transaction/conditional write for the generation/status check and state mutation. Admin inspection of historical data may remain available, but job credentials must be revoked on retirement.
 
-Add `OTTER_INTEGRATION_NAME`. Update Python context exposure if appropriate; keep state addressing based on ID. Existing run IDs/log APIs remain stable. Add name snapshots to new runs and name fields to integration API views. Do not invent historical labels when they are unavailable; the old integration key can supply the legacy label during migration.
+Add `OTTER_JOB_NAME`. Update Python context exposure if appropriate; keep state addressing based on ID. Existing run IDs/log APIs remain stable. Add name snapshots to new runs and name fields to job API views. Do not invent historical labels when they are unavailable; the old job key can supply the legacy label during migration.
 
 ## 7. Lifecycle command behavior
 
@@ -168,9 +168,9 @@ Retain a minimal deleted-ID tombstone and path suppression, while leaving source
 
 ### `otter move <ref> <destination>`
 
-Preserve identity through a journaled same-filesystem directory rename. Require matching source marker, absent/unreserved destination, allowed root, and no nested registered integrations for the initial implementation. Reject cross-filesystem operations before mutation where detectable and handle EXDEV without committing the binding.
+Preserve identity through a journaled same-filesystem directory rename. Require matching source marker, absent/unreserved destination, allowed root, and no nested registered jobs for the initial implementation. Reject cross-filesystem operations before mutation where detectable and handle EXDEV without committing the binding.
 
-Quiesce the integration, cancel queued work with a clear reason, settle execution, invalidate old generations, reserve both paths, rename, update binding, and restore scheduling. The marker and ID remain unchanged. Crash recovery inspects old/new paths and the journal rather than inferring moves during ordinary scanning. Reject ambiguous recovery states.
+Quiesce the job, cancel queued work with a clear reason, settle execution, invalidate old generations, reserve both paths, rename, update binding, and restore scheduling. The marker and ID remain unchanged. Crash recovery inspects old/new paths and the journal rather than inferring moves during ordinary scanning. Reject ambiguous recovery states.
 
 Plain shell `mv` is intentionally treated as disappearance plus fresh registration. No separate `new-id` command is needed; use reset. Defer automatic moves, cross-filesystem copy-and-delete, and general backup resurrection/import commands.
 
@@ -178,7 +178,7 @@ Plain shell `mv` is intentionally treated as disappearance plus fresh registrati
 
 Update `internal/cli/ref.go`, `release.go`, `prepare.go`, `internal/release/*`, and `internal/pyenv/*` to use authoritative IDs.
 
-- Replace independent manifest-name resolution in `integrationTargets` and all `--source` branches. A source override must match the resolved source binding; it cannot stage arbitrary source under an existing ID.
+- Replace independent manifest-name resolution in `jobTargets` and all `--source` branches. A source override must match the resolved source binding; it cannot stage arbitrary source under an existing ID.
 - Resolve `(ID, generation, source path)` before staging. Check marker/binding before capture and again before activation. Stage in an isolated temporary location. If reset/delete/move intervenes, refuse activation; do not fall back to name.
 - Offline staging/activation owns the workspace lock; online staging goes through the authority or an authority-controlled operation. The existing direct CLI writer must not remain an unguarded alternate route.
 - Release storage remains `.releases/<id>/<digest>` and `.releases/active/<id>`. Metadata records ID and source provenance; add schema/version fields if needed.
@@ -187,20 +187,20 @@ Update `internal/cli/ref.go`, `release.go`, `prepare.go`, `internal/release/*`, 
 - Prepare environments using ID, not label or directory basename. Audit policy/digest inputs and existing recorded identities. Deletion must identify exclusive environment ownership reliably.
 - Prevent retention/cleanup from deleting resources pinned by active operations or executions.
 
-## 9. Deployment integration
+## 9. Deployment job
 
 Current deploy selection returns directory names and passes them to remote release as names. Separate these concepts explicitly: local relative source path, destination relative source path, label, destination ID.
 
 Required behavior:
 
 1. Local Stage excludes markers and marker temporary files. Revision calculation ignores them.
-2. Remote rsync excludes/protects destination `.otter-id` from both transfer and deletion. Verify actual filter semantics with integration tests; exclusion in local Stage alone is insufficient with `--delete`.
-3. A destination missing an integration gets a fresh remote registration. An existing destination registration persists through code updates and label changes. Local and remote UUIDs need not match.
+2. Remote rsync excludes/protects destination `.otter-id` from both transfer and deletion. Verify actual filter semantics with job tests; exclusion in local Stage alone is insufficient with `--delete`.
+3. A destination missing a job gets a fresh remote registration. An existing destination registration persists through code updates and label changes. Local and remote UUIDs need not match.
 4. Remote release resolves destination paths or explicit IDs, never a directory basename masquerading as a name.
-5. Partial deploy does not delete or retire other integrations.
+5. Partial deploy does not delete or retire other jobs.
 6. Runtime owner must be able to write new markers in the deployed source tree; update permissions narrowly, not by recursively chowning live data.
 
-Coordinate remote source synchronization with reconciliation using a durable, narrow deployment-maintenance operation. Begin it through the daemon authority (or under exclusive ownership when stopped), mark affected paths, block their new admissions and registry reconciliation, then synchronize, register/verify destinations, prepare and activate, and end maintenance. This permits unaffected integrations to continue. A disconnected/dead deployment leaves affected sources blocked with an operation ID; retry the deployment to recover. Do not auto-resume a potentially partial source tree on a timer. Provide inspection through existing deploy status/diagnostics. If the repository's deploy sequence already has a safe equivalent, reuse it instead of adding parallel mechanisms.
+Coordinate remote source synchronization with reconciliation using a durable, narrow deployment-maintenance operation. Begin it through the daemon authority (or under exclusive ownership when stopped), mark affected paths, block their new admissions and registry reconciliation, then synchronize, register/verify destinations, prepare and activate, and end maintenance. This permits unaffected jobs to continue. A disconnected/dead deployment leaves affected sources blocked with an operation ID; retry the deployment to recover. Do not auto-resume a potentially partial source tree on a timer. Provide inspection through existing deploy status/diagnostics. If the repository's deploy sequence already has a safe equivalent, reuse it instead of adding parallel mechanisms.
 
 Old active immutable releases must remain intact on failure. On startup recover deployment/identity operations before treating synchronized directories as authoritative observations. Cover both bootstrap with no running daemon and update with a running daemon.
 
@@ -244,7 +244,7 @@ Verified entry points; inspect callers and tests before refactoring:
 | Deploy | `internal/deploy/target.go`, `build.go`, `render.go`, `remote.go`, `deployer.go`, `state.go` | Path/ID distinction; marker protection; remote coordination |
 | SDK | `sdk/python/otter/*`, `sdk/python/tests/*` | Opaque ID and display name; compatibility tests |
 
-Audit every `Manifest.Name`, `.ID`, `integration_id`, `OTTER_INTEGRATION_ID`, and integration-derived filesystem key. Do not perform a blind textual replacement: labels still belong in logs and manifests, while IDs belong in persistence and authority checks. Avoid adding runtime registration IDs back into parsed manifests.
+Audit every `Manifest.Name`, `.ID`, `job_id`, `OTTER_JOB_ID`, and job-derived filesystem key. Do not perform a blind textual replacement: labels still belong in logs and manifests, while IDs belong in persistence and authority checks. Avoid adding runtime registration IDs back into parsed manifests.
 
 ## 12. Implementation phases and exit criteria
 
@@ -329,7 +329,7 @@ Use actual temporary directories and SQLite databases. Include restart/subproces
 - Deploy stages no markers and leaves existing remote markers intact under actual rsync filter behavior.
 - Fresh remote gets fresh remote ID; repeated deploy and label rename preserve it.
 - Directory basename different from manifest name works; duplicate labels in separate directories work.
-- Partial deployment preserves unrelated integrations. Interrupted synchronization remains safely blocked and retryable.
+- Partial deployment preserves unrelated jobs. Interrupted synchronization remains safely blocked and retryable.
 - Marker changes alone do not affect release content digest or deployment revision.
 
 ## 14. Checks and documentation

@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// fixture builds a checkout-shaped tree: <root>/integrations/<name> plus a
+// fixture builds a checkout-shaped tree: <root>/jobs/<name> plus a
 // shared <root>/lib, which is the canonical layout the release package mirrors.
 type fixture struct {
 	root   string
@@ -24,7 +24,7 @@ type fixture struct {
 func newFixture(t *testing.T, name string) fixture {
 	t.Helper()
 	root, data := t.TempDir(), t.TempDir()
-	source := filepath.Join(root, "integrations", name)
+	source := filepath.Join(root, "jobs", name)
 	shared := filepath.Join(root, "lib")
 	for _, dir := range []string{source, shared} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -69,7 +69,7 @@ func (f fixture) stage(t *testing.T, env string) Metadata {
 	return meta
 }
 
-// released resolves the integration directory inside a staged release through
+// released resolves the job directory inside a staged release through
 // the metadata, which is the only supported way to read the placement back.
 func (f fixture) released(t *testing.T, meta Metadata) string {
 	t.Helper()
@@ -92,14 +92,14 @@ func TestStageMirrorsTheLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.IntegrationPath != "integrations/one" {
-		t.Errorf("IntegrationPath = %q, want integrations/one", meta.IntegrationPath)
+	if meta.JobPath != "jobs/one" {
+		t.Errorf("JobPath = %q, want jobs/one", meta.JobPath)
 	}
 	// The mirror is the whole point: the manifest's ../../lib must resolve
 	// inside the release exactly as it does in the checkout.
 	for _, want := range []string{
-		filepath.Join(dir, "integrations", f.name, "main.py"),
-		filepath.Join(dir, "integrations", f.name, "otter.yaml"),
+		filepath.Join(dir, "jobs", f.name, "main.py"),
+		filepath.Join(dir, "jobs", f.name, "otter.yaml"),
 		filepath.Join(dir, "lib", "shared_lib.py"),
 		filepath.Join(dir, ManifestFileName),
 	} {
@@ -141,21 +141,21 @@ func TestStageIsIdempotent(t *testing.T) {
 func TestDigestIsPlacementSensitive(t *testing.T) {
 	f := newFixture(t, "one")
 	canonical, err := f.manager().StageWithLayout(f.name, f.source,
-		Layout{IntegrationPath: "integrations/one", Trees: []SharedTree{{Source: f.shared, Name: "lib"}}}, "env-1")
+		Layout{JobPath: "jobs/one", Trees: []SharedTree{{Source: f.shared, Name: "lib"}}}, "env-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	flat, err := f.manager().StageWithLayout(f.name, f.source,
-		Layout{IntegrationPath: "one", Trees: []SharedTree{{Source: f.shared, Name: "lib"}}}, "env-1")
+		Layout{JobPath: "one", Trees: []SharedTree{{Source: f.shared, Name: "lib"}}}, "env-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if canonical.Digest == flat.Digest {
-		t.Error("moving the integration changed no digest, so a queued run could execute the wrong snapshot")
+		t.Error("moving the job changed no digest, so a queued run could execute the wrong snapshot")
 	}
 
 	renamed, err := f.manager().StageWithLayout(f.name, f.source,
-		Layout{IntegrationPath: "integrations/one", Trees: []SharedTree{{Source: f.shared, Name: "vendor"}}}, "env-1")
+		Layout{JobPath: "jobs/one", Trees: []SharedTree{{Source: f.shared, Name: "vendor"}}}, "env-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestStageSkipsSecretsAndCaches(t *testing.T) {
 	write(t, filepath.Join(f.source, "otter.db"), "not a database")
 	write(t, filepath.Join(f.source, "__pycache__", "main.cpython-313.pyc"), "cache")
 	// The pulled schema is editor tooling and runs to megabytes; the query
-	// document beside it is read while the integration runs.
+	// document beside it is read while the job runs.
 	write(t, filepath.Join(f.source, "schema", "shopify", "shopify.graphql"), "type Product { id: ID }\n")
 	write(t, filepath.Join(f.source, "queries", "products.graphql"), "query { products { nodes { id } } }\n")
 
@@ -211,7 +211,7 @@ func TestStageSkipsSecretsAndCaches(t *testing.T) {
 		}
 	}
 	if _, err := os.Stat(filepath.Join(released, "queries", "products.graphql")); err != nil {
-		t.Errorf("release dropped the query document the integration reads: %v", err)
+		t.Errorf("release dropped the query document the job reads: %v", err)
 	}
 }
 
@@ -221,7 +221,7 @@ func TestActivateIsAtomicAndResolvable(t *testing.T) {
 	manager := f.manager()
 
 	if _, ok, err := manager.Active(f.name); err != nil || ok {
-		t.Fatalf("integration reported an active release before activation (ok=%v err=%v)", ok, err)
+		t.Fatalf("job reported an active release before activation (ok=%v err=%v)", ok, err)
 	}
 
 	if err := manager.Activate(f.name, first.Digest); err != nil {
@@ -353,7 +353,7 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 	} else if !strings.HasPrefix(got, root) {
 		t.Errorf("safeJoin escaped the root: %s", got)
 	}
-	// The root itself is a legal placement: an integration at the release root.
+	// The root itself is a legal placement: a job at the release root.
 	if got, err := safeJoin(root, "."); err != nil || got != filepath.Clean(root) {
 		t.Errorf("safeJoin(root, \".\") = %q, %v; want %q", got, err, root)
 	}
@@ -400,68 +400,68 @@ func TestListReportsTheActiveRelease(t *testing.T) {
 // --- placement rule ---------------------------------------------------------
 
 // TestPlanLayouts pins the one rule against every shape a workspace can have:
-// the integration and the shared tree each land relative to the same base.
+// the job and the shared tree each land relative to the same base.
 func TestPlanLayouts(t *testing.T) {
 	tests := []struct {
-		name        string
-		root        string
-		integration string
-		tree        string
-		wantInteg   string
-		wantTree    string
+		name      string
+		root      string
+		job       string
+		tree      string
+		wantInteg string
+		wantTree  string
 	}{
 		{
-			name:        "canonical integrations/<name>",
-			root:        "/repo",
-			integration: "/repo/integrations/foo",
-			tree:        "/repo/lib/python",
-			wantInteg:   "integrations/foo",
-			wantTree:    "lib/python",
+			name:      "canonical jobs/<name>",
+			root:      "/repo",
+			job:       "/repo/jobs/foo",
+			tree:      "/repo/lib/python",
+			wantInteg: "jobs/foo",
+			wantTree:  "lib/python",
 		},
 		{
-			name:        "flat workspace root",
-			root:        "/repo",
-			integration: "/repo/foo",
-			tree:        "/repo/lib/python",
-			wantInteg:   "foo",
-			wantTree:    "lib/python",
+			name:      "flat workspace root",
+			root:      "/repo",
+			job:       "/repo/foo",
+			tree:      "/repo/lib/python",
+			wantInteg: "foo",
+			wantTree:  "lib/python",
 		},
 		{
-			name:        "grouped integration",
-			root:        "/repo",
-			integration: "/repo/group/foo",
-			tree:        "/repo/group/lib/python",
-			wantInteg:   "group/foo",
-			wantTree:    "group/lib/python",
+			name:      "grouped job",
+			root:      "/repo",
+			job:       "/repo/group/foo",
+			tree:      "/repo/group/lib/python",
+			wantInteg: "group/foo",
+			wantTree:  "group/lib/python",
 		},
 		{
-			// Deploy: the discovery root is <remote>/integrations while the
+			// Deploy: the discovery root is <remote>/jobs while the
 			// shared library is a sibling of it.
-			name:        "deploy discovery root",
-			root:        "/opt/otter/integrations",
-			integration: "/opt/otter/integrations/foo",
-			tree:        "/opt/otter/lib/python",
-			wantInteg:   "integrations/foo",
-			wantTree:    "lib/python",
+			name:      "deploy discovery root",
+			root:      "/opt/otter/jobs",
+			job:       "/opt/otter/jobs/foo",
+			tree:      "/opt/otter/lib/python",
+			wantInteg: "jobs/foo",
+			wantTree:  "lib/python",
 		},
 		{
 			// --source outside the discovery root but inside the same base.
-			name:        "source outside the discovery root",
-			root:        "/repo/integrations",
-			integration: "/repo/other/foo",
-			tree:        "/repo/lib",
-			wantInteg:   "other/foo",
-			wantTree:    "lib",
+			name:      "source outside the discovery root",
+			root:      "/repo/jobs",
+			job:       "/repo/other/foo",
+			tree:      "/repo/lib",
+			wantInteg: "other/foo",
+			wantTree:  "lib",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			layout, err := Plan(tc.root, tc.integration, []SharedTree{{Source: tc.tree}})
+			layout, err := Plan(tc.root, tc.job, []SharedTree{{Source: tc.tree}})
 			if err != nil {
 				t.Fatalf("Plan: %v", err)
 			}
-			if layout.IntegrationPath != tc.wantInteg {
-				t.Errorf("integration placed at %q, want %q", layout.IntegrationPath, tc.wantInteg)
+			if layout.JobPath != tc.wantInteg {
+				t.Errorf("job placed at %q, want %q", layout.JobPath, tc.wantInteg)
 			}
 			if len(layout.Trees) != 1 || layout.Trees[0].Name != tc.wantTree {
 				t.Errorf("trees placed at %+v, want one at %q", layout.Trees, tc.wantTree)
@@ -471,9 +471,9 @@ func TestPlanLayouts(t *testing.T) {
 }
 
 func TestPlanDropsTreesAlreadyCarried(t *testing.T) {
-	// A tree inside the integration travels with the integration's own copy.
-	layout, err := Plan("/repo", "/repo/integrations/foo", []SharedTree{
-		{Source: "/repo/integrations/foo/vendor"},
+	// A tree inside the job travels with the job's own copy.
+	layout, err := Plan("/repo", "/repo/jobs/foo", []SharedTree{
+		{Source: "/repo/jobs/foo/vendor"},
 		{Source: "/repo/lib"},
 	})
 	if err != nil {
@@ -484,7 +484,7 @@ func TestPlanDropsTreesAlreadyCarried(t *testing.T) {
 	}
 
 	// A tree nested inside another captured tree is already carried.
-	layout, err = Plan("/repo", "/repo/integrations/foo", []SharedTree{
+	layout, err = Plan("/repo", "/repo/jobs/foo", []SharedTree{
 		{Source: "/repo/lib"},
 		{Source: "/repo/lib/python/connectors"},
 	})
@@ -497,7 +497,7 @@ func TestPlanDropsTreesAlreadyCarried(t *testing.T) {
 }
 
 func TestPlanCollectsMultipleSharedTrees(t *testing.T) {
-	layout, err := Plan("/repo", "/repo/integrations/foo", []SharedTree{
+	layout, err := Plan("/repo", "/repo/jobs/foo", []SharedTree{
 		{Source: "/repo/lib/python"},
 		{Source: "/repo/vendor/sdk"},
 	})
@@ -518,13 +518,13 @@ func TestPlanCollectsMultipleSharedTrees(t *testing.T) {
 func TestPlanRefusesUnrepresentablePlacements(t *testing.T) {
 	// No common ancestor below the filesystem root: the tree lives on a
 	// different branch entirely.
-	if _, err := Plan("/repo/integrations", "/repo/integrations/foo", []SharedTree{{Source: "/elsewhere/lib"}}); err == nil {
+	if _, err := Plan("/repo/jobs", "/repo/jobs/foo", []SharedTree{{Source: "/elsewhere/lib"}}); err == nil {
 		t.Error("planned a release whose shared tree has no relative placement")
 	}
-	// A tree containing the integration cannot be copied into the release
+	// A tree containing the job cannot be copied into the release
 	// without placing the release inside itself.
-	if _, err := Plan("/repo", "/repo/integrations/foo", []SharedTree{{Source: "/repo/integrations"}}); err == nil {
-		t.Error("planned a release whose shared tree contains the integration")
+	if _, err := Plan("/repo", "/repo/jobs/foo", []SharedTree{{Source: "/repo/jobs"}}); err == nil {
+		t.Error("planned a release whose shared tree contains the job")
 	}
 }
 
@@ -532,20 +532,20 @@ func TestPlanRefusesUnrepresentablePlacements(t *testing.T) {
 
 func TestLegacyMetadataDefaultsPlacement(t *testing.T) {
 	f := newFixture(t, "one")
-	legacy := Metadata{Integration: f.name, Digest: strings.Repeat("b", 64)}
-	rel, err := legacy.IntegrationRel()
+	legacy := Metadata{Job: f.name, Digest: strings.Repeat("b", 64)}
+	rel, err := legacy.JobRel()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rel != "integrations/one" {
-		t.Errorf("legacy placement = %q, want integrations/one", rel)
+	if rel != "jobs/one" {
+		t.Errorf("legacy placement = %q, want jobs/one", rel)
 	}
 
 	dir, err := f.manager().Dir(f.name, legacy.Digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "integrations", "one", "main.py"), "print('legacy')\n")
+	write(t, filepath.Join(dir, "jobs", "one", "main.py"), "print('legacy')\n")
 	src, err := legacy.SourceDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -555,18 +555,18 @@ func TestLegacyMetadataDefaultsPlacement(t *testing.T) {
 	}
 }
 
-func TestInvalidIntegrationPathRejected(t *testing.T) {
+func TestInvalidJobPathRejected(t *testing.T) {
 	root := t.TempDir()
 	for _, raw := range []string{"../escape", "a/../../b", "/absolute", ".."} {
-		meta := Metadata{Integration: "one", Digest: strings.Repeat("c", 64), IntegrationPath: raw}
+		meta := Metadata{Job: "one", Digest: strings.Repeat("c", 64), JobPath: raw}
 		if _, err := meta.SourceDir(root); err == nil {
-			t.Errorf("IntegrationPath %q was accepted", raw)
+			t.Errorf("JobPath %q was accepted", raw)
 		}
 	}
 	// An absolute path dressed up as relative must not sneak through safeJoin.
-	meta := Metadata{Integration: "one", Digest: strings.Repeat("c", 64), IntegrationPath: "a/../../../etc"}
+	meta := Metadata{Job: "one", Digest: strings.Repeat("c", 64), JobPath: "a/../../../etc"}
 	if _, err := meta.SourceDir(root); err == nil {
-		t.Error("an escaping IntegrationPath was accepted")
+		t.Error("an escaping JobPath was accepted")
 	}
 }
 
@@ -584,11 +584,11 @@ func TestOldDigestSnapshotsAreNotReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The metadata the old implementation wrote: no integration_path, and the
-	// snapshot at the hardcoded integrations/<name>.
-	write(t, filepath.Join(old, "integrations", f.name, "main.py"), "print('old')\n")
+	// The metadata the old implementation wrote: no job_path, and the
+	// snapshot at the hardcoded jobs/<name>.
+	write(t, filepath.Join(old, "jobs", f.name, "main.py"), "print('old')\n")
 	if err := writeMetadata(old, Metadata{
-		Integration: f.name,
+		Job:         f.name,
 		Digest:      v1,
 		Environment: "env-1",
 		Source:      f.source,
@@ -611,10 +611,10 @@ func TestOldDigestSnapshotsAreNotReused(t *testing.T) {
 
 // digestV1 reproduces the hashing of the previous implementation, so the test
 // can prove a snapshot it named is not reused.
-func digestV1(integrationDir string, shared []SharedTree, environmentDigest string) (string, error) {
+func digestV1(jobDir string, shared []SharedTree, environmentDigest string) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "otter-release-v1\x00%s\x00%s\x00", filepath.Base(integrationDir), environmentDigest)
-	if err := hashTree(h, integrationDir, integrationDir); err != nil {
+	fmt.Fprintf(h, "otter-release-v1\x00%s\x00%s\x00", filepath.Base(jobDir), environmentDigest)
+	if err := hashTree(h, jobDir, jobDir); err != nil {
 		return "", err
 	}
 	sorted := append([]SharedTree(nil), shared...)
@@ -642,10 +642,10 @@ func TestMissingSharedTreeIsAnError(t *testing.T) {
 	}
 }
 
-// An integration at the workspace root would have the data directory inside the
+// A job at the workspace root would have the data directory inside the
 // tree it captures. That copy would contain the staging directory itself, so it
 // is refused instead of recursing until the disk fills.
-func TestStageRefusesADataDirectoryInsideTheIntegration(t *testing.T) {
+func TestStageRefusesADataDirectoryInsideTheJob(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "otter.yaml"), "version: 1\nname: one\nentrypoint: main.py\n")
 	write(t, filepath.Join(root, "main.py"), "print('ok')\n")
@@ -655,8 +655,8 @@ func TestStageRefusesADataDirectoryInsideTheIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if layout.IntegrationPath != "." {
-		t.Fatalf("placement = %q, want the release root", layout.IntegrationPath)
+	if layout.JobPath != "." {
+		t.Fatalf("placement = %q, want the release root", layout.JobPath)
 	}
 	if _, err := manager.StageWithLayout("one", root, layout, ""); err == nil {
 		t.Fatal("staged a release inside its own data directory")
@@ -693,7 +693,7 @@ func TestAbsoluteSymlinkIsRejected(t *testing.T) {
 func TestInternalSymlinksArePreserved(t *testing.T) {
 	f := newFixture(t, "one")
 	write(t, filepath.Join(f.source, "real.py"), "X = 1\n")
-	// Within the integration.
+	// Within the job.
 	if err := os.Symlink("real.py", filepath.Join(f.source, "alias.py")); err != nil {
 		t.Fatal(err)
 	}

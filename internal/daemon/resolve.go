@@ -31,13 +31,13 @@ import (
 func (d *Daemon) resolveRef(ref string) (*registered, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return nil, fmt.Errorf("integration reference is empty: %w", api.ErrInvalid)
+		return nil, fmt.Errorf("job reference is empty: %w", api.ErrInvalid)
 	}
 
 	if id, ok := strings.CutPrefix(ref, "id:"); ok {
 		entry, found := d.reg.get(id)
 		if !found {
-			return nil, fmt.Errorf("integration %q: %w", ref, api.ErrNotFound)
+			return nil, fmt.Errorf("job %q: %w", ref, api.ErrNotFound)
 		}
 		return entry, nil
 	}
@@ -52,11 +52,11 @@ func (d *Daemon) resolveRef(ref string) (*registered, error) {
 		if entry, found := d.reg.get(ref); found {
 			return entry, nil
 		}
-		return nil, fmt.Errorf("integration %q: %w", ref, api.ErrNotFound)
+		return nil, fmt.Errorf("job %q: %w", ref, api.ErrNotFound)
 	case 1:
 		return matches[0], nil
 	default:
-		return nil, fmt.Errorf("integration %q is ambiguous; use id:<id> or a path: %s: %w",
+		return nil, fmt.Errorf("job %q is ambiguous; use id:<id> or a path: %s: %w",
 			ref, describeCandidates(matches), api.ErrConflict)
 	}
 }
@@ -81,7 +81,7 @@ func (d *Daemon) resolvePathRef(ref string) (*registered, error) {
 		return nil, err
 	}
 	if !found || rec.OwnerID.IsZero() {
-		return nil, fmt.Errorf("%s: no registered integration at that path: %w", ref, api.ErrNotFound)
+		return nil, fmt.Errorf("%s: no registered job at that path: %w", ref, api.ErrNotFound)
 	}
 	entry, ok := d.reg.get(rec.OwnerID.String())
 	if !ok {
@@ -108,7 +108,7 @@ func looksLikePath(ref string) bool {
 func describeCandidates(matches []*registered) string {
 	parts := make([]string, 0, len(matches))
 	for _, m := range matches {
-		parts = append(parts, fmt.Sprintf("%s at %s", m.Integration.ID, m.Integration.Dir))
+		parts = append(parts, fmt.Sprintf("%s at %s", m.Job.ID, m.Job.Dir))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, "; ")
@@ -130,7 +130,7 @@ func observationError(obs identity.Observation) string {
 	case obs.ManifestError != "":
 		return obs.ManifestError
 	default:
-		return "integration is not registered"
+		return "job is not registered"
 	}
 }
 
@@ -139,12 +139,12 @@ func observationError(obs identity.Observation) string {
 //
 // The active registry is tried first. An explicit id, or a path whose recorded
 // owner is no longer active, is then resolved against the identity store, so
-// an integration whose directory has already been removed can still be purged
+// a job whose directory has already been removed can still be purged
 // by id. Deleting the source first and the data second must work.
 func (d *Daemon) resolveLifecycleRef(ctx context.Context, ref string) (identity.Instance, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return identity.Instance{}, fmt.Errorf("integration reference is empty: %w", api.ErrInvalid)
+		return identity.Instance{}, fmt.Errorf("job reference is empty: %w", api.ErrInvalid)
 	}
 	if entry, err := d.resolveRef(ref); err == nil && !entry.Instance.ID.IsZero() {
 		return entry.Instance, nil
@@ -174,19 +174,19 @@ func (d *Daemon) resolveLifecycleRef(ctx context.Context, ref string) (identity.
 		if found && !rec.OwnerID.IsZero() {
 			return d.instanceAnyStatus(ctx, rec.OwnerID.String())
 		}
-		return identity.Instance{}, fmt.Errorf("%s: no integration was ever registered there: %w", ref, api.ErrNotFound)
+		return identity.Instance{}, fmt.Errorf("%s: no job was ever registered there: %w", ref, api.ErrNotFound)
 	}
 
 	// A retired identity has left the active registry, so a label can only be
 	// matched against the registry itself. One match is unambiguous; two
-	// retired integrations sharing a label need the id.
+	// retired jobs sharing a label need the id.
 	switch matches := d.instancesByLabel(ctx, ref); len(matches) {
 	case 1:
 		return matches[0], nil
 	case 0:
 	default:
 		return identity.Instance{}, fmt.Errorf(
-			"integration %q matches %d retired or deleted identities; use id:<id>: %w",
+			"job %q matches %d retired or deleted identities; use id:<id>: %w",
 			ref, len(matches), api.ErrConflict)
 	}
 
@@ -215,7 +215,7 @@ func (d *Daemon) instancesByLabel(ctx context.Context, label string) []identity.
 func (d *Daemon) instanceAnyStatus(ctx context.Context, id string) (identity.Instance, error) {
 	inst, err := d.ident.Store().Instance(ctx, identity.MustParseOrZero(id))
 	if err != nil {
-		return identity.Instance{}, fmt.Errorf("integration %q: %w", id, api.ErrNotFound)
+		return identity.Instance{}, fmt.Errorf("job %q: %w", id, api.ErrNotFound)
 	}
 	return inst, nil
 }

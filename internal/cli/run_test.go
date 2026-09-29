@@ -122,7 +122,7 @@ func TestWaitForRunFollowsRetriesToTheEnd(t *testing.T) {
 		calls++
 		// max_attempts 3 with attempt 1 failed: the policy can still retry, so
 		// the wait must keep watching rather than call the chain exhausted.
-		fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":"failed","latest_status":%q,"max_attempts":3,"attempts":%s}`,
+		fmt.Fprintf(w, `{"id":"root-run","job_id":"x","status":"failed","latest_status":%q,"max_attempts":3,"attempts":%s}`,
 			step.status, step.attempts)
 	}))
 	defer server.Close()
@@ -159,7 +159,7 @@ func TestWaitForRunFollowsATimeoutIntoItsRetry(t *testing.T) {
 			step = timeline[calls]
 		}
 		calls++
-		fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":"timed_out","latest_status":%q,"max_attempts":2,"attempts":%s}`,
+		fmt.Fprintf(w, `{"id":"root-run","job_id":"x","status":"timed_out","latest_status":%q,"max_attempts":2,"attempts":%s}`,
 			step.status, step.attempts)
 	}))
 	defer server.Close()
@@ -179,7 +179,7 @@ func TestWaitForRunFollowsATimeoutIntoItsRetry(t *testing.T) {
 
 // A failure or timeout the manifest cannot retry is the end of the chain on the
 // first view. Without this, `otter run` spends retryGrace watching a chain that
-// will never move -- which is every run of an integration with retries disabled.
+// will never move -- which is every run of a job with retries disabled.
 func TestWaitForRunSettlesWhenRetriesAreExhausted(t *testing.T) {
 	for _, status := range []runs.Status{runs.StatusFailed, runs.StatusTimedOut} {
 		t.Run(string(status), func(t *testing.T) {
@@ -187,7 +187,7 @@ func TestWaitForRunSettlesWhenRetriesAreExhausted(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				calls++
-				fmt.Fprintf(w, `{"id":"root-run","integration_id":"x","status":%q,"attempt":1,"latest_status":%q,"max_attempts":1,"attempts":[{"id":"root-run","status":%q,"attempt":1}]}`,
+				fmt.Fprintf(w, `{"id":"root-run","job_id":"x","status":%q,"attempt":1,"latest_status":%q,"max_attempts":1,"attempts":[{"id":"root-run","status":%q,"attempt":1}]}`,
 					status, status, status)
 			}))
 			defer server.Close()
@@ -211,7 +211,7 @@ func TestWaitForRunSettlesWhenRetriesAreExhausted(t *testing.T) {
 	}
 }
 
-// When the daemon cannot report the ceiling (an integration that has been
+// When the daemon cannot report the ceiling (a job that has been
 // removed, or an older daemon), the grace is still what bounds the wait: a
 // failed chain is watched briefly in case a retry appears.
 func TestWaitForRunFallsBackToTheGraceWithoutACeiling(t *testing.T) {
@@ -219,7 +219,7 @@ func TestWaitForRunFallsBackToTheGraceWithoutACeiling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		calls++
-		fmt.Fprint(w, `{"id":"root-run","integration_id":"x","status":"failed","attempt":2,"latest_status":"failed","attempts":[{"id":"root-run","status":"failed","attempt":2}]}`)
+		fmt.Fprint(w, `{"id":"root-run","job_id":"x","status":"failed","attempt":2,"latest_status":"failed","attempts":[{"id":"root-run","status":"failed","attempt":2}]}`)
 	}))
 	defer server.Close()
 
@@ -243,7 +243,7 @@ func TestWaitForRunFallsBackToTheGraceWithoutACeiling(t *testing.T) {
 func TestWaitForRunTimesOut(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"root-run","integration_id":"x","status":"running","latest_status":"running","attempts":[]}`)
+		fmt.Fprint(w, `{"id":"root-run","job_id":"x","status":"running","latest_status":"running","attempts":[]}`)
 	}))
 	defer server.Close()
 
@@ -258,7 +258,7 @@ func TestWaitForRunTimesOut(t *testing.T) {
 }
 
 // Both spellings of a long flag must work, and a flag written after the
-// integration name must not become a second positional.
+// job name must not become a second positional.
 func TestRunArgumentParsing(t *testing.T) {
 	takesValue := func(arg string) bool {
 		name := strings.TrimLeft(arg, "-")

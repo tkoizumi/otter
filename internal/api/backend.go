@@ -20,9 +20,9 @@ var (
 	ErrForbidden = errors.New("forbidden")
 
 	// ErrPaused refuses an autonomous trigger -- cron or webhook -- for an
-	// integration the operator paused. It is deliberately separate from
+	// job the operator paused. It is deliberately separate from
 	// ErrConflict so the API can answer "temporarily not accepting triggers"
-	// rather than "the request contradicts the integration's state". A manual
+	// rather than "the request contradicts the job's state". A manual
 	// run is never refused with this error.
 	ErrPaused = errors.New("paused")
 )
@@ -35,57 +35,57 @@ type Backend interface {
 	Version() string
 	StartedAt() time.Time
 
-	// ListIntegrations returns every discovered integration. Webhook tokens
+	// ListJobs returns every discovered job. Webhook tokens
 	// must be omitted here.
-	ListIntegrations() []IntegrationView
+	ListJobs() []JobView
 
-	// GetIntegration returns one integration, including its webhook token.
-	GetIntegration(id string) (IntegrationView, bool)
+	// GetJob returns one job, including its webhook token.
+	GetJob(id string) (JobView, bool)
 
-	// IntegrationGeneration reports the current identity generation of an
-	// integration, so a per-run token issued against an older generation can
+	// JobGeneration reports the current identity generation of an
+	// job, so a per-run token issued against an older generation can
 	// be refused at the point of mutation.
-	IntegrationGeneration(id string) (int64, bool)
+	JobGeneration(id string) (int64, bool)
 
-	// ResolveIntegration resolves a label, a path or an id to the integration
+	// ResolveJob resolves a label, a path or an id to the job
 	// it names. It is how the CLI learns the durable identity of a target
 	// without reading the registry itself.
-	ResolveIntegration(ref string) (IntegrationView, error)
+	ResolveJob(ref string) (JobView, error)
 
-	// RegisterIntegration registers a source path explicitly, clearing any
+	// RegisterJob registers a source path explicitly, clearing any
 	// deletion suppression. It never adopts a supplied marker into existing
 	// state.
-	RegisterIntegration(ctx context.Context, path string) (IntegrationView, error)
+	RegisterJob(ctx context.Context, path string) (JobView, error)
 
-	// ResetIntegration retires an identity and mints a fresh one at the same
+	// ResetJob retires an identity and mints a fresh one at the same
 	// path, preserving the old data for explicit deletion.
-	ResetIntegration(ctx context.Context, ref string) (ResetView, error)
+	ResetJob(ctx context.Context, ref string) (ResetView, error)
 
-	// DeleteIntegration purges an identity's state, history, tokens, releases
+	// DeleteJob purges an identity's state, history, tokens, releases
 	// and owned environments. Source files are left in place. A retired or
 	// already-deleted identity is still a legitimate target when named by id.
-	DeleteIntegration(ctx context.Context, ref string) (DeletedView, error)
+	DeleteJob(ctx context.Context, ref string) (DeletedView, error)
 
-	// MoveIntegration preserves an identity across a same-filesystem rename.
-	MoveIntegration(ctx context.Context, ref, destination string) (IntegrationView, error)
+	// MoveJob preserves an identity across a same-filesystem rename.
+	MoveJob(ctx context.Context, ref, destination string) (JobView, error)
 
-	// SetPaused suspends or re-arms an integration's autonomous triggers. It
-	// accepts a reference, so `otter pause` works from the integration's own
+	// SetPaused suspends or re-arms a job's autonomous triggers. It
+	// accepts a reference, so `otter pause` works from the job's own
 	// directory. Manual runs are unaffected in both directions.
 	SetPaused(ctx context.Context, ref string, paused bool) (PauseView, error)
 
-	// Reload re-reads the integrations directory and applies what it finds to
+	// Reload re-reads the jobs directory and applies what it finds to
 	// the running daemon, without stopping it. Executing runs and unchanged
 	// cron schedules are left alone.
 	Reload(ctx context.Context) (ReloadResult, error)
 
 	// SubmitRun queues a new run with default submission options and returns
 	// its run id.
-	SubmitRun(ctx context.Context, integrationID string, payload TriggerPayload) (string, error)
+	SubmitRun(ctx context.Context, jobID string, payload TriggerPayload) (string, error)
 
 	// SubmitRunWithOptions queues a new run with explicit options, such as the
 	// HTTP capture policy.
-	SubmitRunWithOptions(ctx context.Context, integrationID string, payload TriggerPayload, opts SubmitRunOptions) (string, error)
+	SubmitRunWithOptions(ctx context.Context, jobID string, payload TriggerPayload, opts SubmitRunOptions) (string, error)
 
 	// CancelRun cancels a queued or running run.
 	CancelRun(ctx context.Context, runID string) error
@@ -103,7 +103,7 @@ type Backend interface {
 	AppendRunLog(ctx context.Context, runID, stream, message string, fields map[string]any) error
 
 	// IngestCaptureEvents applies one batch of HTTP capture events submitted by a
-	// running child. The integration identity is inferred from the run record and
+	// running child. The job identity is inferred from the run record and
 	// never from the caller, so a run token cannot attribute traffic elsewhere.
 	IngestCaptureEvents(ctx context.Context, runID string, batch inspection.EventBatch) (*inspection.IngestResult, error)
 
@@ -131,16 +131,16 @@ type Backend interface {
 	TimelinePage(ctx context.Context, req timeline.Request) (*timeline.Page, error)
 
 	// GetState reads one state key.
-	GetState(ctx context.Context, integrationID, key string) (json.RawMessage, error)
+	GetState(ctx context.Context, jobID, key string) (json.RawMessage, error)
 
 	// SetState writes one state key.
-	SetState(ctx context.Context, integrationID, key string, value json.RawMessage) (time.Time, error)
+	SetState(ctx context.Context, jobID, key string, value json.RawMessage) (time.Time, error)
 
 	// DeleteState removes one state key.
-	DeleteState(ctx context.Context, integrationID, key string) (bool, error)
+	DeleteState(ctx context.Context, jobID, key string) (bool, error)
 
-	// AllState returns every state key for an integration.
-	AllState(ctx context.Context, integrationID string) (map[string]json.RawMessage, error)
+	// AllState returns every state key for a job.
+	AllState(ctx context.Context, jobID string) (map[string]json.RawMessage, error)
 
 	// QueueDepth reports how many runs are waiting.
 	QueueDepth(ctx context.Context) (int, error)
@@ -151,6 +151,6 @@ type Backend interface {
 	// ResolveRunToken validates a per-run token issued to a child process.
 	ResolveRunToken(token string) (RunToken, bool)
 
-	// WebhookTokenFor returns the webhook token of an integration.
-	WebhookTokenFor(integrationID string) (string, bool)
+	// WebhookTokenFor returns the webhook token of a job.
+	WebhookTokenFor(jobID string) (string, bool)
 }

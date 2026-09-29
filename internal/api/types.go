@@ -17,7 +17,7 @@ const (
 )
 
 // TriggerPayload is what caused a run. The body and headers are recorded on
-// the run so integration code can read ctx.trigger.body / .headers.
+// the run so job code can read ctx.trigger.body / .headers.
 type TriggerPayload struct {
 	Type    string              `json:"type"`
 	Body    json.RawMessage     `json:"body,omitempty"`
@@ -31,8 +31,8 @@ type TriggerPayload struct {
 	WebhookToken string `json:"-"`
 }
 
-// IntegrationView is the API representation of an integration manifest.
-type IntegrationView struct {
+// JobView is the API representation of a job manifest.
+type JobView struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
 	Description      string            `json:"description,omitempty"`
@@ -51,8 +51,8 @@ type IntegrationView struct {
 	Error            string            `json:"error,omitempty"`
 	NextRunAt        *time.Time        `json:"next_run_at,omitempty"`
 
-	// Capture is the HTTP capture policy a new run of this integration would
-	// use: the integration's declared policy, or the deployment default when the
+	// Capture is the HTTP capture policy a new run of this job would
+	// use: the job's declared policy, or the deployment default when the
 	// manifest does not declare one.
 	Capture string `json:"capture"`
 
@@ -63,7 +63,7 @@ type IntegrationView struct {
 	Status     string `json:"status,omitempty"`
 }
 
-// RetryView describes an integration's retry policy.
+// RetryView describes a job's retry policy.
 type RetryView struct {
 	Attempts     int    `json:"attempts"`
 	MaxAttempts  int    `json:"max_attempts"`
@@ -72,35 +72,35 @@ type RetryView struct {
 	MaxDelay     string `json:"max_delay"`
 }
 
-// TriggerView describes how an integration can be started.
+// TriggerView describes how a job can be started.
 type TriggerView struct {
 	Cron           string `json:"cron,omitempty"`
 	WebhookEnabled bool   `json:"webhook_enabled"`
 	WebhookURL     string `json:"webhook_url,omitempty"`
 
-	// WebhookToken is only populated on the single-integration endpoint, so
-	// that listing integrations never spills credentials.
+	// WebhookToken is only populated on the single-job endpoint, so
+	// that listing jobs never spills credentials.
 	WebhookToken string `json:"webhook_token,omitempty"`
 
-	// Paused suspends every autonomous trigger of this integration: cron stops
+	// Paused suspends every autonomous trigger of this job: cron stops
 	// firing and the webhook refuses a trigger. Manual runs are unaffected, so
-	// a paused integration can still be run on demand. PausedAt answers "since
+	// a paused job can still be run on demand. PausedAt answers "since
 	// when".
 	Paused   bool       `json:"paused"`
 	PausedAt *time.Time `json:"paused_at,omitempty"`
 }
 
-// PauseView reports an integration's trigger state after a pause or resume.
+// PauseView reports a job's trigger state after a pause or resume.
 //
 // Changed distinguishes a fresh transition from a repeat, which is what lets a
 // deploy script call pause unconditionally and still tell whether it did
 // anything.
 type PauseView struct {
-	IntegrationID string     `json:"integration_id"`
-	Name          string     `json:"name,omitempty"`
-	Paused        bool       `json:"paused"`
-	Changed       bool       `json:"changed"`
-	Since         *time.Time `json:"since,omitempty"`
+	JobID   string     `json:"job_id"`
+	Name    string     `json:"name,omitempty"`
+	Paused  bool       `json:"paused"`
+	Changed bool       `json:"changed"`
+	Since   *time.Time `json:"since,omitempty"`
 }
 
 // ResetView reports the identity change a reset performed. The old identity is
@@ -122,12 +122,12 @@ type DeletedView struct {
 	Path    string `json:"path,omitempty"`
 }
 
-// RegisterRequest is the body of POST /v1/integrations.
+// RegisterRequest is the body of POST /v1/jobs.
 type RegisterRequest struct {
 	Path string `json:"path"`
 }
 
-// MoveRequest is the body of POST /v1/integrations/{id}/move.
+// MoveRequest is the body of POST /v1/jobs/{id}/move.
 type MoveRequest struct {
 	Destination string `json:"destination"`
 }
@@ -140,8 +140,8 @@ type RunView struct {
 	LatestStatus runs.Status `json:"latest_status"`
 	Attempts     []*runs.Run `json:"attempts"`
 
-	// MaxAttempts is the retry ceiling the integration's manifest currently
-	// allows, including the first attempt. It is 0 when the integration is no
+	// MaxAttempts is the retry ceiling the job's manifest currently
+	// allows, including the first attempt. It is 0 when the job is no
 	// longer registered, so a caller watching a failed chain can tell "the
 	// policy has given up" (the newest attempt is at the ceiling) apart from
 	// "a retry is still coming" -- a distinction the statuses alone cannot make
@@ -151,19 +151,19 @@ type RunView struct {
 
 // HealthResponse is returned by GET /health.
 //
-// Integrations, QueueDepth and Runs are present only for an authenticated
+// Jobs, QueueDepth and Runs are present only for an authenticated
 // caller: an unauthenticated liveness probe receives status, version and
 // uptime alone.
 type HealthResponse struct {
 	Status        string         `json:"status"`
 	Version       string         `json:"version"`
 	UptimeSeconds float64        `json:"uptime_seconds"`
-	Integrations  *HealthCounts  `json:"integrations,omitempty"`
+	Jobs          *HealthCounts  `json:"jobs,omitempty"`
 	QueueDepth    *int           `json:"queue_depth,omitempty"`
 	Runs          map[string]int `json:"runs,omitempty"`
 }
 
-// HealthCounts summarises discovered integrations.
+// HealthCounts summarises discovered jobs.
 type HealthCounts struct {
 	Total   int `json:"total"`
 	Valid   int `json:"valid"`
@@ -172,16 +172,16 @@ type HealthCounts struct {
 
 // RunToken is the scope granted to a per-run token handed to a child process.
 // It is deliberately narrow: it can read its own run, read and write state
-// for its own integration and append its own logs, nothing more.
+// for its own job and append its own logs, nothing more.
 //
 // Generation is the identity generation the run was authorized against. It is
 // carried through the authorization boundary into state mutation so that a
 // token issued before a reset, move, retirement or deletion cannot write to
 // state that now belongs to a different instance.
 type RunToken struct {
-	RunID         string `json:"run_id"`
-	IntegrationID string `json:"integration_id"`
-	Generation    int64  `json:"generation,omitempty"`
+	RunID      string `json:"run_id"`
+	JobID      string `json:"job_id"`
+	Generation int64  `json:"generation,omitempty"`
 }
 
 // StateResponse is returned by the whole-state endpoint.
@@ -191,17 +191,17 @@ type StateResponse struct {
 
 // SetStateResponse is returned by PUT state.
 type SetStateResponse struct {
-	IntegrationID string          `json:"integration_id"`
-	Key           string          `json:"key"`
-	Value         json.RawMessage `json:"value"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	JobID     string          `json:"job_id"`
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // DeleteStateResponse is returned by DELETE state.
 type DeleteStateResponse struct {
-	IntegrationID string `json:"integration_id"`
-	Key           string `json:"key"`
-	Deleted       bool   `json:"deleted"`
+	JobID   string `json:"job_id"`
+	Key     string `json:"key"`
+	Deleted bool   `json:"deleted"`
 }
 
 // SubmitRunResponse is returned when a run is accepted.
@@ -214,7 +214,7 @@ type SubmitRunResponse struct {
 // SubmitRunOptions carries submission settings that are not part of the trigger.
 //
 // They are deliberately not smuggled through the request body: that body is the
-// trigger JSON, recorded verbatim and handed to integration code, so mixing
+// trigger JSON, recorded verbatim and handed to job code, so mixing
 // runtime options into it would corrupt both.
 type SubmitRunOptions struct {
 	// Capture is the HTTP capture policy for the run. Empty means the default.
@@ -231,7 +231,7 @@ type CancelRunResponse struct {
 // ReloadResult reports what a reload changed.
 //
 // It is returned rather than only logged because an operator who edited one
-// manifest wants to see that one integration changed, not merely that the
+// manifest wants to see that one job changed, not merely that the
 // whole directory was re-read.
 type ReloadResult struct {
 	Added   []string `json:"added"`
@@ -239,12 +239,12 @@ type ReloadResult struct {
 	Changed []string `json:"changed"`
 	Invalid []string `json:"invalid"`
 
-	// Total and Valid describe the integration set after the reload.
+	// Total and Valid describe the job set after the reload.
 	Total int `json:"total"`
 	Valid int `json:"valid"`
 
-	// RunsCancelled counts the queued runs of removed integrations that were
-	// ended, because a removed integration can never execute them.
+	// RunsCancelled counts the queued runs of removed jobs that were
+	// ended, because a removed job can never execute them.
 	RunsCancelled int `json:"runs_cancelled"`
 }
 

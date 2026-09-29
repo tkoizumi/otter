@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-// Integration is the result of discovery: either a valid, runnable
-// integration or an invalid one that must be reported without taking the
+// Job is the result of discovery: either a valid, runnable
+// job or an invalid one that must be reported without taking the
 // daemon down.
-type Integration struct {
+type Job struct {
 	// ID is the runtime identity. Discovery alone cannot mint one, so the
 	// legacy Discover path fills it with the manifest name; the daemon
 	// replaces it with the durable identity the registry assigned.
@@ -29,11 +29,11 @@ type Integration struct {
 	// Valid reports whether the manifest parsed and validated cleanly.
 	Valid bool
 
-	// Error explains why the integration is invalid.
+	// Error explains why the job is invalid.
 	Error string
 }
 
-// skippedDirs are directories that never contain integrations and are
+// skippedDirs are directories that never contain jobs and are
 // expensive or pointless to walk.
 var skippedDirs = map[string]bool{
 	".git":          true,
@@ -52,28 +52,28 @@ var skippedDirs = map[string]bool{
 }
 
 // Discover recursively finds every otter.yaml under root, loads it and
-// validates it. Invalid integrations are returned with Valid=false and an
+// validates it. Invalid jobs are returned with Valid=false and an
 // Error message rather than causing a failure: a single broken manifest must
 // never stop the daemon from serving the rest.
-func Discover(root string) ([]*Integration, error) {
+func Discover(root string) ([]*Job, error) {
 	if strings.TrimSpace(root) == "" {
-		return nil, fmt.Errorf("integrations directory must not be empty")
+		return nil, fmt.Errorf("jobs directory must not be empty")
 	}
 
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return nil, fmt.Errorf("resolve integrations directory %s: %w", root, err)
+		return nil, fmt.Errorf("resolve jobs directory %s: %w", root, err)
 	}
 
 	info, err := os.Stat(abs)
 	if err != nil {
-		return nil, fmt.Errorf("integrations directory %s: %w", abs, err)
+		return nil, fmt.Errorf("jobs directory %s: %w", abs, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("integrations path %s is not a directory", abs)
+		return nil, fmt.Errorf("jobs path %s is not a directory", abs)
 	}
 
-	var findings []*Integration
+	var findings []*Job
 
 	walkErr := filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -95,11 +95,11 @@ func Discover(root string) ([]*Integration, error) {
 		if d.Name() != ManifestFileName {
 			return nil
 		}
-		findings = append(findings, loadIntegration(path))
+		findings = append(findings, loadJob(path))
 		return nil
 	})
 	if walkErr != nil {
-		return nil, fmt.Errorf("walk integrations directory %s: %w", abs, walkErr)
+		return nil, fmt.Errorf("walk jobs directory %s: %w", abs, walkErr)
 	}
 
 	sort.Slice(findings, func(i, j int) bool { return findings[i].Dir < findings[j].Dir })
@@ -114,7 +114,7 @@ func Discover(root string) ([]*Integration, error) {
 		}
 		if first, dup := seen[it.ID]; dup {
 			it.Valid = false
-			it.Error = fmt.Sprintf("duplicate integration name %q: already defined in %s", it.ID, first)
+			it.Error = fmt.Sprintf("duplicate job name %q: already defined in %s", it.ID, first)
 			continue
 		}
 		seen[it.ID] = it.Dir
@@ -130,8 +130,8 @@ func Discover(root string) ([]*Integration, error) {
 	return findings, nil
 }
 
-func loadIntegration(manifestPath string) *Integration {
-	it := &Integration{
+func loadJob(manifestPath string) *Job {
+	it := &Job{
 		Dir:          filepath.Dir(manifestPath),
 		ManifestPath: manifestPath,
 	}

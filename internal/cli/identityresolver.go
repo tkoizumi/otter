@@ -22,19 +22,19 @@ import (
 // write identity state without becoming a second writer alongside a live
 // daemon.
 
-// mapTargetIdentities rewrites integration targets so their ID is the durable
+// mapTargetIdentities rewrites job targets so their ID is the durable
 // identity rather than the manifest label.
-func (a *App) mapTargetIdentities(ctx context.Context, integrationsRoot, dataDir string, targets []integrationTarget) ([]integrationTarget, int) {
+func (a *App) mapTargetIdentities(ctx context.Context, jobsRoot, dataDir string, targets []jobTarget) ([]jobTarget, int) {
 	client := runningWorkspaceClient(ctx)
 
-	out := make([]integrationTarget, 0, len(targets))
+	out := make([]jobTarget, 0, len(targets))
 	for _, target := range targets {
-		id, err := resolveIdentityForDir(ctx, client, integrationsRoot, dataDir, target.Dir)
+		id, err := resolveIdentityForDir(ctx, client, jobsRoot, dataDir, target.Dir)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 			return nil, 1
 		}
-		out = append(out, integrationTarget{ID: id, Name: target.ID, Dir: target.Dir})
+		out = append(out, jobTarget{ID: id, Name: target.ID, Dir: target.Dir})
 	}
 	return out, 0
 }
@@ -53,26 +53,26 @@ func runningWorkspaceClient(ctx context.Context) *api.Client {
 	client := api.NewClient(base, os.Getenv("OTTER_API_TOKEN"))
 	// A reload is how a directory added since the daemon started becomes
 	// addressable. A failure here is not fatal: resolution may still succeed
-	// for an integration the daemon already knows.
+	// for a job the daemon already knows.
 	_, _ = client.Reload(ctx)
 	return client
 }
 
 // resolveIdentityForDir maps a source directory to the identity that owns it.
-func resolveIdentityForDir(ctx context.Context, client *api.Client, integrationsRoot, dataDir, dir string) (string, error) {
+func resolveIdentityForDir(ctx context.Context, client *api.Client, jobsRoot, dataDir, dir string) (string, error) {
 	if client != nil {
-		view, err := client.ResolveIntegration(ctx, dir)
+		view, err := client.ResolveJob(ctx, dir)
 		if err != nil {
 			return "", err
 		}
 		return view.ID, nil
 	}
-	return reconcileAndResolve(ctx, integrationsRoot, dataDir, dir)
+	return reconcileAndResolve(ctx, jobsRoot, dataDir, dir)
 }
 
 // reconcileAndResolve runs the observe-and-reconcile pass locally, under the
 // data-directory lock when it is free, and returns the identity owning dir.
-func reconcileAndResolve(ctx context.Context, integrationsRoot, dataDir, dir string) (string, error) {
+func reconcileAndResolve(ctx context.Context, jobsRoot, dataDir, dir string) (string, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return "", fmt.Errorf("create data directory %s: %w", dataDir, err)
 	}
@@ -96,7 +96,7 @@ func reconcileAndResolve(ctx context.Context, integrationsRoot, dataDir, dir str
 	}
 
 	store := identity.NewStore(db.DB)
-	service := identity.NewService(store, integrationsRoot)
+	service := identity.NewService(store, jobsRoot)
 
 	known, err := store.Paths(ctx)
 	if err != nil {
@@ -108,15 +108,15 @@ func reconcileAndResolve(ctx context.Context, integrationsRoot, dataDir, dir str
 			knownPaths = append(knownPaths, rec.CanonicalPath)
 		}
 	}
-	scan, err := config.Observe(integrationsRoot, knownPaths)
+	scan, err := config.Observe(jobsRoot, knownPaths)
 	if err != nil {
-		return "", fmt.Errorf("observe integrations: %w", err)
+		return "", fmt.Errorf("observe jobs: %w", err)
 	}
 	if _, err := service.Recover(ctx); err != nil {
 		return "", err
 	}
 	if _, err := service.Reconcile(ctx, scan); err != nil {
-		return "", fmt.Errorf("reconcile integration identity: %w", err)
+		return "", fmt.Errorf("reconcile job identity: %w", err)
 	}
 
 	canonical, err := identity.Canonical(dir)
@@ -128,7 +128,7 @@ func reconcileAndResolve(ctx context.Context, integrationsRoot, dataDir, dir str
 		return "", err
 	}
 	if !found || rec.OwnerID.IsZero() {
-		return "", fmt.Errorf("%s is not a registered integration", dir)
+		return "", fmt.Errorf("%s is not a registered job", dir)
 	}
 	return rec.OwnerID.String(), nil
 }

@@ -47,12 +47,12 @@ func RunDaemon(ctx context.Context, version string, args []string, stdout, stder
 	notifyOn := fs.String("notify-on", strings.Join(cfg.Notify.On, ","), "comma-separated terminal statuses that notify (default: every failure)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: otterd [flags]\n\n")
-		fmt.Fprintf(stderr, "Runs the Otter daemon: it discovers integrations, registers their\n")
+		fmt.Fprintf(stderr, "Runs the Otter daemon: it discovers jobs, registers their\n")
 		fmt.Fprintf(stderr, "triggers, executes them as child processes and serves the HTTP API.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(stderr, "\nEnvironment:\n")
-		fmt.Fprintf(stderr, "  OTTER_INTEGRATIONS_DIR OTTER_DATA_DIR OTTER_LISTEN OTTER_WORKERS\n")
+		fmt.Fprintf(stderr, "  OTTER_JOBS_DIR OTTER_DATA_DIR OTTER_LISTEN OTTER_WORKERS\n")
 		fmt.Fprintf(stderr, "  OTTER_API_TOKEN OTTER_LOG_FORMAT OTTER_LOG_LEVEL OTTER_SHUTDOWN_GRACE\n")
 		fmt.Fprintf(stderr, "  OTTER_SDK_PATH OTTER_ALLOW_INCOMPLETE_RECOVERY\n")
 	}

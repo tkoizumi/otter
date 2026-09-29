@@ -1,20 +1,20 @@
 # Contributing to Otter
 
 This repository is the **runtime**: the daemon, the CLI, the embedded Python SDK
-and the contracts between them. It is not an integration project, and it ships
+and the contracts between them. It is not a job project, and it ships
 no example catalog.
 
 That distinction decides most reviews. Code that the runtime *is* (execution,
-scheduling, state, identity, releases, deployment) and code an integration
+scheduling, state, identity, releases, deployment) and code a job
 *imports* (the SDK) belong here. Code that *is a deployment* — vendor clients,
-mappings, real integrations — belongs in its own project, which installs Otter
+mappings, real jobs — belongs in its own project, which installs Otter
 and uses it.
 
 ## Prerequisites
 
 - **Go** — the version in [`go.mod`](go.mod); CI reads it from there too.
 - **Python 3.13** — what CI uses for the SDK suite and the smoke workflow. The
-  daemon itself needs a `python3` on the machine it runs integration code on.
+  daemon itself needs a `python3` on the machine it runs job code on.
 - `git`, and `make` for the documented loop.
 
 Nothing else. There are no SaaS credentials, no local services and no network
@@ -122,7 +122,7 @@ Two things to keep in mind:
   may be an installed release, which is a different program from the one you
   just built.
 - **Keep the workspace outside the repository.** `otter init` writes `.otter/`
-  and an integration directory; neither belongs in this tree. Both are
+  and a job directory; neither belongs in this tree. Both are
   gitignored as a safety net, not as an invitation.
 
 ## Documentation
@@ -132,7 +132,7 @@ Two things to keep in mind:
 `operations.md` and `deploy.md` describe what an *installed* Otter does. If a
 change alters behaviour, the document is part of the change.
 
-Integration-authoring tutorials do not live here. Keep this repository's prose
+Job-authoring tutorials do not live here. Keep this repository's prose
 about the runtime and point at an installed workflow.
 
 ## Packaging and releases
@@ -153,7 +153,7 @@ list. `CHANGELOG.md` links to each release's notes.
 
 ## What not to send
 
-- Vendor clients, mappings, credentials or a real integration.
+- Vendor clients, mappings, credentials or a real job.
 - An example directory. If you want the runtime to demonstrate something, extend
   the `otter init` scaffold and `scripts/smoke.sh` — that is how it stays true.
 - Generated files, `bin/`, `.otter/`, `run.log`, editor state.

@@ -1,10 +1,10 @@
 # Manifest Reference (`otter.yaml`)
 
-Every integration directory contains exactly one file named `otter.yaml`. The
-daemon finds integrations by walking the root passed to `--integrations` and
-looking for that filename. Nothing else is required to register an integration.
+Every job directory contains exactly one file named `otter.yaml`. The
+daemon finds jobs by walking the root passed to `--jobs` and
+looking for that filename. Nothing else is required to register a job.
 
-Discovery skips directories that cannot contain integrations and are expensive
+Discovery skips directories that cannot contain jobs and are expensive
 to walk: `.git`, `.hg`, `.svn`, `.cache`, `.venv`, `venv`, `node_modules`,
 `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.tox`, `dist` and `build`.
 
@@ -18,7 +18,7 @@ to walk: `.git`, `.hg`, `.svn`, `.cache`, `.venv`, `venv`, `node_modules`,
 - [Secrets](#secrets)
 - [Naming and uniqueness](#naming-and-uniqueness)
 - [Entrypoint rules](#entrypoint-rules)
-- [Validation and invalid integrations](#validation-and-invalid-integrations)
+- [Validation and invalid jobs](#validation-and-invalid-jobs)
 - [Examples](#examples)
 
 ## Minimal manifest
@@ -29,7 +29,7 @@ name: example
 entrypoint: main.py
 ```
 
-That is a valid, runnable integration: no trigger (manual runs only), the
+That is a valid, runnable job: no trigger (manual runs only), the
 default 300-second timeout, concurrency 1, and no retries.
 
 ## Full manifest
@@ -75,21 +75,21 @@ capture: full
 | `version` | integer | **yes** | — | Manifest schema version. Must be `1`. |
 | `name` | string | **yes** | — | Human-facing label, used by the CLI and shown in the API. Must match `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`. Labels need not be unique; the durable identity is separate. See [identity.md](identity.md). |
 | `description` | string | no | `""` | Free-form human description, returned by the API and shown by `otter inspect`. |
-| `entrypoint` | string | **yes** | — | Path to the Python file to run, relative to the integration directory. Must stay inside the directory and must exist. |
+| `entrypoint` | string | **yes** | — | Path to the Python file to run, relative to the job directory. Must stay inside the directory and must exist. |
 | `python.mode` | string | no | `external` | `external` preserves host Python behavior. `managed` requires `.python-version`, `pyproject.toml`, and `uv.lock`; prepare it before running. |
 | `python.executable` | string | no | `python3` in external mode | Interpreter used to launch the entrypoint. Resolved on `PATH` or given as an absolute path. Cannot be set in managed mode. |
-| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. The declared directories are captured into the integration's release at the same relative depth, so the same relative paths keep working after activation. |
+| `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. The declared directories are captured into the job's release at the same relative depth, so the same relative paths keep working after activation. |
 | `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`). Omit for no schedule. |
-| `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-integration token. |
+| `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-job token. |
 | `timeout` | integer \| string | no | `300` | Maximum wall-clock time for one attempt. An integer means seconds; a string is a Go duration (`30s`, `5m`, `1h30m`). |
-| `concurrency` | integer | no | `1` | Maximum number of simultaneous runs of **this** integration. Extra triggers queue. Must be `>= 1`. |
+| `concurrency` | integer | no | `1` | Maximum number of simultaneous runs of **this** job. Extra triggers queue. Must be `>= 1`. |
 | `retry.attempts` | integer | no | `0` | **Total** number of attempts, including the first. Must be `>= 0`. |
 | `retry.backoff` | string | no | `exponential` | One of `none`, `linear`, `exponential`. |
 | `retry.initial_delay` | string | no | `2s` | Delay before the second attempt. Go duration string. |
 | `retry.max_delay` | string | no | `60s` | Upper bound on any single backoff delay. Go duration string. |
 | `env` | map[string]string | no | `{}` | Extra environment variables for the child process. Values may reference daemon environment variables with `${VAR}`. |
 | `secrets` | []string | no | `[]` | Names of environment variables read from the **daemon's** environment and injected into the child process. |
-| `capture` | string | no | unset (deployment default) | How much of this integration's outgoing HTTP is recorded: `off`, `metadata` or `full`. Unset means the integration has no opinion and the deployment default applies; `off` refuses to record anything. See [http-capture.md](http-capture.md). |
+| `capture` | string | no | unset (deployment default) | How much of this job's outgoing HTTP is recorded: `off`, `metadata` or `full`. Unset means the job has no opinion and the deployment default applies; `off` refuses to record anything. See [http-capture.md](http-capture.md). |
 
 Unknown fields are rejected rather than ignored, so a typo such as `timeouts:`
 fails validation immediately instead of silently taking the default.
@@ -111,9 +111,9 @@ at the first one.
 
 ## Triggers
 
-An integration can have a cron trigger, a webhook trigger, both, or neither.
-Manual runs (`otter run <name>`, `POST /v1/integrations/{id}/runs`) work for
-every integration regardless of its trigger configuration.
+A job can have a cron trigger, a webhook trigger, both, or neither.
+Manual runs (`otter run <name>`, `POST /v1/jobs/{id}/runs`) work for
+every job regardless of its trigger configuration.
 
 ### Cron
 
@@ -127,11 +127,11 @@ trigger:
   `@monthly`, `@yearly`, `@every 5m`) are accepted too.
 - Schedules are reconciled from manifests on every daemon start and on every
   `otter reload`. Editing a cron expression and reloading is the way to change a
-  schedule — the daemon does not need to be restarted, and integrations whose
+  schedule — the daemon does not need to be restarted, and jobs whose
   expression did not change keep their next fire time.
 - **Missed occurrences are not replayed.** If the daemon is offline from 12:00
   to 12:20 with a `*/5` schedule, the four missed ticks are gone. Design
-  integrations to reconcile from a checkpoint stored in `ctx.state` instead of
+  jobs to reconcile from a checkpoint stored in `ctx.state` instead of
   assuming one run per tick.
 
 Useful expressions:
@@ -153,14 +153,14 @@ trigger:
 ```
 
 Exposes `POST /v1/hooks/{name}`. On first start the daemon generates a static
-token for the integration, stores it in SQLite, and returns it from
-`GET /v1/integrations/{id}`. The caller must present it as `X-Otter-Token:
+token for the job, stores it in SQLite, and returns it from
+`GET /v1/jobs/{id}`. The caller must present it as `X-Otter-Token:
 <token>` or `?token=<token>`. The request body and headers are handed to Python
 through `ctx.trigger`.
 
 ```bash
 TOKEN=$(curl -s -H "Authorization: Bearer $OTTER_API_TOKEN" \
-  http://127.0.0.1:7337/v1/integrations/my-hook | python3 -c 'import json,sys;print(json.load(sys.stdin)["webhook_token"])')
+  http://127.0.0.1:7337/v1/jobs/my-hook | python3 -c 'import json,sys;print(json.load(sys.stdin)["webhook_token"])')
 
 curl -s -X POST -H "X-Otter-Token: $TOKEN" -H 'Content-Type: application/json' \
   -d '{"order_id": 4242}' http://127.0.0.1:7337/v1/hooks/my-hook
@@ -168,7 +168,7 @@ curl -s -X POST -H "X-Otter-Token: $TOKEN" -H 'Content-Type: application/json' \
 
 ### Manual only
 
-Omit `trigger` entirely (or leave both sub-fields unset). The integration can
+Omit `trigger` entirely (or leave both sub-fields unset). The job can
 only be started by `otter run <name>` or the API.
 
 ## Retries
@@ -234,11 +234,11 @@ On timeout the daemon sends `SIGTERM` to the child's process group, waits about
 5 seconds, then `SIGKILL`s it. The run is marked `timed_out` and the retry
 policy applies.
 
-`concurrency` limits simultaneous runs **of this integration**; extra triggers
+`concurrency` limits simultaneous runs **of this job**; extra triggers
 stay queued. The global `--workers` flag caps total concurrent runs across all
-integrations (default: number of CPU cores, capped at 8). Both limits apply at
+jobs (default: number of CPU cores, capped at 8). Both limits apply at
 once — a manifest `concurrency: 8` on a machine started with `--workers 2` still
-runs at most two integrations at a time.
+runs at most two jobs at a time.
 
 ## Environment variables
 
@@ -256,10 +256,10 @@ env:
 - Use `env` for configuration, `secrets` for credentials.
 
 The runtime always adds these variables to the child environment, which override
-anything an integration attempts to set with the same names:
+anything a job attempts to set with the same names:
 
-`OTTER_INTEGRATION_ID`, `OTTER_INTEGRATION_NAME`, `OTTER_RUN_ID`, `OTTER_API_URL`,
-`OTTER_STATE_TOKEN`, `OTTER_TRIGGER_TYPE`, `OTTER_INTEGRATION_DIR`.
+`OTTER_JOB_ID`, `OTTER_JOB_NAME`, `OTTER_RUN_ID`, `OTTER_API_URL`,
+`OTTER_STATE_TOKEN`, `OTTER_TRIGGER_TYPE`, `OTTER_JOB_DIR`.
 
 ## Secrets
 
@@ -270,7 +270,7 @@ secrets:
 ```
 
 Secrets are read from the **daemon's** environment, not from the manifest and not
-from a `.env` file in the integration directory. The names listed are copied into
+from a `.env` file in the job directory. The names listed are copied into
 the child process's environment just before execution.
 
 - Keep values out of YAML: put `SHOPIFY_TOKEN=...` in the systemd
@@ -292,14 +292,14 @@ capture: off        # or metadata, or full
 ```
 
 Otter records a run's outgoing HTTP so a failure can be explained without adding
-logging to the integration. `full`, which stores sanitized headers and bounded
-JSON bodies, is the default; the manifest is how an integration opts down.
+logging to the job. `full`, which stores sanitized headers and bounded
+JSON bodies, is the default; the manifest is how a job opts down.
 
 - `capture: off` records nothing at all and installs no instrumentation.
 - `capture: metadata` records request summaries — method, sanitized URL, status,
   duration and call site — and never a header or body.
 - `capture: full` additionally records permitted headers and bounded, sanitized
-  JSON bodies. Set this explicitly when the integration must keep payloads even
+  JSON bodies. Set this explicitly when the job must keep payloads even
   if the deployment default is later lowered.
 - Omitting the field means "no opinion": the deployment's `--capture-default`
   applies. That is different from `capture: off`.
@@ -316,10 +316,10 @@ resolved policy. Capture observes live traffic and never changes a request; see
   digit. `shopify-to-erp` and `erp.sync_v2` are valid; `Shopify-Sync`, `_x` and
   `-x-` are not.
 - `name` is a **label**, not a key. State, run history, webhook tokens, releases
-  and prepared environments belong to the integration's durable **identity**,
+  and prepared environments belong to the job's durable **identity**,
   which the runtime mints once and records in a `.otter-id` marker inside the
   directory. See [identity.md](identity.md).
-- Labels do **not** have to be unique. Two integrations may declare the same
+- Labels do **not** have to be unique. Two jobs may declare the same
   `name`; `otter run <name>` then refuses and lists every candidate, and either
   `id:<id>` or a filesystem path selects one unambiguously.
 - A reference is a label, a path, or `id:<id>`. `otter run .` and a bare
@@ -334,40 +334,40 @@ resolved policy. Capture observes live traffic and never changes a request; see
 
 ## Entrypoint rules
 
-- `entrypoint` is relative to the integration directory.
+- `entrypoint` is relative to the job directory.
 - It must resolve **inside** that directory. `../shared/main.py` and absolute
   paths are rejected.
 - The file must exist at validation time; a missing entrypoint makes the
-  integration invalid and is never a retryable failure.
-- The child process runs with the integration directory as its working
+  job invalid and is never a retryable failure.
+- The child process runs with the job directory as its working
   directory, so relative paths inside `main.py` resolve naturally next to the
   manifest.
 - In external mode, Otter does not install `requirements.txt`; provision the
   interpreter yourself. In managed mode, pin an exact CPython patch version in
   `.python-version`, declare dependencies in `pyproject.toml`, commit `uv.lock`,
-  and run `otter prepare --integrations <root> --data <data-dir>` before starting
+  and run `otter prepare --jobs <root> --data <data-dir>` before starting
   the daemon. Preparation requires `uv` on the target host; pass `--uv <path>`
   to select it. Managed runs use only a prepared environment and never fall back
   to host Python.
 
-## Validation and invalid integrations
+## Validation and invalid jobs
 
 Validate without starting the daemon:
 
 ```bash
-otter validate ./my-integration
-otter validate ./my-integration/otter.yaml
-otter validate my-integration               # by label, from inside the workspace
+otter validate ./my-job
+otter validate ./my-job/otter.yaml
+otter validate my-job               # by label, from inside the workspace
 ```
 
 `otter validate` exits non-zero and prints the field-level error on failure.
 
-At runtime, an invalid integration **never** crashes the daemon:
+At runtime, an invalid job **never** crashes the daemon:
 
-- the error is written to the daemon log (`"event":"integration_invalid"`),
-- the integration appears in the API (`GET /v1/integrations`) with
+- the error is written to the daemon log (`"event":"job_invalid"`),
+- the job appears in the API (`GET /v1/jobs`) with
   `"valid": false` and an `"error"` string,
-- it is hidden from `otter integrations` unless you pass `--all`,
+- it is hidden from `otter jobs` unless you pass `--all`,
 - it cannot be run until the manifest is fixed and the daemon reloads it.
 
 ## Examples
@@ -444,7 +444,7 @@ entrypoint: main.py
 
 python:
   executable: /opt/otter/venv/bin/python3
-  # Shared client code, so several integrations can import one Shopify or
+  # Shared client code, so several jobs can import one Shopify or
   # ERP client instead of each carrying its own copy.
   path:
     - ../../lib/python

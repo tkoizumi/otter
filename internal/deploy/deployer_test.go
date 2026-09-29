@@ -30,8 +30,8 @@ type fakeRunner struct {
 	// healthURL, when set, makes the health check talk to a real HTTP server
 	// instead of returning a canned response.
 	healthURL string
-	// bindingsJSON is what the destination runtime answers `identity list
-	// --json` with, so a converge can record destination identities.
+	// bindingsJSON is what the destination runtime answers `jobs --json --all`
+	// with, so a converge can record destination identities.
 	bindingsJSON string
 	// workspaceList is what the host answers the workspace-record scan with:
 	// JSON records, the marker, then the ports already listening.
@@ -40,7 +40,7 @@ type fakeRunner struct {
 
 func (f *fakeRunner) RunStream(_ context.Context, command string, stdout, _ io.Writer) error {
 	f.records = append(f.records, "stream: "+command)
-	if f.bindingsJSON != "" && strings.Contains(command, "identity list") && stdout != nil {
+	if f.bindingsJSON != "" && strings.Contains(command, "jobs --json") && stdout != nil {
 		_, _ = io.WriteString(stdout, f.bindingsJSON)
 	}
 	return nil
@@ -176,7 +176,7 @@ func (b *fakeBuilder) Stage(_ Config, outDir string) error {
 	files := b.contents
 	if files == nil {
 		files = map[string]string{
-			"integrations/counter/main.py":          "print('counter')",
+			"jobs/counter/main.py":                  "print('counter')",
 			"lib/python/example_shared/__init__.py": "",
 		}
 	}
@@ -214,10 +214,10 @@ func newTestDeployer(t *testing.T, runner *fakeRunner, builder *fakeBuilder) (*D
 
 	cfg := Config{
 		ProjectRoot: repo,
-		Integrations: []Integration{{
+		Jobs: []Job{{
 			Name:  "counter",
 			Label: "counter",
-			Dir:   filepath.Join(repo, LocalIntegrationsDir, "counter"),
+			Dir:   filepath.Join(repo, LocalJobsDir, "counter"),
 		}},
 		SharedEnv: sharedPath,
 		Version:   "v0.1.0-test",
@@ -327,7 +327,7 @@ func TestRunRevisionTracksSourceChanges(t *testing.T) {
 	}
 
 	builder.contents = map[string]string{
-		"integrations/counter/main.py":          "print('counter and more')",
+		"jobs/counter/main.py":                  "print('counter and more')",
 		"lib/python/example_shared/__init__.py": "",
 	}
 	second, err := deployer.Run(context.Background())
@@ -537,14 +537,14 @@ func TestDestroyKeepsDataAndClearsState(t *testing.T) {
 	}
 }
 
-// A managed integration must be released on the host before the daemon
+// A managed job must be released on the host before the daemon
 // restarts, so a failed release leaves the previous deployment serving.
 func TestRunReleasesManagedPythonBeforeRestart(t *testing.T) {
 	runner := &fakeRunner{healthy: true}
 	builder := newFakeBuilder(t)
 	builder.contents = map[string]string{
-		"integrations/counter/otter.yaml": "version: 1\nname: counter\npython:\n  mode: managed\n",
-		"integrations/counter/main.py":    "print('counter')",
+		"jobs/counter/otter.yaml": "version: 1\nname: counter\npython:\n  mode: managed\n",
+		"jobs/counter/main.py":    "print('counter')",
 	}
 	deployer, _, stderr := newTestDeployer(t, runner, builder)
 	mustWriteManifest(t, deployer.Config, "counter", "managed")
@@ -571,9 +571,9 @@ func TestRunReleasesManagedPythonBeforeRestart(t *testing.T) {
 	}
 }
 
-// An integration that did not opt into managed Python is still released -- a
+// A job that did not opt into managed Python is still released -- a
 // run executes the active release -- but nothing about it needs uv, so a host
-// with no managed integrations gets no vendored toolchain.
+// with no managed jobs gets no vendored toolchain.
 func TestExternalPythonIsReleasedWithoutPreparation(t *testing.T) {
 	runner := &fakeRunner{healthy: true}
 	deployer, _, stderr := newTestDeployer(t, runner, newFakeBuilder(t))
@@ -590,14 +590,14 @@ func TestExternalPythonIsReleasedWithoutPreparation(t *testing.T) {
 		}
 		released = true
 		if strings.Contains(script, "--uv") {
-			t.Errorf("an external integration was prepared with uv:\n%s", script)
+			t.Errorf("an external job was prepared with uv:\n%s", script)
 		}
 	}
 	if !released {
-		t.Error("an external integration was not released, so its runs would be refused")
+		t.Error("an external job was not released, so its runs would be refused")
 	}
 	if strings.Contains(stderr.String(), "vendoring uv") || strings.Contains(stderr.String(), "pushing uv") {
-		t.Errorf("uv was shipped for a workspace with no managed integrations:\n%s", stderr.String())
+		t.Errorf("uv was shipped for a workspace with no managed jobs:\n%s", stderr.String())
 	}
 }
 
@@ -606,13 +606,13 @@ func TestExternalPythonIsReleasedWithoutPreparation(t *testing.T) {
 func mustWriteManifest(t *testing.T, cfg Config, name, mode string) {
 	t.Helper()
 	dir := ""
-	for _, integ := range cfg.Integrations {
+	for _, integ := range cfg.Jobs {
 		if integ.Name == name {
 			dir = integ.Dir
 		}
 	}
 	if dir == "" {
-		t.Fatalf("no integration named %s in the test config", name)
+		t.Fatalf("no job named %s in the test config", name)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -626,10 +626,10 @@ func mustWriteManifest(t *testing.T, cfg Config, name, mode string) {
 	}
 }
 
-// A deploy limited to one integration must not let --delete remove the others
+// A deploy limited to one job must not let --delete remove the others
 // from the host: they are on the remote and not in the source tree being
 // pushed, which is exactly what --delete removes by default.
-func TestLimitedDeployProtectsOtherIntegrations(t *testing.T) {
+func TestLimitedDeployProtectsOtherJobs(t *testing.T) {
 	runner := &fakeRunner{healthy: true}
 	deployer, _, _ := newTestDeployer(t, runner, newFakeBuilder(t))
 	deployer.Config.Limited = true
@@ -642,36 +642,36 @@ func TestLimitedDeployProtectsOtherIntegrations(t *testing.T) {
 	for _, record := range runner.pushed() {
 		pushed += record + "\n"
 	}
-	if !strings.Contains(pushed, "protect /integrations/***") {
-		t.Errorf("a limited deploy did not protect the other integrations:\n%s", pushed)
+	if !strings.Contains(pushed, "protect /jobs/***") {
+		t.Errorf("a limited deploy did not protect the other jobs:\n%s", pushed)
 	}
 
 	// An unrestricted deploy should not carry the protection, so removing an
-	// integration locally still removes it remotely.
+	// job locally still removes it remotely.
 	runner.records = nil
 	deployer.Config.Limited = false
 	if err := deployer.pushSources(context.Background(), t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(strings.Join(runner.pushed(), "\n"), "protect") {
-		t.Error("an unrestricted deploy protected the integrations tree")
+		t.Error("an unrestricted deploy protected the jobs tree")
 	}
 }
 
 // A limited deploy of the classic layout carries shared code that lands outside
-// integrations/ (a manifest declaring ../../lib/python). --delete would remove
-// it, breaking every integration this deploy is not carrying, so each tree the
+// jobs/ (a manifest declaring ../../lib/python). --delete would remove
+// it, breaking every job this deploy is not carrying, so each tree the
 // deploy does carry is protected by name too.
-func TestLimitedDeployProtectsSharedTreesOutsideIntegrations(t *testing.T) {
+func TestLimitedDeployProtectsSharedTreesOutsideJobs(t *testing.T) {
 	project := t.TempDir()
 	runner := &fakeRunner{healthy: true}
 	deployer := &Deployer{
 		Config: Config{
 			ProjectRoot: project,
 			Limited:     true,
-			Integrations: []Integration{{
+			Jobs: []Job{{
 				Name:  "one",
-				Dir:   filepath.Join(project, "integrations", "one"),
+				Dir:   filepath.Join(project, "jobs", "one"),
 				Trees: []string{filepath.Join(project, "lib", "python")},
 			}},
 		},
@@ -685,22 +685,22 @@ func TestLimitedDeployProtectsSharedTreesOutsideIntegrations(t *testing.T) {
 	}
 	pushed := strings.Join(runner.pushed(), "\n")
 	if !strings.Contains(pushed, "protect /lib/***") {
-		t.Errorf("a limited deploy did not protect the shared library outside integrations/:\n%s", pushed)
+		t.Errorf("a limited deploy did not protect the shared library outside jobs/:\n%s", pushed)
 	}
-	if !strings.Contains(pushed, "protect /integrations/***") {
-		t.Errorf("a limited deploy did not protect the other integrations:\n%s", pushed)
+	if !strings.Contains(pushed, "protect /jobs/***") {
+		t.Errorf("a limited deploy did not protect the other jobs:\n%s", pushed)
 	}
 }
 
 // A converge records the identity the destination assigned to each
-// integration, so a later deploy can tell "same instance, new code" from "a
+// job, so a later deploy can tell "same instance, new code" from "a
 // new instance" without guessing. Local and remote ids are independent, and
 // the record is the only place they are related.
 func TestRunRecordsDestinationBindings(t *testing.T) {
 	runner := &fakeRunner{
 		healthy: true,
 		bindingsJSON: `[{"id":"remote-identity-1","name":"counter",` +
-			`"path":"/opt/otter/integrations/counter","status":"active"},` +
+			`"path":"/opt/otter/jobs/counter","status":"active"},` +
 			`{"id":"retired-1","name":"gone","path":"/opt/otter/gone","status":"retired"}]`,
 	}
 	deployer, _, _ := newTestDeployer(t, runner, newFakeBuilder(t))
@@ -728,19 +728,21 @@ func TestRunRecordsDestinationBindings(t *testing.T) {
 	}
 
 	// The command reads the registry rather than the API, so it works with the
-	// runtime stopped, and it names the destination root explicitly.
+	// runtime stopped, and it names the destination data directory explicitly.
 	var bindingsCommand string
 	for _, record := range runner.records {
-		if strings.Contains(record, "identity list") {
+		if strings.Contains(record, "jobs --json") {
 			bindingsCommand = record
 		}
 	}
 	target := deployer.Config.Target
-	if !strings.Contains(bindingsCommand, "'"+target.DataDir+"'") ||
-		!strings.Contains(bindingsCommand, "'"+target.IntegrationsDir()+"'") {
-		t.Fatalf("bindings command does not name the destination paths: %q", bindingsCommand)
+	if !strings.Contains(bindingsCommand, "'"+target.DataDir+"'") {
+		t.Fatalf("bindings command does not name the destination data directory: %q", bindingsCommand)
 	}
-	// A name-only lookup would find another workspace's integration: the paths
+	if !strings.Contains(bindingsCommand, "--all") {
+		t.Errorf("bindings command does not ask for every registration: %q", bindingsCommand)
+	}
+	// A name-only lookup would find another workspace's job: the paths
 	// have to be this workspace's.
 	if !strings.Contains(bindingsCommand, "/workspaces/") {
 		t.Errorf("bindings command is not workspace-scoped: %q", bindingsCommand)
@@ -780,7 +782,7 @@ func TestLayoutPrecedesPushAndOwnershipFollowsIt(t *testing.T) {
 			if layout < 0 {
 				layout = i
 			}
-		case strings.Contains(rec, "for dir in bin integrations lib tools; do"):
+		case strings.Contains(rec, "for dir in bin jobs lib tools; do"):
 			if ownership < 0 {
 				ownership = i
 			}

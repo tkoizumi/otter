@@ -27,9 +27,9 @@ type fakeBackend struct {
 	version   string
 	startedAt time.Time
 
-	integrations map[string]IntegrationView
-	webhookFor   map[string]string
-	runTokens    map[string]RunToken
+	jobs       map[string]JobView
+	webhookFor map[string]string
+	runTokens  map[string]RunToken
 
 	runs      map[string]*runs.Run
 	runOrder  []string
@@ -61,8 +61,8 @@ type fakeBackend struct {
 }
 
 type submittedRun struct {
-	integrationID string
-	payload       TriggerPayload
+	jobID   string
+	payload TriggerPayload
 }
 
 // pauseCall records one pause or resume the handler forwarded to the backend.
@@ -75,26 +75,26 @@ var _ Backend = (*fakeBackend)(nil)
 
 func newFakeBackend() *fakeBackend {
 	return &fakeBackend{
-		version:      "test-1.0.0",
-		startedAt:    time.Now().Add(-90 * time.Second).UTC(),
-		integrations: map[string]IntegrationView{},
-		webhookFor:   map[string]string{},
-		runTokens:    map[string]RunToken{},
-		runs:         map[string]*runs.Run{},
-		logs:         map[string][]runs.LogEntry{},
-		state:        map[string]map[string]json.RawMessage{},
-		runCounts:    map[string]int{},
-		capture:      newFakeCapture(),
+		version:    "test-1.0.0",
+		startedAt:  time.Now().Add(-90 * time.Second).UTC(),
+		jobs:       map[string]JobView{},
+		webhookFor: map[string]string{},
+		runTokens:  map[string]RunToken{},
+		runs:       map[string]*runs.Run{},
+		logs:       map[string][]runs.LogEntry{},
+		state:      map[string]map[string]json.RawMessage{},
+		runCounts:  map[string]int{},
+		capture:    newFakeCapture(),
 	}
 }
 
-func (f *fakeBackend) addIntegration(id string, valid bool, webhookToken string) {
+func (f *fakeBackend) addJob(id string, valid bool, webhookToken string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.integrations[id] = IntegrationView{
+	f.jobs[id] = JobView{
 		ID:       id,
 		Name:     id,
-		Path:     "/integrations/" + id,
+		Path:     "/jobs/" + id,
 		Valid:    valid,
 		Triggers: TriggerView{WebhookEnabled: webhookToken != "", WebhookToken: webhookToken},
 	}
@@ -121,13 +121,13 @@ func (f *fakeBackend) addLogs(runID string, entries ...runs.LogEntry) {
 	}
 }
 
-func (f *fakeBackend) seedState(integrationID, key, value string) {
+func (f *fakeBackend) seedState(jobID, key, value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.state[integrationID] == nil {
-		f.state[integrationID] = map[string]json.RawMessage{}
+	if f.state[jobID] == nil {
+		f.state[jobID] = map[string]json.RawMessage{}
 	}
-	f.state[integrationID][key] = json.RawMessage(value)
+	f.state[jobID][key] = json.RawMessage(value)
 }
 
 func (f *fakeBackend) submissionCount() int {
@@ -157,11 +157,11 @@ func (f *fakeBackend) Version() string { return f.version }
 
 func (f *fakeBackend) StartedAt() time.Time { return f.startedAt }
 
-func (f *fakeBackend) ListIntegrations() []IntegrationView {
+func (f *fakeBackend) ListJobs() []JobView {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]IntegrationView, 0, len(f.integrations))
-	for _, v := range f.integrations {
+	out := make([]JobView, 0, len(f.jobs))
+	for _, v := range f.jobs {
 		// A listing must never leak the webhook token.
 		v.Triggers.WebhookToken = ""
 		out = append(out, v)
@@ -170,60 +170,60 @@ func (f *fakeBackend) ListIntegrations() []IntegrationView {
 	return out
 }
 
-func (f *fakeBackend) GetIntegration(id string) (IntegrationView, bool) {
+func (f *fakeBackend) GetJob(id string) (JobView, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v, ok := f.integrations[id]
+	v, ok := f.jobs[id]
 	return v, ok
 }
 
-func (f *fakeBackend) IntegrationGeneration(id string) (int64, bool) {
+func (f *fakeBackend) JobGeneration(id string) (int64, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v, ok := f.integrations[id]
+	v, ok := f.jobs[id]
 	if !ok {
 		return 0, false
 	}
 	return v.Generation, true
 }
 
-func (f *fakeBackend) ResolveIntegration(ref string) (IntegrationView, error) {
+func (f *fakeBackend) ResolveJob(ref string) (JobView, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if v, ok := f.integrations[ref]; ok {
+	if v, ok := f.jobs[ref]; ok {
 		return v, nil
 	}
-	for _, v := range f.integrations {
+	for _, v := range f.jobs {
 		if v.Name == ref {
 			return v, nil
 		}
 	}
-	return IntegrationView{}, fmt.Errorf("integration %q: %w", ref, ErrNotFound)
+	return JobView{}, fmt.Errorf("job %q: %w", ref, ErrNotFound)
 }
 
-func (f *fakeBackend) RegisterIntegration(_ context.Context, path string) (IntegrationView, error) {
+func (f *fakeBackend) RegisterJob(_ context.Context, path string) (JobView, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return IntegrationView{ID: path, Name: path, Path: path, Valid: true}, nil
+	return JobView{ID: path, Name: path, Path: path, Valid: true}, nil
 }
 
-func (f *fakeBackend) ResetIntegration(_ context.Context, ref string) (ResetView, error) {
+func (f *fakeBackend) ResetJob(_ context.Context, ref string) (ResetView, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return ResetView{OldID: ref, NewID: ref + "-new", Name: ref, Path: "/tmp/" + ref}, nil
 }
 
-func (f *fakeBackend) DeleteIntegration(_ context.Context, ref string) (DeletedView, error) {
+func (f *fakeBackend) DeleteJob(_ context.Context, ref string) (DeletedView, error) {
 	return DeletedView{Deleted: true, ID: ref, Name: ref}, nil
 }
 
-func (f *fakeBackend) MoveIntegration(_ context.Context, ref, destination string) (IntegrationView, error) {
+func (f *fakeBackend) MoveJob(_ context.Context, ref, destination string) (JobView, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return IntegrationView{ID: ref, Name: ref, Path: destination, Valid: true}, nil
+	return JobView{ID: ref, Name: ref, Path: destination, Valid: true}, nil
 }
 
-// SetPaused records the call and mirrors it into the integration's view, so a
+// SetPaused records the call and mirrors it into the job's view, so a
 // handler test can read back the trigger state the API reported.
 func (f *fakeBackend) SetPaused(_ context.Context, ref string, paused bool) (PauseView, error) {
 	f.mu.Lock()
@@ -233,19 +233,19 @@ func (f *fakeBackend) SetPaused(_ context.Context, ref string, paused bool) (Pau
 	}
 	f.pauseCalls = append(f.pauseCalls, pauseCall{ref: ref, paused: paused})
 
-	view, ok := f.integrations[ref]
+	view, ok := f.jobs[ref]
 	if !ok {
 		return PauseView{}, ErrNotFound
 	}
 	changed := view.Triggers.Paused != paused
 	view.Triggers.Paused = paused
-	f.integrations[ref] = view
+	f.jobs[ref] = view
 
 	out := PauseView{
-		IntegrationID: ref,
-		Name:          view.Name,
-		Paused:        paused,
-		Changed:       changed,
+		JobID:   ref,
+		Name:    view.Name,
+		Paused:  paused,
+		Changed: changed,
 	}
 	if paused {
 		at := time.Now().UTC()
@@ -264,29 +264,29 @@ func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {
 	return f.reloadOut, nil
 }
 
-func (f *fakeBackend) SubmitRun(_ context.Context, integrationID string, payload TriggerPayload) (string, error) {
+func (f *fakeBackend) SubmitRun(_ context.Context, jobID string, payload TriggerPayload) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// The daemon refuses an autonomous trigger for a paused integration and
+	// The daemon refuses an autonomous trigger for a paused job and
 	// admits a manual run regardless. The fake has to model that, because the
 	// API's status code -- 503 rather than 409 -- is chosen from it.
-	if view, ok := f.integrations[integrationID]; ok && view.Triggers.Paused {
+	if view, ok := f.jobs[jobID]; ok && view.Triggers.Paused {
 		if payload.Type != "" && payload.Type != TriggerManual {
-			return "", fmt.Errorf("integration %q is paused: %w", integrationID, ErrPaused)
+			return "", fmt.Errorf("job %q is paused: %w", jobID, ErrPaused)
 		}
 	}
 
-	f.submitted = append(f.submitted, submittedRun{integrationID: integrationID, payload: payload})
+	f.submitted = append(f.submitted, submittedRun{jobID: jobID, payload: payload})
 	f.nextRun++
 	runID := fmt.Sprintf("submitted-%d", f.nextRun)
 	f.runs[runID] = &runs.Run{
-		ID:            runID,
-		IntegrationID: integrationID,
-		TriggerType:   payload.Type,
-		Status:        runs.StatusQueued,
-		Attempt:       1,
-		CreatedAt:     time.Now().UTC(),
+		ID:          runID,
+		JobID:       jobID,
+		TriggerType: payload.Type,
+		Status:      runs.StatusQueued,
+		Attempt:     1,
+		CreatedAt:   time.Now().UTC(),
 	}
 	f.runOrder = append(f.runOrder, runID)
 	return runID, nil
@@ -321,7 +321,7 @@ func (f *fakeBackend) ListRuns(_ context.Context, filter runs.Filter) ([]*runs.R
 	out := []*runs.Run{}
 	for _, id := range f.runOrder {
 		r := f.runs[id]
-		if filter.IntegrationID != "" && r.IntegrationID != filter.IntegrationID {
+		if filter.JobID != "" && r.JobID != filter.JobID {
 			continue
 		}
 		if filter.Status != "" && r.Status != filter.Status {
@@ -363,41 +363,41 @@ func (f *fakeBackend) AppendRunLog(_ context.Context, runID, stream, message str
 	return nil
 }
 
-func (f *fakeBackend) GetState(_ context.Context, integrationID, key string) (json.RawMessage, error) {
+func (f *fakeBackend) GetState(_ context.Context, jobID, key string) (json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v, ok := f.state[integrationID][key]
+	v, ok := f.state[jobID][key]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	return append(json.RawMessage(nil), v...), nil
 }
 
-func (f *fakeBackend) SetState(_ context.Context, integrationID, key string, value json.RawMessage) (time.Time, error) {
+func (f *fakeBackend) SetState(_ context.Context, jobID, key string, value json.RawMessage) (time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.state[integrationID] == nil {
-		f.state[integrationID] = map[string]json.RawMessage{}
+	if f.state[jobID] == nil {
+		f.state[jobID] = map[string]json.RawMessage{}
 	}
-	f.state[integrationID][key] = append(json.RawMessage(nil), value...)
+	f.state[jobID][key] = append(json.RawMessage(nil), value...)
 	return time.Now().UTC(), nil
 }
 
-func (f *fakeBackend) DeleteState(_ context.Context, integrationID, key string) (bool, error) {
+func (f *fakeBackend) DeleteState(_ context.Context, jobID, key string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.state[integrationID][key]; !ok {
+	if _, ok := f.state[jobID][key]; !ok {
 		return false, nil
 	}
-	delete(f.state[integrationID], key)
+	delete(f.state[jobID], key)
 	return true, nil
 }
 
-func (f *fakeBackend) AllState(_ context.Context, integrationID string) (map[string]json.RawMessage, error) {
+func (f *fakeBackend) AllState(_ context.Context, jobID string) (map[string]json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := map[string]json.RawMessage{}
-	for k, v := range f.state[integrationID] {
+	for k, v := range f.state[jobID] {
 		out[k] = append(json.RawMessage(nil), v...)
 	}
 	return out, nil
@@ -422,10 +422,10 @@ func (f *fakeBackend) ResolveRunToken(token string) (RunToken, bool) {
 	return scope, ok
 }
 
-func (f *fakeBackend) WebhookTokenFor(integrationID string) (string, bool) {
+func (f *fakeBackend) WebhookTokenFor(jobID string) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	token, ok := f.webhookFor[integrationID]
+	token, ok := f.webhookFor[jobID]
 	return token, ok && token != ""
 }
 
@@ -507,11 +507,11 @@ func wantStatus(t *testing.T, r httpResult, want int) {
 
 func TestAuthenticationWithoutTokenOnLoopback(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
 
-	for _, path := range []string{"/health", "/v1/integrations", "/v1/integrations/int-A", "/v1/runs"} {
+	for _, path := range []string{"/health", "/v1/jobs", "/v1/jobs/int-A", "/v1/runs"} {
 		t.Run(path, func(t *testing.T) {
 			r := do(t, http.MethodGet, srv.URL+path, nil, nil)
 			wantStatus(t, r, http.StatusOK)
@@ -521,7 +521,7 @@ func TestAuthenticationWithoutTokenOnLoopback(t *testing.T) {
 
 func TestAuthenticationWithAPIToken(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	srv := newTestServer(t, ServerConfig{APIToken: "s3cret-token"}, b)
 	defer srv.Close()
 
@@ -539,7 +539,7 @@ func TestAuthenticationWithAPIToken(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := do(t, http.MethodGet, srv.URL+"/v1/integrations", nil, tc.hdr)
+			r := do(t, http.MethodGet, srv.URL+"/v1/jobs", nil, tc.hdr)
 			wantStatus(t, r, tc.want)
 			if tc.want == http.StatusUnauthorized {
 				if env := r.errorEnvelope(t); env.Error.Code != CodeUnauthorized {
@@ -552,12 +552,12 @@ func TestAuthenticationWithAPIToken(t *testing.T) {
 
 func TestRunTokenScopes(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
-	b.addIntegration("int-B", true, "")
-	b.runTokens["run-token"] = RunToken{RunID: "run-A", IntegrationID: "int-A"}
+	b.addJob("int-A", true, "")
+	b.addJob("int-B", true, "")
+	b.runTokens["run-token"] = RunToken{RunID: "run-A", JobID: "int-A"}
 	now := time.Now().UTC()
-	b.addRun(&runs.Run{ID: "run-A", IntegrationID: "int-A", Status: runs.StatusQueued, Attempt: 1, CreatedAt: now})
-	b.addRun(&runs.Run{ID: "run-B", IntegrationID: "int-B", Status: runs.StatusQueued, Attempt: 1, CreatedAt: now})
+	b.addRun(&runs.Run{ID: "run-A", JobID: "int-A", Status: runs.StatusQueued, Attempt: 1, CreatedAt: now})
+	b.addRun(&runs.Run{ID: "run-B", JobID: "int-B", Status: runs.StatusQueued, Attempt: 1, CreatedAt: now})
 	b.seedState("int-A", "present", "1")
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
@@ -575,17 +575,17 @@ func TestRunTokenScopes(t *testing.T) {
 		{"read own run", http.MethodGet, "/v1/runs/run-A", nil, http.StatusOK},
 		{"read own logs", http.MethodGet, "/v1/runs/run-A/logs", nil, http.StatusOK},
 		{"append own log", http.MethodPost, "/v1/runs/run-A/logs", []byte(`{"message":"hi"}`), http.StatusCreated},
-		{"read own state", http.MethodGet, "/v1/integrations/int-A/state", nil, http.StatusOK},
-		{"read own state key", http.MethodGet, "/v1/integrations/int-A/state/present", nil, http.StatusOK},
-		{"write own state key", http.MethodPut, "/v1/integrations/int-A/state/fresh", []byte(`{"x":1}`), http.StatusOK},
-		{"delete own state key", http.MethodDelete, "/v1/integrations/int-A/state/present", nil, http.StatusOK},
+		{"read own state", http.MethodGet, "/v1/jobs/int-A/state", nil, http.StatusOK},
+		{"read own state key", http.MethodGet, "/v1/jobs/int-A/state/present", nil, http.StatusOK},
+		{"write own state key", http.MethodPut, "/v1/jobs/int-A/state/fresh", []byte(`{"x":1}`), http.StatusOK},
+		{"delete own state key", http.MethodDelete, "/v1/jobs/int-A/state/present", nil, http.StatusOK},
 		{"read other run", http.MethodGet, "/v1/runs/run-B", nil, http.StatusForbidden},
 		{"read other run logs", http.MethodGet, "/v1/runs/run-B/logs", nil, http.StatusForbidden},
 		{"append to other run", http.MethodPost, "/v1/runs/run-B/logs", []byte(`{"message":"hi"}`), http.StatusForbidden},
-		{"read other integration state", http.MethodGet, "/v1/integrations/int-B/state", nil, http.StatusForbidden},
-		{"write other integration state", http.MethodPut, "/v1/integrations/int-B/state/k", []byte(`1`), http.StatusForbidden},
-		{"admin list integrations", http.MethodGet, "/v1/integrations", nil, http.StatusForbidden},
-		{"admin submit run", http.MethodPost, "/v1/integrations/int-A/runs", nil, http.StatusForbidden},
+		{"read other job state", http.MethodGet, "/v1/jobs/int-B/state", nil, http.StatusForbidden},
+		{"write other job state", http.MethodPut, "/v1/jobs/int-B/state/k", []byte(`1`), http.StatusForbidden},
+		{"admin list jobs", http.MethodGet, "/v1/jobs", nil, http.StatusForbidden},
+		{"admin submit run", http.MethodPost, "/v1/jobs/int-A/runs", nil, http.StatusForbidden},
 		{"admin list runs", http.MethodGet, "/v1/runs", nil, http.StatusForbidden},
 		{"admin cancel run", http.MethodPost, "/v1/runs/run-A/cancel", nil, http.StatusForbidden},
 	}
@@ -609,15 +609,15 @@ func TestRunTokenScopes(t *testing.T) {
 // which is exactly why the check has to happen at the mutation.
 func TestStateWriteRefusesAStaleGeneration(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
-	b.integrations["int-A"] = IntegrationView{ID: "int-A", Name: "counter", Valid: true, Generation: 3}
-	b.runTokens["stale"] = RunToken{RunID: "run-A", IntegrationID: "int-A", Generation: 2}
+	b.addJob("int-A", true, "")
+	b.jobs["int-A"] = JobView{ID: "int-A", Name: "counter", Valid: true, Generation: 3}
+	b.runTokens["stale"] = RunToken{RunID: "run-A", JobID: "int-A", Generation: 2}
 	b.seedState("int-A", "count", "1")
 
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
 	defer srv.Close()
 
-	r := do(t, http.MethodPut, srv.URL+"/v1/integrations/int-A/state/count", []byte(`2`),
+	r := do(t, http.MethodPut, srv.URL+"/v1/jobs/int-A/state/count", []byte(`2`),
 		map[string]string{"Authorization": "Bearer stale"})
 	wantStatus(t, r, http.StatusConflict)
 	if env := r.errorEnvelope(t); env.Error.Code != CodeConflict {
@@ -625,16 +625,16 @@ func TestStateWriteRefusesAStaleGeneration(t *testing.T) {
 	}
 
 	// A token at the current generation is unaffected.
-	b.runTokens["fresh"] = RunToken{RunID: "run-A", IntegrationID: "int-A", Generation: 3}
-	r = do(t, http.MethodPut, srv.URL+"/v1/integrations/int-A/state/count", []byte(`2`),
+	b.runTokens["fresh"] = RunToken{RunID: "run-A", JobID: "int-A", Generation: 3}
+	r = do(t, http.MethodPut, srv.URL+"/v1/jobs/int-A/state/count", []byte(`2`),
 		map[string]string{"Authorization": "Bearer fresh"})
 	wantStatus(t, r, http.StatusOK)
 }
 
 func TestWebhookAuthentication(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("hooked", true, "webhook-token")
-	b.addIntegration("disabled", true, "")
+	b.addJob("hooked", true, "webhook-token")
+	b.addJob("disabled", true, "")
 
 	// A webhook caller must not need the admin bearer token.
 	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
@@ -650,7 +650,7 @@ func TestWebhookAuthentication(t *testing.T) {
 		{"wrong token", "/v1/hooks/hooked", map[string]string{"X-Otter-Token": "nope"}, http.StatusUnauthorized},
 		{"header token", "/v1/hooks/hooked", map[string]string{"X-Otter-Token": "webhook-token"}, http.StatusAccepted},
 		{"query token", "/v1/hooks/hooked?token=webhook-token", nil, http.StatusAccepted},
-		{"unknown integration", "/v1/hooks/ghost", map[string]string{"X-Otter-Token": "webhook-token"}, http.StatusNotFound},
+		{"unknown job", "/v1/hooks/ghost", map[string]string{"X-Otter-Token": "webhook-token"}, http.StatusNotFound},
 		{"webhook disabled", "/v1/hooks/disabled", map[string]string{"X-Otter-Token": "webhook-token"}, http.StatusNotFound},
 	}
 
@@ -671,7 +671,7 @@ func TestWebhookAuthentication(t *testing.T) {
 				if !ok || b.submissionCount() != before+1 {
 					t.Fatalf("webhook did not reach SubmitRun")
 				}
-				if last.integrationID != "hooked" || last.payload.Type != TriggerWebhook {
+				if last.jobID != "hooked" || last.payload.Type != TriggerWebhook {
 					t.Fatalf("unexpected submission: %+v", last)
 				}
 				if string(last.payload.Body) != `{"event":"push"}` {
@@ -693,8 +693,8 @@ func TestHealthEndpoint(t *testing.T) {
 	b := newFakeBackend()
 	b.version = "v9.9.9"
 	b.startedAt = time.Now().Add(-2 * time.Minute).UTC()
-	b.addIntegration("ok", true, "")
-	b.addIntegration("bad", false, "")
+	b.addJob("ok", true, "")
+	b.addJob("bad", false, "")
 	b.queueDepth = 3
 	b.runCounts = map[string]int{"queued": 1, "running": 2}
 
@@ -706,18 +706,18 @@ func TestHealthEndpoint(t *testing.T) {
 
 	var raw map[string]json.RawMessage
 	r.decode(t, &raw)
-	for _, key := range []string{"status", "version", "uptime_seconds", "integrations", "queue_depth", "runs"} {
+	for _, key := range []string{"status", "version", "uptime_seconds", "jobs", "queue_depth", "runs"} {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("health response is missing %q: %s", key, r.body)
 		}
 	}
 	var counts map[string]json.RawMessage
-	if err := json.Unmarshal(raw["integrations"], &counts); err != nil {
-		t.Fatalf("integrations is not an object: %v", err)
+	if err := json.Unmarshal(raw["jobs"], &counts); err != nil {
+		t.Fatalf("jobs is not an object: %v", err)
 	}
 	for _, key := range []string{"total", "valid", "invalid"} {
 		if _, ok := counts[key]; !ok {
-			t.Fatalf("integrations is missing %q: %s", key, raw["integrations"])
+			t.Fatalf("jobs is missing %q: %s", key, raw["jobs"])
 		}
 	}
 
@@ -732,11 +732,11 @@ func TestHealthEndpoint(t *testing.T) {
 	if health.UptimeSeconds <= 0 {
 		t.Fatalf("uptime_seconds = %v, want > 0", health.UptimeSeconds)
 	}
-	if health.Integrations == nil {
-		t.Fatal("an authenticated /health response must include integrations")
+	if health.Jobs == nil {
+		t.Fatal("an authenticated /health response must include jobs")
 	}
-	if *health.Integrations != (HealthCounts{Total: 2, Valid: 1, Invalid: 1}) {
-		t.Fatalf("integrations = %+v", *health.Integrations)
+	if *health.Jobs != (HealthCounts{Total: 2, Valid: 1, Invalid: 1}) {
+		t.Fatalf("jobs = %+v", *health.Jobs)
 	}
 	if health.QueueDepth == nil || *health.QueueDepth != 3 {
 		t.Fatalf("queue_depth = %v, want 3", health.QueueDepth)
@@ -751,7 +751,7 @@ func TestHealthEndpoint(t *testing.T) {
 // token is configured and none (or a wrong one) was presented.
 func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	srv := newTestServer(t, ServerConfig{APIToken: "s3cret"}, b)
 	defer srv.Close()
 
@@ -767,7 +767,7 @@ func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 		if health.Status != "ok" || health.Version == "" {
 			t.Fatalf("liveness payload = %+v", health)
 		}
-		if health.Integrations != nil || health.QueueDepth != nil || len(health.Runs) != 0 {
+		if health.Jobs != nil || health.QueueDepth != nil || len(health.Runs) != 0 {
 			t.Fatalf("unauthenticated /health leaked counters: %s", r.body)
 		}
 	})
@@ -779,7 +779,7 @@ func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 		}
 		var health HealthResponse
 		r.decode(t, &health)
-		if health.Integrations != nil {
+		if health.Jobs != nil {
 			t.Fatalf("a wrong token must not reveal counters: %s", r.body)
 		}
 	})
@@ -791,7 +791,7 @@ func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 		}
 		var health HealthResponse
 		r.decode(t, &health)
-		if health.Integrations == nil || health.QueueDepth == nil {
+		if health.Jobs == nil || health.QueueDepth == nil {
 			t.Fatalf("an authenticated caller should see counters: %s", r.body)
 		}
 	})
@@ -799,13 +799,13 @@ func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 
 func TestSubmitRunEndpoint(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
 
 	t.Run("empty body succeeds", func(t *testing.T) {
 		before := b.submissionCount()
-		r := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs", nil, nil)
+		r := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs", nil, nil)
 		wantStatus(t, r, http.StatusAccepted)
 		var out SubmitRunResponse
 		r.decode(t, &out)
@@ -816,7 +816,7 @@ func TestSubmitRunEndpoint(t *testing.T) {
 		if !ok || b.submissionCount() != before+1 {
 			t.Fatalf("SubmitRun was not called")
 		}
-		if last.integrationID != "int-A" || last.payload.Type != TriggerManual {
+		if last.jobID != "int-A" || last.payload.Type != TriggerManual {
 			t.Fatalf("unexpected submission: %+v", last)
 		}
 		if len(last.payload.Body) != 0 {
@@ -826,7 +826,7 @@ func TestSubmitRunEndpoint(t *testing.T) {
 
 	t.Run("invalid json rejected", func(t *testing.T) {
 		before := b.submissionCount()
-		r := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs", []byte(`{"not json`), nil)
+		r := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs", []byte(`{"not json`), nil)
 		wantStatus(t, r, http.StatusBadRequest)
 		if env := r.errorEnvelope(t); env.Error.Code != CodeInvalid {
 			t.Fatalf("error code = %q", env.Error.Code)
@@ -838,7 +838,7 @@ func TestSubmitRunEndpoint(t *testing.T) {
 
 	t.Run("valid json passed through", func(t *testing.T) {
 		body := []byte(`{"a":1,"b":[true,null]}`)
-		r := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs", body, nil)
+		r := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs", body, nil)
 		wantStatus(t, r, http.StatusAccepted)
 		last, ok := b.lastSubmission()
 		if !ok {
@@ -852,8 +852,8 @@ func TestSubmitRunEndpoint(t *testing.T) {
 
 func TestListRunsValidation(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
-	b.addRun(&runs.Run{ID: "run-1", IntegrationID: "int-A", Status: runs.StatusQueued, Attempt: 1, CreatedAt: time.Now().UTC()})
+	b.addJob("int-A", true, "")
+	b.addRun(&runs.Run{ID: "run-1", JobID: "int-A", Status: runs.StatusQueued, Attempt: 1, CreatedAt: time.Now().UTC()})
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
 
@@ -885,16 +885,16 @@ func TestListRunsValidation(t *testing.T) {
 	}
 }
 
-func TestIntegrationEndpointsAndTokenScope(t *testing.T) {
+func TestJobEndpointsAndTokenScope(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "wh-secret-token")
+	b.addJob("int-A", true, "wh-secret-token")
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
 
 	t.Run("single includes webhook token", func(t *testing.T) {
-		r := do(t, http.MethodGet, srv.URL+"/v1/integrations/int-A", nil, nil)
+		r := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A", nil, nil)
 		wantStatus(t, r, http.StatusOK)
-		var view IntegrationView
+		var view JobView
 		r.decode(t, &view)
 		if view.ID != "int-A" {
 			t.Fatalf("id = %q", view.ID)
@@ -903,32 +903,32 @@ func TestIntegrationEndpointsAndTokenScope(t *testing.T) {
 			t.Fatalf("webhook_token = %q", view.Triggers.WebhookToken)
 		}
 		if !bytes.Contains(r.body, []byte(`"webhook_token"`)) {
-			t.Fatalf("single integration response has no webhook_token field: %s", r.body)
+			t.Fatalf("single job response has no webhook_token field: %s", r.body)
 		}
 	})
 
 	t.Run("list never leaks webhook token", func(t *testing.T) {
-		r := do(t, http.MethodGet, srv.URL+"/v1/integrations", nil, nil)
+		r := do(t, http.MethodGet, srv.URL+"/v1/jobs", nil, nil)
 		wantStatus(t, r, http.StatusOK)
 		if bytes.Contains(r.body, []byte("wh-secret-token")) {
 			t.Fatalf("list response leaked the webhook token: %s", r.body)
 		}
 		var out struct {
-			Integrations []IntegrationView `json:"integrations"`
+			Jobs []JobView `json:"jobs"`
 		}
 		r.decode(t, &out)
-		if len(out.Integrations) != 1 {
-			t.Fatalf("integrations = %d, want 1", len(out.Integrations))
+		if len(out.Jobs) != 1 {
+			t.Fatalf("jobs = %d, want 1", len(out.Jobs))
 		}
-		for _, v := range out.Integrations {
+		for _, v := range out.Jobs {
 			if v.Triggers.WebhookToken != "" {
-				t.Fatalf("listed integration carries a webhook token")
+				t.Fatalf("listed job carries a webhook token")
 			}
 		}
 	})
 
-	t.Run("unknown integration is 404", func(t *testing.T) {
-		r := do(t, http.MethodGet, srv.URL+"/v1/integrations/ghost", nil, nil)
+	t.Run("unknown job is 404", func(t *testing.T) {
+		r := do(t, http.MethodGet, srv.URL+"/v1/jobs/ghost", nil, nil)
 		wantStatus(t, r, http.StatusNotFound)
 		if env := r.errorEnvelope(t); env.Error.Code != CodeNotFound {
 			t.Fatalf("error code = %q", env.Error.Code)
@@ -938,7 +938,7 @@ func TestIntegrationEndpointsAndTokenScope(t *testing.T) {
 
 func TestStateEndpoints(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	b.seedState("int-A", "num", "123")
 	b.seedState("int-A", "obj", `{"a":1}`)
 	b.seedState("int-A", "gone", `"bye"`)
@@ -954,7 +954,7 @@ func TestStateEndpoints(t *testing.T) {
 	}
 	for _, tc := range rawCases {
 		t.Run("raw "+tc.key, func(t *testing.T) {
-			r := do(t, http.MethodGet, srv.URL+"/v1/integrations/int-A/state/"+tc.key, nil, nil)
+			r := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A/state/"+tc.key, nil, nil)
 			wantStatus(t, r, http.StatusOK)
 			if got := strings.TrimRight(string(r.body), "\n"); got != tc.want {
 				t.Fatalf("body = %q, want raw value %q (no envelope)", got, tc.want)
@@ -966,7 +966,7 @@ func TestStateEndpoints(t *testing.T) {
 	}
 
 	t.Run("unknown key is 404", func(t *testing.T) {
-		r := do(t, http.MethodGet, srv.URL+"/v1/integrations/int-A/state/missing", nil, nil)
+		r := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A/state/missing", nil, nil)
 		wantStatus(t, r, http.StatusNotFound)
 		if env := r.errorEnvelope(t); env.Error.Code != CodeNotFound {
 			t.Fatalf("error code = %q", env.Error.Code)
@@ -974,7 +974,7 @@ func TestStateEndpoints(t *testing.T) {
 	})
 
 	t.Run("all state", func(t *testing.T) {
-		r := do(t, http.MethodGet, srv.URL+"/v1/integrations/int-A/state", nil, nil)
+		r := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A/state", nil, nil)
 		wantStatus(t, r, http.StatusOK)
 		var out StateResponse
 		r.decode(t, &out)
@@ -987,7 +987,7 @@ func TestStateEndpoints(t *testing.T) {
 	})
 
 	t.Run("put rejects non-json", func(t *testing.T) {
-		r := do(t, http.MethodPut, srv.URL+"/v1/integrations/int-A/state/k", []byte("not json"), nil)
+		r := do(t, http.MethodPut, srv.URL+"/v1/jobs/int-A/state/k", []byte("not json"), nil)
 		wantStatus(t, r, http.StatusBadRequest)
 		if env := r.errorEnvelope(t); env.Error.Code != CodeInvalid {
 			t.Fatalf("error code = %q", env.Error.Code)
@@ -995,18 +995,18 @@ func TestStateEndpoints(t *testing.T) {
 	})
 
 	t.Run("put echoes value", func(t *testing.T) {
-		r := do(t, http.MethodPut, srv.URL+"/v1/integrations/int-A/state/k", []byte(`{"x":true}`), nil)
+		r := do(t, http.MethodPut, srv.URL+"/v1/jobs/int-A/state/k", []byte(`{"x":true}`), nil)
 		wantStatus(t, r, http.StatusOK)
 		var out SetStateResponse
 		r.decode(t, &out)
-		if out.IntegrationID != "int-A" || out.Key != "k" {
+		if out.JobID != "int-A" || out.Key != "k" {
 			t.Fatalf("unexpected response: %+v", out)
 		}
 		if string(out.Value) != `{"x":true}` {
 			t.Fatalf("value = %s", out.Value)
 		}
 		// The write must be visible to a following read.
-		got := do(t, http.MethodGet, srv.URL+"/v1/integrations/int-A/state/k", nil, nil)
+		got := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A/state/k", nil, nil)
 		wantStatus(t, got, http.StatusOK)
 		if strings.TrimSpace(string(got.body)) != `{"x":true}` {
 			t.Fatalf("read back = %s", got.body)
@@ -1014,7 +1014,7 @@ func TestStateEndpoints(t *testing.T) {
 	})
 
 	t.Run("delete then 404", func(t *testing.T) {
-		r := do(t, http.MethodDelete, srv.URL+"/v1/integrations/int-A/state/gone", nil, nil)
+		r := do(t, http.MethodDelete, srv.URL+"/v1/jobs/int-A/state/gone", nil, nil)
 		wantStatus(t, r, http.StatusOK)
 		var out DeleteStateResponse
 		r.decode(t, &out)
@@ -1022,7 +1022,7 @@ func TestStateEndpoints(t *testing.T) {
 			t.Fatalf("unexpected response: %+v", out)
 		}
 
-		again := do(t, http.MethodDelete, srv.URL+"/v1/integrations/int-A/state/gone", nil, nil)
+		again := do(t, http.MethodDelete, srv.URL+"/v1/jobs/int-A/state/gone", nil, nil)
 		wantStatus(t, again, http.StatusNotFound)
 		if env := again.errorEnvelope(t); env.Error.Code != CodeNotFound {
 			t.Fatalf("error code = %q", env.Error.Code)
@@ -1032,9 +1032,9 @@ func TestStateEndpoints(t *testing.T) {
 
 func TestRunLogEndpoints(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	now := time.Now().UTC()
-	b.addRun(&runs.Run{ID: "run-1", IntegrationID: "int-A", Status: runs.StatusRunning, Attempt: 1, CreatedAt: now})
+	b.addRun(&runs.Run{ID: "run-1", JobID: "int-A", Status: runs.StatusRunning, Attempt: 1, CreatedAt: now})
 	b.addLogs("run-1", runs.LogEntry{ID: 1, RunID: "run-1", Timestamp: now, Stream: runs.StreamOtter, Message: "first"})
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
@@ -1142,12 +1142,12 @@ func TestUnknownRouteReturnsJSONEnvelope(t *testing.T) {
 
 func TestRequestBodyTooLarge(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
+	b.addJob("int-A", true, "")
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
 
 	big := bytes.Repeat([]byte("a"), maxBodyBytes+1)
-	r := do(t, http.MethodPost, srv.URL+"/v1/integrations/int-A/runs", big, nil)
+	r := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/runs", big, nil)
 	wantStatus(t, r, http.StatusBadRequest)
 	if env := r.errorEnvelope(t); env.Error.Code != CodeInvalid {
 		t.Fatalf("error code = %q", env.Error.Code)
@@ -1156,8 +1156,8 @@ func TestRequestBodyTooLarge(t *testing.T) {
 
 func TestReloadEndpointIsAdminOnlyAndReturnsTheResult(t *testing.T) {
 	b := newFakeBackend()
-	b.addIntegration("int-A", true, "")
-	b.runTokens["run-token"] = RunToken{RunID: "run-A", IntegrationID: "int-A"}
+	b.addJob("int-A", true, "")
+	b.runTokens["run-token"] = RunToken{RunID: "run-A", JobID: "int-A"}
 	b.reloadOut = ReloadResult{
 		Added:         []string{"int-B"},
 		Total:         2,

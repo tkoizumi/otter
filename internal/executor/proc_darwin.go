@@ -14,7 +14,7 @@ import (
 // Linux's PR_SET_PDEATHSIG or FreeBSD's procctl(PROC_PDEATHSIG_CTL). So when
 // the daemon is killed outright, an in-flight child is reparented and keeps
 // running while the next startup marks its run failed and retries it. An
-// integration whose external effects are not idempotent can therefore be
+// job whose external effects are not idempotent can therefore be
 // duplicated.
 //
 // Only abrupt daemon death is exposed, and only on this platform. Timeout,

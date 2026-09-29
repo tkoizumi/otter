@@ -14,10 +14,10 @@ import (
 	"github.com/tkoizumi/otter/internal/config"
 )
 
-// writeIntegration writes a minimal manifest into a fresh directory and
+// writeJob writes a minimal manifest into a fresh directory and
 // returns the directory. The manifest name is independent of the directory
 // name, which is the case a name-only CLI cannot express.
-func writeIntegration(t *testing.T, name string) string {
+func writeJob(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()
 	body := "version: 1\nname: " + name + "\nentrypoint: main.py\n"
@@ -38,22 +38,22 @@ func chdirForTest(t *testing.T, dir string) {
 
 // A plain name is the daemon's identifier and must reach it untouched: the
 // whole point is that the existing spelling keeps working.
-func TestResolveIntegrationRefPassesNamesThrough(t *testing.T) {
+func TestResolveJobRefPassesNamesThrough(t *testing.T) {
 	for _, ref := range []string{"counter", "shopify-to-salesforce", "erp.sync_v2", "a", ""} {
-		got, err := resolveIntegrationRef(ref)
+		got, err := resolveJobRef(ref)
 		if err != nil {
-			t.Errorf("resolveIntegrationRef(%q): %v", ref, err)
+			t.Errorf("resolveJobRef(%q): %v", ref, err)
 			continue
 		}
 		if got != ref {
-			t.Errorf("resolveIntegrationRef(%q) = %q, want it unchanged", ref, got)
+			t.Errorf("resolveJobRef(%q) = %q, want it unchanged", ref, got)
 		}
 	}
 }
 
 // The directory is not the identifier: the manifest name is. Resolving a path
 // must therefore read otter.yaml rather than use the directory's own name.
-func TestResolveIntegrationRefReadsTheManifestName(t *testing.T) {
+func TestResolveJobRefReadsTheManifestName(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "some-directory")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -70,13 +70,13 @@ func TestResolveIntegrationRefReadsTheManifestName(t *testing.T) {
 	check := func(refs []string) {
 		t.Helper()
 		for _, ref := range refs {
-			got, err := resolveIntegrationRef(ref)
+			got, err := resolveJobRef(ref)
 			if err != nil {
-				t.Errorf("resolveIntegrationRef(%q): %v", ref, err)
+				t.Errorf("resolveJobRef(%q): %v", ref, err)
 				continue
 			}
 			if got != "shopify-to-erp" {
-				t.Errorf("resolveIntegrationRef(%q) = %q, want shopify-to-erp", ref, got)
+				t.Errorf("resolveJobRef(%q) = %q, want shopify-to-erp", ref, got)
 			}
 		}
 	}
@@ -96,9 +96,9 @@ func TestResolveIntegrationRefReadsTheManifestName(t *testing.T) {
 	check([]string{".", "otter.yaml", filepath.Join(dir, config.ManifestFileName)})
 }
 
-// A path that is not an integration has to say so locally: the daemon cannot
+// A path that is not a job has to say so locally: the daemon cannot
 // explain a directory, only a name it does not know.
-func TestResolveIntegrationRefRejectsWhatItCannotResolve(t *testing.T) {
+func TestResolveJobRefRejectsWhatItCannotResolve(t *testing.T) {
 	tests := []struct {
 		name    string
 		ref     string
@@ -108,7 +108,7 @@ func TestResolveIntegrationRefRejectsWhatItCannotResolve(t *testing.T) {
 		{
 			name: "no manifest in the directory",
 			ref:  ".",
-			want: "is not an integration",
+			want: "is not a job",
 		},
 		{
 			name: "missing path",
@@ -137,9 +137,9 @@ func TestResolveIntegrationRefRejectsWhatItCannotResolve(t *testing.T) {
 			}
 			chdirForTest(t, dir)
 
-			_, err := resolveIntegrationRef(tc.ref)
+			_, err := resolveJobRef(tc.ref)
 			if err == nil {
-				t.Fatalf("resolveIntegrationRef(%q) succeeded, want an error", tc.ref)
+				t.Fatalf("resolveJobRef(%q) succeeded, want an error", tc.ref)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not contain %q", err, tc.want)
@@ -149,7 +149,7 @@ func TestResolveIntegrationRefRejectsWhatItCannotResolve(t *testing.T) {
 }
 
 // The line between "a name" and "a path" is what keeps the new spelling from
-// shadowing the old one; neither "." nor ".." can be an integration name.
+// shadowing the old one; neither "." nor ".." can be a job name.
 func TestLooksLikePath(t *testing.T) {
 	tests := []struct {
 		ref  string
@@ -159,8 +159,8 @@ func TestLooksLikePath(t *testing.T) {
 		{"..", true},
 		{"./counter", true},
 		{"../counter", true},
-		{"/srv/integrations/counter", true},
-		{"integrations/counter", true},
+		{"/srv/jobs/counter", true},
+		{"jobs/counter", true},
 		{"otter.yaml", true},
 		{"", false},
 		{"counter", false},
@@ -186,7 +186,7 @@ func TestCmdRunResolvesTheWorkingDirectory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	dir := writeIntegration(t, "shopify-to-erp")
+	dir := writeJob(t, "shopify-to-erp")
 	chdirForTest(t, dir)
 
 	for _, args := range [][]string{{"."}, {}} {
@@ -202,7 +202,7 @@ func TestCmdRunResolvesTheWorkingDirectory(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("exit %d, stderr: %s", code, errOut.String())
 			}
-			if want := "/v1/integrations/shopify-to-erp/runs"; runPath != want {
+			if want := "/v1/jobs/shopify-to-erp/runs"; runPath != want {
 				t.Errorf("submitted to %q, want %q", runPath, want)
 			}
 			if !strings.Contains(out.String(), id) {

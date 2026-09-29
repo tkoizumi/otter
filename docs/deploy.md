@@ -23,7 +23,7 @@ whatever the runtime would serve locally is what the deploy ships.
 my-project/                      ← the project root: run otter deploy here
 ├── otter.env                    shared credentials
 ├── otter.deploy.yaml            committed, secret-free target
-└── shopify_integrations/        any grouping you like
+└── shopify_jobs/        any grouping you like
     ├── lib/python/              shared code, declared by the manifests
     ├── customer_sync/
     │   └── otter.yaml           python.path: [../lib/python]
@@ -31,12 +31,12 @@ my-project/                      ← the project root: run otter deploy here
         └── otter.yaml           python.path: [../lib/python]
 ```
 
-There is no required `integrations/` directory and no requirement that the
-project be a Go checkout. Integrations are addressed by the manifest `name:` or
-by their directory name, so `--integration product_sync` selects one.
+There is no required `jobs/` directory and no requirement that the
+project be a Go checkout. Jobs are addressed by the manifest `name:` or
+by their directory name, so `--job product_sync` selects one.
 
-Python is not required at all for integrations that use managed mode. An
-integration in external mode runs on the host's own interpreter.
+Python is not required at all for jobs that use managed mode. An
+job in external mode runs on the host's own interpreter.
 
 ## Workspaces: one host, many projects
 
@@ -49,7 +49,7 @@ A host is a container, not a deployment. Each project you deploy gets its own
 │   ├── examples-7f3a91c2/            ← one project
 │   │   ├── bin/otterd  bin/otter
 │   │   ├── tools/uv/uv
-│   │   ├── integrations/<name>/
+│   │   ├── jobs/<name>/
 │   │   ├── workspace.json            host-side record
 │   │   └── .otter/data/              its own SQLite, releases, interpreters
 │   └── client-sync-1b04de77/         ← another project, untouched by the first
@@ -87,7 +87,7 @@ adopts an existing workspace by name (or creates one under that name).
 ssh root@203.0.113.10 'echo ok'
 
 # From the project root: install or update this project's workspace, shipping
-# every integration found beneath it and the shared trees their manifests declare.
+# every job found beneath it and the shared trees their manifests declare.
 otter deploy --host root@203.0.113.10
 
 # What does this host hold? Lists every workspace and its port.
@@ -98,7 +98,8 @@ otter deploy --host root@203.0.113.10 --dry-run
 
 # Reach the remote API through a tunnel, exactly like a local daemon.
 ssh -N -L 7337:127.0.0.1:7337 root@203.0.113.10 &
-otter integrations
+export OTTER_API_URL=http://127.0.0.1:7337
+otter jobs
 otter runs --all --limit 10
 ```
 
@@ -189,8 +190,8 @@ mirror that publishes only the archives.
   │   release for it     │◀─────────────────────│ allocate a free port   │
   │ stage every          │─────────────────────▶│ /opt/otter/workspaces/ │
   │   discovered         │        rsync         │   <workspace>/         │
-  │   integration and    │─────────────────────▶│     bin/otter(d)       │
-  │   its declared trees │                      │     integrations/<name>│
+  │   job and    │─────────────────────▶│     bin/otter(d)       │
+  │   its declared trees │                      │     jobs/<name>│
   │ workspace record     │─────────────────────▶│     workspace.json     │
   │ env files (stdin!)   │─────────────────────▶│ /etc/otter/workspaces/ │
   │                      │                      │   <workspace>.env      │
@@ -216,11 +217,11 @@ In order:
    matching published release and verified against its checksums. Either way the
    binaries are static — no cgo — because the SQLite driver is pure Go — and
    they live inside the workspace, so another workspace's runtime is untouched.
-4. **Stage** a copy of every discovered integration and every shared tree its
+4. **Stage** a copy of every discovered job and every shared tree its
    manifest declares, in a temporary directory. Tests, `__pycache__`, `.env`
    files and databases are left out.
 5. **Push** the staged tree with `rsync`. The sources converge with `--delete`,
-   so a deleted integration or mapping file actually disappears — and the sweep
+   so a deleted job or mapping file actually disappears — and the sweep
    is scoped to this workspace, so it can never reach another one. The binary
    tree is pushed separately so the running daemon's executable is never the
    target of a partial write.
@@ -228,24 +229,24 @@ In order:
    credentials — `/etc/otter/workspaces/<workspace>.env`, mode `0600`. The
    contents travel over SSH **stdin**, never in a command line: `argv` is
    visible to every process on the host for the lifetime of the call.
-7. **Release** every integration in the workspace: stage an immutable snapshot,
+7. **Release** every job in the workspace: stage an immutable snapshot,
    validate the snapshot's own manifest, prepare the environment when the
    manifest asks for managed Python, and activate it. A run executes the active
-   release, so an unreleased integration would deploy and then refuse to run. A
+   release, so an unreleased job would deploy and then refuse to run. A
    failure here still leaves the previous release active, which is why this
    happens before the restart.
 
-   Every integration lands at `<workspace>/integrations/<name>`, and each shared
+   Every job lands at `<workspace>/jobs/<name>`, and each shared
    tree lands at the relative depth its manifest declares from there. A manifest
    saying `python.path: [../lib/python]` therefore puts shared code at
-   `<workspace>/integrations/lib/python`, while one saying
+   `<workspace>/jobs/lib/python`, while one saying
    `[../../lib/python]` — the layout of the runtime repository itself — puts it
-   beside the workspace's `integrations/`. In both cases the shipped manifest is unmodified
+   beside the workspace's `jobs/`. In both cases the shipped manifest is unmodified
    and its relative path resolves verbatim, because placement preserves the
    geometry the declaration depends on rather than assuming one repository's
-   shape. Each integration is released by name, so its failure is reported
+   shape. Each job is released by name, so its failure is reported
    against its own name in the deploy log. Deploying a newer Otter also
-   re-releases every integration, which is required after an upgrade: the
+   re-releases every job, which is required after an upgrade: the
    release digest format is versioned and an older snapshot is never reused. Old
    snapshots stay in the host's data directory until retention prunes them, so a
    rollback across the upgrade still works.
@@ -258,7 +259,7 @@ In order:
    `.otter/state.secret.json`, keyed by host, so a later deploy of this project
    knows which workspace it owns there.
 
-The same script also takes ownership of `bin/`, `integrations/` and the staged
+The same script also takes ownership of `bin/`, `jobs/` and the staged
 shared trees for the service account — rsync pushes as the SSH login, so the
 files must be handed over before the daemon restarts. The data directory is
 never part of that: it is already owned correctly, and recursively chowning a
@@ -269,7 +270,7 @@ a failed deploy never claims success.
 
 ## Daemon-wide settings
 
-Settings that belong to the daemon rather than to one integration — a failure
+Settings that belong to the daemon rather than to one job — a failure
 notification endpoint, the log level — live in `otter.daemon.env` at the
 project root:
 
@@ -317,7 +318,7 @@ sync finished {"failed":12,"written":88}
 _run 42e84cd5-bd9 · 1.84s · release 3c850cfa6c9c_
 ```
 
-The second line is the integration's own final log line, which is usually the
+The second line is the job's own final log line, which is usually the
 actionable part: *12 failed, 88 written* rather than just "exit code 1".
 
 **A Teams caveat.** Microsoft has been moving new webhook URLs to Power Automate
@@ -336,42 +337,42 @@ that fails silently fails exactly when it is needed.
 
 `otter.yaml` is committed, and `otter inspect` prints its `env:` block. A
 notification URL embeds a credential in its path, so it cannot live there. It is
-also per-integration, while notification is a property of the daemon.
+also per-job, while notification is a property of the daemon.
 
 ### Why not the shared credentials file
 
 That file is documented as credentials, so a daemon setting placed there reads
-as though it were a secret. `SSL_CERT_FILE` ended up in a per-integration
+as though it were a secret. `SSL_CERT_FILE` ended up in a per-job
 credentials file by accident, which is exactly this failure mode.
 
 ## Secrets
 
 Credentials live in `otter.env` at the project root, shared by every
-integration **in this workspace**. At deploy it becomes
+job **in this workspace**. At deploy it becomes
 `/etc/otter/workspaces/<workspace>.env`, owned by root with mode `0600`, loaded
 by that workspace's unit.
 
-Per workspace, not per integration: the daemon's environment is a single process
-environment and an integration receives only the keys its manifest declares, so
-per-integration files isolated nothing. But it is per *workspace*, because each
+Per workspace, not per job: the daemon's environment is a single process
+environment and a job receives only the keys its manifest declares, so
+per-job files isolated nothing. But it is per *workspace*, because each
 workspace is a separate daemon — which is what lets two projects on one host use
 the same key name (`SHOPIFY_CLIENT_ID`) with different values.
 
 ```sh
-cp my-integration/.env.example otter.env
+cp my-job/.env.example otter.env
 $EDITOR otter.env
 otter deploy --host droplet
 ```
 
-**One file per workspace, not one per integration.** The daemon's environment is
+**One file per workspace, not one per job.** The daemon's environment is
 a single process environment — every `EnvironmentFile=` is merged into it — and
-an integration receives only the keys its own manifest declares. So a
-per-integration file isolated nothing: it just turned one rotated credential
+a job receives only the keys its own manifest declares. So a
+per-job file isolated nothing: it just turned one rotated credential
 into an N-file edit and let those copies drift apart. Separate workspaces are
 separate daemons, so their credentials never meet.
 
-What remains per-integration is the *declaration*: `secrets:` in `otter.yaml`
-lists what that integration needs, which is what lets the daemon refuse to start
+What remains per-job is the *declaration*: `secrets:` in `otter.yaml`
+lists what that job needs, which is what lets the daemon refuse to start
 it when a credential is absent. Storage is shared; requirements are not.
 
 The file format is the boring subset systemd itself supports — `KEY=value`,
@@ -384,20 +385,20 @@ otter deploy --host droplet --env-file ~/.otter/shopify-prod.env
 ```
 
 `otter deploy` warns about any variable listed in a manifest's `secrets:` that
-it could not find, naming every integration that needs it, but it still deploys:
+it could not find, naming every job that needs it, but it still deploys:
 the daemon reports missing secrets far more clearly than the deploy command can,
 and refusing to deploy would make it impossible to ship a fix for exactly that
 problem.
 
-### An integration that needs a different value
+### A job that needs a different value
 
-Two integrations talking to two stores share key *names*
+Two jobs talking to two stores share key *names*
 (`SHOPIFY_CLIENT_ID`) but not values. Give each credential a distinct name in
 `otter.env` and bind it in the manifest, which expands `${VAR}` from the shared
 file:
 
 ```yaml
-# shopify_integrations/customer_sync/otter.yaml
+# shopify_jobs/customer_sync/otter.yaml
 env:
   SHOPIFY_CLIENT_ID: ${ORDERS_STORE_CLIENT_ID}
   SHOPIFY_CLIENT_SECRET: ${ORDERS_STORE_CLIENT_SECRET}
@@ -443,8 +444,9 @@ renew. Reach it with a tunnel:
 
 ```sh
 ssh -N -L 7337:127.0.0.1:7337 droplet    # foreground, Ctrl-C to stop
+export OTTER_API_URL=http://127.0.0.1:7337   # name the daemon; without it `otter jobs` reads this workspace's registry
 export OTTER_API_TOKEN=$(python3 -c 'import json;print(json.load(open(".otter/state.secret.json"))["api_token"])')
-otter integrations
+otter jobs
 otter runs --all --limit 10
 otter logs $(otter run customer_sync) --follow
 ```
@@ -494,22 +496,22 @@ previous successful deploy, then the command line.
 | `--status` | show this project's deploys, and with `--host` what that host holds | — |
 | `--destroy`, `--keep-data`, `--yes` | removal | — |
 
-## Deploying one integration
+## Deploying one job
 
-`otter deploy` ships every integration it discovers under the project. To ship
+`otter deploy` ships every job it discovers under the project. To ship
 just one and leave the rest of the host alone:
 
 ```sh
-otter deploy --host droplet --integration customer_sync
+otter deploy --host droplet --job customer_sync
 ```
 
-The name may be the directory or the manifest `name:`. The other integration
+The name may be the directory or the manifest `name:`. The other job
 directories on the host are protected from the converging sync, so they keep
 running exactly as they were, and their secrets files are not rewritten. So are
-the shared trees this deploy does not carry: otherwise shipping one integration
+the shared trees this deploy does not carry: otherwise shipping one job
 would delete a library the others import.
 
-This is the deploy to use when several integrations share a host and you only
+This is the deploy to use when several jobs share a host and you only
 changed one.
 
 ## Upgrades
@@ -551,7 +553,7 @@ otter deploy --host droplet --destroy --workspace analytics   # a different one
 
 Without `--keep-data` the command names the data directory, explains what it
 holds, and asks you to type the host name before doing anything. Deleting it
-discards every integration's watermark, which means the next deploy rescans the
+discards every job's watermark, which means the next deploy rescans the
 source system from scratch — expensive at Shopify and rude at Salesforce.
 `otter deploy --destroy --keep-data` keeps the data; `otter deploy --destroy`
 removes it.
@@ -594,7 +596,7 @@ megabytes; object storage costs cents.
 
 ## The rule a deploy must not break
 
-> Otter should remain a small runtime, not evolve into an integration platform
+> Otter should remain a small runtime, not evolve into a job platform
 > inside the daemon.
 
 `otter deploy` pushes a binary and starts a service. It does not provision
@@ -602,21 +604,21 @@ machines, manage DNS, terminate TLS, mount volumes, join clusters or talk to a
 cloud API. If a future provider backend is added, it should end by producing the
 same thing: a host you can ssh to, with systemd, running `otterd`.
 
-## Integration identity on the host
+## Job identity on the host
 
-The destination registers its own integration identities. Local and remote ids
+The destination registers its own job identities. Local and remote ids
 are independent and need not match, and nothing about a local `.otter-id` travels
 with a deploy: the file is excluded from the staged tree, and excluded and
 protected in the rsync step so `--delete` cannot remove the marker the host
-already has. Each integration is released by its destination path, so a
+already has. Each job is released by its destination path, so a
 directory whose name differs from its manifest label is still resolved
 correctly.
 
 Each workspace has its own registry, so two projects on one host may both have
-an integration named `counter` without colliding -- they are different
+a job named `counter` without colliding -- they are different
 directories, different identities and different run histories.
 
-`otter deploy` records the destination identity of every deployed integration in
+`otter deploy` records the destination identity of every deployed job in
 `.otter/deploy.json` (keyed by host) and prints them from `otter deploy --status`:
 
 ```
@@ -625,4 +627,4 @@ destination identities:
 ```
 
 The deployed tree must be writable by the runtime user, because registering a
-new integration writes its `.otter-id` marker. See [identity.md](identity.md).
+new job writes its `.otter-id` marker. See [identity.md](identity.md).

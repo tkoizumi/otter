@@ -69,12 +69,12 @@ func writeManifest(t *testing.T, name string) string {
 	return dir
 }
 
-// The point of the whole feature: standing in the integration directory,
+// The point of the whole feature: standing in the job directory,
 // `otter pause` needs no argument and no id. It resolves through the manifest,
 // exactly like `otter run`.
 func TestPauseWithNoArgumentUsesTheWorkingDirectory(t *testing.T) {
 	rec := &pauseRecorder{view: api.PauseView{
-		IntegrationID: "id-1", Name: "counter", Paused: true, Changed: true,
+		JobID: "id-1", Name: "counter", Paused: true, Changed: true,
 	}}
 	srv := rec.server(t)
 	defer srv.Close()
@@ -88,8 +88,8 @@ func TestPauseWithNoArgumentUsesTheWorkingDirectory(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; output:\n%s", code, out.String())
 	}
 
-	if rec.path != "/v1/integrations/counter/pause" {
-		t.Errorf("request path = %q, want /v1/integrations/counter/pause", rec.path)
+	if rec.path != "/v1/jobs/counter/pause" {
+		t.Errorf("request path = %q, want /v1/jobs/counter/pause", rec.path)
 	}
 	if rec.body != "" {
 		t.Errorf("pause sent a request body %q, want none", rec.body)
@@ -104,7 +104,7 @@ func TestPauseWithNoArgumentUsesTheWorkingDirectory(t *testing.T) {
 
 func TestResumeWithNoArgumentUsesTheWorkingDirectory(t *testing.T) {
 	rec := &pauseRecorder{view: api.PauseView{
-		IntegrationID: "id-1", Name: "counter", Paused: false, Changed: true,
+		JobID: "id-1", Name: "counter", Paused: false, Changed: true,
 	}}
 	srv := rec.server(t)
 	defer srv.Close()
@@ -116,8 +116,8 @@ func TestResumeWithNoArgumentUsesTheWorkingDirectory(t *testing.T) {
 	if code := app.cmdPauseResume(context.Background(), globals{api: srv.URL}, nil, false); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if rec.path != "/v1/integrations/counter/resume" {
-		t.Errorf("request path = %q, want /v1/integrations/counter/resume", rec.path)
+	if rec.path != "/v1/jobs/counter/resume" {
+		t.Errorf("request path = %q, want /v1/jobs/counter/resume", rec.path)
 	}
 	if text := out.String(); !strings.Contains(text, "resumed: counter") {
 		t.Errorf("output = %q, want the resume named", text)
@@ -128,7 +128,7 @@ func TestResumeWithNoArgumentUsesTheWorkingDirectory(t *testing.T) {
 // and needs to know whether this call was the one that changed anything.
 func TestPauseReportsThatNothingChanged(t *testing.T) {
 	rec := &pauseRecorder{view: api.PauseView{
-		IntegrationID: "id-1", Name: "counter", Paused: true, Changed: false,
+		JobID: "id-1", Name: "counter", Paused: true, Changed: false,
 	}}
 	srv := rec.server(t)
 	defer srv.Close()
@@ -145,11 +145,11 @@ func TestPauseReportsThatNothingChanged(t *testing.T) {
 	}
 }
 
-// A name, a path and an identity all address the same integration, and the path
-// form is what `otter pause .` in an integration directory sends.
+// A name, a path and an identity all address the same job, and the path
+// form is what `otter pause .` in a job directory sends.
 func TestPauseAcceptsAPathArgument(t *testing.T) {
 	rec := &pauseRecorder{view: api.PauseView{
-		IntegrationID: "id-1", Name: "counter", Paused: true, Changed: true,
+		JobID: "id-1", Name: "counter", Paused: true, Changed: true,
 	}}
 	srv := rec.server(t)
 	defer srv.Close()
@@ -162,12 +162,12 @@ func TestPauseAcceptsAPathArgument(t *testing.T) {
 	if code := app.cmdPauseResume(context.Background(), globals{api: srv.URL}, []string{dir}, true); code != 0 {
 		t.Fatalf("exit code = %d, want 0; output:\n%s", code, out.String())
 	}
-	if rec.path != "/v1/integrations/counter/pause" {
+	if rec.path != "/v1/jobs/counter/pause" {
 		t.Errorf("request path = %q, want the manifest's name", rec.path)
 	}
 }
 
-func TestPauseRefusesMoreThanOneIntegration(t *testing.T) {
+func TestPauseRefusesMoreThanOneJob(t *testing.T) {
 	var out bytes.Buffer
 	app := New("test", &out, &out)
 	code := app.cmdPauseResume(context.Background(), globals{api: "http://127.0.0.1:1"},
@@ -229,9 +229,9 @@ func TestCancelRequiresARunID(t *testing.T) {
 	}
 }
 
-// A paused integration has no next run, and the schedule view has to say so.
+// A paused job has no next run, and the schedule view has to say so.
 // A blank column is what the docs warn reads as "silently not firing".
-func TestScheduleViewNamesAPausedIntegration(t *testing.T) {
+func TestScheduleViewNamesAPausedJob(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/v1/runs") {
@@ -242,7 +242,7 @@ func TestScheduleViewNamesAPausedIntegration(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	list := []api.IntegrationView{{
+	list := []api.JobView{{
 		ID: "id-1", Name: "counter", Valid: true,
 		Triggers: api.TriggerView{Cron: "*/5 * * * *", Paused: true},
 	}}
@@ -298,7 +298,7 @@ func TestPauseResumeAndCancelNeedADaemon(t *testing.T) {
 }
 
 // `otter inspect` follows the same convention as `otter run` and
-// `otter release`: standing in the integration directory, the argument is
+// `otter release`: standing in the job directory, the argument is
 // optional. It also has to explain a pause, since the missing next run is the
 // thing that would otherwise look like a fault.
 func TestInspectWithNoArgumentShowsThePause(t *testing.T) {
@@ -311,7 +311,7 @@ func TestInspectWithNoArgumentShowsThePause(t *testing.T) {
 			return
 		}
 		path = r.URL.Path
-		_ = json.NewEncoder(w).Encode(api.IntegrationView{
+		_ = json.NewEncoder(w).Encode(api.JobView{
 			ID:               "counter",
 			Name:             "counter",
 			Path:             "/tmp/counter",
@@ -334,14 +334,14 @@ func TestInspectWithNoArgumentShowsThePause(t *testing.T) {
 	if code := app.cmdInspect(context.Background(), globals{api: srv.URL}, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0; output:\n%s", code, out.String())
 	}
-	if path != "/v1/integrations/counter" {
-		t.Errorf("request path = %q, want /v1/integrations/counter", path)
+	if path != "/v1/jobs/counter" {
+		t.Errorf("request path = %q, want /v1/jobs/counter", path)
 	}
 	text := out.String()
 	if !strings.Contains(text, "paused:") || !strings.Contains(text, "since ") {
 		t.Errorf("inspect output does not explain the pause:\n%s", text)
 	}
 	if strings.Contains(text, "next run:") {
-		t.Errorf("a paused integration should not report a next run:\n%s", text)
+		t.Errorf("a paused job should not report a next run:\n%s", text)
 	}
 }

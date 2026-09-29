@@ -12,7 +12,7 @@ tmp/
 *.db-wal
 *.db-shm
 
-# Integration identity markers. The runtime writes one into an integration
+# Job identity markers. The runtime writes one into a job
 # directory; it names a local instance, so a fresh clone registering its own is
 # the intended behaviour and the file stays out of git.
 .otter-id

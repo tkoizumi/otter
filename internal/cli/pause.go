@@ -8,16 +8,16 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 )
 
-// cmdPauseResume suspends or re-arms an integration's autonomous triggers.
+// cmdPauseResume suspends or re-arms a job's autonomous triggers.
 //
 // Pausing stops cron and webhook admission. It does not retire the identity,
 // touch the state, cancel a queued run or remove a release, and it does not
-// block a manual run: "stop firing on its own" and "disable this integration"
+// block a manual run: "stop firing on its own" and "disable this job"
 // are different requests, and only the first one is what an operator pausing a
-// misbehaving integration at 3am means.
+// misbehaving job at 3am means.
 //
-// With no argument the integration in the working directory is used, so inside
-// an integration directory `otter pause` and `otter pause .` are the same
+// With no argument the job in the working directory is used, so inside
+// a job directory `otter pause` and `otter pause .` are the same
 // command, exactly like `otter run`.
 func (a *App) cmdPauseResume(ctx context.Context, g globals, args []string, paused bool) int {
 	verb := "resume"
@@ -29,19 +29,19 @@ func (a *App) cmdPauseResume(ctx context.Context, g globals, args []string, paus
 	fs.SetOutput(a.Stderr)
 	fs.Usage = func() {
 		if paused {
-			fmt.Fprint(a.Stderr, "Usage: otter pause [integration]\n\n"+
-				"Suspends cron and webhook triggers for one integration. State, history,\n"+
+			fmt.Fprint(a.Stderr, "Usage: otter pause [job]\n\n"+
+				"Suspends cron and webhook triggers for one job. State, history,\n"+
 				"tokens and releases are untouched, and otter run still works.\n")
 			return
 		}
-		fmt.Fprint(a.Stderr, "Usage: otter resume [integration]\n\n"+
+		fmt.Fprint(a.Stderr, "Usage: otter resume [job]\n\n"+
 			"Re-arms the triggers a pause suspended.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintf(a.Stderr, "otter: usage: otter %s [integration]\n", verb)
+		fmt.Fprintf(a.Stderr, "otter: usage: otter %s [job]\n", verb)
 		return 2
 	}
 
@@ -49,7 +49,7 @@ func (a *App) cmdPauseResume(ctx context.Context, g globals, args []string, paus
 	if fs.NArg() == 1 {
 		ref = fs.Arg(0)
 	}
-	id, err := resolveIntegrationRef(ref)
+	id, err := resolveJobRef(ref)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 2
@@ -58,9 +58,9 @@ func (a *App) cmdPauseResume(ctx context.Context, g globals, args []string, paus
 	client := g.client()
 	var view *api.PauseView
 	if paused {
-		view, err = client.PauseIntegration(ctx, id)
+		view, err = client.PauseJob(ctx, id)
 	} else {
-		view, err = client.ResumeIntegration(ctx, id)
+		view, err = client.ResumeJob(ctx, id)
 	}
 	if err != nil {
 		return a.fail(err)

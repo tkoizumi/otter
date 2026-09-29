@@ -57,15 +57,18 @@ const (
 	// StateFileName is the state file inside that directory.
 	StateFileName = "deploy.json"
 
-	// LocalIntegrationsDir is the directory name integrations are deployed
+	// LocalJobsDir is the directory name jobs are deployed
 	// under, inside a workspace. It is the discovery root the host's runtime
 	// scans, and it is fixed so that a manifest's relative python.path keeps
 	// resolving the same way in every workspace.
-	LocalIntegrationsDir = "integrations"
+	LocalJobsDir = "jobs"
 )
 
 // Target describes where and how to deploy.
 type Target struct {
+	// JobsLayout preserves the physical directory of an existing workspace.
+	JobsLayout string `json:"jobs_layout,omitempty"`
+
 	// Host is the SSH destination: an address or an alias from ~/.ssh/config.
 	Host string `json:"host"`
 	// User is the SSH login user. Empty means "let ssh decide".
@@ -192,11 +195,11 @@ func (t Target) UnitPath() string   { return "/etc/systemd/system/" + t.ServiceU
 func (t Target) BinaryPath() string { return filepath.Join(t.WorkspaceDir(), "bin", "otterd") }
 func (t Target) CLIPath() string    { return filepath.Join(t.WorkspaceDir(), "bin", "otter") }
 
-// IntegrationsDir is the discovery root handed to `otter release`. Each
-// workspace has its own, so an integration name only has to be unique within
+// JobsDir is the discovery root handed to `otter release`. Each
+// workspace has its own, so a job name only has to be unique within
 // the workspace that owns it.
-func (t Target) IntegrationsDir() string {
-	return filepath.Join(t.WorkspaceDir(), LocalIntegrationsDir)
+func (t Target) JobsDir() string {
+	return filepath.Join(t.WorkspaceDir(), t.jobsLayout())
 }
 
 // ToolsDir holds the vendored uv for this workspace.
@@ -439,4 +442,12 @@ func ParsePlatform(s string) (goos, goarch string, err error) {
 		return "", "", fmt.Errorf("unsupported GOARCH %q: otter deploy builds amd64 or arm64", goarch)
 	}
 	return goos, goarch, nil
+}
+
+// jobsLayout keeps existing job paths stable across terminology upgrades.
+func (t Target) jobsLayout() string {
+	if t.JobsLayout == "integrations" {
+		return t.JobsLayout
+	}
+	return LocalJobsDir
 }

@@ -3,9 +3,9 @@
 ## Objective and scope
 
 Implement the first debugging milestone: a developer can inspect a run's outgoing
-HTTP requests and responses without adding logging statements to integration code.
+HTTP requests and responses without adding logging statements to job code.
 
-The acceptance scenario is a JSON POST returning HTTP 400. After the integration
+The acceptance scenario is a JSON POST returning HTTP 400. After the job
 fails, `otter requests <run-id>` lists the request and
 `otter request <run-id> <request-id>` shows its sanitized outgoing JSON and error
 response. Existing execution, exception, retry, and response-reading behavior is
@@ -13,7 +13,7 @@ preserved.
 
 Implement this milestone end to end. Do not implement state history, replay,
 local-source execution, debugger attachment, a combined timeline, a browser UI,
-or adapters for requests/httpx in this change. Do not restore vendor integrations
+or adapters for requests/httpx in this change. Do not restore vendor jobs
 or connector libraries removed from this repository.
 
 ## Repository facts and initial checks
@@ -34,7 +34,7 @@ changes. Relevant existing components:
 - `internal/cli/cli.go`: command dispatch and run flags.
 - `internal/database/database.go`: SQLite uses one connection. Queries inside a
   transaction must use that transaction, not the outer DB connection.
-- `migrations/`: currently ends at `0003_integration_identity.sql`; add the next
+- `migrations/`: currently ends at `0003_job_identity.sql`; add the next
   migration, never modify an applied migration.
 - `internal/daemon/identity_api.go`: reset/delete paths that must clean up capture data.
 
@@ -78,7 +78,7 @@ logs. Define Go and Python representations and table-driven conformance fixtures
 for redaction and completeness states.
 
 For manual submission, use a validated query option on the existing endpoint,
-for example `POST /v1/integrations/{id}/runs?capture=full`. This preserves the
+for example `POST /v1/jobs/{id}/runs?capture=full`. This preserves the
 existing request body as the trigger JSON verbatim. Extend the internal submission
 options and client methods cleanly; do not hide the option inside user JSON or
 record authentication headers as configuration.
@@ -132,14 +132,14 @@ GET  /v1/runs/{id}/requests/{request_id}
 ```
 
 The POST accepts bounded batches of allowlisted event types. Require a live run
-token scoped to the path's run, infer integration identity from the run, and
+token scoped to the path's run, infer job identity from the run, and
 reject forged/cross-run attribution. Use operator authorization for GETs, matching
 existing loopback/admin rules. Never expose raw bodies through error responses.
 List responses exclude payloads and include capture coverage/completeness.
 
 Enforce body/row quotas transactionally. A quota rejection is diagnostic loss,
-not an integration failure. Cascade capture deletion with run deletion and cover
-integration reset/delete. Add periodic bounded retention work and startup cleanup;
+not a job failure. Cascade capture deletion with run deletion and cover
+job reset/delete. Add periodic bounded retention work and startup cleanup;
 avoid long cleanup transactions blocking the single DB connection.
 
 ## 3. SDK transport and urllib instrumentation
@@ -210,7 +210,7 @@ If content cannot be safely processed under the supported policy, omit it.
 Document that field-based redaction does not discover every secret or personal
 value in arbitrary data. Full capture remains opt-in.
 
-Capture failures must preserve the integration's return values, exceptions and
+Capture failures must preserve the job's return values, exceptions and
 exit status. Surface loss through the capture summary when delivery is possible,
 and at most one SDK diagnostic per run when it is not. Never print failed payloads
 or tokens in that diagnostic.
@@ -241,7 +241,7 @@ Use local HTTP fixtures only; no live SaaS credentials or calls.
 
 1. Migration on a fresh DB and an existing DB; historical runs remain readable.
 2. Store lifecycle, duplicate delivery, out-of-order updates, pagination, quotas,
-   retention and cleanup on run/integration deletion.
+   retention and cleanup on run/job deletion.
 3. API token scope, revoked-token rejection, invalid events, oversized batches,
    and rejection of cross-run request lookup/ingestion.
 4. Redaction fixtures shared across Go/Python: nested arrays, mixed-case headers,
@@ -252,9 +252,9 @@ Use local HTTP fixtures only; no live SaaS credentials or calls.
    close without read, streamed upload omission and two concurrent requests.
 6. Compare client-visible results/errors with capture off/on. Verify no recursive
    Otter traffic and no modifications outside an Otter-launched process.
-7. Queue saturation and ingestion outage: integration still finishes; memory and
+7. Queue saturation and ingestion outage: job still finishes; memory and
    shutdown are bounded. Failure exit flushes; killed runs show uncertainty.
-8. Generic end-to-end integration: GET JSON, POST transformed JSON, receive 400,
+8. Generic end-to-end job: GET JSON, POST transformed JSON, receive 400,
    read error body, fail. Execute through normal release/run machinery. Assert
    request list and detail output reveal payload/error without explicit logging.
 9. Retry inheritance and per-attempt separation; trigger JSON remains byte/meaning
@@ -285,4 +285,4 @@ does not capture all nondeterministic inputs.
 Final report: describe implemented behavior, commands to try, test results,
 measured overhead and known capture limitations. The milestone is complete only
 when the failed-POST acceptance scenario works through the actual CLI, SDK,
-daemon and database, with no manual logging in the integration.
+daemon and database, with no manual logging in the job.

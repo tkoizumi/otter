@@ -33,7 +33,7 @@ import (
 func requirePython(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 is not installed; skipping daemon integration test")
+		t.Skip("python3 is not installed; skipping daemon job test")
 	}
 }
 
@@ -68,8 +68,8 @@ func recoveryCount(t *testing.T, output string) int {
 	return 0
 }
 
-// writeIntegration lays a manifest and entrypoint into root/<dir>.
-func writeIntegration(t *testing.T, root, dir, manifestYAML, python string) string {
+// writeJob lays a manifest and entrypoint into root/<dir>.
+func writeJob(t *testing.T, root, dir, manifestYAML, python string) string {
 	t.Helper()
 	path := filepath.Join(root, dir)
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -98,7 +98,7 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// releaseAll stages and activates a release for every valid integration under
+// releaseAll stages and activates a release for every valid job under
 // root. A run executes the active release rather than the source tree, so a
 // workspace with no releases refuses every submission -- including the ones a
 // test is about to make.
@@ -179,11 +179,11 @@ func runtimeID(t *testing.T, d *Daemon, label string) string {
 	if err != nil {
 		t.Fatalf("resolve %q: %v", label, err)
 	}
-	return entry.Integration.ID
+	return entry.Job.ID
 }
 
 // identityIDFor runs the same observe-and-reconcile pass the daemon will, so a
-// test can learn an integration's durable identity before the daemon exists --
+// test can learn a job's durable identity before the daemon exists --
 // for example to seed a run record or stage a release the way production keys
 // them.
 func identityIDFor(t *testing.T, root, dataDir, label string) string {
@@ -228,7 +228,7 @@ func identityIDFor(t *testing.T, root, dataDir, label string) string {
 	return ""
 }
 
-// newDaemon builds a daemon over root, releasing every integration the test
+// newDaemon builds a daemon over root, releasing every job the test
 // wrote before this point so a submission can bind to a snapshot the way
 // production requires. An empty dataDir gets a fresh temp dir.
 func newDaemon(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig)) *Daemon {
@@ -241,15 +241,15 @@ func newDaemonUnreleased(t *testing.T, root, dataDir string, provider secrets.Pr
 	return newDaemonWith(t, root, dataDir, provider, tweak, false)
 }
 
-func newDaemonWith(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseIntegrations bool) *Daemon {
+func newDaemonWith(t *testing.T, root, dataDir string, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseJobs bool) *Daemon {
 	t.Helper()
-	return newDaemonWithLogger(t, root, dataDir, testLogger(), provider, tweak, releaseIntegrations)
+	return newDaemonWithLogger(t, root, dataDir, testLogger(), provider, tweak, releaseJobs)
 }
 
 // newDaemonWithLogger is newDaemonWith with an explicit logger, so a test can
 // capture and assert on what startup reported -- for example the true count of
 // interrupted runs a recovery pass handled.
-func newDaemonWithLogger(t *testing.T, root, dataDir string, logger *logging.Logger, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseIntegrations bool) *Daemon {
+func newDaemonWithLogger(t *testing.T, root, dataDir string, logger *logging.Logger, provider secrets.Provider, tweak func(*config.DaemonConfig), releaseJobs bool) *Daemon {
 	t.Helper()
 	requirePython(t)
 
@@ -258,7 +258,7 @@ func newDaemonWithLogger(t *testing.T, root, dataDir string, logger *logging.Log
 	}
 
 	cfg := config.DefaultDaemonConfig("test")
-	cfg.IntegrationsDir = root
+	cfg.JobsDir = root
 	cfg.DataDir = dataDir
 	cfg.Listen = freeAddr(t)
 	cfg.Workers = 4
@@ -268,7 +268,7 @@ func newDaemonWithLogger(t *testing.T, root, dataDir string, logger *logging.Log
 		tweak(&cfg)
 	}
 
-	if releaseIntegrations {
+	if releaseJobs {
 		releaseAll(t, root, dataDir)
 	}
 
@@ -366,13 +366,13 @@ func waitForStatus(t *testing.T, d *Daemon, runID string, want runs.Status, time
 	return nil
 }
 
-// awaitRunCount waits until at least n runs exist for an integration.
-func awaitRunCount(t *testing.T, d *Daemon, integrationID string, n int, timeout time.Duration) []*runs.Run {
+// awaitRunCount waits until at least n runs exist for a job.
+func awaitRunCount(t *testing.T, d *Daemon, jobID string, n int, timeout time.Duration) []*runs.Run {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: integrationID, Limit: 100})
+		list, err := d.runs.List(context.Background(), runs.Filter{JobID: jobID, Limit: 100})
 		if err != nil {
 			t.Fatalf("list runs: %v", err)
 		}
@@ -381,16 +381,16 @@ func awaitRunCount(t *testing.T, d *Daemon, integrationID string, n int, timeout
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("integration %s did not accumulate %d runs in time", integrationID, n)
+	t.Fatalf("job %s did not accumulate %d runs in time", jobID, n)
 	return nil
 }
 
 // trackPeakConcurrency samples the running count until done() is true.
-func trackPeakConcurrency(d *Daemon, integrationID string, done func() bool, timeout time.Duration) int {
+func trackPeakConcurrency(d *Daemon, jobID string, done func() bool, timeout time.Duration) int {
 	peak := 0
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if n := d.cap.running(integrationID); n > peak {
+		if n := d.cap.running(jobID); n > peak {
 			peak = n
 		}
 		if done() {
@@ -420,11 +420,11 @@ func readRunFromDisk(t *testing.T, dataDir, runID string) (*runs.Run, []*runs.Ru
 	return root, attempts
 }
 
-func getState(t *testing.T, d *Daemon, integrationID, key string) json.RawMessage {
+func getState(t *testing.T, d *Daemon, jobID, key string) json.RawMessage {
 	t.Helper()
-	value, err := d.GetState(context.Background(), integrationID, key)
+	value, err := d.GetState(context.Background(), jobID, key)
 	if err != nil {
-		t.Fatalf("get state %s/%s: %v", integrationID, key, err)
+		t.Fatalf("get state %s/%s: %v", jobID, key, err)
 	}
 	return value
 }
@@ -446,9 +446,9 @@ func logMessages(t *testing.T, d *Daemon, runID, stream string) []string {
 
 // ------------------------------------------------------------------- tests
 
-func TestIntegrationExecutesPersistsStateAndLogs(t *testing.T) {
+func TestJobExecutesPersistsStateAndLogs(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "counter", `
+	writeJob(t, root, "counter", `
 version: 1
 name: counter
 entrypoint: main.py
@@ -524,7 +524,7 @@ print("count=%d" % count)
 
 func TestRetryPolicyRetriesUntilSuccess(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "flaky", `
+	writeJob(t, root, "flaky", `
 version: 1
 name: flaky
 entrypoint: main.py
@@ -605,7 +605,7 @@ print("recovered on attempt %d" % attempts)
 
 func TestRetryPolicyStopsAtMaxAttempts(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "always-fails", `
+	writeJob(t, root, "always-fails", `
 version: 1
 name: always-fails
 entrypoint: main.py
@@ -642,7 +642,7 @@ sys.exit(7)
 
 func TestTimeoutMarksRunTimedOut(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "hang", `
+	writeJob(t, root, "hang", `
 version: 1
 name: hang
 entrypoint: main.py
@@ -686,7 +686,7 @@ time.sleep(300)
 
 func TestTimeoutIsRetriedWhenPolicyAllows(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "hang", `
+	writeJob(t, root, "hang", `
 version: 1
 name: hang
 entrypoint: main.py
@@ -718,7 +718,7 @@ time.sleep(300)
 
 func TestMissingSecretFailsWithoutRetrying(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "needs-secret", `
+	writeJob(t, root, "needs-secret", `
 version: 1
 name: needs-secret
 entrypoint: main.py
@@ -770,7 +770,7 @@ print("should never run")
 
 func TestConcurrencyLimitSerializesRuns(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "slow", `
+	writeJob(t, root, "slow", `
 version: 1
 name: slow
 entrypoint: main.py
@@ -800,7 +800,7 @@ time.sleep(0.6)
 	}
 
 	done := func() bool {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: runtimeID(t, d, "slow"), Limit: 10})
+		list, err := d.runs.List(context.Background(), runs.Filter{JobID: runtimeID(t, d, "slow"), Limit: 10})
 		if err != nil {
 			return false
 		}
@@ -818,7 +818,7 @@ time.sleep(0.6)
 		t.Fatalf("concurrency: 1 allowed %d simultaneous runs", peak)
 	}
 	if peak == 0 {
-		t.Fatal("never observed the integration running")
+		t.Fatal("never observed the job running")
 	}
 
 	for _, id := range ids {
@@ -830,7 +830,7 @@ time.sleep(0.6)
 
 func TestConcurrencyAboveOneRunsInParallel(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "parallel", `
+	writeJob(t, root, "parallel", `
 version: 1
 name: parallel
 entrypoint: main.py
@@ -853,7 +853,7 @@ time.sleep(1.0)
 	}
 
 	done := func() bool {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: runtimeID(t, d, "parallel"), Limit: 10})
+		list, err := d.runs.List(context.Background(), runs.Filter{JobID: runtimeID(t, d, "parallel"), Limit: 10})
 		if err != nil {
 			return false
 		}
@@ -874,7 +874,7 @@ time.sleep(1.0)
 
 func TestCancelRunningRunIsNotRetried(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "slow", `
+	writeJob(t, root, "slow", `
 version: 1
 name: slow
 entrypoint: main.py
@@ -910,7 +910,7 @@ time.sleep(300)
 
 func TestCancelQueuedRunRemovesItFromTheQueue(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "slow", `
+	writeJob(t, root, "slow", `
 version: 1
 name: slow
 entrypoint: main.py
@@ -960,7 +960,7 @@ time.sleep(2)
 
 func TestCrashRecoveryMarksRunningRunsFailedAndRetries(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", `
+	writeJob(t, root, "job", `
 version: 1
 name: job
 entrypoint: main.py
@@ -989,13 +989,13 @@ print("job ran")
 	}
 	startedAt := time.Now().UTC().Add(-time.Minute)
 	seedRun := &runs.Run{
-		ID:            "interrupted-run",
-		IntegrationID: jobID,
-		TriggerType:   runs.TriggerManual,
-		Status:        runs.StatusRunning,
-		Attempt:       1,
-		CreatedAt:     startedAt,
-		StartedAt:     &startedAt,
+		ID:          "interrupted-run",
+		JobID:       jobID,
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusRunning,
+		Attempt:     1,
+		CreatedAt:   startedAt,
+		StartedAt:   &startedAt,
 	}
 	if err := runs.NewStore(seed.DB).Create(context.Background(), seedRun); err != nil {
 		t.Fatalf("seed run: %v", err)
@@ -1054,7 +1054,7 @@ func TestCrashRecoveryHandlesMoreThanOneListingPage(t *testing.T) {
 	)
 
 	root := t.TempDir()
-	writeIntegration(t, root, "job", `
+	writeJob(t, root, "job", `
 version: 1
 name: job
 entrypoint: main.py
@@ -1083,13 +1083,13 @@ retry:
 	seedRun := func(id string, attempt int, startedAt time.Time) {
 		t.Helper()
 		if err := store.Create(context.Background(), &runs.Run{
-			ID:            id,
-			IntegrationID: jobID,
-			TriggerType:   runs.TriggerManual,
-			Status:        runs.StatusRunning,
-			Attempt:       attempt,
-			CreatedAt:     startedAt,
-			StartedAt:     &startedAt,
+			ID:          id,
+			JobID:       jobID,
+			TriggerType: runs.TriggerManual,
+			Status:      runs.StatusRunning,
+			Attempt:     attempt,
+			CreatedAt:   startedAt,
+			StartedAt:   &startedAt,
 		}); err != nil {
 			t.Fatalf("seed run %s: %v", id, err)
 		}
@@ -1145,7 +1145,7 @@ retry:
 func startupConfig(t *testing.T, root, dataDir string) config.DaemonConfig {
 	t.Helper()
 	cfg := config.DefaultDaemonConfig("test")
-	cfg.IntegrationsDir = root
+	cfg.JobsDir = root
 	cfg.DataDir = dataDir
 	cfg.Listen = freeAddr(t)
 	cfg.Workers = 4
@@ -1231,12 +1231,12 @@ func TestStartupFailClosedOnIncompleteRecovery(t *testing.T) {
 			prepare: func(t *testing.T, dataDir string) {
 				withDataDir(t, dataDir, func(ctx context.Context, db *database.DB) {
 					if err := runs.NewStore(db.DB).Create(ctx, &runs.Run{
-						ID:            "stuck",
-						IntegrationID: "job",
-						TriggerType:   runs.TriggerManual,
-						Status:        runs.StatusRunning,
-						Attempt:       1,
-						CreatedAt:     time.Now().UTC(),
+						ID:          "stuck",
+						JobID:       "job",
+						TriggerType: runs.TriggerManual,
+						Status:      runs.StatusRunning,
+						Attempt:     1,
+						CreatedAt:   time.Now().UTC(),
 					}); err != nil {
 						t.Fatalf("seed running run: %v", err)
 					}
@@ -1254,12 +1254,12 @@ func TestStartupFailClosedOnIncompleteRecovery(t *testing.T) {
 			prepare: func(t *testing.T, dataDir string) {
 				withDataDir(t, dataDir, func(ctx context.Context, db *database.DB) {
 					if err := runs.NewStore(db.DB).Create(ctx, &runs.Run{
-						ID:            "orphan",
-						IntegrationID: "job",
-						TriggerType:   runs.TriggerManual,
-						Status:        runs.StatusQueued,
-						Attempt:       1,
-						CreatedAt:     time.Now().UTC(),
+						ID:          "orphan",
+						JobID:       "job",
+						TriggerType: runs.TriggerManual,
+						Status:      runs.StatusQueued,
+						Attempt:     1,
+						CreatedAt:   time.Now().UTC(),
 					}); err != nil {
 						t.Fatalf("seed queued run: %v", err)
 					}
@@ -1317,7 +1317,7 @@ func TestStartupFailClosedOnIncompleteRecovery(t *testing.T) {
 
 func TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", `
+	writeJob(t, root, "job", `
 version: 1
 name: job
 entrypoint: main.py
@@ -1336,12 +1336,12 @@ retry:
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := runs.NewStore(seed.DB).Create(context.Background(), &runs.Run{
-		ID:            "interrupted",
-		IntegrationID: jobID,
-		TriggerType:   runs.TriggerManual,
-		Status:        runs.StatusRunning,
-		Attempt:       1,
-		CreatedAt:     time.Now().UTC(),
+		ID:          "interrupted",
+		JobID:       jobID,
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusRunning,
+		Attempt:     1,
+		CreatedAt:   time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -1362,7 +1362,7 @@ retry:
 
 func TestGracefulShutdownFailsAndRetriesInFlightRuns(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "slow", `
+	writeJob(t, root, "slow", `
 version: 1
 name: slow
 entrypoint: main.py
@@ -1410,7 +1410,7 @@ time.sleep(300)
 
 func TestGracefulShutdownLetsShortRunsFinish(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "quick", `
+	writeJob(t, root, "quick", `
 version: 1
 name: quick
 entrypoint: main.py
@@ -1450,7 +1450,7 @@ print("finished during grace")
 
 func TestQueuedRunsSurviveRestart(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", `
+	writeJob(t, root, "job", `
 version: 1
 name: job
 entrypoint: main.py
@@ -1468,12 +1468,12 @@ print("job ran")
 	// A run whose status says "queued" but which has no queue row is the one
 	// inconsistency a crash can leave behind; reconciliation must repair it.
 	orphan := &runs.Run{
-		ID:            "orphan-run",
-		IntegrationID: runtimeID(t, d, "job"),
-		TriggerType:   runs.TriggerManual,
-		Status:        runs.StatusQueued,
-		Attempt:       1,
-		CreatedAt:     time.Now().UTC(),
+		ID:          "orphan-run",
+		JobID:       runtimeID(t, d, "job"),
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusQueued,
+		Attempt:     1,
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := d.runs.Create(context.Background(), orphan); err != nil {
 		t.Fatalf("create orphan run: %v", err)
@@ -1512,7 +1512,7 @@ func TestReconcileQueueReenqueuesMoreThanOneListingPage(t *testing.T) {
 	const orphans = 60 // per status, so more than one listing page in total
 
 	root := t.TempDir()
-	writeIntegration(t, root, "job", minimalManifest("job"), noopPython)
+	writeJob(t, root, "job", minimalManifest("job"), noopPython)
 
 	// Not started: reconciliation is called directly, so nothing claims the
 	// rows while the test counts them.
@@ -1526,12 +1526,12 @@ func TestReconcileQueueReenqueuesMoreThanOneListingPage(t *testing.T) {
 			id := fmt.Sprintf("%s-%03d", status, i)
 			ids = append(ids, id)
 			run := &runs.Run{
-				ID:            id,
-				IntegrationID: jobID,
-				TriggerType:   runs.TriggerManual,
-				Status:        status,
-				Attempt:       1,
-				CreatedAt:     time.Now().UTC(),
+				ID:          id,
+				JobID:       jobID,
+				TriggerType: runs.TriggerManual,
+				Status:      status,
+				Attempt:     1,
+				CreatedAt:   time.Now().UTC(),
 			}
 			if err := d.runs.Create(ctx, run); err != nil {
 				t.Fatalf("seed run %s: %v", id, err)
@@ -1569,7 +1569,7 @@ func TestCronTriggerRegistrationAndFiring(t *testing.T) {
 	// @every is a robfig/cron descriptor, accepted by the same parser used for
 	// standard expressions. It keeps the test fast; production manifests use
 	// normal five-field cron.
-	writeIntegration(t, root, "ticker", `
+	writeJob(t, root, "ticker", `
 version: 1
 name: ticker
 entrypoint: main.py
@@ -1584,7 +1584,7 @@ ctx = Context.from_environment()
 ctx.log.info("tick", trigger=ctx.trigger.type)
 `)
 
-	writeIntegration(t, root, "five-field", `
+	writeJob(t, root, "five-field", `
 version: 1
 name: five-field
 entrypoint: main.py
@@ -1638,7 +1638,7 @@ trigger:
 
 func TestWebhookTriggerAuthenticatesAndPassesBody(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "hook", `
+	writeJob(t, root, "hook", `
 version: 1
 name: hook
 entrypoint: main.py
@@ -1663,10 +1663,10 @@ print("hook %s" % ctx.trigger.body)
 
 	token, ok := d.WebhookTokenFor("hook")
 	if !ok || token == "" {
-		t.Fatal("a webhook-enabled integration should have a token")
+		t.Fatal("a webhook-enabled job should have a token")
 	}
 	if _, ok := d.WebhookTokenFor("missing"); ok {
-		t.Error("an unknown integration must not report a webhook token")
+		t.Error("an unknown job must not report a webhook token")
 	}
 
 	base := "http://" + d.cfg.Listen + "/v1/hooks/hook"
@@ -1738,9 +1738,9 @@ print("hook %s" % ctx.trigger.body)
 	}
 }
 
-func TestSubmitRunRejectsUnknownAndInvalidIntegrations(t *testing.T) {
+func TestSubmitRunRejectsUnknownAndInvalidJobs(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "good", `
+	writeJob(t, root, "good", `
 version: 1
 name: good
 entrypoint: main.py
@@ -1758,32 +1758,32 @@ entrypoint: main.py
 	d := newDaemon(t, root, "", nil, nil)
 
 	if _, err := d.SubmitRun(context.Background(), "nope", api.TriggerPayload{}); !errors.Is(err, api.ErrNotFound) {
-		t.Errorf("unknown integration error = %v, want api.ErrNotFound", err)
+		t.Errorf("unknown job error = %v, want api.ErrNotFound", err)
 	}
 	if _, err := d.SubmitRun(context.Background(), "broken", api.TriggerPayload{}); !errors.Is(err, api.ErrInvalid) {
-		t.Errorf("invalid integration error = %v, want api.ErrInvalid", err)
+		t.Errorf("invalid job error = %v, want api.ErrInvalid", err)
 	}
 
-	// An invalid integration must not stop the valid one from running.
+	// An invalid job must not stop the valid one from running.
 	startDaemon(t, d)
 	runID, err := d.SubmitRun(context.Background(), "good", api.TriggerPayload{})
 	if err != nil {
-		t.Fatalf("submit run for the valid integration: %v", err)
+		t.Fatalf("submit run for the valid job: %v", err)
 	}
 	if view := awaitTerminal(t, d, runID); view.Run.Status != runs.StatusSucceeded {
-		t.Errorf("valid integration status = %s, want succeeded", view.Run.Status)
+		t.Errorf("valid job status = %s, want succeeded", view.Run.Status)
 	}
 
-	// The invalid integration should still be visible in the API, flagged.
-	view, ok := d.GetIntegration("broken")
+	// The invalid job should still be visible in the API, flagged.
+	view, ok := d.GetJob("broken")
 	if !ok {
-		t.Fatal("the invalid integration is missing from the registry")
+		t.Fatal("the invalid job is missing from the registry")
 	}
 	if view.Valid {
-		t.Error("the broken integration was reported as valid")
+		t.Error("the broken job was reported as valid")
 	}
 	if view.Error == "" {
-		t.Error("the invalid integration should carry a validation error")
+		t.Error("the invalid job should carry a validation error")
 	}
 }
 
@@ -1793,7 +1793,7 @@ entrypoint: main.py
 // requires) while the release was staged external; the run must record external.
 func TestSubmissionBindsToTheReleasedPythonMode(t *testing.T) {
 	root := t.TempDir()
-	dir := writeIntegration(t, root, "demo", `
+	dir := writeJob(t, root, "demo", `
 version: 1
 name: demo
 entrypoint: main.py
@@ -1818,7 +1818,7 @@ python:
 
 	// The live manifest now claims managed Python. Only the bound release can
 	// still say the code runs external.
-	writeIntegration(t, root, "demo", `
+	writeJob(t, root, "demo", `
 version: 1
 name: demo
 entrypoint: main.py
@@ -1847,8 +1847,8 @@ python:
 
 func TestStateAPIRoundTripAndNamespacing(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", "version: 1\nname: a\nentrypoint: main.py\n", `print("a")`)
-	writeIntegration(t, root, "b", "version: 1\nname: b\nentrypoint: main.py\n", `print("b")`)
+	writeJob(t, root, "a", "version: 1\nname: a\nentrypoint: main.py\n", `print("a")`)
+	writeJob(t, root, "b", "version: 1\nname: b\nentrypoint: main.py\n", `print("b")`)
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 
@@ -1871,14 +1871,14 @@ func TestStateAPIRoundTripAndNamespacing(t *testing.T) {
 		t.Fatalf("all state: %v", err)
 	}
 	if len(all) != 1 {
-		t.Errorf("integration a has %d state keys, want 1", len(all))
+		t.Errorf("job a has %d state keys, want 1", len(all))
 	}
 
 	if _, err := d.GetState(ctx, "a", "missing"); !errors.Is(err, api.ErrNotFound) {
 		t.Errorf("missing key error = %v, want not found", err)
 	}
 	if _, err := d.GetState(ctx, "nope", "cursor"); !errors.Is(err, api.ErrNotFound) {
-		t.Errorf("unknown integration error = %v, want not found", err)
+		t.Errorf("unknown job error = %v, want not found", err)
 	}
 	if _, err := d.SetState(ctx, "a", "bad key", json.RawMessage(`1`)); err == nil {
 		t.Error("an invalid state key should be rejected")
@@ -1900,7 +1900,7 @@ func TestStateAPIRoundTripAndNamespacing(t *testing.T) {
 func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	registry := newRunTokenRegistry()
 
-	token, err := registry.Issue("run-1", "integration-a", 0)
+	token, err := registry.Issue("run-1", "job-a", 0)
 	if err != nil {
 		t.Fatalf("issue token: %v", err)
 	}
@@ -1912,8 +1912,8 @@ func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	if !ok {
 		t.Fatal("a freshly issued token should resolve")
 	}
-	if scope.RunID != "run-1" || scope.IntegrationID != "integration-a" {
-		t.Errorf("scope = %+v, want run-1/integration-a", scope)
+	if scope.RunID != "run-1" || scope.JobID != "job-a" {
+		t.Errorf("scope = %+v, want run-1/job-a", scope)
 	}
 
 	registry.Revoke(token)
@@ -1925,8 +1925,8 @@ func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	}
 
 	// Issuing a second token for the same run replaces the first.
-	first, _ := registry.Issue("run-2", "integration-b", 0)
-	second, _ := registry.Issue("run-2", "integration-b", 0)
+	first, _ := registry.Issue("run-2", "job-b", 0)
+	second, _ := registry.Issue("run-2", "job-b", 0)
 	if _, ok := registry.Lookup(first); ok {
 		t.Error("re-issuing should invalidate the previous token for that run")
 	}
@@ -1939,7 +1939,7 @@ func TestRunTokensAreScopedAndRevoked(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			tok, err := registry.Issue("concurrent", "integration-c", 0)
+			tok, err := registry.Issue("concurrent", "job-c", 0)
 			if err == nil {
 				registry.Lookup(tok)
 				registry.Revoke(tok)
@@ -1956,16 +1956,16 @@ func TestCapacityReserveRelease(t *testing.T) {
 	cap.setLimits(map[string]int{"one": 1, "two": 2})
 
 	if !cap.Reserve("one") {
-		t.Fatal("first reservation for a concurrency-1 integration should succeed")
+		t.Fatal("first reservation for a concurrency-1 job should succeed")
 	}
 	if cap.Reserve("one") {
 		t.Fatal("second concurrent reservation must be refused")
 	}
 	if !cap.Reserve("two") || !cap.Reserve("two") {
-		t.Fatal("a concurrency-2 integration should allow two reservations")
+		t.Fatal("a concurrency-2 job should allow two reservations")
 	}
 	if cap.Reserve("two") {
-		t.Fatal("a third reservation for a concurrency-2 integration must be refused")
+		t.Fatal("a third reservation for a concurrency-2 job must be refused")
 	}
 	if cap.totalRunning() != 3 {
 		t.Fatalf("total running = %d, want 3", cap.totalRunning())
@@ -1976,12 +1976,12 @@ func TestCapacityReserveRelease(t *testing.T) {
 		t.Fatal("releasing a slot should allow a new reservation")
 	}
 
-	// An integration with no manifest limit defaults to one.
+	// A job with no manifest limit defaults to one.
 	if !cap.Reserve("unlisted") {
-		t.Fatal("an unlisted integration should default to concurrency 1")
+		t.Fatal("an unlisted job should default to concurrency 1")
 	}
 	if cap.Reserve("unlisted") {
-		t.Fatal("an unlisted integration should not allow a second reservation")
+		t.Fatal("an unlisted job should not allow a second reservation")
 	}
 
 	cap.close()
@@ -1997,7 +1997,7 @@ func TestCapacityReserveRelease(t *testing.T) {
 
 func TestWorkerPoolLimitCapsGlobalConcurrency(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "parallel", `
+	writeJob(t, root, "parallel", `
 version: 1
 name: parallel
 entrypoint: main.py
@@ -2022,7 +2022,7 @@ time.sleep(1.0)
 	}
 
 	done := func() bool {
-		list, err := d.runs.List(context.Background(), runs.Filter{IntegrationID: runtimeID(t, d, "parallel"), Limit: 10})
+		list, err := d.runs.List(context.Background(), runs.Filter{JobID: runtimeID(t, d, "parallel"), Limit: 10})
 		if err != nil {
 			return false
 		}
@@ -2046,7 +2046,7 @@ time.sleep(1.0)
 
 func TestDrainingRuntimeRejectsNewRuns(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
+	writeJob(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
 
 	d := newDaemon(t, root, "", nil, nil)
 	startDaemon(t, d)
@@ -2059,7 +2059,7 @@ func TestDrainingRuntimeRejectsNewRuns(t *testing.T) {
 
 func TestRunMetadataRecordsTriggerType(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
+	writeJob(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
 
 	d := newDaemon(t, root, "", nil, nil)
 	startDaemon(t, d)
@@ -2109,7 +2109,7 @@ func TestNotifyFailureSendsOnlyReportedStatuses(t *testing.T) {
 		notifier: notify.New(config.NotifyConfig{URL: server.URL + "/hook", On: []string{"failed"}}, testLogger()),
 	}
 	run := &runs.Run{
-		ID: "run-1", IntegrationID: "flaky", Attempt: 2, ReleaseDigest: "abc123",
+		ID: "run-1", JobID: "flaky", Attempt: 2, ReleaseDigest: "abc123",
 	}
 	exit := 1
 
@@ -2144,7 +2144,7 @@ func TestNotifyFailureSurvivesABrokenEndpoint(t *testing.T) {
 		notifier: notify.New(config.NotifyConfig{URL: "http://127.0.0.1:1/hook"}, testLogger(),
 			notify.WithRetryPolicy(2, time.Millisecond)),
 	}
-	d.notifyFailure(&runs.Run{ID: "run-2", IntegrationID: "flaky", Attempt: 1},
+	d.notifyFailure(&runs.Run{ID: "run-2", JobID: "flaky", Attempt: 1},
 		runs.Finish{Status: runs.StatusFailed, Error: "boom"}, "", 10)
 	// Reaching this point without a panic or a blocked call is the assertion:
 	// notification is best-effort and must never fail a run.
@@ -2165,7 +2165,7 @@ func TestNotifyFailureIdentifiesTheHost(t *testing.T) {
 		hostname: "droplet-1",
 		notifier: notify.New(config.NotifyConfig{URL: server.URL}, testLogger()),
 	}
-	d.notifyFailure(&runs.Run{ID: "run-1", IntegrationID: "flaky", Attempt: 1},
+	d.notifyFailure(&runs.Run{ID: "run-1", JobID: "flaky", Attempt: 1},
 		runs.Finish{Status: runs.StatusFailed, Error: "boom"}, "", 10)
 
 	if got.Host != "droplet-1" {
@@ -2173,22 +2173,22 @@ func TestNotifyFailureIdentifiesTheHost(t *testing.T) {
 	}
 }
 
-// An integration with no active release cannot run, whatever its Python mode.
+// A job with no active release cannot run, whatever its Python mode.
 // This is the strict half of the release model: nothing executes until a
 // snapshot has been activated, so "what ran" is always something that was
 // deliberately made live.
-func TestUnreleasedIntegrationIsRefused(t *testing.T) {
+func TestUnreleasedJobIsRefused(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
+	writeJob(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("ok")`)
 
 	d := newDaemonUnreleased(t, root, "", nil, nil)
 	startDaemon(t, d)
 
 	_, err := d.SubmitRun(context.Background(), "job", api.TriggerPayload{Type: api.TriggerManual})
 	if err == nil {
-		t.Fatal("a run of an unreleased integration was accepted")
+		t.Fatal("a run of an unreleased job was accepted")
 	}
-	// A conflict with the integration's state, not a server fault: the API
+	// A conflict with the job's state, not a server fault: the API
 	// must answer 409 rather than 500.
 	if !errors.Is(err, api.ErrConflict) {
 		t.Errorf("refusal is not classified as a conflict: %v", err)
@@ -2201,12 +2201,12 @@ func TestUnreleasedIntegrationIsRefused(t *testing.T) {
 }
 
 // A run executes the release that was active when it was submitted, not the
-// source tree as it stands at execution time. For an external integration that
+// source tree as it stands at execution time. For an external job that
 // is the whole value of a release: it pins no interpreter, but it does pin the
 // code.
 func TestRunExecutesTheActiveReleaseNotTheLiveTree(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("released")`)
+	writeJob(t, root, "job", "version: 1\nname: job\nentrypoint: main.py\n", `print("released")`)
 
 	d := newDaemon(t, root, "", nil, nil)
 	startDaemon(t, d)
@@ -2255,7 +2255,7 @@ func TestRunExecutesTheActiveReleaseNotTheLiveTree(t *testing.T) {
 
 // -------------------------------------------------------------------- reload
 
-// minimalManifest is a runnable integration with no triggers, used as the
+// minimalManifest is a runnable job with no triggers, used as the
 // base of the reload tests. A per-test name keeps duplicate-name validation
 // from interfering.
 func minimalManifest(name string) string {
@@ -2269,9 +2269,9 @@ timeout: 30
 
 const noopPython = `print("ok")`
 
-func TestReloadAddsAnIntegrationWithoutStoppingTheDaemon(t *testing.T) {
+func TestReloadAddsAnJobWithoutStoppingTheDaemon(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "existing", `
+	writeJob(t, root, "existing", `
 version: 1
 name: existing
 entrypoint: main.py
@@ -2289,11 +2289,11 @@ trigger:
 		t.Fatal("the existing cron trigger has no next fire time")
 	}
 
-	// A second integration appears while the daemon is serving.
-	writeIntegration(t, root, "fresh", minimalManifest("fresh"), noopPython)
+	// A second job appears while the daemon is serving.
+	writeJob(t, root, "fresh", minimalManifest("fresh"), noopPython)
 
-	if _, ok := d.GetIntegration("fresh"); ok {
-		t.Fatal("an integration added after startup should not be visible before a reload")
+	if _, ok := d.GetJob("fresh"); ok {
+		t.Fatal("a job added after startup should not be visible before a reload")
 	}
 
 	result, err := d.Reload(ctx)
@@ -2311,7 +2311,7 @@ trigger:
 		t.Errorf("total = %d valid = %d, want 2 and 2", result.Total, result.Valid)
 	}
 
-	view, ok := d.GetIntegration("fresh")
+	view, ok := d.GetJob("fresh")
 	if !ok || !view.Valid {
 		t.Fatalf("fresh is not visible and valid after a reload: ok=%v view=%+v", ok, view)
 	}
@@ -2321,7 +2321,7 @@ trigger:
 		t.Fatalf("the API stopped answering across a reload: %v", err)
 	}
 
-	// The integration that did not change kept its schedule, which is the
+	// The job that did not change kept its schedule, which is the
 	// property a restart cannot offer.
 	nextAfter, ok := d.sched.Next(runtimeID(t, d, "existing"))
 	if !ok {
@@ -2336,19 +2336,19 @@ trigger:
 	}
 }
 
-func TestReloadMakesANewIntegrationRunnableWithoutRestart(t *testing.T) {
+func TestReloadMakesANewJobRunnableWithoutRestart(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "existing", minimalManifest("existing"), noopPython)
+	writeJob(t, root, "existing", minimalManifest("existing"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	startDaemon(t, d)
 	ctx := context.Background()
 
-	writeIntegration(t, root, "fresh", minimalManifest("fresh"), noopPython)
+	writeJob(t, root, "fresh", minimalManifest("fresh"), noopPython)
 
 	// Undiscovered: the daemon cannot address it at all.
 	if _, err := d.SubmitRun(ctx, "fresh", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrNotFound) {
-		t.Fatalf("submitting an undiscovered integration = %v, want not found", err)
+		t.Fatalf("submitting an undiscovered job = %v, want not found", err)
 	}
 
 	if _, err := d.Reload(ctx); err != nil {
@@ -2358,7 +2358,7 @@ func TestReloadMakesANewIntegrationRunnableWithoutRestart(t *testing.T) {
 	// Discovered, but a run executes the active release, so reload makes it
 	// visible and release makes it live. The two steps stay separate.
 	if _, err := d.SubmitRun(ctx, "fresh", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrConflict) {
-		t.Fatalf("submitting an unreleased integration = %v, want conflict", err)
+		t.Fatalf("submitting an unreleased job = %v, want conflict", err)
 	}
 
 	releaseAll(t, root, d.cfg.DataDir)
@@ -2375,13 +2375,13 @@ func TestReloadMakesANewIntegrationRunnableWithoutRestart(t *testing.T) {
 
 func TestReloadReportsChangedAndInvalidManifests(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "kept", minimalManifest("kept"), noopPython)
+	writeJob(t, root, "kept", minimalManifest("kept"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 
-	// Edit the manifest of an integration the daemon already knows, and add a
+	// Edit the manifest of a job the daemon already knows, and add a
 	// directory whose manifest cannot be used.
-	writeIntegration(t, root, "kept", `
+	writeJob(t, root, "kept", `
 version: 1
 name: kept
 entrypoint: main.py
@@ -2420,23 +2420,23 @@ trigger:
 		t.Errorf("total = %d valid = %d, want 2 and 1", result.Total, result.Valid)
 	}
 
-	// The broken integration is present but not runnable, which is the
+	// The broken job is present but not runnable, which is the
 	// difference an operator needs: "not there" and "there but broken" are
 	// fixed by different actions.
 	if _, err := d.SubmitRun(context.Background(), "broken", api.TriggerPayload{Type: api.TriggerManual}); !errors.Is(err, api.ErrInvalid) {
-		t.Errorf("submitting an invalid integration = %v, want invalid", err)
+		t.Errorf("submitting an invalid job = %v, want invalid", err)
 	}
 
 	// An invalid manifest must not keep its cron trigger.
 	if _, ok := d.sched.Spec(runtimeID(t, d, "broken")); ok {
-		t.Error("an invalid integration should not have a cron trigger")
+		t.Error("an invalid job should not have a cron trigger")
 	}
 }
 
-func TestReloadCancelsQueuedRunsOfARemovedIntegration(t *testing.T) {
+func TestReloadCancelsQueuedRunsOfARemovedJob(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "doomed", minimalManifest("doomed"), noopPython)
-	writeIntegration(t, root, "kept", minimalManifest("kept"), noopPython)
+	writeJob(t, root, "doomed", minimalManifest("doomed"), noopPython)
+	writeJob(t, root, "kept", minimalManifest("kept"), noopPython)
 
 	// Not started: no worker claims the run, so it stays queued and is
 	// available to be cancelled by the reload.
@@ -2452,7 +2452,7 @@ func TestReloadCancelsQueuedRunsOfARemovedIntegration(t *testing.T) {
 	}
 
 	if err := os.RemoveAll(filepath.Join(root, "doomed")); err != nil {
-		t.Fatalf("remove integration: %v", err)
+		t.Fatalf("remove job: %v", err)
 	}
 
 	result, err := d.Reload(ctx)
@@ -2482,9 +2482,9 @@ func TestReloadCancelsQueuedRunsOfARemovedIntegration(t *testing.T) {
 		t.Errorf("the cancelled run is still queued (present=%v err=%v)", present, err)
 	}
 
-	// The integration that stayed was not touched.
-	if _, ok := d.GetIntegration("kept"); !ok {
-		t.Error("reload removed an integration that is still on disk")
+	// The job that stayed was not touched.
+	if _, ok := d.GetJob("kept"); !ok {
+		t.Error("reload removed a job that is still on disk")
 	}
 }
 
@@ -2496,8 +2496,8 @@ func TestReloadCancelsMoreThanOneListingPageOfRemovedRuns(t *testing.T) {
 	const doomed = 60 // per status, so more than one listing page in total
 
 	root := t.TempDir()
-	writeIntegration(t, root, "doomed", minimalManifest("doomed"), noopPython)
-	writeIntegration(t, root, "kept", minimalManifest("kept"), noopPython)
+	writeJob(t, root, "doomed", minimalManifest("doomed"), noopPython)
+	writeJob(t, root, "kept", minimalManifest("kept"), noopPython)
 
 	// Not started, so nothing claims the runs: they stay queued and are
 	// available to be cancelled by the reload.
@@ -2511,12 +2511,12 @@ func TestReloadCancelsMoreThanOneListingPageOfRemovedRuns(t *testing.T) {
 			id := fmt.Sprintf("%s-%03d", status, i)
 			ids = append(ids, id)
 			run := &runs.Run{
-				ID:            id,
-				IntegrationID: doomedID,
-				TriggerType:   runs.TriggerManual,
-				Status:        status,
-				Attempt:       1,
-				CreatedAt:     time.Now().UTC(),
+				ID:          id,
+				JobID:       doomedID,
+				TriggerType: runs.TriggerManual,
+				Status:      status,
+				Attempt:     1,
+				CreatedAt:   time.Now().UTC(),
 			}
 			if err := d.runs.Create(ctx, run); err != nil {
 				t.Fatalf("seed run %s: %v", id, err)
@@ -2528,7 +2528,7 @@ func TestReloadCancelsMoreThanOneListingPageOfRemovedRuns(t *testing.T) {
 	}
 
 	if err := os.RemoveAll(filepath.Join(root, "doomed")); err != nil {
-		t.Fatalf("remove integration: %v", err)
+		t.Fatalf("remove job: %v", err)
 	}
 
 	result, err := d.Reload(ctx)
@@ -2562,7 +2562,7 @@ func TestReloadCancelsMoreThanOneListingPageOfRemovedRuns(t *testing.T) {
 
 func TestReloadOfAnUnchangedDirectoryReportsNothing(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", minimalManifest("a"), noopPython)
+	writeJob(t, root, "a", minimalManifest("a"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 
@@ -2586,7 +2586,7 @@ func TestReloadOfAnUnchangedDirectoryReportsNothing(t *testing.T) {
 // This is the case that used to require a restart.
 func TestReloadPicksUpAFixedManifest(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "fixed", `
+	writeJob(t, root, "fixed", `
 version: 1
 name: fixed
 entrypoint: main.py
@@ -2598,11 +2598,11 @@ trigger:
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 
-	if view, ok := d.GetIntegration("fixed"); !ok || view.Valid {
-		t.Fatalf("the broken integration should be present and invalid: ok=%v valid=%v", ok, view.Valid)
+	if view, ok := d.GetJob("fixed"); !ok || view.Valid {
+		t.Fatalf("the broken job should be present and invalid: ok=%v valid=%v", ok, view.Valid)
 	}
 
-	writeIntegration(t, root, "fixed", `
+	writeJob(t, root, "fixed", `
 version: 1
 name: fixed
 entrypoint: main.py
@@ -2626,9 +2626,9 @@ trigger:
 		t.Errorf("added = %v, want [fixed]", result.Added)
 	}
 
-	view, ok := d.GetIntegration("fixed")
+	view, ok := d.GetJob("fixed")
 	if !ok || !view.Valid {
-		t.Fatalf("the fixed integration is still not valid: ok=%v view=%+v", ok, view)
+		t.Fatalf("the fixed job is still not valid: ok=%v view=%+v", ok, view)
 	}
 	if spec, ok := d.sched.Spec(runtimeID(t, d, "fixed")); !ok || spec != "@every 4h" {
 		t.Errorf("cron spec = %q (registered=%v), want @every 4h", spec, ok)
@@ -2637,7 +2637,7 @@ trigger:
 
 func TestConcurrentReloadIsRejected(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "a", minimalManifest("a"), noopPython)
+	writeJob(t, root, "a", minimalManifest("a"), noopPython)
 	d := newDaemon(t, root, "", nil, nil)
 
 	// Hold the reload gate, which is what a reload in flight does.

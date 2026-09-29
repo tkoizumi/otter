@@ -20,30 +20,30 @@ import (
 	"github.com/tkoizumi/otter/internal/release"
 )
 
-// cmdRelease stages integrations as immutable releases, prepares their managed
+// cmdRelease stages jobs as immutable releases, prepares their managed
 // Python environments, and activates them.
 //
 // The order is deliberate: stage, validate the snapshot's manifest, prepare
 // against the staged snapshot, then switch. A failure at any point leaves the
 // previous release active, so a bad candidate can never take down a working
-// integration. Activation is the last step, and it is a single atomic rename.
+// job. Activation is the last step, and it is a single atomic rename.
 //
-// Every integration runs from its active release, so this is the command that
+// Every job runs from its active release, so this is the command that
 // makes code live, for external and managed Python alike. The difference is
 // what else a release pins: managed mode also binds an interpreter and a
 // dependency set, which is why only it has a preparation step.
 //
-// Identity follows `otter run`: no argument means the integration in the
+// Identity follows `otter run`: no argument means the job in the
 // working directory, a bare word is a manifest name, and anything path-shaped
-// is read from disk. --all releases every integration in the workspace.
+// is read from disk. --all releases every job in the workspace.
 func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
-	integrations := fs.String("integrations", config.DefaultIntegrations, "integrations root (default: this workspace)")
+	jobs := fs.String("jobs", config.DefaultJobs, "jobs root (default: this workspace)")
 	data := fs.String("data", "", "Otter data directory (default: the workspace's, .otter/data)")
-	source := fs.String("source", "", "integration directory to snapshot; overrides discovery")
+	source := fs.String("source", "", "job directory to snapshot; overrides discovery")
 	shared := fs.String("shared", "", "extra shared code directories to snapshot (comma-separated)")
-	all := fs.Bool("all", false, "release every integration in the workspace")
+	all := fs.Bool("all", false, "release every job in the workspace")
 	activate := fs.String("activate", "", "activate an already staged release by digest, without staging")
 	uv := fs.String("uv", "", "uv executable used only during preparation")
 	keep := fs.Int("keep", 0, "retain this many inactive releases (0 keeps every release)")
@@ -51,13 +51,13 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	prune := fs.Bool("prune", false, "with --list --all: remove release directories that have no registered identity")
 	apply := fs.Bool("apply", false, "with --prune: actually remove; without it the command only reports")
 	fs.Usage = func() {
-		fmt.Fprintln(a.Stderr, "Usage: otter release [flags] [<integration>|.]")
+		fmt.Fprintln(a.Stderr, "Usage: otter release [flags] [<job>|.]")
 		fmt.Fprintln(a.Stderr)
-		fmt.Fprintln(a.Stderr, "Stages an immutable snapshot of an integration, prepares its managed Python")
+		fmt.Fprintln(a.Stderr, "Stages an immutable snapshot of a job, prepares its managed Python")
 		fmt.Fprintln(a.Stderr, "environment, and activates it. Runs execute the active release, so an edit is")
-		fmt.Fprintln(a.Stderr, "not live until the integration is released again.")
+		fmt.Fprintln(a.Stderr, "not live until the job is released again.")
 		fmt.Fprintln(a.Stderr)
-		fmt.Fprintln(a.Stderr, "With no argument, releases the integration in the working directory.")
+		fmt.Fprintln(a.Stderr, "With no argument, releases the job in the working directory.")
 		fmt.Fprintln(a.Stderr)
 		fmt.Fprintln(a.Stderr, "Flags:")
 		fs.PrintDefaults()
@@ -69,11 +69,11 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter release [flags] [<integration>|.]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter release [flags] [<job>|.]")
 		return 2
 	}
 	if *all && fs.NArg() > 0 {
-		fmt.Fprintln(a.Stderr, "otter: --all releases every integration; do not name one as well")
+		fmt.Fprintln(a.Stderr, "otter: --all releases every job; do not name one as well")
 		return 2
 	}
 	if *all && *source != "" {
@@ -85,7 +85,7 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 		return 2
 	}
 	if *activate != "" && *all {
-		fmt.Fprintln(a.Stderr, "otter: --activate works on one integration at a time")
+		fmt.Fprintln(a.Stderr, "otter: --activate works on one job at a time")
 		return 2
 	}
 	if *list && (*activate != "" || *source != "") {
@@ -111,15 +111,15 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 		return code
 	}
 	*data = dataDir
-	integrationsRoot, code := resolveIntegrationsRoot(a.Stderr, *integrations, flagWasSet(fs, "integrations"))
+	jobsRoot, code := resolveJobsRoot(a.Stderr, *jobs, flagWasSet(fs, "jobs"))
 	if code != 0 {
 		return code
 	}
-	*integrations = integrationsRoot
+	*jobs = jobsRoot
 
 	manager := release.Manager{DataDir: *data}
 
-	// The cross-integration view does not need a target: it reports what has a
+	// The cross-job view does not need a target: it reports what has a
 	// release, whether or not anything is currently discoverable.
 	if *list && *all {
 		if *prune {
@@ -128,13 +128,13 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 		return a.printAllReleases(ctx, manager, g.jsonOut)
 	}
 
-	targets, code := a.integrationTargets(ref, *integrations, *source, named, *all)
+	targets, code := a.jobTargets(ref, *jobs, *source, named, *all)
 	if code != 0 {
 		return code
 	}
 	// Releases are keyed by the durable identity, not by the manifest label, so
 	// the runtime is the thing that names them. Resolve before staging.
-	targets, code = a.mapTargetIdentities(ctx, *integrations, *data, targets)
+	targets, code = a.mapTargetIdentities(ctx, *jobs, *data, targets)
 	if code != 0 {
 		return code
 	}
@@ -143,23 +143,23 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	}
 	if *activate != "" {
 		if len(targets) != 1 {
-			fmt.Fprintln(a.Stderr, "otter: --activate works on one integration at a time")
+			fmt.Fprintln(a.Stderr, "otter: --activate works on one job at a time")
 			return 2
 		}
 		return a.activateRelease(ctx, manager, targets[0].ID, targets[0].Label(), *activate, *uv)
 	}
 
 	for _, target := range targets {
-		if code := a.releaseOne(ctx, manager, integrationsRoot, target, *shared, *uv, *keep); code != 0 {
+		if code := a.releaseOne(ctx, manager, jobsRoot, target, *shared, *uv, *keep); code != 0 {
 			return code
 		}
 	}
 	return 0
 }
 
-// integrationTarget is one integration a local command acts on: the name the
+// jobTarget is one job a local command acts on: the name the
 // runtime knows it by, and the source tree it lives in.
-type integrationTarget struct {
+type jobTarget struct {
 	// ID is the durable identity releases and environments are keyed by.
 	ID string
 	// Name is the manifest label, used only for human-facing output.
@@ -169,23 +169,23 @@ type integrationTarget struct {
 
 // Label renders the target for output. The label is what an operator typed and
 // recognises; the identity is internal.
-func (t integrationTarget) Label() string {
+func (t jobTarget) Label() string {
 	if t.Name != "" {
 		return t.Name
 	}
 	return t.ID
 }
 
-// integrationTargets works out which integrations a command acts on.
+// jobTargets works out which jobs a command acts on.
 //
 // A bare name is the only case that needs the workspace, because only then is
 // there something to search for; a path reference names its own tree.
-func (a *App) integrationTargets(ref, integrationsRoot, source string, named, all bool) ([]integrationTarget, int) {
+func (a *App) jobTargets(ref, jobsRoot, source string, named, all bool) ([]jobTarget, int) {
 	if all {
-		return a.discoveredIntegrationTargets(integrationsRoot)
+		return a.discoveredJobTargets(jobsRoot)
 	}
 
-	id, dir, err := resolveIntegrationRefDir(ref)
+	id, dir, err := resolveJobRefDir(ref)
 	if err != nil {
 		// An unnamed "." that does not resolve is only an error when --source
 		// is not there to name the tree instead.
@@ -205,7 +205,7 @@ func (a *App) integrationTargets(ref, integrationsRoot, source string, named, al
 		dir = absolute
 		if !named {
 			// --source names the tree; with no reference, the tree names the
-			// integration.
+			// job.
 			m, err := config.Load(filepath.Join(dir, config.ManifestFileName))
 			if err != nil {
 				fmt.Fprintf(a.Stderr, "otter: %v\n", err)
@@ -213,14 +213,14 @@ func (a *App) integrationTargets(ref, integrationsRoot, source string, named, al
 			}
 			id = m.Name
 		}
-		return []integrationTarget{{ID: id, Dir: dir}}, 0
+		return []jobTarget{{ID: id, Dir: dir}}, 0
 	}
 
 	if dir != "" {
-		return []integrationTarget{{ID: id, Dir: dir}}, 0
+		return []jobTarget{{ID: id, Dir: dir}}, 0
 	}
 
-	items, err := config.Discover(integrationsRoot)
+	items, err := config.Discover(jobsRoot)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return nil, 1
@@ -233,29 +233,29 @@ func (a *App) integrationTargets(ref, integrationsRoot, source string, named, al
 			fmt.Fprintf(a.Stderr, "otter: %s: %s\n", id, item.Error)
 			return nil, 1
 		}
-		return []integrationTarget{{ID: id, Dir: item.Dir}}, 0
+		return []jobTarget{{ID: id, Dir: item.Dir}}, 0
 	}
-	fmt.Fprintf(a.Stderr, "otter: integration %s not found under %s\n", id, integrationsRoot)
+	fmt.Fprintf(a.Stderr, "otter: job %s not found under %s\n", id, jobsRoot)
 	return nil, 1
 }
 
-// discoveredIntegrationTargets is every valid integration under a root, for --all.
-func (a *App) discoveredIntegrationTargets(integrationsRoot string) ([]integrationTarget, int) {
-	items, err := config.Discover(integrationsRoot)
+// discoveredJobTargets is every valid job under a root, for --all.
+func (a *App) discoveredJobTargets(jobsRoot string) ([]jobTarget, int) {
+	items, err := config.Discover(jobsRoot)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return nil, 1
 	}
-	targets := make([]integrationTarget, 0, len(items))
+	targets := make([]jobTarget, 0, len(items))
 	for _, item := range items {
 		if !item.Valid {
 			fmt.Fprintf(a.Stderr, "otter: %s: %s\n", item.ID, item.Error)
 			return nil, 1
 		}
-		targets = append(targets, integrationTarget{ID: item.ID, Dir: item.Dir})
+		targets = append(targets, jobTarget{ID: item.ID, Dir: item.Dir})
 	}
 	if len(targets) == 0 {
-		fmt.Fprintf(a.Stderr, "otter: no %s found under %s\n", config.ManifestFileName, integrationsRoot)
+		fmt.Fprintf(a.Stderr, "otter: no %s found under %s\n", config.ManifestFileName, jobsRoot)
 		return nil, 1
 	}
 	return targets, 0
@@ -274,8 +274,8 @@ func absoluteDir(path string) (string, error) {
 	return filepath.Clean(filepath.Join(wd, path)), nil
 }
 
-// releaseOne stages, validates, prepares and activates one integration.
-func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrationsRoot string, target integrationTarget, shared, uv string, keep int) int {
+// releaseOne stages, validates, prepares and activates one job.
+func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared, uv string, keep int) int {
 	label := target.Label()
 	manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
 	if err != nil {
@@ -283,11 +283,11 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrati
 		return 1
 	}
 	// The manifest name is a label, not a key: it may differ from the identity
-	// and may even be shared with another integration. Identity was resolved
+	// and may even be shared with another job. Identity was resolved
 	// from the registry before staging, and is re-verified before activation.
 	//
 	// A release can only carry a tree whose depth is expressed relative to the
-	// integration directory. An absolute python.path passes validation on this
+	// job directory. An absolute python.path passes validation on this
 	// machine and is a missing directory on the host, so it is refused here.
 	if err := manifest.ValidatePythonPathsForRelease(); err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
@@ -295,7 +295,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrati
 	}
 
 	// The manifest's own python.path is the authoritative list of shared code,
-	// so a release captures exactly what the integration imports without the
+	// so a release captures exactly what the job imports without the
 	// operator having to repeat it on the command line. --shared adds trees
 	// the manifest cannot express.
 	sources, err := sharedSourcesFor(target.Dir, manifest, shared)
@@ -308,8 +308,8 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrati
 		trees = append(trees, release.SharedTree{Source: src})
 	}
 	// ONE placement rule: the base is the closest common ancestor of the
-	// discovery root, this integration and every captured tree.
-	layout, err := release.Plan(integrationsRoot, target.Dir, trees)
+	// discovery root, this job and every captured tree.
+	layout, err := release.Plan(jobsRoot, target.Dir, trees)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
 		return 1
@@ -318,14 +318,14 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrati
 	envManager := pyenv.Manager{DataDir: manager.DataDir}
 
 	// Bound one release: a release that hangs on a package download must not
-	// hold a deploy open indefinitely. With --all the bound is per integration,
+	// hold a deploy open indefinitely. With --all the bound is per job,
 	// so one slow environment does not starve the rest.
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
 	// 1. Resolve the environment identity for this source tree. The release
 	//    digest covers it, so it has to be known before the snapshot is taken.
-	//    Only managed Python has one: an external integration runs the
+	//    Only managed Python has one: an external job runs the
 	//    interpreter the manifest names, and what a release pins for it is the
 	//    source.
 	environmentDigest := ""
@@ -386,7 +386,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrati
 	//    The source binding is re-checked first: a directory moved, reset or
 	//    replaced while the snapshot was being built must not be activated
 	//    under an identity that no longer owns it.
-	if current, err := resolveIdentityForDir(ctx, runningWorkspaceClient(ctx), integrationsRoot, manager.DataDir, target.Dir); err != nil || current != target.ID {
+	if current, err := resolveIdentityForDir(ctx, runningWorkspaceClient(ctx), jobsRoot, manager.DataDir, target.Dir); err != nil || current != target.ID {
 		fmt.Fprintf(a.Stderr, "otter: %s: source binding at %s changed while staging; re-run the release\n", label, target.Dir)
 		return 1
 	}
@@ -410,7 +410,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, integrati
 	return 0
 }
 
-// activateRelease points an integration at a release it already has.
+// activateRelease points a job at a release it already has.
 //
 // This is rollback. Every staged digest is still on disk unless retention
 // removed it, and switching is the same atomic rename a new release performs.
@@ -479,7 +479,7 @@ func (a *App) activateStaged(ctx context.Context, manager release.Manager, id, l
 	return 0
 }
 
-// snapshotRelease resolves a staged release's integration directory and loads
+// snapshotRelease resolves a staged release's job directory and loads
 // and validates the manifest that travels inside it. Validating the snapshot
 // manifest is what tells "the paths exist on the machine that released" apart
 // from "the release captured the trees the paths name": a release that names an
@@ -521,8 +521,8 @@ func (a *App) requireReadyEnvironment(ctx context.Context, manager release.Manag
 // The manifest's own python.path is the starting point. Its entries are already
 // resolved to absolute directories by the config package, so this does not
 // reinterpret them: it only confirms each one exists as a directory. An entry
-// inside the integration directory is returned too and dropped later by
-// release.Plan, because the integration's own copy already carries it. --shared
+// inside the job directory is returned too and dropped later by
+// release.Plan, because the job's own copy already carries it. --shared
 // adds trees the manifest cannot express and may be absolute.
 //
 // A declared tree that is missing is an error rather than a skip: silently
@@ -616,7 +616,7 @@ func (a *App) printReleases(m release.Manager, id, label string) int {
 				placement = filepath.ToSlash(shown)
 			}
 		} else {
-			fmt.Fprintf(a.Stderr, "otter: release %s has an invalid integration path: %v\n", rel.Digest[:12], err)
+			fmt.Fprintf(a.Stderr, "otter: release %s has an invalid job path: %v\n", rel.Digest[:12], err)
 			code = 1
 		}
 		fmt.Fprintf(a.Stdout, "%s %s  %s  env=%s%s  at=%s  %s\n",
@@ -647,7 +647,7 @@ func mustReleaseDir(m release.Manager, id, digest string) string {
 // bound to, so retention can protect them. A missing or unreadable database
 // yields no pins: retention still never removes the active or newest inactive
 // release, so the fallback is safe rather than silently destructive.
-func (a *App) pinnedReleases(ctx context.Context, dataDir, integrationID string) map[string]bool {
+func (a *App) pinnedReleases(ctx context.Context, dataDir, jobID string) map[string]bool {
 	db, err := database.Open(ctx, dataDir)
 	if err != nil {
 		return nil
@@ -656,9 +656,9 @@ func (a *App) pinnedReleases(ctx context.Context, dataDir, integrationID string)
 
 	rows, err := db.QueryContext(ctx,
 		`SELECT DISTINCT release_digest FROM runs
-		  WHERE integration_id = ? AND release_digest <> ''
+		  WHERE job_id = ? AND release_digest <> ''
 		    AND status IN ('queued', 'running', 'retrying')`,
-		integrationID)
+		jobID)
 	if err != nil {
 		return nil
 	}
@@ -677,7 +677,7 @@ func (a *App) pinnedReleases(ctx context.Context, dataDir, integrationID string)
 	return out
 }
 
-// releaseRow is one line of the cross-integration release view.
+// releaseRow is one line of the cross-job release view.
 type releaseRow struct {
 	Name     string `json:"name"`
 	ID       string `json:"id,omitempty"`
@@ -687,8 +687,8 @@ type releaseRow struct {
 	Releases int    `json:"releases"`
 }
 
-// printAllReleases lists every integration that has a release, and every
-// registered integration that does not, so "why did this run refuse?" has an
+// printAllReleases lists every job that has a release, and every
+// registered job that does not, so "why did this run refuse?" has an
 // answer without walking the data directory by hand.
 func (a *App) printAllReleases(ctx context.Context, manager release.Manager, asJSON bool) int {
 	rows, err := collectReleases(ctx, manager)
@@ -706,13 +706,13 @@ func (a *App) printAllReleases(ctx context.Context, manager release.Manager, asJ
 		return 0
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(a.Stderr, "otter: no releases and no registered integrations")
+		fmt.Fprintln(a.Stderr, "otter: no releases and no registered jobs")
 		return 1
 	}
 
 	// Column widths follow the data, so a long label never collides with the
 	// id beside it.
-	nameWidth, idWidth := len("INTEGRATION"), len("ID")
+	nameWidth, idWidth := len("JOB"), len("ID")
 	for _, row := range rows {
 		if len(row.Name) > nameWidth {
 			nameWidth = len(row.Name)
@@ -722,7 +722,7 @@ func (a *App) printAllReleases(ctx context.Context, manager release.Manager, asJ
 		}
 	}
 	fmt.Fprintf(a.Stdout, "%-*s  %-*s  %-14s  %-3s  %-14s  %s\n",
-		nameWidth, "INTEGRATION", idWidth, "ID", "ACTIVE RELEASE", "REL", "STATUS", "PATH")
+		nameWidth, "JOB", idWidth, "ID", "ACTIVE RELEASE", "REL", "STATUS", "PATH")
 
 	orphans := 0
 	for _, row := range rows {
@@ -730,7 +730,7 @@ func (a *App) printAllReleases(ctx context.Context, manager release.Manager, asJ
 		status := row.Status
 		path := row.Path
 		if id == "" {
-			// No identity at all: leftover release data, not an integration.
+			// No identity at all: leftover release data, not a job.
 			id, status, path = "-", "(no identity)", "-"
 			orphans++
 		}
@@ -742,14 +742,14 @@ func (a *App) printAllReleases(ctx context.Context, manager release.Manager, asJ
 			nameWidth, row.Name, idWidth, id, active, row.Releases, status, path)
 	}
 	if orphans > 0 {
-		fmt.Fprintf(a.Stdout, "\n%d row(s) have no identity: they are release directories left behind, not integrations.\n", orphans)
+		fmt.Fprintf(a.Stdout, "\n%d row(s) have no identity: they are release directories left behind, not jobs.\n", orphans)
 		fmt.Fprintln(a.Stdout, "Inspect with `otter release --list --all`, remove with `otter release --list --all --prune --apply`.")
 	}
 	return 0
 }
 
 // pruneOrphanReleases removes release directories that no registered identity
-// owns: the leftovers of an integration deleted outside the registry.
+// owns: the leftovers of a job deleted outside the registry.
 //
 // It is a dry run unless --apply is passed, and it refuses to act at all until
 // the identity registry is bootstrapped, because an empty registry would make
@@ -864,7 +864,7 @@ func orphanReleaseIDs(manager release.Manager, registered map[string]bool) ([]st
 //
 // The registry contributes rows with no release, which is the state that makes
 // a submission refuse; the release directories contribute rows with no
-// registration, which is the state a deleted integration leaves behind.
+// registration, which is the state a deleted job leaves behind.
 func collectReleases(ctx context.Context, manager release.Manager) ([]releaseRow, error) {
 	rows := map[string]*releaseRow{}
 
@@ -898,7 +898,7 @@ func collectReleases(ctx context.Context, manager release.Manager) ([]releaseRow
 		id := entry.Name()
 		row, ok := rows[id]
 		if !ok {
-			// A release with no registration: the integration was deleted
+			// A release with no registration: the job was deleted
 			// outside the registry. The id column stays empty so this row is
 			// never mistaken for an identity.
 			row = &releaseRow{Name: id}
@@ -918,7 +918,7 @@ func collectReleases(ctx context.Context, manager release.Manager) ([]releaseRow
 
 	// A deleted identity with no releases left is a tombstone, not a release.
 	// It is kept in the registry on purpose so its id is never reused, but it
-	// has nothing to say here; `otter identity list --all` is where tombstones
+	// has nothing to say here; `otter jobs --all` is where tombstones
 	// are shown.
 	for id, row := range rows {
 		if row.Status == string(identity.StatusDeleted) && row.Releases == 0 {

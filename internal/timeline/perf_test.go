@@ -192,7 +192,7 @@ func seedExchanges(t *testing.T, f *fixture, count int, at time.Time) {
 		  SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < %d
 		)
 		INSERT INTO http_exchanges
-		  (run_id, request_id, integration_id, producer_seq, occurred_at, ingested_at,
+		  (run_id, request_id, job_id, producer_seq, occurred_at, ingested_at,
 		   updated_at, phase, complete, method, sanitized_url, status_code, payloads)
 		SELECT 'run-1', 'req-' || n, 'int-1', n, ?, ?, ?,
 		       'completed', 1, 'POST', 'https://a.test/' || n, 200, 'full'

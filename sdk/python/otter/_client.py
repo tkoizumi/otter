@@ -9,7 +9,7 @@ the JSON HTTP API exposed by the ``otterd`` daemon:
 * transient failures (connection errors and HTTP 5xx) are retried with a short
   exponential backoff, while 4xx responses are returned to the caller as-is.
 
-Integrations normally never touch this module directly: they use
+Jobs normally never touch this module directly: they use
 :class:`otter.Context`, whose ``state``, ``log`` and ``trigger`` helpers wrap it.
 """
 
@@ -44,7 +44,7 @@ def describe_api_failure(status: int, body: Any) -> str:
     """Extract a human readable message from an API error envelope.
 
     Shared by every caller that has to explain a non-2xx response -- state
-    errors to the integration author, log delivery failures to the run's
+    errors to the job author, log delivery failures to the run's
     records -- so the same response never reads two different ways.
     """
     if isinstance(body, dict):
@@ -137,9 +137,9 @@ class Client:
                 request.add_header("Authorization", "Bearer %s" % self.token)
             try:
                 # Otter's own control traffic is never captured: recording the
-                # recorder would recurse, and the daemon API is not integration
+                # recorder would recurse, and the daemon API is not job
                 # behaviour. The guard is thread-local, so it cannot hide a
-                # concurrent request the integration itself makes.
+                # concurrent request the job itself makes.
                 with _capture.suppressed():
                     with urllib.request.urlopen(request, timeout=self.timeout) as response:
                         return int(response.status), _decode_body(response.read())

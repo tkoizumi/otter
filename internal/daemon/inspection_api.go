@@ -20,8 +20,8 @@ const captureRetentionInterval = time.Hour
 
 // IngestCaptureEvents implements api.Backend.
 //
-// The integration identity comes from the run record, never from the caller, so
-// a run token cannot attribute traffic to another integration. A run with no
+// The job identity comes from the run record, never from the caller, so
+// a run token cannot attribute traffic to another job. A run with no
 // capture configuration is refused rather than silently starting one: the row is
 // written at submission precisely so ingestion cannot invent a recording.
 func (d *Daemon) IngestCaptureEvents(ctx context.Context, runID string, batch inspection.EventBatch) (*inspection.IngestResult, error) {
@@ -130,7 +130,7 @@ func (d *Daemon) TimelinePage(ctx context.Context, req timeline.Request) (*timel
 // beginCapture records the resolved capture policy for a run. It is called at
 // submission, before any child exists, so that a run which observes nothing is
 // still distinguishable from a run that predates capture.
-func (d *Daemon) beginCapture(runID, integrationID string, policy inspection.Policy) {
+func (d *Daemon) beginCapture(runID, jobID string, policy inspection.Policy) {
 	if d.inspection == nil || !policy.Valid() {
 		return
 	}
@@ -138,9 +138,9 @@ func (d *Daemon) beginCapture(runID, integrationID string, policy inspection.Pol
 	defer cancel()
 
 	err := d.inspection.Begin(ctx, inspection.CaptureSettings{
-		RunID:         runID,
-		IntegrationID: integrationID,
-		Policy:        policy,
+		RunID:  runID,
+		JobID:  jobID,
+		Policy: policy,
 	})
 	if err != nil {
 		// Capture is diagnostic: failing to record must not fail a submission.

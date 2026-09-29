@@ -21,25 +21,25 @@ import (
 // assert.
 const claimFailureBackoffFloor = time.Second
 
-// claimForTest creates one queued run for integrationID and claims it, which is
+// claimForTest creates one queued run for jobID and claims it, which is
 // the state executeRun sees in production: the run_queue row is gone and a
 // worker slot is reserved.
-func claimForTest(t *testing.T, d *Daemon, runID, integrationID string) *queue.Item {
+func claimForTest(t *testing.T, d *Daemon, runID, jobID string) *queue.Item {
 	t.Helper()
 	ctx := context.Background()
 
 	run := &runs.Run{
-		ID:            runID,
-		IntegrationID: integrationID,
-		TriggerType:   runs.TriggerManual,
-		Status:        runs.StatusQueued,
-		Attempt:       1,
-		CreatedAt:     time.Now().UTC(),
+		ID:          runID,
+		JobID:       jobID,
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusQueued,
+		Attempt:     1,
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := d.runs.Create(ctx, run); err != nil {
 		t.Fatalf("create run %s: %v", runID, err)
 	}
-	if err := d.queue.Enqueue(ctx, runID, integrationID, time.Now().UTC()); err != nil {
+	if err := d.queue.Enqueue(ctx, runID, jobID, time.Now().UTC()); err != nil {
 		t.Fatalf("enqueue run %s: %v", runID, err)
 	}
 
@@ -73,7 +73,7 @@ func onlyQueued(t *testing.T, d *Daemon) queue.Item {
 // pick it up until the next daemon restart.
 func TestClaimedRunIsRequeuedWhenMarkRunningFails(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", minimalManifest("job"), noopPython)
+	writeJob(t, root, "job", minimalManifest("job"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -122,7 +122,7 @@ func TestClaimedRunIsRequeuedWhenMarkRunningFails(t *testing.T) {
 // and the run must not be lost between claims.
 func TestClaimedRunIsRequeuedWhenItsRecordCannotBeRead(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", minimalManifest("job"), noopPython)
+	writeJob(t, root, "job", minimalManifest("job"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -157,7 +157,7 @@ func TestClaimedRunIsRequeuedWhenItsRecordCannotBeRead(t *testing.T) {
 // later claim could only fail on again.
 func TestClaimedRunWithNoRecordIsNotRequeued(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", minimalManifest("job"), noopPython)
+	writeJob(t, root, "job", minimalManifest("job"), noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -200,25 +200,25 @@ retry:
 
 // runningRun builds the record executeRun leaves behind once an attempt has
 // started.
-func runningRun(id, integrationID, integrationName string, attempt int, startedAt time.Time) *runs.Run {
+func runningRun(id, jobID, jobName string, attempt int, startedAt time.Time) *runs.Run {
 	return &runs.Run{
-		ID:              id,
-		IntegrationID:   integrationID,
-		IntegrationName: integrationName,
-		TriggerType:     runs.TriggerManual,
-		Status:          runs.StatusRunning,
-		Attempt:         attempt,
-		CreatedAt:       startedAt,
-		StartedAt:       &startedAt,
+		ID:          id,
+		JobID:       jobID,
+		JobName:     jobName,
+		TriggerType: runs.TriggerManual,
+		Status:      runs.StatusRunning,
+		Attempt:     attempt,
+		CreatedAt:   startedAt,
+		StartedAt:   &startedAt,
 	}
 }
 
-// resolvedManifest returns the manifest the daemon resolved for integrationID.
-func resolvedManifest(t *testing.T, d *Daemon, integrationID string) *config.Manifest {
+// resolvedManifest returns the manifest the daemon resolved for jobID.
+func resolvedManifest(t *testing.T, d *Daemon, jobID string) *config.Manifest {
 	t.Helper()
-	entry, ok := d.reg.get(integrationID)
+	entry, ok := d.reg.get(jobID)
 	if !ok || entry.Manifest == nil {
-		t.Fatalf("no manifest for integration %s", integrationID)
+		t.Fatalf("no manifest for job %s", jobID)
 	}
 	return entry.Manifest
 }
@@ -241,7 +241,7 @@ func breakFinishCommit(t *testing.T) func() {
 // (with its queue row) both appear.
 func TestFinishRunPersistsOutcomeAndSuccessorAtomically(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", retryableManifest, noopPython)
+	writeJob(t, root, "job", retryableManifest, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -301,7 +301,7 @@ func TestFinishRunPersistsOutcomeAndSuccessorAtomically(t *testing.T) {
 // is missing.
 func TestFinishCommitFailureLeavesNoPartialOutcome(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", retryableManifest, noopPython)
+	writeJob(t, root, "job", retryableManifest, noopPython)
 
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
@@ -363,7 +363,7 @@ func TestFinishCommitFailureLeavesNoPartialOutcome(t *testing.T) {
 // as a crash between the child's exit and the write would leave them.
 func TestFallbackJournalIsAppliedOnRestart(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", retryableManifest, noopPython)
+	writeJob(t, root, "job", retryableManifest, noopPython)
 
 	dataDir := t.TempDir()
 	jobID := identityIDFor(t, root, dataDir, "job")
@@ -458,7 +458,7 @@ func TestFallbackJournalIsAppliedOnRestart(t *testing.T) {
 // test observe the run state the hold protects.
 func TestUnreadableFallbackJournalDoesNotReRunRunningRuns(t *testing.T) {
 	root := t.TempDir()
-	writeIntegration(t, root, "job", retryableManifest, noopPython)
+	writeJob(t, root, "job", retryableManifest, noopPython)
 
 	dataDir := t.TempDir()
 	jobID := identityIDFor(t, root, dataDir, "job")

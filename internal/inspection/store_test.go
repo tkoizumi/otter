@@ -32,9 +32,9 @@ func newTestStore(t *testing.T, limits Limits) *Store {
 func beginTestCapture(t *testing.T, store *Store, runID string, policy Policy) {
 	t.Helper()
 	if err := store.Begin(context.Background(), CaptureSettings{
-		RunID:         runID,
-		IntegrationID: "int-1",
-		Policy:        policy,
+		RunID:  runID,
+		JobID:  "int-1",
+		Policy: policy,
 	}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -240,8 +240,8 @@ func TestIngestLifecycleMergesAndCounts(t *testing.T) {
 	if exchange.DurationToHeadersMS == nil || *exchange.DurationToHeadersMS != 7 {
 		t.Errorf("time to headers = %v, want 7", exchange.DurationToHeadersMS)
 	}
-	if exchange.IntegrationID != "int-1" {
-		t.Errorf("integration = %q, want the run's integration, not a client value", exchange.IntegrationID)
+	if exchange.JobID != "int-1" {
+		t.Errorf("job = %q, want the run's job, not a client value", exchange.JobID)
 	}
 	if exchange.Payloads != "full" {
 		t.Errorf("payloads = %q, want full", exchange.Payloads)
@@ -531,7 +531,7 @@ func TestRetentionExpiresPayloadsButKeepsTheSummary(t *testing.T) {
 	}
 }
 
-func TestDeleteForRunAndIntegration(t *testing.T) {
+func TestDeleteForRunAndJob(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, Limits{})
 
@@ -551,11 +551,11 @@ func TestDeleteForRunAndIntegration(t *testing.T) {
 		t.Errorf("run-1 summary survived DeleteForRun: %v", err)
 	}
 
-	if _, err := store.DeleteForIntegration(ctx, "int-1"); err != nil {
-		t.Fatalf("DeleteForIntegration: %v", err)
+	if _, err := store.DeleteForJob(ctx, "int-1"); err != nil {
+		t.Fatalf("DeleteForJob: %v", err)
 	}
 	if _, err := store.Capture(ctx, "run-2"); !errors.Is(err, ErrNotConfigured) {
-		t.Errorf("run-2 summary survived DeleteForIntegration: %v", err)
+		t.Errorf("run-2 summary survived DeleteForJob: %v", err)
 	}
 }
 

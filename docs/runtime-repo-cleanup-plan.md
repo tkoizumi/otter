@@ -3,21 +3,21 @@
 ## Objective
 
 Make this repository the source checkout for people changing, testing, and
-releasing the Otter runtime. People building integrations should install Otter
+releasing the Otter runtime. People building jobs should install Otter
 and work in their own project; they should not need this checkout, its Makefile,
 or its Python connector libraries.
 
-The final repository has no top-level `integrations/`, `examples/`, or vendor
-library tree. Small integration programs remain where needed to test runtime
+The final repository has no top-level `jobs/`, `examples/`, or vendor
+library tree. Small job programs remain where needed to test runtime
 contracts, as package-local fixtures or files generated in temporary directories.
 
 This is a repository-boundary change. Preserve the installed product's commands,
 manifest format, SDK, configuration defaults, deployment behavior, and data
 compatibility. In particular, keep `otter init`, `validate`, `prepare`, `release`,
-`start`, and `deploy`. Supporting integration projects is part of the runtime;
+`start`, and `deploy`. Supporting job projects is part of the runtime;
 hosting those projects in its source repository is not required.
 
-The integration work is already preserved in Git. Preservation is complete and
+The job work is already preserved in Git. Preservation is complete and
 is not a prerequisite or work item in this plan. Cleanup can proceed directly
 in this repository; no destination setup or external-project validation is needed.
 
@@ -27,13 +27,13 @@ in this repository; no destination setup or external-project validation is neede
 | --- | --- | --- |
 | `cmd/`, `internal/`, `migrations/` | Runtime, CLI, persistence, and tests | Keep. |
 | `sdk/` | Embedded Python runtime SDK and its tests | Keep. |
-| `integrations/shopify-to-salesforce/` | Customer sync application, configuration, tests, and probe tooling | Remove from this repository. |
-| `integrations/shopify-product-to-salesforce-product/` | Product sync application, schemas, queries, and tests | Remove from this repository. |
+| `jobs/shopify-to-salesforce/` | Customer sync application, configuration, tests, and probe tooling | Remove from this repository. |
+| `jobs/shopify-product-to-salesforce-product/` | Product sync application, schemas, queries, and tests | Remove from this repository. |
 | `lib/python/` | Vendor clients, sync helpers, schema tooling, and tests | Remove from this repository. |
-| `graphql.config.yml` | Editor configuration for integration queries and schemas | Remove from this repository. |
+| `graphql.config.yml` | Editor configuration for job queries and schemas | Remove from this repository. |
 | `Makefile` | Runtime development mixed with application release, schema, startup, and deployment wrappers | Reduce to runtime development and packaging. |
 | `.github/workflows/test.yml`, `.github/workflows/release.yml` | Runtime tests mixed with connector and application suites | Retain runtime validation; remove application suites. |
-| `README.md`, `docs/examples.md`, `sdk/python/README.md` | Runtime documentation mixed with integration tutorials and missing example links | Refocus and repair references. |
+| `README.md`, `docs/examples.md`, `sdk/python/README.md` | Runtime documentation mixed with job tutorials and missing example links | Refocus and repair references. |
 | `.nvimlog`, `run.log` | Tracked local artifacts | Remove from version control and ignore. |
 | `find_runtime.sh` | Local runtime diagnostic helper | Review; retain under `scripts/` only if useful to contributors. |
 
@@ -43,7 +43,7 @@ architecture/operations documentation.
 
 ## 1. Remove application-owned source
 
-Remove the tracked contents of both integration directories, all of
+Remove the tracked contents of both job directories, all of
 `lib/python/`, and `graphql.config.yml`. Remove empty parent directories where
 applicable. Their application tests, vendor schemas, query files, lockfiles,
 and probe tools leave with them.
@@ -53,7 +53,7 @@ coverage using the generic fixtures described below. Update Makefile and CI
 references in the same implementation change so deletion does not leave broken
 build or test commands.
 
-No copying, archiving, destination repository setup, or integration-project
+No copying, archiving, destination repository setup, or job-project
 verification is required. Existing Git history provides the preserved work.
 Leave ignored local environment files, runtime state, identity markers,
 databases, virtual environments, and caches untouched. This cleanup does not
@@ -71,7 +71,7 @@ release layout, managed Python, deployment, and SDK behavior.
 - Audit whether any runtime coverage depends on the departing applications.
   Replace only that coverage with generic fixtures; do not port business mapping
   tests or create a duplicate example catalog.
-- Keep tests for integrations importing sibling shared code. Removing the
+- Keep tests for jobs importing sibling shared code. Removing the
   repository's `lib/python/` must not remove support for user-provided libraries
   or change release/deployment layout rules.
 - Preserve the generic scaffold and its tests in `internal/cli/init.go` and
@@ -81,7 +81,7 @@ Add one automated contributor smoke workflow, exposed as `make smoke`, that:
 
 1. Builds and uses this checkout's binary by absolute path.
 2. Creates a fresh temporary workspace outside the source checkout and runs
-   `otter init` to generate a credential-free integration.
+   `otter init` to generate a credential-free job.
 3. Validates and releases it, starts a runtime on a free loopback port, and
    submits a run.
 4. Waits with a bounded timeout for success and checks the scaffold's persisted
@@ -99,7 +99,7 @@ Update `Makefile`:
 - Keep `help`, `build`, `test`, `test-go`, `test-python`, `lint`, `fmt`, `tidy`,
   `cross`, and packaging helpers; add the isolated `smoke` target.
 - Make `test-python` run only the embedded runtime SDK suite.
-- Remove integration-specific variables, test discovery, schema commands, and
+- Remove job-specific variables, test discovery, schema commands, and
   `release`, `release-all`, and `release-list` wrappers. Binary publishing stays
   in the existing release pipeline.
 - Remove `start`, `start-detached`, `stop`, and `restart` wrappers that assume
@@ -131,7 +131,7 @@ Rewrite `README.md` around the runtime contributor:
 
 Add `CONTRIBUTING.md` with the supported development loop, subsystem locations,
 fixture conventions, external-workspace debugging, and the policy that vendor
-clients, mappings, and real integrations belong in separate projects. Derive
+clients, mappings, and real jobs belong in separate projects. Derive
 tool prerequisites from `go.mod` and CI rather than guessing versions.
 
 For existing documentation:
@@ -139,7 +139,7 @@ For existing documentation:
 - Retain API, manifest, SDK, identity, managed Python, security, operations, and
   deployment references as versioned product contracts. Their commands should
   work with installed binaries in a user's own workspace.
-- Remove long integration-authoring tutorials and `docs/examples.md` from this
+- Remove long job-authoring tutorials and `docs/examples.md` from this
   repository. Retain only concise explanations needed for runtime contracts;
   no tutorial migration or separate documentation project is required.
 - Remove the bundled-example walkthroughs and missing-file links. Use short,
@@ -149,12 +149,12 @@ For existing documentation:
 - Update `sdk/python/README.md`, `docs/architecture.md`, `docs/operations.md`,
   and other affected references to remove reliance on absent examples.
 - Fix CLI help/output in `internal/cli/cli.go` that points at `./examples` or
-  uses a specific bundled Shopify integration as the assumed starting point.
+  uses a specific bundled Shopify job as the assumed starting point.
   Update affected assertions if output is tested.
 - Review historical implementation plans and label them as historical where
   needed; avoid treating them as current contributor instructions.
 
-Do not globally remove the word `integrations` or every `lib/python` path.
+Do not globally remove the word `jobs` or every `lib/python` path.
 API routes, configuration defaults, and illustrative user-workspace layouts
 remain valid. Audit references by meaning, not just by matching their spelling.
 
@@ -171,7 +171,7 @@ remain valid. Audit references by meaning, not just by matching their spelling.
   filenames alone does not enforce formatting.
 - Check a non-publishing GoReleaser snapshot: retain both binaries, existing
   archive names, checksums, platforms, and the embedded SDK. No vendor
-  code, integration configuration, or local artifacts should be packaged.
+  code, job configuration, or local artifacts should be packaged.
 
 No release tag, publishing action, Homebrew update, remote deployment, or
 unrelated dependency upgrade is needed to implement this plan.
@@ -192,7 +192,7 @@ require no migration for this change.
 
 ## Acceptance criteria
 
-- A fresh clone contains no top-level integration applications, example catalog,
+- A fresh clone contains no top-level job applications, example catalog,
   vendor clients, or vendor schema tooling.
 - `make help` describes runtime development and packaging only.
 - `make build`, `make test`, `make lint`, and `make smoke` pass from a fresh clone

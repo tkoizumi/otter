@@ -70,10 +70,10 @@ const (
 	TriggerWebhook = "webhook"
 )
 
-// Run is one execution attempt of an integration.
+// Run is one execution attempt of a job.
 type Run struct {
 	ID                string          `json:"id"`
-	IntegrationID     string          `json:"integration_id"`
+	JobID             string          `json:"job_id"`
 	TriggerType       string          `json:"trigger_type"`
 	Status            Status          `json:"status"`
 	Attempt           int             `json:"attempt"`
@@ -99,12 +99,12 @@ type Run struct {
 	ReleaseSourceDir string `json:"-"`
 	SDKVersion       string `json:"sdk_version,omitempty"`
 
-	// IntegrationName is the manifest label the run was submitted under, and
-	// IntegrationGeneration is the identity generation that authorized it.
+	// JobName is the manifest label the run was submitted under, and
+	// JobGeneration is the identity generation that authorized it.
 	// A generation mismatch after a reset, move, retirement or deletion is
 	// what fences a stale worker or state write.
-	IntegrationName       string `json:"integration_name,omitempty"`
-	IntegrationGeneration int64  `json:"integration_generation,omitempty"`
+	JobName       string `json:"job_name,omitempty"`
+	JobGeneration int64  `json:"job_generation,omitempty"`
 
 	// CapturePolicy is the HTTP capture policy this run was submitted with. A
 	// retry inherits it from its parent. An empty value means the run predates
@@ -133,11 +133,11 @@ func (r *Run) ErrorString() string {
 	return *r.Error
 }
 
-const runColumns = `id, integration_id, trigger_type, status, attempt, parent_run_id,
+const runColumns = `id, job_id, trigger_type, status, attempt, parent_run_id,
 	created_at, started_at, finished_at, exit_code, error, metadata,
 	python_mode, python_version, environment_digest, python_policy,
 	release_digest, release_source_dir, sdk_version,
-	integration_name, integration_generation, capture_policy`
+	job_name, job_generation, capture_policy`
 
 // defaultListLimit is the page size List substitutes when a caller supplies no
 // limit, and maxListLimit is the largest explicit limit it accepts. A limit
@@ -196,7 +196,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 
 	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	args := []any{
-		r.ID, r.IntegrationID, r.TriggerType, string(r.Status), r.Attempt,
+		r.ID, r.JobID, r.TriggerType, string(r.Status), r.Attempt,
 		database.NullableString(deref(r.ParentRunID)),
 		database.FormatTime(r.CreatedAt),
 		database.FormatNullable(r.StartedAt),
@@ -205,7 +205,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		database.NullableString(deref(r.Error)),
 		metadata, r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy,
 		r.ReleaseDigest, r.ReleaseSourceDir, r.SDKVersion,
-		r.IntegrationName, r.IntegrationGeneration, r.CapturePolicy,
+		r.JobName, r.JobGeneration, r.CapturePolicy,
 	}
 
 	var err error
@@ -220,11 +220,11 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 	return nil
 }
 
-// DeleteByIntegration removes every durable trace of one integration's runs:
+// DeleteByJob removes every durable trace of one job's runs:
 // captured logs, queue rows and run records. It exists for `otter delete`,
 // which purges an identity's history deliberately, and returns how many run
 // records were removed.
-func (s *Store) DeleteByIntegration(ctx context.Context, integrationID string) (int64, error) {
+func (s *Store) DeleteByJob(ctx context.Context, jobID string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -232,17 +232,17 @@ func (s *Store) DeleteByIntegration(ctx context.Context, integrationID string) (
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM run_logs WHERE run_id IN (SELECT id FROM runs WHERE integration_id = ?)`,
-		integrationID); err != nil {
-		return 0, fmt.Errorf("runs: delete logs for %s: %w", integrationID, err)
+		`DELETE FROM run_logs WHERE run_id IN (SELECT id FROM runs WHERE job_id = ?)`,
+		jobID); err != nil {
+		return 0, fmt.Errorf("runs: delete logs for %s: %w", jobID, err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM run_queue WHERE integration_id = ?`, integrationID); err != nil {
-		return 0, fmt.Errorf("runs: delete queue rows for %s: %w", integrationID, err)
+		`DELETE FROM run_queue WHERE job_id = ?`, jobID); err != nil {
+		return 0, fmt.Errorf("runs: delete queue rows for %s: %w", jobID, err)
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE integration_id = ?`, integrationID)
+	res, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE job_id = ?`, jobID)
 	if err != nil {
-		return 0, fmt.Errorf("runs: delete for %s: %w", integrationID, err)
+		return 0, fmt.Errorf("runs: delete for %s: %w", jobID, err)
 	}
 	removed, err := res.RowsAffected()
 	if err != nil {
@@ -255,14 +255,14 @@ func (s *Store) DeleteByIntegration(ctx context.Context, integrationID string) (
 }
 
 // CancelPinnedToRelease cancels the queued and retrying attempts of one
-// integration that are bound to a single release digest, and removes them from
+// job that are bound to a single release digest, and removes them from
 // the queue.
 //
 // It exists for a quarantined release: an attempt submitted before the release
 // was disabled already recorded the snapshot it would execute, so removing the
 // activation pointer is not enough. Cancelling is the honest outcome -- the code
 // was staged from a source the operator rejected -- and the error says so.
-func (s *Store) CancelPinnedToRelease(ctx context.Context, integrationID, digest, reason string) (int, error) {
+func (s *Store) CancelPinnedToRelease(ctx context.Context, jobID, digest, reason string) (int, error) {
 	if digest == "" {
 		return 0, nil
 	}
@@ -275,14 +275,14 @@ func (s *Store) CancelPinnedToRelease(ctx context.Context, integrationID, digest
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM run_queue WHERE run_id IN (
 		     SELECT id FROM runs
-		      WHERE integration_id = ? AND release_digest = ? AND status IN ('queued', 'retrying'))`,
-		integrationID, digest); err != nil {
+		      WHERE job_id = ? AND release_digest = ? AND status IN ('queued', 'retrying'))`,
+		jobID, digest); err != nil {
 		return 0, fmt.Errorf("runs: unqueue quarantined attempts: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE runs SET status = 'cancelled', error = ?, finished_at = ?
-		  WHERE integration_id = ? AND release_digest = ? AND status IN ('queued', 'retrying')`,
-		reason, database.FormatTime(time.Now().UTC()), integrationID, digest)
+		  WHERE job_id = ? AND release_digest = ? AND status IN ('queued', 'retrying')`,
+		reason, database.FormatTime(time.Now().UTC()), jobID, digest)
 	if err != nil {
 		return 0, fmt.Errorf("runs: cancel quarantined attempts: %w", err)
 	}
@@ -311,18 +311,18 @@ func (s *Store) Get(ctx context.Context, id string) (*Run, error) {
 
 // Filter narrows a run listing.
 type Filter struct {
-	IntegrationID string
-	// IntegrationIDs matches runs whose integration_id is any of the listed
-	// values. It exists because a run's integration_id is not stable across
+	JobID string
+	// JobIDs matches runs whose job_id is any of the listed
+	// values. It exists because a run's job_id is not stable across
 	// the identity migration: older rows were keyed by the manifest label,
 	// newer ones by the durable identity. A reference can only be answered by
 	// matching both spellings in one query.
-	IntegrationIDs []string
-	Status         Status
-	ParentRunID    string
-	Limit          int
-	Offset         int
-	Ascending      bool
+	JobIDs      []string
+	Status      Status
+	ParentRunID string
+	Limit       int
+	Offset      int
+	Ascending   bool
 }
 
 // List returns runs matching the filter, newest first by default.
@@ -341,17 +341,17 @@ func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 		where []string
 		args  []any
 	)
-	if f.IntegrationID != "" {
-		where = append(where, "integration_id = ?")
-		args = append(args, f.IntegrationID)
+	if f.JobID != "" {
+		where = append(where, "job_id = ?")
+		args = append(args, f.JobID)
 	}
-	if len(f.IntegrationIDs) > 0 {
-		placeholders := make([]string, len(f.IntegrationIDs))
-		for i, id := range f.IntegrationIDs {
+	if len(f.JobIDs) > 0 {
+		placeholders := make([]string, len(f.JobIDs))
+		for i, id := range f.JobIDs {
 			placeholders[i] = "?"
 			args = append(args, id)
 		}
-		where = append(where, "integration_id IN ("+strings.Join(placeholders, ", ")+")")
+		where = append(where, "job_id IN ("+strings.Join(placeholders, ", ")+")")
 	}
 	if f.Status != "" {
 		where = append(where, "status = ?")
@@ -690,17 +690,17 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 		releaseDigest     string
 		releaseSourceDir  string
 		sdkVersion        string
-		integrationName   string
-		integrationGen    int64
+		jobName           string
+		jobGen            int64
 		capturePolicy     string
 	)
 
 	dest := []any{
-		&r.ID, &r.IntegrationID, &r.TriggerType, &status, &r.Attempt,
+		&r.ID, &r.JobID, &r.TriggerType, &status, &r.Attempt,
 		&parent, &created, &started, &finished, &exitCode, &errMsg, &meta,
 		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
 		&releaseDigest, &releaseSourceDir, &sdkVersion,
-		&integrationName, &integrationGen, &capturePolicy,
+		&jobName, &jobGen, &capturePolicy,
 	}
 	if rowID != nil {
 		dest = append([]any{rowID}, dest...)
@@ -713,7 +713,7 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 	r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy, r.SDKVersion =
 		pythonMode, pythonVersion, environmentDigest, pythonPolicy, sdkVersion
 	r.ReleaseDigest, r.ReleaseSourceDir = releaseDigest, releaseSourceDir
-	r.IntegrationName, r.IntegrationGeneration = integrationName, integrationGen
+	r.JobName, r.JobGeneration = jobName, jobGen
 	r.CapturePolicy = capturePolicy
 	if parent.Valid {
 		v := parent.String

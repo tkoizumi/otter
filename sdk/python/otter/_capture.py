@@ -1,7 +1,7 @@
-"""Bounded HTTP capture for Otter integrations.
+"""Bounded HTTP capture for Otter jobs.
 
 This module is the SDK half of request inspection. It records what an
-integration's own code sends and receives, redacts it, and delivers it to the
+job's own code sends and receives, redacts it, and delivers it to the
 daemon in bounded batches.
 
 Three rules shape everything here:
@@ -11,7 +11,7 @@ Three rules shape everything here:
   network is wrapped so that diagnostic work can only ever be dropped.
 * **The recording is bounded.** Bodies, headers, URLs, error text, queue depth,
   batch size and shutdown time all have hard ceilings. Dropping capture is always
-  preferable to delaying or growing an integration.
+  preferable to delaying or growing a job.
 * **Nothing secret is persisted.** Redaction runs here, before delivery, and
   again in the daemon. Neither pass trusts the other.
 
@@ -92,7 +92,7 @@ QUEUE_MAX_EVENTS = 512
 FLUSH_DEADLINE_SECONDS = 2.0
 
 #: Per-attempt delivery timeout and attempts. Capture has short timeouts and
-#: bounded retries; it must not hold an integration open.
+#: bounded retries; it must not hold a job open.
 DELIVERY_TIMEOUT_SECONDS = 1.0
 DELIVERY_ATTEMPTS = 2
 
@@ -130,7 +130,7 @@ def suppressed():
     """Run a block whose HTTP calls must never be captured.
 
     The SDK's own daemon traffic uses this. It is thread-local, so suppressing
-    one request never hides an integration's concurrent traffic.
+    one request never hides a job's concurrent traffic.
     """
     depth = getattr(_suppress_state, "depth", 0)
     _suppress_state.depth = depth + 1
@@ -395,7 +395,7 @@ _INTERNAL_DIR = os.path.dirname(os.path.abspath(__file__))
 
 #: Directories belonging to an optional transport adapter (requests, httpx).
 #: Frames from these are skipped when naming a call site, so a recorded exchange
-#: points at the integration's code rather than at library internals.
+#: points at the job's code rather than at library internals.
 _adapter_frame_dirs: List[str] = []
 _adapter_frame_lock = threading.Lock()
 
@@ -564,7 +564,7 @@ class Capture:
                     installed.append(adapter.NAME)
             except BaseException:
                 # A transport adapter is optional. One that cannot install only
-                # narrows what is covered; it must never stop the integration.
+                # narrows what is covered; it must never stop the job.
                 continue
         self.adapters = installed
         self._installed = True
@@ -1021,7 +1021,7 @@ def install_from_environment(environ: Optional[Dict[str, str]] = None) -> Option
             capture.start()
         except BaseException:
             # Instrumentation is diagnostic: a failure to install it must leave
-            # the integration running normally.
+            # the job running normally.
             return None
         _ACTIVE = capture
         return capture

@@ -17,16 +17,16 @@ func TestStageSkipKeepsQueryDocumentsAndDropsSchemas(t *testing.T) {
 		want bool
 		why  string
 	}{
-		{"/repo/integrations/shopify/schema/shopify/shopify.graphql", true,
+		{"/repo/jobs/shopify/schema/shopify/shopify.graphql", true,
 			"the pulled schema is editor tooling, not a run-time input"},
-		{"/repo/integrations/shopify/schema/salesforce/product2.py", false,
-			"the generated Python modules are imported while the integration runs"},
-		{"/repo/integrations/shopify/queries/products.graphql", false,
-			"a query document is read while the integration runs"},
-		{"/repo/integrations/shopify/schema-tools/notes.graphql", false,
+		{"/repo/jobs/shopify/schema/salesforce/product2.py", false,
+			"the generated Python modules are imported while the job runs"},
+		{"/repo/jobs/shopify/queries/products.graphql", false,
+			"a query document is read while the job runs"},
+		{"/repo/jobs/shopify/schema-tools/notes.graphql", false,
 			"a directory that merely starts with 'schema' is not the schema"},
-		{"/repo/integrations/shopify/.env", true, "secrets never travel"},
-		{"/repo/integrations/shopify/main.py", false, "the entrypoint is the point"},
+		{"/repo/jobs/shopify/.env", true, "secrets never travel"},
+		{"/repo/jobs/shopify/main.py", false, "the entrypoint is the point"},
 	}
 
 	for _, tc := range cases {

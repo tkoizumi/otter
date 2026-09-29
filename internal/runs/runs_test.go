@@ -30,13 +30,13 @@ func newTestStore(t *testing.T) (*Store, *LogStore) {
 
 func sampleRun(id string, status Status, attempt int) *Run {
 	return &Run{
-		ID:            id,
-		IntegrationID: "shopify",
-		TriggerType:   TriggerManual,
-		Status:        status,
-		Attempt:       attempt,
-		CreatedAt:     time.Now().UTC(),
-		Metadata:      json.RawMessage(`{"type":"manual"}`),
+		ID:          id,
+		JobID:       "shopify",
+		TriggerType: TriggerManual,
+		Status:      status,
+		Attempt:     attempt,
+		CreatedAt:   time.Now().UTC(),
+		Metadata:    json.RawMessage(`{"type":"manual"}`),
 	}
 }
 
@@ -77,7 +77,7 @@ func TestCreateGetAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.IntegrationID != "shopify" || got.Status != StatusQueued || got.Attempt != 1 {
+	if got.JobID != "shopify" || got.Status != StatusQueued || got.Attempt != 1 {
 		t.Errorf("round trip = %+v", got)
 	}
 	if got.TriggerType != TriggerManual {
@@ -351,7 +351,7 @@ func TestListFiltersOrderingAndPaging(t *testing.T) {
 		run := sampleRun("run-"+string(rune('0'+i)), StatusQueued, 1)
 		run.CreatedAt = base.Add(time.Duration(i) * time.Minute)
 		if i%2 == 0 {
-			run.IntegrationID = "netsuite"
+			run.JobID = "netsuite"
 		}
 		if err := store.Create(ctx, run); err != nil {
 			t.Fatal(err)
@@ -383,7 +383,7 @@ func TestListFiltersOrderingAndPaging(t *testing.T) {
 	}
 
 	// Runs 2 and 4 belong to netsuite, leaving 1, 3 and 5 on shopify.
-	shopify, err := store.List(ctx, Filter{IntegrationID: "shopify"})
+	shopify, err := store.List(ctx, Filter{JobID: "shopify"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,20 +577,20 @@ var (
 	_ func(context.Context, *sql.Tx, string, Finish) error = (&Store{}).FinishTx
 )
 
-// TestListMatchesAnyIntegrationID covers the migrated-workspace case: the same
-// integration appears under a durable identity in newer rows and under the
+// TestListMatchesAnyJobID covers the migrated-workspace case: the same
+// job appears under a durable identity in newer rows and under the
 // label in older ones, and a reference has to match both spellings at once.
-func TestListMatchesAnyIntegrationID(t *testing.T) {
+func TestListMatchesAnyJobID(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()
 
 	modern := sampleRun("run-modern", StatusSucceeded, 1)
-	modern.IntegrationID = "986d91e8-dde4-45be-b298-c9332c220498"
-	modern.IntegrationName = "counter"
+	modern.JobID = "986d91e8-dde4-45be-b298-c9332c220498"
+	modern.JobName = "counter"
 	legacy := sampleRun("run-legacy", StatusSucceeded, 1)
-	legacy.IntegrationID = "counter"
+	legacy.JobID = "counter"
 	unrelated := sampleRun("run-other", StatusSucceeded, 1)
-	unrelated.IntegrationID = "other"
+	unrelated.JobID = "other"
 	for _, run := range []*Run{modern, legacy, unrelated} {
 		if err := store.Create(ctx, run); err != nil {
 			t.Fatalf("create %s: %v", run.ID, err)
@@ -598,7 +598,7 @@ func TestListMatchesAnyIntegrationID(t *testing.T) {
 	}
 
 	both, err := store.List(ctx, Filter{
-		IntegrationIDs: []string{modern.IntegrationID, "counter"},
+		JobIDs: []string{modern.JobID, "counter"},
 	})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -608,13 +608,13 @@ func TestListMatchesAnyIntegrationID(t *testing.T) {
 	}
 	for _, run := range both {
 		if run.ID == unrelated.ID {
-			t.Errorf("an unrelated integration matched: %s", run.ID)
+			t.Errorf("an unrelated job matched: %s", run.ID)
 		}
 	}
 
 	// The single-value filter stays exact: it is what internal callers use with
 	// a durable id, and it must not broaden to a label.
-	exact, err := store.List(ctx, Filter{IntegrationID: "counter"})
+	exact, err := store.List(ctx, Filter{JobID: "counter"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

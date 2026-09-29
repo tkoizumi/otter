@@ -26,7 +26,7 @@ import (
 // human has to carry around.
 //
 // The same walk identifies the project itself, which is what lets `otter
-// start` default its integrations directory and its data directory without
+// start` default its jobs directory and its data directory without
 // being told either one.
 
 // ListenURLFileName is written by a running daemon into its data directory.
@@ -80,6 +80,7 @@ func resolveAPI(g *globals) bool {
 	}
 	if fromEnv := strings.TrimSpace(os.Getenv("OTTER_API_URL")); fromEnv != "" {
 		g.api = fromEnv
+		g.apiExplicit = true
 		return true
 	}
 	dir, err := workingDirForTest()

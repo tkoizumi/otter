@@ -11,7 +11,7 @@ import (
 )
 
 // legacyOriginRows is the set the backfill has to get right: the daemon's real
-// narration shapes, and the lines an integration can plausibly write on the same
+// narration shapes, and the lines a job can plausibly write on the same
 // stream.
 var legacyOriginRows = []struct {
 	stream, message string
@@ -86,7 +86,7 @@ func TestOriginBackfillClassifiesLegacyRows(t *testing.T) {
 // backfillStatements extracts the origin UPDATEs from the migration, so the test
 // exercises the shipped SQL rather than a copy of it. Both are needed: the first
 // marks the daemon's narration, the second labels everything else as the
-// integration's.
+// job's.
 func backfillStatements(t *testing.T) []string {
 	t.Helper()
 	body, err := os.ReadFile("../../migrations/0008_run_logs_origin.sql")

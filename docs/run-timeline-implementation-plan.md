@@ -5,7 +5,7 @@
 Implement `otter trace <run-id>` so an operator can read a finished attempt's
 context, lifecycle, logs, and HTTP exchanges in one chronological view, then
 open the relevant request for payload details. The operator should not need to
-correlate separate command outputs or add logging to integration code.
+correlate separate command outputs or add logging to job code.
 
 This plan narrows `docs/run-timeline-feature.md` for the first release. Where the
 two differ, implement this plan: completed attempts only, no live following,
@@ -18,7 +18,7 @@ Ship:
 
 - One attempt per trace, including successful, failed, timed-out, and cancelled
   attempts. A finished failed parent is inspectable while its retry is running.
-- Context showing integration identity/name, run ID, status, error, exit code,
+- Context showing job identity/name, run ID, status, error, exit code,
   release digest, attempt, parent run ID, and a command for inspecting the retry
   chain. Do not merge other attempts into the event list.
 - Existing `otter`-stream lifecycle lines, stdout/stderr, and HTTP summaries.
@@ -31,7 +31,7 @@ Defer:
 - `--follow`, live updates, and guarantees of observing every HTTP phase.
 - Trigger bodies and headers. Existing trigger storage is not sanitized to the
   HTTP inspection standard; displaying it requires a separate bounded redaction
-  contract. Do not alter the input delivered to integrations.
+  contract. Do not alter the input delivered to jobs.
 - State history, replay, run comparison, automatic causal diagnosis, a browser
   UI, and SDK instrumentation changes.
 - Retaining HTTP metadata after expiry. Today retention deletes exchange rows
@@ -92,7 +92,7 @@ otter trace <run-id> --no-http
   - `queued`: explain that the attempt is waiting for execution and point to
     `otter run-status <run-id>` and `otter status` for run and queue information.
     Do not promise a numeric queue position: the current API exposes queue depth,
-    and claim order also depends on availability and integration capacity.
+    and claim order also depends on availability and job capacity.
   A queued first attempt has no parent. Manual/cron/webhook submission appends
   its `run queued` lifecycle line, but there is no execution output yet. This
   submission behavior does not apply to attempts created by `scheduleRetry`.
@@ -106,7 +106,7 @@ otter trace <run-id> --no-http
 Human output should make these facts easy to scan:
 
 ```text
-integration: example   status: failed   attempt: 1
+job: example   status: failed   attempt: 1
 release: <digest-prefix>   trigger: manual   duration: <total attempt duration>
 error: <recorded run error>
 retry context: otter run-status <run-id>
@@ -322,11 +322,11 @@ invalidation of a previously valid terminal-only cursor.
 
 Extend the generic daemon/CLI fixture approach in
 `internal/daemon/capture_e2e_test.go` and `internal/cli/capture_test.go`. Use
-temporary integrations and a local HTTP server, not vendor accounts.
+temporary jobs and a local HTTP server, not vendor accounts.
 
 Required scenarios:
 
-1. An uninstrumented integration POSTs JSON, reads an HTTP 400 error body, and
+1. An uninstrumented job POSTs JSON, reads an HTTP 400 error body, and
    raises. Release and execute it normally. Trace shows context, the captured
    request/call site, exception output, and recorded terminal lifecycle. Its
    printed detail command retrieves the sanitized outgoing and response JSON.
@@ -339,7 +339,7 @@ Required scenarios:
 5. A successful run with a handled HTTP error: display the HTTP status without
    claiming that the run failed.
 
-Unit and integration checks:
+Unit and job checks:
 
 - Interleaving, equal timestamps within/across sources, page sizes 1 and maximum,
   empty sources, exact-full final page, and one source much larger than another.

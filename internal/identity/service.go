@@ -60,7 +60,7 @@ func NewService(store *Store, root string) *Service {
 // Store exposes the underlying registry.
 func (s *Service) Store() *Store { return s.store }
 
-// Root reports the canonical integrations root.
+// Root reports the canonical jobs root.
 func (s *Service) Root() string { return s.root }
 
 // Reconcile builds and applies a plan for a scan.
@@ -438,7 +438,7 @@ func (s *Service) Delete(ctx context.Context, id ID, purge PurgeFunc) error {
 
 // Move preserves an identity across a same-filesystem directory rename. The
 // destination must be inside the root, unowned, and must not contain or be
-// contained by another registered integration.
+// contained by another registered job.
 func (s *Service) Move(ctx context.Context, id ID, destination string) (Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -548,13 +548,13 @@ func (s *Service) rejectNested(ctx context.Context, id ID, to string) error {
 	return nil
 }
 
-// checkWithinRoot refuses a path outside the configured integrations root.
+// checkWithinRoot refuses a path outside the configured jobs root.
 func (s *Service) checkWithinRoot(path string) error {
 	if s.root == "" {
 		return nil
 	}
 	if !Within(s.root, path) {
-		return fmt.Errorf("identity: %s is outside the integrations root %s", path, s.root)
+		return fmt.Errorf("identity: %s is outside the jobs root %s", path, s.root)
 	}
 	return nil
 }

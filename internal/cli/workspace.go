@@ -15,7 +15,7 @@ import (
 // They used to be answered separately inside each command, which is how
 // `otter start` and `otter release` came to disagree about the same workspace:
 // start scanned the project root and wrote to .otter/data, release scanned
-// ./integrations relative to the working directory and wrote to .otter/data
+// ./jobs relative to the working directory and wrote to .otter/data
 // only by accident of which directory it happened to be run from. One resolver,
 // used by every local command, is the fix.
 
@@ -30,15 +30,15 @@ func workspaceRoot() (root string, inProject bool, err error) {
 	return root, ok, nil
 }
 
-// resolveIntegrationsRoot decides which directory a local command scans for
+// resolveJobsRoot decides which directory a local command scans for
 // manifests.
 //
 // Precedence is the flag, then the workspace root, then the conventional
-// ./integrations. The workspace root is what makes a command work wherever an
-// integration sits under it -- directly at the root, under integrations/, or
+// ./jobs. The workspace root is what makes a command work wherever an
+// job sits under it -- directly at the root, under jobs/, or
 // under any grouping directory -- and the flag is what lets `otter deploy` name
 // a path on a host that has no workspace marker of its own.
-func resolveIntegrationsRoot(stderr io.Writer, requested string, explicit bool) (string, int) {
+func resolveJobsRoot(stderr io.Writer, requested string, explicit bool) (string, int) {
 	if explicit {
 		return requested, 0
 	}
@@ -51,11 +51,11 @@ func resolveIntegrationsRoot(stderr io.Writer, requested string, explicit bool) 
 		return root, 0
 	}
 	fmt.Fprintf(stderr, "otter: no workspace here (no .otter in this directory or above)\n")
-	fmt.Fprintf(stderr, "otter: run this from a workspace, or pass --integrations <dir>\n")
+	fmt.Fprintf(stderr, "otter: run this from a workspace, or pass --jobs <dir>\n")
 	return "", 2
 }
 
-// manifestByName finds the manifest of an integration by the name the runtime
+// manifestByName finds the manifest of a job by the name the runtime
 // knows it by, searching the workspace the working directory belongs to.
 //
 // It is what lets a bare word work in commands that are otherwise path-based,

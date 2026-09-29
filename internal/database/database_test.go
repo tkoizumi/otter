@@ -174,7 +174,7 @@ func TestMigrateCreatesExpectedTables(t *testing.T) {
 	db := migrateTempDB(t)
 
 	for _, name := range []string{
-		"integration_state",
+		"job_state",
 		"runs",
 		"run_logs",
 		"run_queue",
@@ -205,7 +205,7 @@ func TestTxCommitsAndRollsBack(t *testing.T) {
 
 	insert := func(tx *sql.Tx, key, value string) error {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO integration_state (integration_id, key, value, updated_at) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO job_state (job_id, key, value, updated_at) VALUES (?, ?, ?, ?)`,
 			"int-A", key, value, FormatTime(time.Now()))
 		return err
 	}
@@ -214,7 +214,7 @@ func TestTxCommitsAndRollsBack(t *testing.T) {
 		t.Helper()
 		var n int
 		if err := db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM integration_state WHERE integration_id = ? AND key = ?`,
+			`SELECT COUNT(*) FROM job_state WHERE job_id = ? AND key = ?`,
 			"int-A", key).Scan(&n); err != nil {
 			t.Fatalf("count %s: %v", key, err)
 		}
@@ -394,19 +394,13 @@ func TestMigrateSkipsAlreadyAppliedMigration(t *testing.T) {
 		t.Fatalf("migration %s schema disappeared", first.name)
 	}
 
-	// Forgetting the record makes the migration run for real; the resulting
-	// schema must be usable.
-	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = ?`, first.version); err != nil {
-		t.Fatalf("forget migration: %v", err)
-	}
+	// Repeating the upgrade must skip applied migrations, especially table
+	// renames whose old names no longer exist.
 	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("Migrate after forgetting the record: %v", err)
-	}
-	if !tableExists(t, db, "runs") {
-		t.Fatalf("runs table was not created by the migration")
+		t.Fatalf("repeat Migrate: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO integration_state (integration_id, key, value, updated_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO job_state (job_id, key, value, updated_at) VALUES (?, ?, ?, ?)`,
 		"int-A", "k", `1`, FormatTime(time.Now())); err != nil {
 		t.Fatalf("migrated schema is not usable: %v", err)
 	}

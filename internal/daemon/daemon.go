@@ -108,7 +108,7 @@ type Daemon struct {
 	queue *queue.Queue
 	state *state.Store
 
-	// paused is the operator's per-integration trigger pause. Pausing stops
+	// paused is the operator's per-job trigger pause. Pausing stops
 	// cron and webhook admission without retiring anything, so it is keyed by
 	// durable identity rather than by label or path.
 	paused *pause.Store
@@ -168,7 +168,7 @@ type Daemon struct {
 // Compile-time proof that the daemon satisfies the API's backend contract.
 var _ api.Backend = (*Daemon)(nil)
 
-// New opens the database, discovers integrations, recovers interrupted runs
+// New opens the database, discovers jobs, recovers interrupted runs
 // and prepares (but does not start) the runtime.
 func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if opts.Logger == nil {
@@ -230,7 +230,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		secrets:    provider,
 		reg:        newRegistry(),
 		cap:        newCapacity(cfg.Workers),
-		ident:      identity.NewService(identStore, cfg.IntegrationsDir),
+		ident:      identity.NewService(identStore, cfg.JobsDir),
 		runTokens:  newRunTokenRegistry(),
 		stopCh:     make(chan struct{}),
 		wakeCh:     make(chan struct{}, 1),
@@ -310,7 +310,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 // resolveSDKPath decides which directory is prepended to the child
 // PYTHONPATH: an explicit --sdk-path, or the SDK embedded in this binary
 // extracted into the data directory. The result is always absolute because
-// children run with their working directory set to the integration directory.
+// children run with their working directory set to the job directory.
 func (d *Daemon) resolveSDKPath() (string, error) {
 	if d.cfg.SDKPath != "" {
 		abs, err := filepath.Abs(d.cfg.SDKPath)
@@ -323,10 +323,10 @@ func (d *Daemon) resolveSDKPath() (string, error) {
 }
 
 // discover reconciles the registry against the source tree, then loads the
-// resulting instances into the runtime registry. Invalid integrations are
+// resulting instances into the runtime registry. Invalid jobs are
 // reported, never fatal.
 func (d *Daemon) discover(ctx context.Context) error {
-	set, err := d.loadIntegrations(ctx)
+	set, err := d.loadJobs(ctx)
 	if err != nil {
 		return err
 	}
@@ -335,19 +335,19 @@ func (d *Daemon) discover(ctx context.Context) error {
 	d.cap.setLimits(d.reg.limits())
 
 	valid, invalid := d.reg.counts()
-	d.log.Info("integrations_discovered",
-		"root", d.cfg.IntegrationsDir,
+	d.log.Info("jobs_discovered",
+		"root", d.cfg.JobsDir,
 		"total", len(set.items),
 		"valid", valid,
 		"invalid", invalid)
 
-	d.logIntegrations(set.items)
+	d.logJobs(set.items)
 	d.syncSchedules(set.items)
 
 	return nil
 }
 
-// loadIntegrations observes the integrations directory, reconciles the durable
+// loadJobs observes the jobs directory, reconciles the durable
 // identity registry against it, and joins the two into the runtime view.
 //
 // Identity comes from the registry, never from the manifest: a manifest names
@@ -356,13 +356,13 @@ func (d *Daemon) discover(ctx context.Context) error {
 //
 // It touches no in-memory shared state. That is what lets a reload do all of
 // its slow work -- walking the tree, parsing manifests, writing markers --
-// before taking any lock, so a large integrations directory is invisible to
+// before taking any lock, so a large jobs directory is invisible to
 // everything already running.
-func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
+func (d *Daemon) loadJobs(ctx context.Context) (discovered, error) {
 	known := d.knownSourcePaths(ctx)
-	scan, err := config.Observe(d.cfg.IntegrationsDir, known)
+	scan, err := config.Observe(d.cfg.JobsDir, known)
 	if err != nil {
-		return discovered{}, fmt.Errorf("observe integrations: %w", err)
+		return discovered{}, fmt.Errorf("observe jobs: %w", err)
 	}
 
 	// Recovery runs before reconciliation so a crash midway through an earlier
@@ -371,7 +371,7 @@ func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
 		d.log.Error("identity_recovery_failed", err)
 	}
 	if _, err := d.ident.Reconcile(ctx, scan); err != nil {
-		return discovered{}, fmt.Errorf("reconcile integration identity: %w", err)
+		return discovered{}, fmt.Errorf("reconcile job identity: %w", err)
 	}
 
 	instances, err := d.ident.Store().Instances(ctx)
@@ -387,7 +387,7 @@ func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
 		if inst.Status != identity.StatusActive {
 			continue
 		}
-		it := &config.Integration{
+		it := &config.Job{
 			ID:   inst.ID.String(),
 			Name: inst.Name,
 			Dir:  inst.CanonicalPath,
@@ -410,7 +410,7 @@ func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
 
 	// A directory the registry does not own is surfaced anyway when it is
 	// present but unusable, so an operator still sees a broken manifest or an
-	// untrustworthy marker in `otter integrations --all`. These entries carry
+	// untrustworthy marker in `otter jobs --all`. These entries carry
 	// no identity: they cannot run, and they never claim state.
 	owned := map[string]bool{}
 	for _, inst := range instances {
@@ -429,7 +429,7 @@ func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
 		if label == "" {
 			label = filepath.Base(obs.Path)
 		}
-		set.items = append(set.items, &config.Integration{
+		set.items = append(set.items, &config.Job{
 			ID:           label,
 			Name:         label,
 			Dir:          obs.Path,
@@ -446,7 +446,7 @@ func (d *Daemon) loadIntegrations(ctx context.Context) (discovered, error) {
 		}
 		token, err := d.ensureWebhookToken(ctx, it.ID)
 		if err != nil {
-			d.log.Error("webhook_token_failed", err, "integration", it.ID)
+			d.log.Error("webhook_token_failed", err, "job", it.ID)
 			continue
 		}
 		set.tokens[it.ID] = token
@@ -472,20 +472,20 @@ func (d *Daemon) knownSourcePaths(ctx context.Context) []string {
 	return out
 }
 
-// logIntegrations reports what discovery found, one integration at a time.
-func (d *Daemon) logIntegrations(items []*config.Integration) {
+// logJobs reports what discovery found, one job at a time.
+func (d *Daemon) logJobs(items []*config.Job) {
 	for _, it := range items {
 		if !it.Valid {
-			d.log.Warn("integration_invalid",
-				"integration", it.Name,
+			d.log.Warn("job_invalid",
+				"job", it.Name,
 				"id", it.ID,
 				"path", it.ManifestPath,
 				"error", it.Error)
 			continue
 		}
 		m := it.Manifest
-		d.log.Debug("integration_registered",
-			"integration", it.Name,
+		d.log.Debug("job_registered",
+			"job", it.Name,
 			"id", it.ID,
 			"path", it.Dir,
 			"cron", m.Cron(),
@@ -497,16 +497,16 @@ func (d *Daemon) logIntegrations(items []*config.Integration) {
 }
 
 // syncSchedules makes the cron runner match items: it reconciles the trigger of
-// every integration that declares one and drops the triggers of integrations
+// every job that declares one and drops the triggers of jobs
 // that no longer do, are no longer valid, or are paused.
 //
-// A paused integration is deliberately absent from `want`, so the same pass
-// that forgets a removed integration also leaves a paused one unarmed -- and
+// A paused job is deliberately absent from `want`, so the same pass
+// that forgets a removed job also leaves a paused one unarmed -- and
 // keeps it unarmed across a reload and a restart.
 //
 // Replace leaves an unchanged expression's entry exactly as it is, so an
-// integration that did not change keeps its next fire time across a reload.
-func (d *Daemon) syncSchedules(items []*config.Integration) {
+// job that did not change keeps its next fire time across a reload.
+func (d *Daemon) syncSchedules(items []*config.Job) {
 	want := map[string]string{}
 	for _, it := range items {
 		if !it.Valid || it.Manifest == nil {
@@ -529,7 +529,7 @@ func (d *Daemon) syncSchedules(items []*config.Integration) {
 	for _, id := range ids {
 		spec := want[id]
 		if err := d.sched.Replace(id, spec, d.cronJob(id, spec)); err != nil {
-			d.log.Error("cron_register_failed", err, "integration", id, "cron", spec)
+			d.log.Error("cron_register_failed", err, "job", id, "cron", spec)
 		}
 	}
 
@@ -540,29 +540,29 @@ func (d *Daemon) syncSchedules(items []*config.Integration) {
 			continue
 		}
 		d.sched.Unregister(id)
-		// Pausing unregisters in the same breath, so a paused integration is
+		// Pausing unregisters in the same breath, so a paused job is
 		// already gone by the time a reload looks. Reporting it here would
 		// claim the reload removed a schedule that the pause removed.
 		if d.paused.Paused(id) {
 			continue
 		}
-		d.log.Info("cron_unregistered", "integration", id)
+		d.log.Info("cron_unregistered", "job", id)
 	}
 }
 
-// cronJob returns the job registered for an integration's cron trigger. The
-// job does no work itself, so a slow integration never blocks the cron runner.
-func (d *Daemon) cronJob(integrationID, spec string) func() {
-	return func() { d.cronTick(integrationID, spec) }
+// cronJob returns the job registered for a job's cron trigger. The
+// job does no work itself, so a slow job never blocks the cron runner.
+func (d *Daemon) cronJob(jobID, spec string) func() {
+	return func() { d.cronTick(jobID, spec) }
 }
 
-// Reload re-reads the integrations directory and applies what it finds to the
+// Reload re-reads the jobs directory and applies what it finds to the
 // running daemon.
 //
 // It is deliberately not a restart. The process, the API listener, the worker
 // pool and every executing child are left alone: only the registry, the
-// per-integration concurrency limits and the cron triggers are replaced. That
-// is what lets an integration be added without interrupting the ones already
+// per-job concurrency limits and the cron triggers are replaced. That
+// is what lets a job be added without interrupting the ones already
 // running.
 //
 // Discovery and token resolution run before any shared state is touched, so
@@ -576,7 +576,7 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 	}
 	defer d.reloadMu.Unlock()
 
-	set, err := d.loadIntegrations(ctx)
+	set, err := d.loadJobs(ctx)
 	if err != nil {
 		return api.ReloadResult{}, err
 	}
@@ -584,7 +584,7 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 	before := d.reg.snapshot()
 	result := diffRegistry(before, set.items)
 
-	// Work belonging to an integration that is about to disappear can never
+	// Work belonging to a job that is about to disappear can never
 	// run -- a worker refuses to claim it -- so it is ended here, with a reason
 	// that names the cause, before the swap that makes it unrunnable. Doing it
 	// first also closes the gap in which a worker could claim one and fail it
@@ -602,8 +602,8 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 	d.syncSchedules(set.items)
 
 	valid, invalid := d.reg.counts()
-	d.log.Info("integrations_reloaded",
-		"root", d.cfg.IntegrationsDir,
+	d.log.Info("jobs_reloaded",
+		"root", d.cfg.JobsDir,
 		"total", len(set.items),
 		"valid", valid,
 		"invalid", invalid,
@@ -617,8 +617,8 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 	// broken", and only one of those is fixed by editing the file.
 	for _, it := range set.items {
 		if !it.Valid {
-			d.log.Warn("integration_invalid",
-				"integration", it.Name,
+			d.log.Warn("job_invalid",
+				"job", it.Name,
 				"id", it.ID,
 				"path", it.ManifestPath,
 				"error", it.Error)
@@ -635,7 +635,7 @@ func (d *Daemon) Reload(ctx context.Context) (api.ReloadResult, error) {
 // Entries are reported by label: the operator edited a manifest with a name,
 // and an opaque identity would make the report unreadable. The identity is
 // still the key; the label is only what is printed.
-func diffRegistry(before map[string]*registered, items []*config.Integration) api.ReloadResult {
+func diffRegistry(before map[string]*registered, items []*config.Job) api.ReloadResult {
 	result := api.ReloadResult{}
 	present := make(map[string]bool, len(items))
 
@@ -647,8 +647,8 @@ func diffRegistry(before map[string]*registered, items []*config.Integration) ap
 		switch {
 		case !existed:
 			result.Added = append(result.Added, label)
-		case old.Integration.Valid != it.Valid ||
-			old.Integration.Error != it.Error ||
+		case old.Job.Valid != it.Valid ||
+			old.Job.Error != it.Error ||
 			!reflect.DeepEqual(old.Manifest, it.Manifest):
 			result.Changed = append(result.Changed, label)
 		}
@@ -660,7 +660,7 @@ func diffRegistry(before map[string]*registered, items []*config.Integration) ap
 
 	for id, entry := range before {
 		if !present[id] {
-			result.Removed = append(result.Removed, displayLabel(entry.Integration))
+			result.Removed = append(result.Removed, displayLabel(entry.Job))
 		}
 	}
 
@@ -674,8 +674,8 @@ func diffRegistry(before map[string]*registered, items []*config.Integration) ap
 	return result
 }
 
-// displayLabel renders an integration for a human-facing report.
-func displayLabel(it *config.Integration) string {
+// displayLabel renders a job for a human-facing report.
+func displayLabel(it *config.Job) string {
 	if it == nil {
 		return ""
 	}
@@ -688,7 +688,7 @@ func displayLabel(it *config.Integration) string {
 // removedIdentityIDs returns the durable identities that disappeared, which is
 // what cancelling their queued runs needs. The display result reports labels;
 // run records are keyed by identity, so the two must not be confused.
-func removedIdentityIDs(before map[string]*registered, items []*config.Integration) []string {
+func removedIdentityIDs(before map[string]*registered, items []*config.Job) []string {
 	present := make(map[string]bool, len(items))
 	for _, it := range items {
 		present[it.ID] = true
@@ -703,11 +703,11 @@ func removedIdentityIDs(before map[string]*registered, items []*config.Integrati
 	return out
 }
 
-// cancelRunsOfRemoved ends the queued and retrying runs of integrations that a
+// cancelRunsOfRemoved ends the queued and retrying runs of jobs that a
 // reload removed.
 //
 // Cancelled, rather than failed, is the honest status: an operator removed the
-// integration on purpose, and a failure alert for work they deliberately
+// job on purpose, and a failure alert for work they deliberately
 // discarded is noise. Runs that are already executing are left alone -- they no
 // longer depend on the registry, and interrupting them is exactly what reload
 // exists to avoid.
@@ -729,10 +729,10 @@ func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int
 		}
 
 		for _, run := range list {
-			if !gone[run.IntegrationID] {
+			if !gone[run.JobID] {
 				continue
 			}
-			message := fmt.Sprintf("integration %s was removed from the integrations directory", run.IntegrationID)
+			message := fmt.Sprintf("job %s was removed from the jobs directory", run.JobID)
 
 			if _, err := d.queue.Remove(ctx, run.ID); err != nil {
 				return cancelled, err
@@ -747,9 +747,9 @@ func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int
 
 			d.appendOtterLog(run.ID, "run cancelled: "+message)
 			d.log.Warn("run_cancelled",
-				"integration", run.IntegrationID,
+				"job", run.JobID,
 				"run_id", run.ID,
-				"reason", "integration_removed")
+				"reason", "job_removed")
 			cancelled++
 		}
 	}
@@ -758,13 +758,13 @@ func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int
 }
 
 // cronTick enqueues a run for a cron trigger. The job does no work itself, so
-// a slow integration never blocks the cron runner.
-func (d *Daemon) cronTick(integrationID, spec string) {
+// a slow job never blocks the cron runner.
+func (d *Daemon) cronTick(jobID, spec string) {
 	// Stop is not the same instant as unregister. A tick already in flight when
 	// the operator paused would otherwise become a run, so the pause is
 	// re-checked here as the last word on admission.
-	if d.paused.Paused(integrationID) {
-		d.log.Debug("cron_skipped", "integration", integrationID, "cron", spec, "reason", "paused")
+	if d.paused.Paused(jobID) {
+		d.log.Debug("cron_skipped", "job", jobID, "cron", spec, "reason", "paused")
 		return
 	}
 
@@ -772,13 +772,13 @@ func (d *Daemon) cronTick(integrationID, spec string) {
 	defer cancel()
 
 	scheduled := time.Now().UTC()
-	d.log.Info("cron_fired", "integration", integrationID, "cron", spec)
+	d.log.Info("cron_fired", "job", jobID, "cron", spec)
 
-	if _, err := d.SubmitRun(ctx, integrationID, api.TriggerPayload{
+	if _, err := d.SubmitRun(ctx, jobID, api.TriggerPayload{
 		Type:        api.TriggerCron,
 		ScheduledAt: &scheduled,
 	}); err != nil {
-		d.log.Error("cron_submit_failed", err, "integration", integrationID)
+		d.log.Error("cron_submit_failed", err, "job", jobID)
 	}
 }
 
@@ -820,7 +820,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 // Shutdown stops the runtime in a fixed order: stop accepting work, stop the
-// scheduler, stop claiming, let running integrations finish, terminate what is
+// scheduler, stop claiming, let running jobs finish, terminate what is
 // left, then close SQLite.
 func (d *Daemon) Shutdown(ctx context.Context) error {
 	d.shutdownOnce.Do(func() {
@@ -882,7 +882,7 @@ func (d *Daemon) shutdown(ctx context.Context) error {
 	return err
 }
 
-// waitForRunning blocks until no integration is executing, or the timeout
+// waitForRunning blocks until no job is executing, or the timeout
 // expires.
 func (d *Daemon) waitForRunning(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
