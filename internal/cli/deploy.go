@@ -40,8 +40,10 @@ func (a *App) cmdDeploy(ctx context.Context, g globals, args []string) int {
 
 Deploying is a converge over SSH, not a recipe of one-off actions: running it
 twice with the same inputs is safe, and the second run reports that nothing
-changed. It never writes to the remote data directory, so run history, sync
-watermarks and the extracted Python SDK survive every deploy.
+changed. Run history, sync watermarks and the extracted Python SDK survive
+every deploy. Old releases are pruned to --keep inactive releases per job,
+always keeping the active release, the rollback target, and any release a
+pending run is bound to.
 
 Flags:
 `)

@@ -3,10 +3,12 @@ package deploy
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadSecrets(t *testing.T) {
@@ -704,5 +706,53 @@ func TestLegacyStateDoesNotLeakTheFlatLayout(t *testing.T) {
 	// A bare deploy must still know which machine it is for.
 	if cfg.Target.Host != "159.203.184.97" {
 		t.Errorf("Host = %q, want the recorded host carried for a bare deploy", cfg.Target.Host)
+	}
+}
+
+// A deploy converges, so release retention is on by default: the flag carries a
+// bounded window, an explicit value wins, and zero is the documented opt-out.
+func TestDeployKeepDefaultsToTheBoundedWindow(t *testing.T) {
+	f, err := ParseDeployFlags(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if DefaultKeep != 3 {
+		t.Fatalf("DefaultKeep = %d, want the proposed 3", DefaultKeep)
+	}
+	if f.Keep != DefaultKeep {
+		t.Errorf("default keep = %d, want %d", f.Keep, DefaultKeep)
+	}
+
+	explicit, err := ParseDeployFlags([]string{"--keep", "10"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if explicit.Keep != 10 {
+		t.Errorf("explicit keep = %d, want 10", explicit.Keep)
+	}
+
+	keepAll, err := ParseDeployFlags([]string{"--keep", "0"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if keepAll.Keep != 0 {
+		t.Errorf("keep-all value = %d, want 0", keepAll.Keep)
+	}
+	if !keepAll.Set("keep") {
+		t.Error("an explicit --keep 0 was not recorded as set, so it is indistinguishable from the default")
+	}
+}
+
+// A negative window is meaningless and would silently become "keep one" inside
+// Retain, so it is refused before anything is sent.
+func TestDeployRejectsANegativeKeep(t *testing.T) {
+	cfg := Config{Keep: -1, ProjectRoot: t.TempDir(), Timeout: time.Minute, Target: DefaultTarget()}
+	cfg.Target.Host = "example.test"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("a negative keep was accepted")
+	}
+	if !strings.Contains(err.Error(), "keep") {
+		t.Errorf("refusal does not name --keep: %v", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -616,7 +617,10 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 	insert("run-done", "succeeded", strings.Repeat("c", 64))
 
 	app := New("test", io.Discard, io.Discard)
-	pins := app.pinnedReleases(ctx, dataDir, "int-1")
+	pins, err := app.pinnedReleases(ctx, dataDir, "int-1")
+	if err != nil {
+		t.Fatalf("pinnedReleases: %v", err)
+	}
 	if !pins[strings.Repeat("a", 64)] || !pins[strings.Repeat("b", 64)] {
 		t.Fatalf("non-terminal runs are not pinned: %+v", pins)
 	}
@@ -624,9 +628,229 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 		t.Fatalf("a finished run pinned its release: %+v", pins)
 	}
 
-	// A missing database is not fatal; it yields no pins.
-	if pins := app.pinnedReleases(ctx, filepath.Join(t.TempDir(), "nope"), "int-1"); len(pins) != 0 {
-		t.Fatalf("missing database produced pins: %+v", pins)
+	// A data directory that has never held a runtime has no runs to pin. That
+	// is an honest empty set, not an unreadable registry, so it is not an error.
+	pins, err = app.pinnedReleases(ctx, filepath.Join(t.TempDir(), "fresh"), "int-1")
+	if err != nil {
+		t.Fatalf("a fresh data directory was treated as unreadable: %v", err)
+	}
+	if len(pins) != 0 {
+		t.Fatalf("a fresh data directory produced pins: %+v", pins)
+	}
+}
+
+// The pin set is the gate a prune passes through, so an unreadable registry
+// must be an error rather than an empty set: empty means "nothing is pinned",
+// which is exactly the wrong thing to assume when the truth is unknown.
+func TestPinnedReleasesRefusesAnUnreadableDatabase(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, database.FileName),
+		[]byte("this is not a SQLite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := New("test", io.Discard, io.Discard)
+	pins, err := app.pinnedReleases(ctx, dataDir, "int-1")
+	if err == nil {
+		t.Fatalf("an unreadable registry yielded a pin set: %+v", pins)
+	}
+	if pins != nil {
+		t.Fatalf("an unreadable registry returned pins: %+v", pins)
+	}
+}
+
+// seedNonTerminalRun records a queued run bound to a release digest, which is
+// what retention must protect. The run is written with the durable job id, the
+// key the pin query filters on.
+func seedNonTerminalRun(t *testing.T, dataDir, jobID, digest string) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open registry: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate registry: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runs (id, job_id, trigger_type, status, attempt, created_at, release_digest)
+		 VALUES (?, ?, 'manual', 'queued', 1, ?, ?)`,
+		"run-queued", jobID, database.FormatTime(time.Now().UTC()), digest); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+}
+
+// The prune gate: when the registry cannot be read, retention refuses rather
+// than removing releases against an assumed-empty pin set. This is the rule
+// `OT-002` records and every prune path shares.
+func TestReleaseRetentionRefusesWhenTheRegistryCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	root, dir := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	manager := release.Manager{DataDir: dataDir}
+
+	// Three releases, so a keep=1 window would have something to remove.
+	for i := 0; i < 3; i++ {
+		writeJobFixture(t, dir, "one", fmt.Sprintf("print(%d)\n", i))
+		if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+			t.Fatalf("release %d exited %d: %s", i, code, stderr)
+		}
+	}
+	id := idFor(t, dir)
+	before, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) < 3 {
+		t.Fatalf("staged %d releases, want at least 3", len(before))
+	}
+
+	// Break the registry after the releases exist. Identity resolution is no
+	// longer needed: this exercises the prune gate directly, the way releaseOne
+	// calls it once the release is active.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(filepath.Join(dataDir, database.FileName+suffix))
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, database.FileName),
+		[]byte("this is not a SQLite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := New("test", io.Discard, io.Discard)
+	removed, err := app.retainReleases(ctx, manager, id, 1)
+	if err == nil {
+		t.Fatalf("retention ran against an unreadable registry and removed %v", removed)
+	}
+	if !strings.Contains(err.Error(), "no release was removed") {
+		t.Errorf("refusal does not state that nothing was removed: %v", err)
+	}
+	after, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a refused retention removed releases: %d -> %d", len(before), len(after))
+	}
+}
+
+// The same refusal end to end: identity resolution still succeeds, but the run
+// registry cannot be read, so `otter release --keep` must exit non-zero and
+// leave every snapshot alone rather than prune against an assumed-empty pin set.
+func TestReleaseKeepRefusesWhenTheRunRegistryIsUnreadable(t *testing.T) {
+	ctx := context.Background()
+	root, dir := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	manager := release.Manager{DataDir: dataDir}
+
+	for i := 0; i < 3; i++ {
+		writeJobFixture(t, dir, "one", fmt.Sprintf("print(%d)\n", i))
+		if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+			t.Fatalf("release %d exited %d: %s", i, code, stderr)
+		}
+	}
+	id := idFor(t, dir)
+	before, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Keep the identity registry readable but make the run registry
+	// unreadable: the pin query then fails after identity resolution has
+	// already succeeded, which is the state the gate exists to catch. Dropping
+	// the table rather than corrupting the file is deliberate -- Migrate sees
+	// every migration applied and does not recreate it.
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE runs`); err != nil {
+		t.Fatalf("drop runs: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := otterIn(t, root, "release", "--keep", "1", "one")
+	if code == 0 {
+		t.Fatalf("release --keep succeeded against an unreadable run registry:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "no release was removed") {
+		t.Errorf("refusal does not state that nothing was removed:\n%s", stderr)
+	}
+	after, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a refused prune removed releases: %d -> %d", len(before), len(after))
+	}
+}
+
+// A deploy's release step prunes through this path, so `--keep N` must remove
+// exactly the releases beyond the window and spare everything still
+// load-bearing: the active release, the rollback target, and every digest a
+// non-terminal run is bound to.
+func TestReleaseKeepPrunesToTheWindowAndProtectsPins(t *testing.T) {
+	root, dir := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	manager := release.Manager{DataDir: dataDir}
+
+	// Five distinct releases. The first release also assigns the durable
+	// identity the registry pins are keyed by.
+	for i := 0; i < 5; i++ {
+		writeJobFixture(t, dir, "one", fmt.Sprintf("print(%d)\n", i))
+		if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+			t.Fatalf("release %d exited %d: %s", i, code, stderr)
+		}
+	}
+	id := idFor(t, dir)
+	before, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 5 {
+		t.Fatalf("staged %d releases, want 5", len(before))
+	}
+	active := ""
+	var inactive []string
+	for _, rel := range before {
+		if rel.Active {
+			active = rel.Digest
+			continue
+		}
+		inactive = append(inactive, rel.Digest)
+	}
+	if active == "" || len(inactive) != 4 {
+		t.Fatalf("active=%q inactive=%d, want one active and four inactive", active, len(inactive))
+	}
+
+	// The oldest release is far outside a one-release window, but a queued run
+	// is bound to it, so retention must keep it anyway.
+	pinned := inactive[len(inactive)-1]
+	seedNonTerminalRun(t, dataDir, id, pinned)
+
+	if _, stderr, code := otterIn(t, root, "release", "--keep", "1", "one"); code != 0 {
+		t.Fatalf("release --keep 1 exited %d: %s", code, stderr)
+	}
+
+	for _, digest := range []string{active, inactive[0], pinned} {
+		if _, err := manager.Metadata(id, digest); err != nil {
+			t.Errorf("retention removed a protected release %s: %v", digest[:12], err)
+		}
+	}
+	after, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 3 {
+		t.Fatalf("kept %d releases, want the active, the rollback target and the pinned one", len(after))
+	}
+	for _, rel := range after {
+		if rel.Digest == inactive[1] || rel.Digest == inactive[2] {
+			t.Errorf("retention kept %s, which is outside the window and unpinned", rel.Digest[:12])
+		}
 	}
 }
 

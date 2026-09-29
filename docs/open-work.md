@@ -57,17 +57,21 @@ exit gate requires. This table remains their intake record.
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
 | OT-001 | Fix documented retention SQL that filters on `runs.queued_at` | doc | `operations.md:507,529,549`; column is `created_at` (`migrations/0001_init.sql:28`) | open |
-| OT-002 | Retention must account for backlog-pinned release snapshots | design | `cli/release.go:645-685` pins digests held by `queued`/`running`/`retrying` runs | open |
-| OT-003 | `otter deploy` never prunes releases; `--keep` is opt-in | gap | `cli/release.go:397-409`; deploy passes no keep value | open |
 | OT-006 | Automatic retention for run logs and runs | feature | `runs.LogStore.DeleteOlderThan` exists (`runs/logs.go:280`) but is called only from a test | scheduled |
 | OT-004 | Expose queue age, per-job depth, and last-success freshness | feature | `/health` reports counts only (`api/server.go:353-391`); no `created_at` age anywhere | open |
 | OT-005 | Ship a `migration_applied` log line, or stop promising one | doc | promised at `operations.md:698`; `Migrate` has no logger and `schema_migrations` has no description column | open |
 | OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | open |
 | OT-011 | Prove queued and retry attempts retain their bound release and environment | test | [see below](#reproducible-releases-not-yet-proven) | open |
 
-`OT-001` through `OT-006` are ordered by dependency: the documented SQL is wrong
-before retention exists, retention must understand pinning before it prunes, and
-nothing in the group is safe to ship until `OT-002` is settled.
+The retention work was ordered by dependency: the documented SQL was wrong
+before retention existed, retention had to understand pinning before it pruned,
+and nothing in the group was safe to ship until `OT-002` was settled.
+
+`OT-002` and `OT-003` are done. Every prune path now runs only with a readable
+pin set, and refuses rather than treating an unreadable registry as "nothing is
+pinned"; the deploy release step passes a keep window (default 3), so a deploy
+converges the release directory instead of leaving every snapshot on disk. See
+[v0.3.0-release-plan.md](v0.3.0-release-plan.md#ws2--release-retention-and-deploy-pruning).
 
 #### Reproducible releases not yet proven
 

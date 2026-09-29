@@ -247,9 +247,13 @@ In order:
    shape. Each job is released by name, so its failure is reported
    against its own name in the deploy log. Deploying a newer Otter also
    re-releases every job, which is required after an upgrade: the
-   release digest format is versioned and an older snapshot is never reused. Old
-   snapshots stay in the host's data directory until retention prunes them, so a
-   rollback across the upgrade still works.
+   release digest format is versioned and an older snapshot is never reused.
+   Each release also prunes inactive snapshots beyond `--keep` (default 3), so
+   the release directory converges instead of growing on every deploy. The
+   active release, the newest inactive one (the rollback target) and any
+   snapshot a queued, running or retrying run is bound to are always kept, so a
+   rollback across the upgrade still works; a prune refuses to run at all if the
+   run registry cannot be read.
 8. **Install and restart** the workspace's systemd unit, then poll the health endpoint on
    the host itself. The API stays bound to loopback the whole time. This is the
    first step that changes anything the running daemon depends on, and it is
@@ -493,6 +497,7 @@ previous successful deploy, then the command line.
 | `--dry-run` | print the plan, change nothing | off |
 | `--verbose` | stream every remote command | off |
 | `--timeout` | overall bound | `10m` |
+| `--keep` | inactive releases retained per job (`0` keeps every release) | `3` |
 | `--status` | show this project's deploys, and with `--host` what that host holds | — |
 | `--destroy`, `--keep-data`, `--yes` | removal | — |
 
@@ -525,10 +530,12 @@ otter deploy --host droplet
 ```
 
 The binary is replaced, systemd restarts the unit, and the daemon's own crash
-recovery re-queues whatever was in flight. The data directory is never read,
-written or deleted by a deploy, so run history, sync watermarks and the
-extracted Python SDK survive. Rollback is the same command against the previous
-commit.
+recovery re-queues whatever was in flight. A deploy never writes or deletes run
+history, sync watermarks or the extracted Python SDK, so all three survive. It
+reads the run registry only to find the releases a pending run is bound to. The
+one thing it removes is old release snapshots, pruned to `--keep` with the active
+release, the rollback target and anything a pending run is bound to always kept.
+Rollback is the same command against the previous commit.
 
 Two consequences worth knowing:
 

@@ -82,7 +82,11 @@ type Deployer struct {
 //	detect platform -> build -> stage -> push sources -> write secrets ->
 //	install unit -> restart -> verify health
 //
-// The remote data directory is never read, written or deleted at any point.
+// Run history, sync watermarks and the extracted Python SDK are never written
+// or deleted. The release step reads the run registry to find the releases a
+// pending run is bound to, then prunes old releases under the data directory
+// down to the configured keep window, always sparing the active release, the
+// rollback target and every pinned release.
 func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	started := time.Now()
 
@@ -249,7 +253,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 	if len(cfg.Jobs) > 0 {
 		d.step("release", "releasing %d job(s)", len(cfg.Jobs))
-		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.JobNames(), uvPath)); err != nil {
+		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.JobNames(), uvPath, cfg.Keep)); err != nil {
 			return nil, fmt.Errorf("release jobs on %s: %w", cfg.Target, err)
 		}
 	} else {

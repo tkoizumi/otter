@@ -56,6 +56,14 @@ type Config struct {
 	// checkout does not have one.
 	DaemonEnv string
 
+	// Keep is how many inactive releases a deploy retains per job, passed to
+	// `otter release --keep`. It bounds only the releases beyond the ones
+	// retention always protects: the active release, the newest inactive one
+	// (the rollback target), and every release a non-terminal run is bound to.
+	// Zero keeps every release, which is the explicit opt-out; the default is
+	// DefaultKeep.
+	Keep int
+
 	// DryRun prints the plan and performs no remote change.
 	DryRun bool
 	// Verbose streams every remote command.
@@ -118,6 +126,10 @@ type Flags struct {
 	DryRun    bool
 	Verbose   bool
 	Timeout   time.Duration
+	// Keep is how many inactive releases to retain per job on the host. Zero
+	// keeps every release, which is the default of `otter release` itself; a
+	// deploy converges, so its own default is DefaultKeep.
+	Keep int
 
 	// Build forces a compile from Go source, refusing to fall back to released
 	// binaries. It is how a contributor deploying from the runtime checkout
@@ -137,6 +149,12 @@ type Flags struct {
 
 // ConfigFileName is the committed, secret-free deploy configuration.
 const ConfigFileName = "otter.deploy.yaml"
+
+// DefaultKeep is how many inactive releases a deploy retains per job. A deploy
+// converges, so it prunes by default rather than waiting for an operator to
+// remember `otter release --keep`; this keeps the active release plus a bounded
+// rollback window. `--keep 0` keeps every release.
+const DefaultKeep = 3
 
 // DaemonEnvFileName is the daemon-wide environment file at the repository
 // root. It is not committed, because a notification URL or an API token is a
@@ -220,6 +238,7 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&f.DryRun, "dry-run", false, "print what would change and touch nothing")
 	fs.BoolVar(&f.Verbose, "verbose", false, "stream every remote command")
 	fs.DurationVar(&f.Timeout, "timeout", 10*time.Minute, "overall timeout for the deploy")
+	fs.IntVar(&f.Keep, "keep", DefaultKeep, "inactive releases to retain per job (0 keeps every release)")
 }
 
 // ParseDeployFlags parses the arguments of `otter deploy`.
@@ -244,8 +263,11 @@ func ParseDeployFlags(args []string, stderr io.Writer) (*Flags, error) {
 		fmt.Fprint(stderr, "  3. rsync the binaries and the job tree\n")
 		fmt.Fprint(stderr, "  4. write the systemd unit and the secrets files\n")
 		fmt.Fprint(stderr, "  5. restart the service and wait for its health endpoint\n")
-		fmt.Fprint(stderr, "\nIt never touches the remote data directory: run history, watermarks\n")
-		fmt.Fprint(stderr, "and the extracted Python SDK survive every deploy.\n\n")
+		fmt.Fprint(stderr, "\nIt never writes or deletes run history, watermarks or the extracted Python\n")
+		fmt.Fprint(stderr, "SDK, so they survive every deploy. It reads the run registry only to find\n")
+		fmt.Fprint(stderr, "the releases a pending run is bound to, and prunes old releases to --keep\n")
+		fmt.Fprint(stderr, "inactive releases per job, always keeping the active release, the rollback\n")
+		fmt.Fprint(stderr, "target, and any release a pending run is bound to.\n\n")
 		fmt.Fprint(stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -275,6 +297,7 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 		DryRun:      f.DryRun,
 		Verbose:     f.Verbose,
 		Timeout:     f.Timeout,
+		Keep:        f.Keep,
 		Target:      DefaultTarget(),
 	}
 
@@ -663,6 +686,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return errors.New("--timeout must be positive")
+	}
+	if c.Keep < 0 {
+		return errors.New("--keep must not be negative; use 0 to keep every release")
 	}
 	return nil
 }

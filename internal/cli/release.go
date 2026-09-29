@@ -398,10 +398,13 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 		// A queued, running or retrying attempt is bound to the snapshot it was
 		// submitted against. Retention must not remove that snapshot, or the
 		// attempt would fail because its own release was garbage-collected
-		// underneath it.
-		removed, err := manager.Retain(target.ID, keep, a.pinnedReleases(ctx, manager.DataDir, target.ID))
+		// underneath it. retainReleases is the gate: a prune runs only with a
+		// readable pin set, and a refused prune fails the release rather than
+		// silently keeping everything.
+		removed, err := a.retainReleases(ctx, manager, target.ID, keep)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: release %s: retention: %v\n", label, err)
+			return 1
 		}
 		for _, digest := range removed {
 			fmt.Fprintf(a.Stdout, "%s: removed old release %s\n", label, digest[:12])
@@ -643,16 +646,43 @@ func mustReleaseDir(m release.Manager, id, digest string) string {
 	return dir
 }
 
+// retainReleases is the one path that removes inactive releases against the
+// pin set, and it is the gate `OT-002` names: a prune runs only with a
+// readable pin set.
+//
+// The prune paths that share this gate are `otter release --keep` and the
+// release step of `otter deploy`, which is how a deploy converges. The orphan
+// prune (`otter release --list --all --prune`) is deliberately different in
+// kind and does not pass through here: it removes directories with no
+// registered identity, which no run can be bound to, so it gates on the
+// identity registry instead of the pin set.
+func (a *App) retainReleases(ctx context.Context, manager release.Manager, jobID string, keep int) ([]string, error) {
+	pins, err := a.pinnedReleases(ctx, manager.DataDir, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("the run registry could not be read (%v), so the pin set is unknown; no release was removed", err)
+	}
+	return manager.Retain(jobID, keep, pins)
+}
+
 // pinnedReleases returns the release digests that non-terminal runs are still
-// bound to, so retention can protect them. A missing or unreadable database
-// yields no pins: retention still never removes the active or newest inactive
-// release, so the fallback is safe rather than silently destructive.
-func (a *App) pinnedReleases(ctx context.Context, dataDir, jobID string) map[string]bool {
+// bound to, so retention can protect them.
+//
+// A prune runs only with a readable pin set: a database that cannot be opened,
+// migrated or queried returns an error and the caller refuses to remove
+// anything, rather than acting on an empty set that only looks like "nothing is
+// pinned". A data directory that has never held a runtime is not unreadable --
+// no run can be bound there -- so the schema is created first, exactly as the
+// orphan-prune path does, and the honest answer is an empty pin set.
+func (a *App) pinnedReleases(ctx context.Context, dataDir, jobID string) (map[string]bool, error) {
 	db, err := database.Open(ctx, dataDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer func() { _ = db.Close() }()
+
+	if err := database.Migrate(ctx, db); err != nil {
+		return nil, err
+	}
 
 	rows, err := db.QueryContext(ctx,
 		`SELECT DISTINCT release_digest FROM runs
@@ -660,21 +690,24 @@ func (a *App) pinnedReleases(ctx context.Context, dataDir, jobID string) map[str
 		    AND status IN ('queued', 'running', 'retrying')`,
 		jobID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
 	out := map[string]bool{}
 	for rows.Next() {
 		var digest string
-		if err := rows.Scan(&digest); err == nil && digest != "" {
+		if err := rows.Scan(&digest); err != nil {
+			return nil, err
+		}
+		if digest != "" {
 			out[digest] = true
 		}
 	}
-	if len(out) == 0 {
-		return nil
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	return out
+	return out, nil
 }
 
 // releaseRow is one line of the cross-job release view.
@@ -754,6 +787,11 @@ func (a *App) printAllReleases(ctx context.Context, manager release.Manager, asJ
 // It is a dry run unless --apply is passed, and it refuses to act at all until
 // the identity registry is bootstrapped, because an empty registry would make
 // every release look like an orphan.
+//
+// This is the third prune path, and it is deliberately not the pinned one: a
+// directory with no registered identity cannot be bound by any run, so pinning
+// has nothing to say about it. It gates on the identity registry (bootstrapped
+// and readable) instead, and Retain's window does not apply to it.
 func (a *App) pruneOrphanReleases(ctx context.Context, manager release.Manager, apply, asJSON bool) int {
 	registered, bootstrapped, err := registeredIdentities(ctx, manager.DataDir)
 	if err != nil {

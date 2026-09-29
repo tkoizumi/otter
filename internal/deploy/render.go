@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -19,8 +20,10 @@ import (
 //     re-queued on startup, so a deploy never drops work that was in flight.
 //   - The API binds loopback. systemd carries the token check, not a firewall;
 //     the CLI reaches the API through an SSH tunnel.
-//   - The unit never writes to the data directory. The database and the
-//     extracted Python SDK survive every deploy untouched.
+//   - The unit never writes run history, watermarks or the extracted Python
+//     SDK. The release step that runs before the restart is the only part of a
+//     deploy that removes anything, and it removes only old release snapshots
+//     beyond the keep window.
 func UnitFile(t Target) string {
 	var b strings.Builder
 
@@ -100,9 +103,9 @@ func SharedEnvFile(apiToken string, secrets map[string]string) string {
 // that was just pushed. The unit file is appended to the script as a heredoc,
 // so the whole converge is one round trip.
 //
-// It is safe to run repeatedly, and it never touches the data directory: that
-// directory holds the sync watermarks and the run history, the two things a
-// deploy must not lose.
+// It is safe to run repeatedly, and it neither reads nor deletes the run
+// history or the sync watermarks. Release retention is a separate step and
+// removes only old release snapshots under the data directory.
 func InstallScript(t Target) string {
 	return PrepareScript(t) + ClaimOwnershipScript(t) + ActivateScript(t)
 }
@@ -341,7 +344,13 @@ fi
 //
 // Jobs are named one by one rather than released with --all so each
 // release reports its own failure against its own name in the deploy log.
-func ReleaseScript(t Target, jobs []string, uvPath string) string {
+//
+// keep is the retention window: a deploy converges, so each release prunes
+// inactive releases beyond it unless keep is 0, which keeps every release. The
+// window is a bound, not a target -- the active release, the rollback target
+// and any release a non-terminal run is bound to are always kept, and a prune
+// is refused outright when the run registry cannot be read.
+func ReleaseScript(t Target, jobs []string, uvPath string, keep int) string {
 	script := `set -e
 RUN_AS=` + ShellQuote(t.RunAsUser) + `
 WORKSPACE_DIR=` + ShellQuote(t.WorkspaceDir()) + `
@@ -368,6 +377,9 @@ cd "$WORKSPACE_DIR"
 		command := runAs + `"$CLI" release` +
 			" --jobs " + ShellQuote(t.JobsDir()) +
 			" --data " + ShellQuote(t.DataDir)
+		if keep > 0 {
+			command += " --keep " + strconv.Itoa(keep)
+		}
 		if uvPath != "" {
 			command += " --uv " + ShellQuote(uvPath)
 		}

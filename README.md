@@ -412,8 +412,9 @@ of the release digest, so a snapshot laid out differently is never reused; a
 release that cannot capture a declared tree (missing, absolute, or reachable
 only through an escaping symlink) is refused instead of shipped. Every
 job must be released once after upgrading Otter: the digest format is
-versioned and old snapshots are left on disk until retention prunes them, so a
-rollback across the upgrade still works.
+versioned, and a deploy prunes inactive snapshots to `--keep` (default 3) while
+always keeping the previous release as the rollback target, so a rollback across
+the upgrade still works.
 
 Global flags: `--api <url>`, `--token <token>`, `--json`, `--version`.
 
@@ -562,9 +563,10 @@ matching published release and verified against its checksums — syncs every
 discovered job and the shared trees their manifests declare, writes the
 systemd unit and the secrets files (over SSH stdin, never argv), restarts the
 service and waits for its health endpoint. Run it twice and the second run is a
-no-op; your data directory is never touched, so run history and sync watermarks
-survive every deploy. The API binds loopback, so you reach it through a tunnel
-rather than an open port:
+no-op; run history and sync watermarks survive every deploy, and old releases
+are pruned to `--keep` (default 3) with the active release, the rollback target
+and anything a pending run is bound to always kept. The API binds loopback, so
+you reach it through a tunnel rather than an open port:
 
 ```bash
 ssh -N -L 7337:127.0.0.1:7337 droplet
@@ -574,7 +576,8 @@ otter runs --all --limit 10
 `--source <checkout>` compiles from a runtime checkout, `--build` forces a
 compile from the project itself, and `--binaries <dir>` uses executables you
 supply (the offline path). To ship one job and leave the rest of the
-host alone, pass `--job <name>`.
+host alone, pass `--job <name>`. Pass `--keep 0` to retain every release
+instead of pruning to the default window.
 
 **One host holds many workspaces.** Each project you deploy gets its own
 directory under `/opt/otter/workspaces/<name>`, its own systemd unit, its own

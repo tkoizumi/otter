@@ -178,10 +178,10 @@ identical digest, so an existing release is reused.
 
 Every job must be released once after upgrading Otter. The digest format
 is versioned, and a new implementation deliberately does not reuse a snapshot
-laid out by an older one, even when the inputs look identical. Old snapshots are
-not deleted by the upgrade: they stay on disk until retention (`--keep`) prunes
-them, so a rollback to a pre-upgrade release still works. `otter deploy` performs
-the re-release for every job as part of the deploy.
+laid out by an older one, even when the inputs look identical. A deploy prunes
+inactive snapshots to `--keep` (default 3), but the previous release is the
+newest inactive one, so a rollback to a pre-upgrade release still works.
+`otter deploy` performs the re-release for every job as part of the deploy.
 
 ### Traceability, not gating
 
@@ -229,10 +229,12 @@ is what executes, so the snapshot is what describes it.
 ### Retention
 
 `otter release --keep N` removes inactive releases beyond `N`, never touching
-the active release, never touching one referenced by queued or running work, and
-always keeping one release to roll back to. Retention is off unless you ask for
-it; every release is kept by default, and `otter release --list` shows what is
-consuming disk.
+the active release, never touching one referenced by queued, running or
+retrying work, and always keeping one release to roll back to. A prune refuses
+to run when the run registry cannot be read, so an unknown pin set never means
+an empty one. `otter release` keeps every release unless you ask for `--keep`;
+`otter deploy` prunes with a default of `--keep 3`, because a deploy is where
+convergence is expected. `otter release --list` shows what is consuming disk.
 
 ### Rollback
 

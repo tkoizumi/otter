@@ -372,12 +372,29 @@ live tree. Activation re-validates the snapshot and, for a managed job,
 that its environment is ready, so `--activate` cannot roll back onto a broken or
 unprepared release.
 
-Releases accumulate under `<data dir>/.releases`. Nothing removes them unless
-you pass `otter release --keep N`, so check `otter release --list <job>`
-(or `otter release --list --all` for every job and every gap)
-if the data directory grows. Retention is per job and `--keep` applies
-to `--all` as well, so `otter release --all --keep 3` prunes a whole workspace
-in one command.
+Releases accumulate under `<data dir>/.releases`. `otter release --keep N`
+prunes inactive releases beyond `N`, and `otter deploy` runs the same prune with
+a default of `--keep 3`, so a deploy converges the release directory as well as
+the code. Check `otter release --list <job>` (or `otter release --list --all`
+for every job and every gap) if the data directory grows. Retention is per job
+and `--keep` applies to `--all` as well, so `otter release --all --keep 3`
+prunes a whole workspace in one command.
+
+Every prune keeps more than the window:
+
+- the **active release** is never removed;
+- the **newest inactive release** is never removed, so a rollback always has a
+  target;
+- any release a `queued`, `running` or `retrying` run is bound to is never
+  removed, because that attempt executes that snapshot; and
+- a prune **refuses to run at all** when the run registry cannot be read, rather
+  than act on a pin set that only looks empty.
+
+A deploy never writes or deletes run history, sync watermarks or the extracted
+Python SDK. It reads the run registry only to find the releases a pending run is
+bound to, and it removes only release snapshots, and only the ones outside that
+window. `otter release` keeps every release unless you pass `--keep`; a deploy
+prunes by default because convergence is the point of a deploy.
 
 ## Backups
 
@@ -770,11 +787,12 @@ Behavior worth expecting:
   `job_invalid` and keeps running.
 - **Every job must be released once after upgrading.** The release
   digest format is versioned, and the new implementation deliberately does not
-  reuse a snapshot laid out by an older one, even for identical inputs. Old
-  snapshots are not deleted by the upgrade and stay on disk until retention
-  prunes them, so a rollback to a pre-upgrade release still works. A deployment
-  does this automatically; a local workspace needs `otter release --all` (or one
-  `otter release` per job) before runs resume executing current code.
+  reuse a snapshot laid out by an older one, even for identical inputs. A
+  deploy prunes inactive snapshots beyond `--keep` (default 3), but the previous
+  release is the newest inactive one, so a rollback to a pre-upgrade release
+  still works. A deployment does this automatically; a local workspace needs
+  `otter release --all` (or one `otter release` per job) before runs resume
+  executing current code.
 - **Startup can refuse to run.** If crash recovery or queue reconciliation
   cannot complete, the daemon exits instead of serving with stranded work. See
   [Daemon refuses to start after a crash](#daemon-refuses-to-start-after-a-crash).
