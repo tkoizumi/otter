@@ -398,7 +398,16 @@ prunes by default because convergence is the point of a deploy.
 
 ## Backups
 
-Stop the writer, or checkpoint first. The simplest correct backup is a
+A backup is only as good as its restore, and `otter.db` on its own does not
+restore a runtime. Run history references releases that live on disk beside the
+database, and job identity is a marker inside the job's **source** directory
+([Job identity](security.md#job-identity)). A database-only backup restores
+history whose code is gone: the runs list, and nothing can execute.
+
+So there are two halves, and both are required — the database first, then
+[everything else a restore needs](#what-else-a-restore-needs).
+
+Stop the writer, or checkpoint first. The simplest correct database backup is a
 checkpoint plus a file copy:
 
 ```bash
@@ -427,7 +436,9 @@ sudo sqlite3 /var/lib/otter/otter.db ".backup '/var/backups/otter/otter-$(date +
 ```
 
 `.backup` is transactional and safe while `otterd` is writing: it restarts
-automatically if the source changes mid-copy. Restoring is equally simple:
+automatically if the source changes mid-copy. Restoring the database file is
+equally simple — but this is the *database half only*, and everything in
+[What else a restore needs](#what-else-a-restore-needs) is required with it:
 
 ```bash
 sudo systemctl stop otter
@@ -440,16 +451,80 @@ sudo systemctl start otter
 Delete stale `-wal`/`-shm` files when restoring by hand; a WAL from a different
 database generation is not valid for the restored file.
 
-Because jobs are code, back up the jobs root too — it is usually
-in git, which is the right answer. Back up `/etc/otter/otter.env` only if you
-keep those secrets somewhere safe and encrypted (it is not a good idea to put
-plaintext credentials in an ordinary backup).
+### What else a restore needs
 
-Suggested cron:
+`<data>` is the data directory — `--data`, `/var/lib/otter` on a deployed host.
+Everything below is checked against a real data directory, not inferred.
 
-```cron
-15 3 * * * root sqlite3 /var/lib/otter/otter.db ".backup '/var/backups/otter/otter-$(date +\%F).db'" && find /var/backups/otter -name 'otter-*.db' -mtime +30 -delete
+| What | Where | Why it is required |
+| --- | --- | --- |
+| Run history, queue, durable state, tokens | `<data>/otter.db` | the database half, above |
+| Release snapshots | `<data>/.releases/<job>/<digest>/` plus the `<job>/active` symlink | an attempt is bound to a digest and re-reads its manifest from that snapshot. Without it the run fails with `release ... is no longer available` |
+| Prepared Python environments | `<data>/environments/<digest>/` | a managed-Python run resolves the digest recorded at submission. A missing environment fails the run before Python starts. The directory carries an `otter-ready.json` that must match the recorded identity |
+| Managed interpreters, uv cache, vendored uv | `<data>/python/`, `<data>/cache/uv/`, `<data>/tools/uv` | reconstructable with `otter prepare`; copying avoids re-fetching the interpreter and wheels on a host with no egress |
+| Job source directories, including `.otter-id` | the jobs root | identity is minted into a marker inside the source directory. Restoring without it produces a *new instance* with empty state. Each release also records its source path in `otter-release.json` |
+| Secrets | `/etc/otter/workspaces/<ws>.env` | a missing secret fails the run before Python starts, and is not retried. Keep this one encrypted and out of the archive holding everything else |
+| The runtime binary and its version | the pinned release | the schema is versioned. Restore the version you backed up, not the newest one |
+
+Do **not** back up, and do not restore:
+
+- `<data>/sdk/` — the embedded Python SDK is re-extracted from the binary at
+  startup;
+- `<data>/otter.lock`, `<data>/serve.pid` and the workspace's `.otter/serve/` —
+  transient process state;
+- `otter.db-wal` / `otter.db-shm` — already folded into the database by a
+  checkpoint or `.backup`. Copying a WAL alongside a database from a different
+  generation is how a restore gets silently corrupted.
+
+Two writers need more quiescing than a database checkpoint provides: a deploy
+stages and **prunes** `.releases/`, and `otter prepare` writes `environments/`.
+Releases and environments are immutable once published, so copying them is safe
+while runs execute — but a prune during the copy can delete a snapshot the
+database still references. Take the backup outside a deploy, or pin what history
+needs.
+
+### Restore onto a clean host
+
+1. Install the **pinned** runtime ([Upgrades](#upgrades)).
+2. Stop the daemon if it is running.
+3. Restore the data directory: `otter.db`, `.releases/`, `environments/`, and
+   `python/` + `cache/uv/` if you copied them. Owned by the service account, data
+   directory mode `0700`, environment file mode `0600`.
+4. Restore the job source directories **at the same absolute paths**. Identity,
+   and the `source` recorded in each release, are path-bound: a restore into a
+   different path is a different instance with different state.
+5. Remove `otter.db-wal` and `otter.db-shm` if any came along.
+6. Start the daemon and verify in this order: `otter status` (serving),
+   `otter jobs` (manifests resolve from the snapshots), `otter runs --all
+   --limit 10` (history reads back), then **execute one job for real**.
+7. Step 6 is the test. A restore that starts and lists history but cannot run a
+   job has not restored a runtime.
+
+A complete backup is a script, not a memory:
+
+```sh
+#!/bin/sh
+# Quiesce deploys first: they are the only writer to .releases/.
+set -eu
+data=/var/lib/otter
+dest=/var/backups/otter/$(date +%F)
+install -d -o root -g root -m 0700 "$dest"
+sqlite3 "$data/otter.db" ".backup '$dest/otter.db'"
+cp -a "$data/.releases"    "$dest/.releases"
+cp -a "$data/environments" "$dest/environments"
 ```
+
+Keep the secrets file out of that archive and store it encrypted. Retain as many
+generations as you are willing to lose, and keep each database **together with
+its releases** — a database whose releases were rotated away is exactly the
+failure this section exists to prevent.
+
+**Status of this procedure.** It is corrected against the real on-disk layout,
+but it is not yet *verified*: P0-03 requires it to be exercised by a recorded
+drill that restores onto a clean host and runs a job
+(`scripts/drill.sh backup-restore`, not yet written). Until that drill's output
+exists, this section is a corrected procedure rather than demonstrated behavior —
+see [phase-0-tasks.md](phase-0-tasks.md) P0-03.
 
 ## Reading a run's logs
 
