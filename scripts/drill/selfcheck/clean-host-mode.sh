@@ -100,7 +100,8 @@ $(printf '%s' "$1" | tail -n 25)"
 CLEAR="-u DRILL_CLEAN_HOST -u DRILL_SOURCE_HOST -u DRILL_TARGET_HOST -u DRILL_SSH_KEY \
 -u DRILL_REMOTE_DIR -u DRILL_REMOTE_JOBS_DIR -u DRILL_REMOTE_SERVICE -u DRILL_JOB \
 -u DRILL_REMOTE_BIN -u DRILL_REMOTE_API_URL -u DRILL_REMOTE_BACKUP_DIR \
--u DRILL_REMOTE_SUDO -u DRILL_REMOTE_API_TOKEN -u DRILL_TRANSPORT \
+-u DRILL_REMOTE_SUDO -u DRILL_REMOTE_API_TOKEN -u DRILL_REMOTE_ENV_FILE \
+-u DRILL_REMOTE_ETC_DIR -u DRILL_TRANSPORT \
 -u DRILL_SABOTAGE -u DRILL_KEEP_TARGET -u DRILL_RUN_LIMIT"
 
 # capture runs a command in the cleared namespace and records its merged output
@@ -152,6 +153,22 @@ has "$out" "DRILL_CLEAN_HOST is not 1" "the refusal must name the missing opt-in
 has "$out" "evidence for the wrong claim" "the refusal must say why it will not fall back"
 hasnot "$out" "drill: workspace" "the half-configured run started the local same-host drill"
 say "  ok  parameters without the opt-in refuse instead of silently running the local drill"
+
+# R4: the optional clean-host parameters count too. `DRILL_REMOTE_SUDO=1` alone
+# is an attempt to run the clean-host drill, and falling through to the local
+# mode would record local evidence under a clean-host claim.
+capture DRILL_REMOTE_SUDO=1 sh "$ENTRY"
+[ "$status" -eq 2 ] || fail "DRILL_REMOTE_SUDO without the opt-in exited $status, want 2"
+has "$out" "DRILL_REMOTE_SUDO" "the refusal must name the optional parameter that was set"
+has "$out" "DRILL_CLEAN_HOST is not 1" "the refusal must name the missing opt-in"
+hasnot "$out" "drill: local same-host mode" "an optional parameter without the opt-in must not run the local drill"
+say "  ok  an optional clean-host parameter without the opt-in refuses too"
+
+capture DRILL_REMOTE_ENV_FILE=/etc/otter/workspaces/app.env DRILL_REMOTE_ETC_DIR=/etc/otter sh "$ENTRY"
+[ "$status" -eq 2 ] || fail "DRILL_REMOTE_ENV_FILE/DRILL_REMOTE_ETC_DIR without the opt-in exited $status, want 2"
+has "$out" "DRILL_REMOTE_ENV_FILE" "the refusal must name every clean-host variable that was set"
+has "$out" "DRILL_REMOTE_ETC_DIR" "the refusal must name every clean-host variable that was set"
+say "  ok  the token-path parameters without the opt-in refuse too"
 
 capture DRILL_CLEAN_HOST=yes sh "$ENTRY"
 [ "$status" -eq 2 ] || fail "DRILL_CLEAN_HOST=yes exited $status, want 2"
@@ -238,6 +255,191 @@ has "$(report_get "$DIRTY_REPORT" jobs_reason)" "otter.yaml" "the dirty jobs rep
 [ "$(report_get "$DIRTY_REPORT" jobs_markers)" = 1 ] ||
 	fail "the probe did not count the identity marker in the jobs root"
 say "  ok  a leftover otter.db, otter.yaml or .otter-id is reported dirty, with the offender named"
+# --- the token, and the unit that will serve the restore ----------------------
+#
+# R1. `otter deploy` writes the API token to /etc/otter/workspaces/<ws>.env and
+# the CLI's own discovery glob (/etc/otter/*.env) does not cross `workspaces/`,
+# so the probe must resolve it. R2: the unit, not the drill's parameters, decides
+# where the restored daemon comes up.
+#
+# The "host" here is a temporary directory and `systemctl` is a test double; the
+# parser, the token resolution, the auth classification and the gate are the
+# real shipped code.
+
+AUTHBIN="$WORK/auth-otter"
+cat >"$AUTHBIN" <<'AUTHSTUB'
+#!/bin/sh
+case "${1:-}" in
+--version)
+	echo "otter v0.0.0-authstub"
+	exit 0
+	;;
+status)
+	echo "api:           ${OTTER_API_URL:-}"
+	echo "version:       v0.0.0-authstub"
+	echo "status:        ok"
+	if [ "${OTTER_API_TOKEN:-}" = "GOODTOKEN" ]; then
+		echo "jobs:          1 total, 1 valid, 0 invalid"
+	else
+		echo "otter: run counts unavailable: the daemon requires an API token" >&2
+	fi
+	exit 0
+	;;
+*)
+	echo "authstub: no such command: ${1:-}" >&2
+	exit 1
+	;;
+esac
+AUTHSTUB
+chmod +x "$AUTHBIN"
+
+TOKETC="$WORK/probe/etc/otter"
+EMPTY_ETC="$WORK/probe/empty/etc/otter"
+mkdir -p "$TOKETC/workspaces" "$EMPTY_ETC/workspaces" "$WORK/probe/bin"
+printf 'OTTER_API_TOKEN=GOODTOKEN\n' >"$TOKETC/workspaces/app-1a2b3c4d.env"
+# A decoy: a second workspace on the same host with a different token. The
+# unit's own environment file must win, or a multi-workspace host authenticates
+# as the wrong workspace and every call is a 401.
+printf 'OTTER_API_TOKEN=OTHERTOKEN\n' >"$TOKETC/workspaces/decoy-9f8e7d6c.env"
+FAKE_UNIT_ENV="$TOKETC/workspaces/app-1a2b3c4d.env"
+FAKE_UNIT_DAEMON_ENV="$TOKETC/workspaces/app-1a2b3c4d.daemon.env"
+printf 'OTTER_DATA_DIR=/should/not/win\n' >"$FAKE_UNIT_DAEMON_ENV"
+
+cat >"$WORK/probe/bin/systemctl" <<'FAKESYSTEMCTL'
+#!/bin/sh
+# Test double for systemctl: the property output a real one prints for a
+# deployed unit. The paths arrive through the environment so the selfcheck can
+# point the unit at its own temporary workspace.
+svc=""
+for a in "$@"; do svc=$a; done
+case "$svc" in
+otterd-app-1a2b3c4d)
+	cat <<EOF
+ActiveState=active
+LoadState=loaded
+ExecStart={ path=$FAKE_UNIT_BIN ; argv[]=$FAKE_UNIT_BIN --jobs $FAKE_UNIT_JOBS --data $FAKE_UNIT_DATA --listen $FAKE_UNIT_LISTEN --log-format json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+EnvironmentFiles=$FAKE_UNIT_DAEMON_ENV (ignore_errors=yes) $FAKE_UNIT_ENV (ignore_errors=yes)
+EOF
+	;;
+*)
+	echo "ActiveState=inactive"
+	echo "LoadState=not-found"
+	echo "ExecStart="
+	echo "EnvironmentFiles="
+	;;
+esac
+FAKESYSTEMCTL
+chmod +x "$WORK/probe/bin/systemctl"
+
+FAKE_UNIT_BIN=/opt/otter/workspaces/app-1a2b3c4d/bin/otterd
+FAKE_UNIT_DATA=/var/lib/otter
+FAKE_UNIT_JOBS=/srv/otter/jobs
+FAKE_UNIT_LISTEN=127.0.0.1:7337
+
+# probe_auth <out> <unit-env-file|-> <etc-dir> [api_token] [env_file]
+# Runs the real probe with the fake systemctl on PATH.
+probe_auth() {
+	auth_out=$1
+	auth_unit_env=$2
+	auth_etc=$3
+	auth_token=${4:-}
+	auth_env_file=${5:-}
+	[ "$auth_unit_env" = "-" ] && auth_unit_env=""
+	env PATH="$WORK/probe/bin:$PATH" \
+		FAKE_UNIT_BIN="$FAKE_UNIT_BIN" FAKE_UNIT_DATA="$FAKE_UNIT_DATA" \
+		FAKE_UNIT_JOBS="$FAKE_UNIT_JOBS" FAKE_UNIT_LISTEN="$FAKE_UNIT_LISTEN" \
+		FAKE_UNIT_ENV="$auth_unit_env" FAKE_UNIT_DAEMON_ENV="$FAKE_UNIT_DAEMON_ENV" \
+		sh "$LIB/host-report.sh" source "$FAKE_UNIT_DATA" "$FAKE_UNIT_JOBS" "$AUTHBIN" \
+		http://127.0.0.1:7337 otterd-app-1a2b3c4d "$auth_token" "$auth_env_file" "$auth_etc" >"$auth_out"
+}
+
+UNIT_REPORT="$WORK/unit.report"
+probe_auth "$UNIT_REPORT" "$FAKE_UNIT_ENV" "$TOKETC"
+[ "$(report_get "$UNIT_REPORT" unit_data_dir)" = "$FAKE_UNIT_DATA" ] ||
+	fail "the probe did not read --data out of the unit's ExecStart"
+[ "$(report_get "$UNIT_REPORT" unit_jobs_dir)" = "$FAKE_UNIT_JOBS" ] ||
+	fail "the probe did not read --jobs out of the unit's ExecStart"
+[ "$(report_get "$UNIT_REPORT" unit_listen)" = "$FAKE_UNIT_LISTEN" ] ||
+	fail "the probe did not read --listen out of the unit's ExecStart"
+[ "$(report_get "$UNIT_REPORT" service_bin)" = "$FAKE_UNIT_BIN" ] ||
+	fail "the probe did not read the unit's binary path"
+[ "$(report_get "$UNIT_REPORT" service_state)" = active ] ||
+	fail "the probe did not read ActiveState"
+[ "$(report_get "$UNIT_REPORT" service_exists)" = yes ] ||
+	fail "the probe did not read LoadState"
+say "  ok  the probe reads the unit's data dir, jobs root, listen address, binary and state"
+
+[ "$(report_get "$UNIT_REPORT" token_source)" = unit-env ] ||
+	fail "the probe did not take the token from the serving unit's own EnvironmentFile (got $(report_get "$UNIT_REPORT" token_source))"
+[ "$(report_get "$UNIT_REPORT" token_file)" = "$FAKE_UNIT_ENV" ] ||
+	fail "the probe resolved the wrong token file: $(report_get "$UNIT_REPORT" token_file)"
+[ "$(report_get "$UNIT_REPORT" token_candidates)" = 1 ] ||
+	fail "the probe saw $(report_get "$UNIT_REPORT" token_candidates) token candidates, want the unit's one"
+[ "$(report_get "$UNIT_REPORT" auth)" = ok ] ||
+	fail "a good token must authenticate: auth=$(report_get "$UNIT_REPORT" auth)"
+[ "$(report_get "$UNIT_REPORT" auth_required)" = no ] ||
+	fail "a good token must not leave auth_required=yes"
+say "  ok  the token comes from the unit's own env file and authenticates (a decoy workspace file does not win)"
+
+AMBIG_REPORT="$WORK/ambiguous.report"
+probe_auth "$AMBIG_REPORT" "-" "$TOKETC"
+[ "$(report_get "$AMBIG_REPORT" token_source)" = ambiguous ] ||
+	fail "two token files and no unit evidence must be reported ambiguous, got $(report_get "$AMBIG_REPORT" token_source)"
+[ "$(report_get "$AMBIG_REPORT" token_file)" = - ] ||
+	fail "an ambiguous resolution must not pick a file"
+[ "$(report_get "$AMBIG_REPORT" token_candidates)" = 2 ] ||
+	fail "the ambiguous report did not count both candidates"
+has "$(report_get "$AMBIG_REPORT" token_reason)" "several files hold a token" "the ambiguous report must say why"
+say "  ok  two candidate token files are reported ambiguous instead of guessing one"
+
+WRONG_REPORT="$WORK/wrong-token.report"
+probe_auth "$WRONG_REPORT" "-" "$EMPTY_ETC" "" "$TOKETC/workspaces/decoy-9f8e7d6c.env"
+[ "$(report_get "$WRONG_REPORT" token_source)" = given-file ] ||
+	fail "an env file named by the drill must be used: $(report_get "$WRONG_REPORT" token_source)"
+[ "$(report_get "$WRONG_REPORT" token_file)" = "$TOKETC/workspaces/decoy-9f8e7d6c.env" ] ||
+	fail "the probe resolved the wrong file: $(report_get "$WRONG_REPORT" token_file)"
+[ "$(report_get "$WRONG_REPORT" auth)" = unauthorized ] ||
+	fail "a token that does not authenticate must be reported unauthorized, got $(report_get "$WRONG_REPORT" auth)"
+say "  ok  a token from the wrong workspace is reported unauthorized, not as a missing job"
+
+NOAUTH_REPORT="$WORK/no-token.report"
+probe_auth "$NOAUTH_REPORT" "-" "$EMPTY_ETC"
+[ "$(report_get "$NOAUTH_REPORT" token_source)" = none ] ||
+	fail "an empty etc directory must resolve no token, got $(report_get "$NOAUTH_REPORT" token_source)"
+[ "$(report_get "$NOAUTH_REPORT" token_file)" = - ] ||
+	fail "no token file must be reported as -"
+[ "$(report_get "$NOAUTH_REPORT" auth)" = token-missing ] ||
+	fail "a daemon that wants a token and did not get one must be reported token-missing"
+say "  ok  a daemon that requires a token, with none found, is reported token-missing"
+
+EXPLICIT_REPORT="$WORK/explicit-token.report"
+probe_auth "$EXPLICIT_REPORT" "-" "$EMPTY_ETC" GOODTOKEN
+[ "$(report_get "$EXPLICIT_REPORT" token_source)" = explicit ] ||
+	fail "an explicitly passed token must be reported as explicit"
+[ "$(report_get "$EXPLICIT_REPORT" auth)" = ok ] ||
+	fail "the explicit token must authenticate"
+say "  ok  an explicitly passed token authenticates without any file"
+
+# lib/run-otter.sh is what every remote CLI call now goes through. The fake
+# transport never lets it run, so exercise it directly: it must hand the token
+# from the file to the CLI's environment, and pass the CLI's own arguments on
+# unchanged.
+cat >"$WORK/otter-echo" <<'ECHO'
+#!/bin/sh
+echo "api=${OTTER_API_URL:-unset}"
+echo "token=${OTTER_API_TOKEN:-unset}"
+echo "args=$*"
+ECHO
+chmod +x "$WORK/otter-echo"
+printf 'OTTER_API_TOKEN=GOODTOKEN\n' >"$WORK/token.env"
+out=$(sh "$LIB/run-otter.sh" "$WORK/token.env" http://127.0.0.1:7337 "$WORK/otter-echo" inspect selfcheck-job)
+has "$out" "token=GOODTOKEN" "run-otter.sh must hand the file's token to the CLI"
+has "$out" "api=http://127.0.0.1:7337" "run-otter.sh must set the API URL"
+has "$out" "args=inspect selfcheck-job" "run-otter.sh must pass the CLI's arguments through"
+out=$(sh "$LIB/run-otter.sh" - http://127.0.0.1:7337 "$WORK/otter-echo" status)
+has "$out" "token=unset" "with no token file the CLI must see no token at all"
+say "  ok  run-otter.sh reads the token file into the CLI environment and passes arguments through"
+
 
 # --- 3. the preflight gate ----------------------------------------------------
 
@@ -311,16 +513,30 @@ jobs_clean=no
 jobs_reason=not empty
 find=yes
 daemon=running
+daemon_version=otter v0.0.0-selfcheck
 daemon_detail=-
+auth=ok
+auth_required=no
 api_url=http://127.0.0.1:7337
+token_source=unit-env
+token_file=/etc/otter/workspaces/app.env
+token_candidates=1
+token_reason=-
+etc_dir=/etc/otter
 service=otter
 service_state=active
 service_exists=yes
+service_bin=/usr/local/bin/otterd
+unit_data_dir=/var/lib/otter
+unit_jobs_dir=/srv/otter/jobs
+unit_listen=127.0.0.1:7337
+unit_env_files=/etc/otter/workspaces/app.daemon.env /etc/otter/workspaces/app.env 
 sqlite3=yes
 sha256sum=yes
 tar=yes
 readlink=yes
 timeout=yes
+getent=yes
 REPORT
 sed -e 's/^role=source/role=target/' \
 	-e 's/^hostname=source.example/hostname=target.example/' \
@@ -337,12 +553,75 @@ sed -e 's/^role=source/role=target/' \
 	-e 's/^jobs_reason=.*/jobs_reason=-/' \
 	-e 's/^jobs_entries=1/jobs_entries=0/' \
 	-e 's/^daemon=running/daemon=stopped/' \
+	-e 's/^auth=ok/auth=unknown/' \
+	-e 's/^auth_required=no/auth_required=unknown/' \
 	-e 's/^service_state=active/service_state=inactive/' \
 	"$WORK/good-source.report" >"$WORK/good-target.report"
 out=$(sh "$LIB/assert-clean-host.sh" "$WORK/good-source.report" "$WORK/good-target.report" 0 2>&1) ||
 	fail "the gate refused reports that satisfy every condition:$out"
 has "$out" "ok: the target is a clean, empty host" "the passing path must say what it concluded"
+has "$out" "token      unit-env" "the passing path must report the token it resolved"
 say "  ok  a fully good pair passes the gate (fixture reports; the gate's own happy path)"
+
+# R1/R2: each mutation below is one broken measurement away from that good pair,
+# and the gate has to name it rather than let the drill fail later with a message
+# that points somewhere else.
+mutation() {
+	mut_name=$1
+	mut_source_sed=$2
+	mut_target_sed=$3
+	if [ -n "$mut_source_sed" ]; then
+		sed -e "$mut_source_sed" "$WORK/good-source.report" >"$WORK/mut-source.report"
+	else
+		cp "$WORK/good-source.report" "$WORK/mut-source.report"
+	fi
+	if [ -n "$mut_target_sed" ]; then
+		sed -e "$mut_target_sed" "$WORK/good-target.report" >"$WORK/mut-target.report"
+	else
+		cp "$WORK/good-target.report" "$WORK/mut-target.report"
+	fi
+	out=$(sh "$LIB/assert-clean-host.sh" "$WORK/mut-source.report" "$WORK/mut-target.report" 0 2>&1) && status=0 || status=$?
+	[ "$status" -ne 0 ] || fail "the gate passed a mutated pair: $mut_name"
+}
+
+mutation "unit data dir" 's|^unit_data_dir=.*|unit_data_dir=/var/lib/somewhere-else|' ""
+has "$out" "serves data directory /var/lib/somewhere-else" "the unit-data-dir mismatch must name the unit's path"
+say "  ok  a unit that serves a different data directory is refused, by name"
+
+mutation "unit jobs dir" 's|^unit_jobs_dir=.*|unit_jobs_dir=/srv/other-jobs|' ""
+has "$out" "serves jobs root /srv/other-jobs" "the unit-jobs-dir mismatch must name the unit's path"
+say "  ok  a unit that serves a different jobs root is refused, by name"
+
+mutation "unit port" 's|^unit_listen=.*|unit_listen=127.0.0.1:7444|' ""
+has "$out" "listens on 127.0.0.1:7444" "the port mismatch must name the unit's address"
+say "  ok  a unit that listens on another port is refused, by name"
+
+mutation "unit paths unreadable" 's|^unit_data_dir=.*|unit_data_dir=-|' ""
+has "$out" "names no data directory" "an undeterminable unit must say so"
+say "  ok  a unit the drill cannot read is refused with instructions, not guessed at"
+
+mutation "ambiguous token" 's|^token_source=.*|token_source=ambiguous|
+s|^token_file=.*|token_file=-|
+s|^auth=ok|auth=token-missing|
+s|^token_reason=.*|token_reason=several files hold a token: /a /b|' ""
+has "$out" "several environment files" "the ambiguous token must be refused, naming the candidates"
+say "  ok  an ambiguous token on the source is refused before any call"
+
+mutation "wrong token" 's|^auth=ok|auth=unauthorized|' ""
+has "$out" "does not authenticate" "a wrong token must be refused as unauthorized"
+say "  ok  a token that does not authenticate is refused as the token, not the job"
+
+mutation "no token found" 's|^token_source=.*|token_source=none|
+s|^token_file=.*|token_file=-|
+s|^auth=ok|auth=token-missing|' ""
+has "$out" "requires an API token and none was found" "a missing token must name the lookups"
+has "$out" "DRILL_REMOTE_ENV_FILE" "a missing token must name the escape hatch"
+say "  ok  a daemon that needs a token and has none is refused with the two overrides named"
+
+mutation "target has no token" "" 's|^token_source=.*|token_source=none|
+s|^token_file=.*|token_file=-|'
+has "$out" "none was found on the target" "a target that cannot be driven must be refused"
+say "  ok  a target with no resolvable token is refused before the restore"
 
 # --- 4. backup and restore halves round-trip locally --------------------------
 
@@ -516,9 +795,24 @@ else
 	exit 96
 fi
 
+# Only the preflight probe is answered. The drill also pipes other scripts over
+# ssh (lib/run-otter.sh, lib/hot-backup.sh, lib/restore-host.sh); refusing those
+# is what makes "the gate refused a dirty target before touching it" checkable,
+# so the probe is identified by the script actually on stdin rather than by the
+# shape of the command line.
+is_probe=no
+if head -n 3 "$stdin" 2>/dev/null | grep -q 'host-report.sh'; then
+	is_probe=yes
+fi
+
 case "$cmd" in
 *"sh -s --"*)
-	args=$(printf '%s' "$cmd" | sed -e 's/^ *//' -e 's/^sudo -n //' -e 's/^sh -s -- //')
+	if [ "$is_probe" != yes ]; then
+		echo "fake-ssh: not the preflight probe; this selfcheck refuses: $(head -n 1 "$stdin" 2>/dev/null)" >&2
+		rm -f "$stdin"
+		exit 97
+	fi
+	args=$(printf '%s' "$cmd" | sed -e 's/^ *//' -e 's/^sudo -n env //' -e 's/^sudo -n //' -e 's/^sh -s -- //')
 	translated=""
 	for a in $args; do
 		case "$a" in
@@ -563,7 +857,9 @@ mkdir -p "$FAKE_SRC/data" "$FAKE_SRC/jobs" "$FAKE_TGT/data" "$FAKE_TGT/jobs"
 
 fake_run() {
 	FAKE_LOG=$1
+	FAKE_SUDO=${2:-0}
 	out=$(env $CLEAR DRILL_TRANSPORT="$FAKE" FAKE_LOG="$FAKE_LOG" \
+		DRILL_REMOTE_SUDO="$FAKE_SUDO" \
 		FAKE_SRC_HOST=root@source.drill.invalid FAKE_TGT_HOST=root@target.drill.invalid \
 		FAKE_SRC_DATA="$FAKE_SRC/data" FAKE_SRC_JOBS="$FAKE_SRC/jobs" \
 		FAKE_TGT_DATA="$FAKE_TGT/data" FAKE_TGT_JOBS="$FAKE_TGT/jobs" \
@@ -618,5 +914,25 @@ case "$NEXT" in
 	;;
 esac
 say "  ok  an empty target passes the gate; the run then stops on the next precondition ($NEXT)"
+
+# R8: with DRILL_REMOTE_SUDO=1 every remote command has to run as
+# `sudo -n env ...`. Bare `VAR=value` after sudo is only accepted when the
+# sudoers rule grants SETENV, and on a rule that does not, the failure is
+# "command not found: OTTER_API_URL=..." from the target. `env` needs no grant.
+: >"$FAKE_TGT/data/otter.db"
+fake_run "$WORK/fake-sudo.log" 1
+has "$out" "sudo=1" "the run must report the privilege mode it was given"
+first_cmd=$(head -n 1 "$WORK/fake-sudo.log")
+case "$first_cmd" in
+"sudo -n env sh -s -- "*)
+	say "  ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: $first_cmd)"
+	;;
+*)
+	fail "with DRILL_REMOTE_SUDO=1 the first remote command was '$first_cmd', want it to start with 'sudo -n env'"
+	;;
+esac
+CALLS=$(wc -l <"$WORK/fake-sudo.log" | tr -d ' ')
+[ "$CALLS" = 2 ] ||
+	fail "the sudo run made $CALLS remote calls, want the two probes before the dirty target was refused"
 
 say "ok: the clean-host mode validates, refuses, gates, backs up and restores without a host"

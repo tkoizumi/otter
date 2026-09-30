@@ -34,11 +34,23 @@
 #                                     for real. A job the operator has not
 #                                     vouched for is never auto-selected.
 #   optional  DRILL_REMOTE_BIN        `/usr/local/bin/otter`
-#             DRILL_REMOTE_API_URL    `http://127.0.0.1:7337`
+#             DRILL_REMOTE_API_URL    `http://127.0.0.1:7337`. Its port has to be
+#                                     the port the unit listens on; the drill
+#                                     refuses when the two disagree.
 #             DRILL_REMOTE_BACKUP_DIR `/var/tmp/otter-drill-backup`
-#             DRILL_REMOTE_SUDO       `1` when the ssh login is not root
-#             DRILL_REMOTE_API_TOKEN  only when the host's own token file is not
-#                                     readable by the login
+#             DRILL_REMOTE_SUDO       `1` when the ssh login is not root. Remote
+#                                     commands then run as `sudo -n env ...`;
+#                                     `env` rather than a bare `VAR=value`
+#                                     prefix, which sudo only accepts when the
+#                                     sudoers rule grants SETENV.
+#             DRILL_REMOTE_ENV_FILE   the environment file holding
+#                                     OTTER_API_TOKEN, when discovery picks the
+#                                     wrong one (see below)
+#             DRILL_REMOTE_API_TOKEN  the token itself; used only when neither
+#                                     the unit's files nor a single environment
+#                                     file resolve one
+#             DRILL_REMOTE_ETC_DIR    where to look for environment files
+#                                     (`/etc/otter`)
 #             DRILL_RUN_LIMIT         how many recent run ids to check (25)
 #             DRILL_KEEP_TARGET       `1` leaves the target daemon and the staged
 #                                     archives in place for inspection
@@ -47,14 +59,28 @@
 #                                     expected to go red, and reaching the end
 #                                     with one set is itself a failure
 #
+# The API token is a precondition with its own checks, because the obvious
+# setup does not work by itself: `otter deploy` writes the token to
+# `/etc/otter/workspaces/<workspace>.env`, and the CLI's own discovery globs
+# only `/etc/otter/*.env` -- `*` does not cross `workspaces/`. Left alone, every
+# call would 401 and this drill would report it as "the runtime does not know
+# this job". So the probe resolves a token file per host (the serving unit's own
+# `EnvironmentFiles=` first, then `/etc/otter/*.env`, then a single
+# `/etc/otter/workspaces/*.env`), reports `ambiguous` rather than guessing when
+# several candidates hold different tokens, and checks that the token actually
+# authenticates before the drill backs anything up. `lib/run-otter.sh` then
+# reads it inside the remote shell, so the secret never reaches a command line
+# or the transcript.
+#
 # What it does, in order:
 #
 #   1. probes BOTH hosts (scripts/drill/lib/host-report.sh) and refuses unless
 #      they are two different Linux machines of the same shape -- same data
-#      directory, same jobs root, same `otter` version -- and the TARGET is
-#      genuinely clean: its data directory and jobs root are empty or absent, no
-#      daemon answers there, and its service is installed but not active. This
-#      is the assertion that makes the run a clean-host restore at all;
+#      directory, same jobs root, same `otter` version, a resolvable API token,
+#      and units that name those same paths and the same port -- and the TARGET
+#      is genuinely clean: its data directory and jobs root are empty or absent,
+#      no daemon answers there, and its service is installed but not active.
+#      This is the assertion that makes the run a clean-host restore at all;
 #   2. takes a complete backup on the live source (lib/hot-backup.sh): the
 #      database via SQLite's online backup while the daemon keeps writing, plus
 #      `.releases/`, `environments/`, `tools/`, `python/`, `cache/` and the job
@@ -173,8 +199,9 @@ if [ -n "$missing" ]; then
 	echo "drill:           DRILL_REMOTE_API_URL (default http://127.0.0.1:7337)," >&2
 	echo "drill:           DRILL_REMOTE_BACKUP_DIR (default /var/tmp/otter-drill-backup)," >&2
 	echo "drill:           DRILL_REMOTE_SUDO=1 when the login is not root," >&2
-	echo "drill:           DRILL_REMOTE_API_TOKEN, DRILL_RUN_LIMIT, DRILL_SABOTAGE," >&2
-	echo "drill:           DRILL_KEEP_TARGET=1" >&2
+	echo "drill:           DRILL_REMOTE_ENV_FILE when the token file must be named," >&2
+	echo "drill:           DRILL_REMOTE_API_TOKEN, DRILL_REMOTE_ETC_DIR, DRILL_RUN_LIMIT," >&2
+	echo "drill:           DRILL_SABOTAGE, DRILL_KEEP_TARGET=1" >&2
 	echo "drill: refusing to fall back to the same-host drill: that would record evidence for the wrong claim" >&2
 	exit 2
 fi
@@ -190,6 +217,8 @@ REMOTE_BIN=${DRILL_REMOTE_BIN:-/usr/local/bin/otter}
 API_URL=${DRILL_REMOTE_API_URL:-http://127.0.0.1:7337}
 BACKUP_ROOT=${DRILL_REMOTE_BACKUP_DIR:-/var/tmp/otter-drill-backup}
 API_TOKEN=${DRILL_REMOTE_API_TOKEN:-}
+ENV_FILE=${DRILL_REMOTE_ENV_FILE:-}
+ETC_DIR=${DRILL_REMOTE_ETC_DIR:-/etc/otter}
 SUDO_MODE=${DRILL_REMOTE_SUDO:-0}
 RUN_LIMIT=${DRILL_RUN_LIMIT:-25}
 SABOTAGE=${DRILL_SABOTAGE:-}
@@ -237,13 +266,21 @@ reject_chars() {
 }
 for name in DRILL_SOURCE_HOST DRILL_TARGET_HOST DRILL_REMOTE_DIR DRILL_REMOTE_JOBS_DIR \
 	DRILL_REMOTE_SERVICE DRILL_JOB DRILL_REMOTE_BIN DRILL_REMOTE_API_URL DRILL_REMOTE_BACKUP_DIR \
-	DRILL_REMOTE_API_TOKEN; do
+	DRILL_REMOTE_API_TOKEN DRILL_REMOTE_ENV_FILE DRILL_REMOTE_ETC_DIR; do
 	reject_chars "$name"
 done
 
 case "$DATA_DIR" in
 /*) ;;
 *) echo "drill: DRILL_REMOTE_DIR must be an absolute path, got $DATA_DIR" >&2; exit 2 ;;
+esac
+case "$ENV_FILE" in
+'' | /*) ;;
+*) echo "drill: DRILL_REMOTE_ENV_FILE must be an absolute path, got $ENV_FILE" >&2; exit 2 ;;
+esac
+case "$ETC_DIR" in
+/*) ;;
+*) echo "drill: DRILL_REMOTE_ETC_DIR must be an absolute path, got $ETC_DIR" >&2; exit 2 ;;
 esac
 case "$JOBS_DIR" in
 /*) ;;
@@ -278,7 +315,11 @@ esac
 }
 
 SSH_OPTS="-i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
-if [ "$SUDO_MODE" = 1 ]; then SUDO="sudo -n"; else SUDO=""; fi
+# `env` after sudo, not bare `VAR=value` prefixes: sudo only accepts an
+# environment assignment in that position when the sudoers rule grants SETENV,
+# and a rule that does not would fail as "command not found: OTTER_API_URL=...".
+# Running `env` as root needs no such grant.
+if [ "$SUDO_MODE" = 1 ]; then SUDO="sudo -n env"; else SUDO=""; fi
 
 # --- shell state --------------------------------------------------------------
 
@@ -296,6 +337,7 @@ SRC_STAGE="$BACKUP_ROOT/$RUN_ID"
 TGT_STAGE="$BACKUP_ROOT/$RUN_ID"
 ARCHIVE="$WORK/backup.tgz"
 TOOK=0
+BACKUP_ROOT_SET=0
 TARGET_STARTED=0
 cleaning=0
 
@@ -324,7 +366,24 @@ cleanup() {
 	if [ "$status" -ne 0 ] && [ "$TOOK" -eq 1 ]; then
 		echo "drill: failed; last target daemon lines:" >&2
 		remote_cmd "$TARGET_HOST" "journalctl -u $SERVICE -n 40 --no-pager" >&2 2>/dev/null || true
-		echo "drill: backup staged at $SOURCE_HOST:$SRC_STAGE and $TARGET_HOST:$TGT_STAGE" >&2
+	fi
+
+	# Staged archives are 0700 directories under $BACKUP_ROOT on both hosts. A
+	# failure leaves them for diagnosis only when the operator asked for that;
+	# otherwise a repeated failure would accumulate them in /var/tmp forever.
+	if [ "$status" -ne 0 ] && { [ "$TOOK" -eq 1 ] || [ "$BACKUP_ROOT_SET" -eq 1 ]; }; then
+		if [ "$KEEP_TARGET" = 1 ]; then
+			echo "drill: staged archives left in place (DRILL_KEEP_TARGET=1):" >&2
+			echo "drill:   $SOURCE_HOST:$SRC_STAGE" >&2
+			echo "drill:   $TARGET_HOST:$TGT_STAGE" >&2
+		else
+			remote_cmd "$SOURCE_HOST" "rm -rf $SRC_STAGE" >/dev/null 2>&1 || true
+			remote_cmd "$TARGET_HOST" "rm -rf $TGT_STAGE" >/dev/null 2>&1 || true
+			echo "drill: removed the staged archives on both hosts ($BACKUP_ROOT/$RUN_ID)" >&2
+			echo "drill: pass DRILL_KEEP_TARGET=1 to leave them behind for diagnosis" >&2
+		fi
+	fi
+	if [ "$status" -ne 0 ]; then
 		echo "drill: workspace was $WORK" >&2
 	fi
 
@@ -364,17 +423,40 @@ remote_script() {
 	fi
 }
 
-# remote_otter asks the daemon on a host through its own CLI. On the host the
-# CLI reads the API token from /etc/otter/*.env for a loopback URL, so no token
-# handling is needed here unless the operator passes one.
+# remote_otter asks the daemon on a host through its own CLI.
+#
+# It runs the CLI through lib/run-otter.sh, which reads OTTER_API_TOKEN out of
+# the environment file the daemon itself loads and hands it over in the CLI's
+# environment. Two reasons:
+#   * `otter deploy` writes the token to /etc/otter/workspaces/<ws>.env, which
+#     the CLI's own discovery glob (/etc/otter/*.env) does not cross -- without
+#     this every call would 401 and the drill would report it as "the runtime
+#     does not know this job";
+#   * the token never appears in a command line or in this transcript, and
+#     reading it as root under sudo works whether or not the login can read a
+#     0600 file.
+# DRILL_REMOTE_API_TOKEN is the explicit override and wins over the file.
 remote_otter() {
 	remote_host=$1
 	shift
-	remote_prefix="OTTER_API_URL=$API_URL"
 	if [ -n "$API_TOKEN" ]; then
-		remote_prefix="$remote_prefix OTTER_API_TOKEN=$API_TOKEN"
+		# The explicit override travels in the command line, so it is visible in
+		# the host's process list for the length of the call. That is the cost of
+		# the override; the discovered-file path above does not pay it.
+		remote_cmd "$remote_host" "OTTER_API_TOKEN=$API_TOKEN OTTER_API_URL=$API_URL $REMOTE_BIN $*"
+		return
 	fi
-	remote_cmd "$remote_host" "$remote_prefix $REMOTE_BIN $*"
+	remote_script "$remote_host" "$LIB/run-otter.sh" "$(token_file_for "$remote_host")" \
+		"$API_URL" "$REMOTE_BIN" $*
+}
+
+# token_file_for echoes the token file the probe resolved on a host, or `-`.
+token_file_for() {
+	case "$1" in
+	"$SOURCE_HOST") printf '%s' "${SRC_TOKEN_FILE:--}" ;;
+	"$TARGET_HOST") printf '%s' "${TGT_TOKEN_FILE:--}" ;;
+	*) printf '%s' "-" ;;
+	esac
 }
 
 # --- 0. announce --------------------------------------------------------------
@@ -390,16 +472,23 @@ fi
 # --- 1. preflight: two hosts, same shape, clean target ------------------------
 
 say "probing $SOURCE_HOST"
-remote_script "$SOURCE_HOST" "$LIB/host-report.sh" source "$DATA_DIR" "$JOBS_DIR" "$REMOTE_BIN" "$API_URL" "$SERVICE" "$API_TOKEN" >"$WORK/source.report" ||
+remote_script "$SOURCE_HOST" "$LIB/host-report.sh" source "$DATA_DIR" "$JOBS_DIR" "$REMOTE_BIN" "$API_URL" "$SERVICE" "$API_TOKEN" "$ENV_FILE" "$ETC_DIR" >"$WORK/source.report" ||
 	fail "could not probe the source host $SOURCE_HOST"
 say "probing $TARGET_HOST"
-remote_script "$TARGET_HOST" "$LIB/host-report.sh" target "$DATA_DIR" "$JOBS_DIR" "$REMOTE_BIN" "$API_URL" "$SERVICE" "$API_TOKEN" >"$WORK/target.report" ||
+remote_script "$TARGET_HOST" "$LIB/host-report.sh" target "$DATA_DIR" "$JOBS_DIR" "$REMOTE_BIN" "$API_URL" "$SERVICE" "$API_TOKEN" "$ENV_FILE" "$ETC_DIR" >"$WORK/target.report" ||
 	fail "could not probe the target host $TARGET_HOST"
+
+# The token file each host resolved, for remote_otter. `-` means the daemon
+# needs none.
+SRC_TOKEN_FILE=$(get token_file "$WORK/source.report")
+TGT_TOKEN_FILE=$(get token_file "$WORK/target.report")
 
 say "source  $(get hostname "$WORK/source.report") (kernel $(get kernel "$WORK/source.report"), version $(get otter_version "$WORK/source.report"), daemon $(get daemon "$WORK/source.report"))"
 say "target  $(get hostname "$WORK/target.report") (kernel $(get kernel "$WORK/target.report"), version $(get otter_version "$WORK/target.report"), daemon $(get daemon "$WORK/target.report"))"
 say "target data $(get data_dir "$WORK/target.report") clean=$(get data_clean "$WORK/target.report") reason=$(get data_reason "$WORK/target.report")"
 say "target jobs $(get jobs_dir "$WORK/target.report") clean=$(get jobs_clean "$WORK/target.report") reason=$(get jobs_reason "$WORK/target.report")"
+say "unit    $(get service "$WORK/source.report") -> $(get unit_data_dir "$WORK/source.report") + $(get unit_jobs_dir "$WORK/source.report") on $(get unit_listen "$WORK/source.report")"
+say "token   source $(get token_source "$WORK/source.report") $(get token_file "$WORK/source.report"), target $(get token_source "$WORK/target.report") $(get token_file "$WORK/target.report")"
 
 sh "$LIB/assert-clean-host.sh" "$WORK/source.report" "$WORK/target.report" "$SUDO_MODE" ||
 	fail "the two hosts are not a legal source/target pair; see the refusal above"
@@ -418,9 +507,16 @@ fi
 
 # The runtime answers for identity and location; nothing here trusts a
 # directory name. One call, so the two answers describe the same moment.
-INSPECT=$(remote_otter "$SOURCE_HOST" "inspect $JOB" 2>/dev/null || true)
+# The failure text is reported as-is: a 401 here means the token could not be
+# resolved, which is a different problem from a job that does not exist, and the
+# operator should not have to guess which one they have.
+if ! INSPECT=$(remote_otter "$SOURCE_HOST" "inspect $JOB" 2>&1); then
+	echo "drill: otter inspect failed on $SOURCE_HOST:" >&2
+	printf '%s\n' "$INSPECT" | sed 's/^/drill:   /' >&2
+	fail "the source runtime did not answer inspect for $JOB (a 401 or 'requires an API token' here is the token, not the job; see DRILL_REMOTE_ENV_FILE and DRILL_REMOTE_API_TOKEN)"
+fi
 SRC_JOBID=$(printf '%s\n' "$INSPECT" | sed -n 's/^job: *//p' | head -n 1)
-[ -n "$SRC_JOBID" ] || fail "the source runtime does not know a job called $JOB"
+[ -n "$SRC_JOBID" ] || fail "otter inspect on the source printed no job id for $JOB"
 SRC_JOBDIR=$(printf '%s\n' "$INSPECT" | sed -n 's/^path: *//p' | head -n 1)
 [ -n "$SRC_JOBDIR" ] || fail "the source runtime did not report a path for job $JOB"
 # The path comes back from the host, not from the operator, so it gets the same
@@ -447,6 +543,7 @@ say "job         $SRC_JOBID at $SRC_JOBDIR (.otter-id agrees)"
 say "backing up   $SOURCE_HOST:$DATA_DIR (daemon still serving)"
 remote_cmd "$SOURCE_HOST" "install -d -m 0700 $BACKUP_ROOT" ||
 	fail "could not create $BACKUP_ROOT on the source host"
+BACKUP_ROOT_SET=1
 remote_script "$SOURCE_HOST" "$LIB/hot-backup.sh" "$DATA_DIR" "$JOBS_DIR" "$SRC_STAGE" "$SABOTAGE" "$SRC_MACHINE" ||
 	fail "the backup on the source host failed"
 
@@ -502,6 +599,18 @@ EXPECT_STATE=$(sqlite3 "$DB" "select key || '=' || value from job_state where jo
 	fail "could not read durable state from the backup database"
 STATE_KEY=$(sqlite3 "$DB" "select key from job_state where job_id='$SRC_JOBID' order by key limit 1;") ||
 	fail "could not read a state key from the backup database"
+# The key is read out of the database, not typed by the operator, and it is
+# about to be interpolated into a remote command like every other value that
+# crosses ssh. The row-for-row comparison below is the real state assertion;
+# this one only proves the DAEMON serves the restored state, so a key the drill
+# cannot pass safely is dropped rather than forced through.
+case "$STATE_KEY" in
+'' ) ;;
+*[!A-Za-z0-9._:-]*)
+	say "note: state key '$STATE_KEY' cannot be passed to a remote shell; the row-for-row database comparison still checks the state"
+	STATE_KEY=""
+	;;
+esac
 EXPECT_RUNS=$(sqlite3 "$DB" "select id from runs where job_id='$SRC_JOBID' order by created_at desc limit $RUN_LIMIT;") ||
 	fail "could not read run history from the backup database"
 TOTAL_RUNS=$(sqlite3 "$DB" "select count(*) from runs where job_id='$SRC_JOBID';") ||
@@ -524,6 +633,14 @@ case "$OWNER_USER$OWNER_GROUP" in
 	fail "the source data directory's owner is not a user:group pair the drill can pass on: $OWNER"
 	;;
 esac
+
+# The account has to exist on the target: restore-host.sh chowns the restored
+# trees to it, and a chown to a name that is not there leaves a daemon that
+# cannot read its own database.
+if ! remote_cmd "$TARGET_HOST" "getent passwd $OWNER_USER >/dev/null && getent group $OWNER_GROUP >/dev/null"; then
+	fail "the target has no account $OWNER: the restore would chown the data directory and jobs root to an owner that does not exist there"
+fi
+say "owner       $OWNER exists on $TARGET_HOST"
 
 say "restoring    $TARGET_HOST:$DATA_DIR from the archive"
 remote_script "$TARGET_HOST" "$LIB/restore-host.sh" "$TGT_STAGE" "$DATA_DIR" "$JOBS_DIR" "$OWNER" ||
@@ -568,8 +685,13 @@ TGT_MARKER=$(remote_cmd "$TARGET_HOST" "sha256sum $JOBS_DIR/$JOB_REL/.otter-id" 
 [ -n "$TGT_MARKER" ] || fail "the target has no $JOBS_DIR/$JOB_REL/.otter-id"
 [ "$TGT_MARKER" = "$EXPECT_MARKER" ] ||
 	fail "the restored .otter-id marker differs from the one in the backup: the job's identity did not survive"
-TGT_JOBID=$(remote_otter "$TARGET_HOST" "inspect $JOB" 2>/dev/null | sed -n 's/^job: *//p' | head -n 1) ||
-	fail "otter inspect failed on the target host"
+TGT_JOBID=$(remote_otter "$TARGET_HOST" "inspect $JOB" 2>&1) || {
+	echo "drill: otter inspect failed on $TARGET_HOST:" >&2
+	printf '%s\n' "$TGT_JOBID" | sed 's/^/drill:   /' >&2
+	fail "the restored runtime did not answer inspect for $JOB: the daemon is up, so this is the runtime's own error, not a missing job"
+}
+TGT_JOBID=$(printf '%s\n' "$TGT_JOBID" | sed -n 's/^job: *//p' | head -n 1)
+[ -n "$TGT_JOBID" ] || fail "otter inspect on the target printed no job id for $JOB"
 [ "$TGT_JOBID" = "$SRC_JOBID" ] ||
 	fail "job identity changed across the restore: $SRC_JOBID -> ${TGT_JOBID:-missing}"
 say "identity    survived ($SRC_JOBID, marker sha256 $EXPECT_MARKER)"

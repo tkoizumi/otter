@@ -125,12 +125,87 @@ t_svc_exists=$(get "$TARGET_REPORT" service_exists)
 [ "$t_svc_state" != active ] || fail "the target's $(get "$TARGET_REPORT" service) service is active: stop and disable it before the drill, or the machine is not clean"
 ok "target     service $(get "$TARGET_REPORT" service) is installed and $t_svc_state"
 
+# --- the unit will serve what the drill restored ------------------------------
+# The drill starts the service, not `otterd` with its own flags, so the unit's
+# own data directory, jobs root and port are what the restored runtime comes up
+# with. A unit that points elsewhere must be refused here, by name, instead of
+# surfacing as "job identity changed" after a restore, or as a 150-second poll
+# timeout when only the port differs.
+
+# port_of reads the port out of `host:port`, `:port` or a bare port.
+port_of() {
+	p=${1##*:}
+	case "$p" in
+	'' | *[!0-9]*) p=$1 ;;
+	esac
+	case "$p" in
+	'' | *[!0-9]*) printf '%s' "-" ;;
+	*) printf '%s' "$p" ;;
+	esac
+}
+
+check_unit_paths() {
+	side=$1
+	report=$2
+	svc=$(get "$report" service)
+	u_data=$(get "$report" unit_data_dir)
+	u_jobs=$(get "$report" unit_jobs_dir)
+	u_listen=$(get "$report" unit_listen)
+	[ "$u_data" != "-" ] || fail "the $side unit $svc names no data directory: the drill cannot tell what it will serve. Give the unit an ExecStart with --data (otter deploy renders one), or name the paths in its EnvironmentFile"
+	[ "$u_jobs" != "-" ] || fail "the $side unit $svc names no jobs root: the drill cannot tell what it will serve. Give the unit an ExecStart with --jobs, or name it in its EnvironmentFile"
+	[ "$u_data" = "$(get "$report" data_dir)" ] || fail "the $side unit $svc serves data directory $u_data, but the drill was told $(get "$report" data_dir): pass the unit's own paths, or the restore lands where nothing will read it"
+	[ "$u_jobs" = "$(get "$report" jobs_dir)" ] || fail "the $side unit $svc serves jobs root $u_jobs, but the drill was told $(get "$report" jobs_dir): job identity and each release's source path are path-bound"
+	[ "$u_listen" != "-" ] || fail "the $side unit $svc names no listen address, so the drill cannot tell which port it comes up on; set DRILL_REMOTE_API_URL only if you know it matches"
+	api_port=$(port_of "$(get "$report" api_url)")
+	unit_port=$(port_of "$u_listen")
+	[ "$api_port" != "-" ] || fail "DRILL_REMOTE_API_URL does not carry a port the drill can read: $(get "$report" api_url)"
+	if [ "$api_port" != "$unit_port" ]; then
+		fail "the $side unit $svc listens on $u_listen (port $unit_port) but the drill asks $api_port: set DRILL_REMOTE_API_URL to the unit's own address"
+	fi
+}
+check_unit_paths source "$SOURCE_REPORT"
+check_unit_paths target "$TARGET_REPORT"
+ok "unit       both units serve $(get "$SOURCE_REPORT" data_dir) and $(get "$SOURCE_REPORT" jobs_dir) on $(get "$SOURCE_REPORT" unit_listen)"
+
 # --- the source is live, and the two are the same shape -----------------------
 
 s_daemon=$(get "$SOURCE_REPORT" daemon)
 s_detail=$(get "$SOURCE_REPORT" daemon_detail)
 [ "$s_daemon" = running ] || fail "no daemon answers on the source at $(get "$SOURCE_REPORT" api_url) (${s_detail:-no detail}): the point of the drill is a backup taken from a live runtime"
 ok "live       the source runtime is serving"
+
+# --- the API token must actually resolve --------------------------------------
+# `otter deploy` writes the token to /etc/otter/workspaces/<workspace>.env, and
+# the CLI's own discovery globs only /etc/otter/*.env, which does not cross
+# `workspaces/`. Left alone, every call would 401 and the drill would report it
+# as "the runtime does not know this job" -- so the token is a precondition
+# checked here, by name.
+
+s_token_source=$(get "$SOURCE_REPORT" token_source)
+s_token_file=$(get "$SOURCE_REPORT" token_file)
+s_auth=$(get "$SOURCE_REPORT" auth)
+s_etc=$(get "$SOURCE_REPORT" etc_dir)
+[ "$s_token_source" != ambiguous ] ||
+	fail "several environment files on the source hold an API token, and none of them is the serving unit's: $(get "$SOURCE_REPORT" token_reason). Set DRILL_REMOTE_ENV_FILE to the right one, or DRILL_REMOTE_API_TOKEN"
+[ "$s_auth" != unauthorized ] ||
+	fail "the API token in $s_token_file does not authenticate against $(get "$SOURCE_REPORT" api_url): on a multi-workspace host that is usually another workspace's token. Set DRILL_REMOTE_ENV_FILE or DRILL_REMOTE_API_TOKEN"
+[ "$s_auth" != token-missing ] ||
+	fail "the source daemon requires an API token and none was found (looked in the serving unit's EnvironmentFiles, $s_etc/*.env and $s_etc/workspaces/*.env): set DRILL_REMOTE_ENV_FILE to the workspace's .env file, or DRILL_REMOTE_API_TOKEN"
+ok "token      ${s_token_source}${s_token_file:+, $s_token_file} authenticates on the source"
+
+# Whatever the target's daemon will require, the drill has to be able to drive
+# it after the restore, so the token must resolve there too.
+if [ "$s_token_source" = explicit ]; then
+	ok "token      passed explicitly, so the target needs no file"
+else
+	t_token_source=$(get "$TARGET_REPORT" token_source)
+	t_auth=$(get "$TARGET_REPORT" auth_required)
+	[ "$t_token_source" != ambiguous ] ||
+		fail "several environment files on the target hold an API token and none of them is the serving unit's: $(get "$TARGET_REPORT" token_reason). Set DRILL_REMOTE_ENV_FILE or DRILL_REMOTE_API_TOKEN"
+	[ "$t_token_source" != none ] ||
+		fail "the source needs a token but none was found on the target (looked in the serving unit's EnvironmentFiles, $(get "$TARGET_REPORT" etc_dir)/*.env and $(get "$TARGET_REPORT" etc_dir)/workspaces/*.env): the drill could not drive the restored daemon. Set DRILL_REMOTE_ENV_FILE or DRILL_REMOTE_API_TOKEN to say which credential to use"
+	ok "token      the target resolves one too (${t_token_source}, $(get "$TARGET_REPORT" token_file))"
+fi
 
 s_kernel=$(get "$SOURCE_REPORT" kernel)
 t_kernel=$(get "$TARGET_REPORT" kernel)
@@ -164,6 +239,19 @@ for side in source target; do
 	done
 done
 ok "tools      sqlite3, tar, find, sha256sum, readlink on both hosts"
+
+# The restore chowns the trees to the source's owner, so that account has to
+# exist on the target; otherwise the daemon starts and cannot read its own
+# database. `getent` is what deploy's own host requirements call for.
+t_getent=$(get "$TARGET_REPORT" getent)
+[ "$t_getent" = yes ] || fail "the target host has no getent, so the drill cannot check that the service account exists before chowning the restored trees to it"
+s_owner_for_check=$(get "$SOURCE_REPORT" data_owner)
+case "$s_owner_for_check" in
+- | "")
+	fail "the source data directory's owner could not be read, so the restore has no owner to chown to"
+	;;
+esac
+ok "owner      the restored trees will be owned by $s_owner_for_check on the target (checked before the restore)"
 
 s_uid=$(get "$SOURCE_REPORT" uid)
 t_uid=$(get "$TARGET_REPORT" uid)

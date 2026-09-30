@@ -119,11 +119,16 @@ set -eu
 # mode and record a transcript for a claim nobody made; the opt-in without its
 # parameters would fail later with a message about ssh rather than about the
 # missing value. A silent fallback either way is evidence for the wrong claim,
-# which is the one thing a drill must never produce.
+# which is the one thing a drill must never produce. Every variable the
+# clean-host mode reads is in the list, optional ones included: setting
+# DRILL_REMOTE_SUDO and nothing else is still an attempt to run that drill.
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 clean_host_seen=""
-for name in DRILL_SOURCE_HOST DRILL_TARGET_HOST DRILL_SSH_KEY DRILL_REMOTE_DIR \
-	DRILL_REMOTE_JOBS_DIR DRILL_REMOTE_SERVICE DRILL_JOB; do
+for name in DRILL_SOURCE_HOST DRILL_TARGET_HOST DRILL_SSH_KEY DRILL_JOB \
+	DRILL_REMOTE_DIR DRILL_REMOTE_JOBS_DIR DRILL_REMOTE_SERVICE DRILL_REMOTE_BIN \
+	DRILL_REMOTE_API_URL DRILL_REMOTE_API_TOKEN DRILL_REMOTE_ENV_FILE \
+	DRILL_REMOTE_ETC_DIR DRILL_REMOTE_BACKUP_DIR DRILL_REMOTE_SUDO \
+	DRILL_KEEP_TARGET DRILL_RUN_LIMIT DRILL_TRANSPORT; do
 	eval "clean_host_value=\${$name:-}"
 	[ -n "$clean_host_value" ] && clean_host_seen="$clean_host_seen $name"
 done
@@ -145,6 +150,9 @@ case "${DRILL_CLEAN_HOST:-}" in
 	exit 2
 	;;
 esac
+
+# Say which drill this is, so a transcript cannot be read as the other one.
+echo "drill: local same-host mode: one machine, a different data directory"
 
 # --- the binary -------------------------------------------------------------
 # `make drill` supplies OTTER_BIN. Run directly, fall back to the checkout's
