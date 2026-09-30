@@ -1,0 +1,70 @@
+=== Phase 0 evidence: HW-1 deploy attempted, blocked (no job project) ===
+task:      P0-07 (HW-1: deploy the pinned build to the Castor host)
+claim:     BLOCKED. The documented first-run deploy command cannot install a runtime.
+date:      2026-09-30 16:09:30 EDT
+where:     operator checkout -> Castor host ubuntu@44.198.213.184 (linux/arm64)
+build:     otter @ dd8bb28, CLI built as v0.3.0-rc1 (make build VERSION=v0.3.0-rc1)
+note:      no host mutation. The first command is a no-op; the second is --dry-run.
+
+--- 1. The documented first-run command, from the otter checkout ---
+$ ./bin/otter deploy --host ubuntu@44.198.213.184 --identity <key> --dry-run
+otter: no otter.yaml found under /Users/taka/Desktop/otter-workspace/otter: nothing to deploy
+exit: non-zero
+
+--- 2. Why: the workspace has no live job project ---
+$ find <workspace> -name otter.yaml -not -path "*/releases/*"
+./scratch-probe/probe/otter.yaml
+(none outside staged release snapshots)
+$ ls <workspace>/otter/otter.yaml <workspace>/otter/integrations
+ls: /Users/taka/Desktop/otter-workspace/otter/otter.yaml: No such file or directory
+ls: /Users/taka/Desktop/otter-workspace/otter/integrations: No such file or directory
+The only otter.yaml files present are 27 staged snapshots under
+otter/.otter/data/.releases/ (shopify-to-salesforce, shopify-product-to-salesforce-product).
+Those are release artifacts, not a working tree, and this checkout is the runtime:
+Makefile: 'This checkout is the runtime, not a job project.'
+
+--- 3. A minimal project IS deployable (feasibility probe, still a dry run) ---
+$ otter init probe && otter validate probe
+ok: probe (.../scratch-probe/probe/otter.yaml)
+1 job(s) valid
+
+$ otter deploy --host ubuntu@44.198.213.184 --identity <key> --dry-run   # from scratch-probe/
+connect:  checking ssh access to ubuntu@44.198.213.184
+connect:  ubuntu@44.198.213.184 is linux/arm64
+platform: building for linux/arm64; this machine is darwin/arm64
+workspace: creating scratch-probe-c5aabf2b on ubuntu@44.198.213.184 (127.0.0.1:7337)
+plan:     dry run: no files will be written and the service will not be touched
+plan:     host:      ubuntu@44.198.213.184
+plan:     platform:  linux/arm64
+plan:     version:   v0.3.0-rc1
+plan:     workspace: scratch-probe-c5aabf2b on ubuntu@44.198.213.184 (unit otterd-scratch-probe-c5aabf2b.service)
+plan:     tree:      /opt/otter/workspaces/scratch-probe-c5aabf2b
+plan:     data:      /opt/otter/workspaces/scratch-probe-c5aabf2b/.otter/data (never written by a deploy)
+plan:     api:       http://127.0.0.1:7337 (loopback; reach it with ssh -L)
+plan:     binaries:  would compile otterd and otter from /Users/taka/Desktop/otter-workspace/otter
+plan:     daemon:    no otter.daemon.env; nothing daemon-wide to configure
+plan:     secrets:   no otter.env; jobs rely on their manifest env
+plan:     release:   would stage and activate probe
+would deploy v0.3.0-rc1 to 44.198.213.184 (linux/arm64)
+workspace:     scratch-probe-c5aabf2b
+jobs:          probe
+install:       /opt/otter
+
+nothing was changed (--dry-run)
+
+--- 4. What the dry run revealed about the daemon environment ---
+daemon:    no otter.daemon.env; nothing daemon-wide to configure
+
+The daemon env file is read from the *project* directory, not from the runtime
+checkout. So OTTER_WORKERS=1 and the notification URL set in
+otter/otter.daemon.env do NOT reach a deploy run from another directory. It must be
+placed in the deployed project, or passed with --daemon-env.
+
+--- verdict ---
+Proves: the documented P0-07 first-run sequence is wrong. `otter deploy` deploys a
+project and its jobs; the otter checkout is the runtime and holds no otter.yaml, so
+the documented command reports "nothing to deploy" and installs no daemon.
+
+Does NOT prove: that the host cannot run the runtime. A minimal project deploys
+cleanly, per the dry run in section 3. What is missing is a job to deploy -- which is
+P0-13 (Castor job selection), and is customer-blocked, not host-blocked.

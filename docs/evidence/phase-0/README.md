@@ -49,3 +49,7 @@ is not.
 | 2026-09-29 | aggregate suite | [2026-09-29-aggregate-drills.txt](2026-09-29-aggregate-drills.txt) | macOS 15 arm64; `make drill` runs all four drills on `main` |
 | 2026-09-29 | P0-10 | [2026-09-29-p0-10-liveness-drill.txt](2026-09-29-p0-10-liveness-drill.txt) | macOS 15 arm64; real `otterd` on loopback plus a local stand-in for the dead-man service |
 | 2026-09-30 | P0-07 host identity | [2026-09-30-p0-07-host-identity.txt](2026-09-30-p0-07-host-identity.txt) | operator checkout; read-only AWS/CloudFormation calls against the otter account (no host access) |
+| 2026-09-30 | P0-07 HW-0 baseline | [2026-09-30-p0-07-host-baseline.txt](2026-09-30-p0-07-host-baseline.txt) | the Castor VM (`i-00dcd4c34a0dcb0ef`), read-only, plus a local full-range TCP scan |
+| 2026-09-30 | P0-07 HW-1 blocked | [2026-09-30-p0-07-hw1-deploy-blocked.txt](2026-09-30-p0-07-hw1-deploy-blocked.txt) | operator checkout; the documented first-run deploy command deploys nothing |
+| 2026-09-30 | P0-07 HW-1 deploy | [2026-09-30-p0-07-hw1-deploy.txt](2026-09-30-p0-07-hw1-deploy.txt) | the Castor VM: v0.3.0-rc1 deployed, caps live, CPython 3.13.1 prepared on arm64 |
+| 2026-09-30 | P0-04 host re-run (failed) | [2026-09-30-p0-04-unit-caps-host-failure.txt](2026-09-30-p0-04-unit-caps-host-failure.txt) | the Castor VM: a runaway job is throttled and swapped, not OOM-killed; otterd starved |

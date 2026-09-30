@@ -1,0 +1,148 @@
+=== Phase 0 evidence: HW-1 deployed the pinned runtime to the Castor host ===
+task:      P0-07 (HW-1), and the first real-host run of P0-04 caps and P0-08 managed Python
+claim:     one empty VM -> a running, hardened otterd serving loopback only
+date:      2026-09-30 16:15:11 EDT
+where:     Castor host ubuntu@44.198.213.184 (i-00dcd4c34a0dcb0ef, us-east-1a), deployed from the operator checkout
+build:     otter @ dd8bb28, CLI built as v0.3.0-rc1 (make build VERSION=v0.3.0-rc1)
+project:   otter_examples @ 264e004 (public), the shopify_integrations project
+workspace: otter-examples-b379f933   unit: otterd-otter-examples-b379f933.service
+redaction: the API token is replaced with <redacted>. Every other value is raw.
+
+--- otter deploy --status (recorded in the project) ---
+host:          ubuntu@44.198.213.184
+workspace:     otter-examples-b379f933
+version:       v0.3.0-rc1
+platform:      linux/arm64
+revision:      1335709472dae303
+deployed at:   2026-09-30 20:14:18 UTC
+tree:          /opt/otter/workspaces/otter-examples-b379f933
+data:          /opt/otter/workspaces/otter-examples-b379f933/.otter/data
+service:       otterd-otter-examples-b379f933.service
+api:           http://127.0.0.1:7337 (loopback on the host)
+
+destination identities:
+  shopify-product-to-salesforce-product f9e82309-ceac-483d-9855-718b29374b19
+  shopify_customer_to_salesforce_contact 75f4bb09-6489-4b90-9ce6-2f0cad62acde
+
+export OTTER_API_TOKEN=<redacted>
+ssh -N -L 7337:127.0.0.1:7337 ubuntu@44.198.213.184 &
+
+
+--- deploy transcript (from the successful run) ---
+$ otter deploy --host ubuntu@44.198.213.184 --identity <key>
+connect:  checking ssh access to ubuntu@44.198.213.184
+Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+connect:  ubuntu@44.198.213.184 is linux/arm64
+platform: building for linux/arm64; this machine is darwin/arm64
+workspace: creating otter-examples-b379f933 on ubuntu@44.198.213.184 (127.0.0.1:7337)
+token:    generated a new API token
+build:    cross-compiling otterd and otter for linux/arm64
+compiling otterd and otter from /Users/taka/Desktop/otter-workspace/otter
+build:    vendoring uv 0.5.9 for linux/arm64
+fetching https://github.com/astral-sh/uv/releases/download/0.5.9/uv-aarch64-unknown-linux-gnu.tar.gz
+uv 0.5.9 ready (sha256 376d5d52a4b3)
+prepare:  creating the service account and layout
+sync:     pushing 2 job(s) and the shared library
+sync:     pushing the binaries
+sync:     pushing uv
+prepare:  handing the workspace to otter
+env:        OTTER_WORKERS
+env:      wrote 1 daemon setting(s) to /etc/otter/workspaces/otter-examples-b379f933.daemon.env
+secrets:  no otter.env, deploying anyway (the daemon will refuse to run a job whose declared secrets are absent)
+release:  releasing 2 job(s)
+releasing shopify-product-to-salesforce-product
+shopify-product-to-salesforce-product: release 518b2fe6dff9
+shopify-product-to-salesforce-product: environment ad7891d7cd30 (python 3.13.1)
+shopify-product-to-salesforce-product: activated 518b2fe6dff9
+releasing shopify_customer_to_salesforce_contact
+shopify_customer_to_salesforce_contact: release 8a939a4f456b
+shopify_customer_to_salesforce_contact: environment 872547ee4fa6 (python 3.13.1)
+shopify_customer_to_salesforce_contact: activated 8a939a4f456b
+install:  writing /etc/systemd/system/otterd-otter-examples-b379f933.service and restarting otterd-otter-examples-b379f933.service
+unit: active
+verify:   waiting for the health endpoint
+verify:   healthy: {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":0.189266731,"jobs":{"total":2,"valid":2,"invalid":0},"queue_depth":0}
+bindings: recorded 2 destination identity(ies)
+done:     v0.3.0-rc1 deployed to ubuntu@44.198.213.184 in 18s
+deployed v0.3.0-rc1 to 44.198.213.184 (linux/arm64)
+workspace:     otter-examples-b379f933
+jobs:          shopify-product-to-salesforce-product, shopify_customer_to_salesforce_contact
+install:       /opt/otter
+
+API token (store it now; it is also in .otter/state.secret.json):
+  export OTTER_API_TOKEN=<redacted>
+
+the API listens on loopback only. Reach it with a tunnel:
+  ssh -N -L 7337:127.0.0.1:7337 44.198.213.184 &
+  otter --api http://127.0.0.1:7337 status
+
+
+--- post-deploy verification on the host ---
+### unit
+active
+enabled
+MainPID=3494
+NRestarts=0
+OOMPolicy=continue
+MemoryHigh=568918016
+MemoryMax=711147520
+TasksMax=512
+User=otter
+### health (loopback)
+{"status":"ok","version":"v0.3.0-rc1","uptime_seconds":13.458003485}
+
+### listening sockets (7337 must be loopback only)
+LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=1689,fd=3),("systemd",pid=1,fd=169))
+LISTEN 0      4096       127.0.0.1:7337      0.0.0.0:*    users:(("otterd",pid=3494,fd=9))                       
+LISTEN 0      4096            [::]:22           [::]:*    users:(("sshd",pid=1689,fd=4),("systemd",pid=1,fd=170))
+### ownership and modes
+755 otter:otter /opt/otter/workspaces/otter-examples-b379f933
+700 otter:otter /opt/otter/workspaces/otter-examples-b379f933/.otter/data
+700 root:root /etc/otter/workspaces
+600 root:root /etc/otter/workspaces/otter-examples-b379f933.env
+600 root:root /etc/otter/workspaces/otter-examples-b379f933.daemon.env
+otter:x:999:988::/opt/otter:/usr/sbin/nologin
+### releases on disk
+75f4bb09-6489-4b90-9ce6-2f0cad62acde
+active
+f9e82309-ceac-483d-9855-718b29374b19
+### swap
+Swap:           2047           0        2047
+
+
+--- schedules paused, and the pause survives a daemon restart ---
+The jobs declare cron "*/5 * * * *", so they were paused immediately after the deploy:
+the project has no credentials, so every run would fail (and notify, once a channel is set).
+
+$ otter pause shopify-product-to-salesforce-product
+paused: shopify-product-to-salesforce-product
+cron and webhook will not fire; otter run still runs it on demand
+$ otter pause shopify_customer_to_salesforce_contact
+paused: shopify_customer_to_salesforce_contact
+cron and webhook will not fire; otter run still runs it on demand
+
+$ systemctl restart otterd-otter-examples-b379f933   # MainPID 3250 -> 3494
+$ otter jobs --schedule
+JOB                                       CRON             NEXT RUN   IN   LAST RUN
+shopify_customer_to_salesforce_contact    */5 * * * *      paused      -   no runs yet
+shopify-product-to-salesforce-product     */5 * * * *      paused      -   no runs yet
+
+Both jobs are still paused after the restart, with MainPID changed, so the pause is
+persisted state and not a process-lifetime flag.
+
+--- verdict ---
+Proves: an empty VM converged to a running otterd (v0.3.0-rc1) with the service account
+nologin, data dir 0700, both env files 0600 root-owned, the unit enabled and active with
+NRestarts 0, the API bound to loopback only, and the P0-04 caps live as resolved values
+(MemoryMax 711147520 = 75%, MemoryHigh 568918016 = 60%, CPUQuota 200%, TasksMax 512)
+with OOMPolicy=continue and the sandbox directives present.
+
+Also proves, on real arm64 hardware: managed Python prepared CPython 3.13.1 for both
+jobs. That is the exact failure docs/managed-python.md warns about ("not every patch
+version is downloadable everywhere"); it did not occur, so the t3.micro/x86 fallback
+the preflight documents is not needed for this pin.
+
+Does NOT prove: P0-07 as a task. Its evidence bar is the port scan plus a passing
+permission assertion test, and the provisioning script that must reproduce this from an
+empty VM is still being written. It also does not prove anything about a Castor job:
+otter_examples is a stand-in, and both its schedules are paused.

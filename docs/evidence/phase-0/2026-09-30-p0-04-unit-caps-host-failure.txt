@@ -1,0 +1,83 @@
+=== Phase 0 evidence: HW-3 unit caps on the Castor host — the claim FAILS as deployed ===
+task:      P0-04 (ledger: "Re-run on the Castor VM once P0-07 exists")
+claim:     a deliberately runaway Python job is killed; otterd survives and the host stays responsive
+result:    FAILS. The job was NOT killed, and the host did not stay responsive.
+date:      2026-09-30 16:21:24 EDT
+where:     the Castor VM, workspace otter-examples-b379f933, deployed caps (75% / 60%), 2 GiB swapfile
+method:    scripts-style host re-run of the committed drill: stage a runaway job into the live
+           workspace, run it, watch the workspace cgroup.
+
+--- the deployed caps, verified in force before the run ---
+unit MemoryMax:        711147520  (75% of 904 MiB)
+unit MemoryHigh:       568918016  (60%)
+cgroup memory.max:     711147520
+cgroup memory.high:    568918016
+cgroup swap.max:       n/a  (NOT SET -- the cgroup may swap without bound)
+otterd MainPID before: 3494
+
+--- what happened (bounded 180s wait) ---
+oom_kill after: 0 (before 0)
+cgroup memory.events:  high 27821   max 0   oom 0   oom_kill 0
+cgroup memory.peak:    628346880  (628 MiB)
+cgroup memory.max:     711147520  (711 MiB)
+unit-caps-host: FAIL: the runaway was not OOM-killed within 180s
+
+The run was throttled at memory.high (27,821 high events) and peaked at 628 MiB --
+BELOW the 711 MiB hard cap. So the hard cap never bound, and the OOM killer never ran.
+
+--- and the host did not stay responsive ---
+free -m:   Mem: 904 total, 868 used, 35 available
+Swap:      2047 total, 2047 used, 0 free   <-- the 2 GiB swapfile, exhausted
+uptime:    load average 3.47
+systemd:   degraded
+cgroup:    python3 pid 3722 RSS 615672 KiB still alive; otterd pid 3494 RSS 804 KiB
+health:    "curl --max-time 5 http://127.0.0.1:7337/health" -> exit 124 (TIMED OUT)
+api:       otter runs runaway --limit 5 -> context deadline exceeded
+
+So the runaway survived, filled swap completely, left 35 MiB available, and starved
+otterd until its API stopped answering. That is the opposite of the claim.
+
+--- why the container drill passed and this does not ---
+The committed drill sets MEMORY_HIGH=off and runs in a container with no swap, so the
+hard cap is the binding constraint and the OOM kill fires in seconds. On the host both
+conditions differ, and either alone is enough to change the outcome:
+
+  1. MemoryHigh=60% throttles and reclaims first (the drill comment predicts exactly
+     this: "can keep a hold-everything allocator pinned below the hard cap").
+  2. No MemorySwapMax is set, so the cgroup swaps without bound. The 2 GiB swapfile,
+     added by the stack as "insurance for a 1 GiB host", is what lets the runaway grow
+     past RAM while memory.current stays under memory.max. Swap pressure then starves
+     every other process in the same cgroup, including otterd, because otterd and the
+     jobs share one cgroup by design (MemoryMax is documented as bounding the sum).
+
+--- recovery (performed immediately) ---
+The API was unresponsive, so the run could not be cancelled through it. Killed the
+runaway child, restarted the unit to clear the cgroup, removed the job from the live
+workspace. After recovery:
+  Mem: 904 total, 268 used, 624 free, 635 available
+  Swap: 2047 total, 0 used
+  /health: {"status":"ok","version":"v0.3.0-rc1"}
+  jobs: the two shopify jobs; the runaway job is gone
+  schedules: both still paused (the pause survived a second restart)
+
+--- a defect in the drill itself, found here ---
+The drill asserts "no runaway process survived" with "pgrep -af runaway/main.py".
+That pattern does not match: the child runs as plain "python3" with its cwd set, so
+the assertion passes even while the runaway is alive. It reported clean on the first
+check after the failure, and the runaway was in fact still running and holding 615 MiB.
+The assertion is not load-bearing as written and must be fixed (match the cgroup procs
+or the run id, not a path substring).
+
+--- verdict ---
+Proves: the caps are correctly configured and in force (the cgroup matches the unit),
+and that the P0-04 guarantee does NOT hold as deployed on the Castor host. A runaway job
+is throttled and swapped rather than killed, and it degrades the daemon and the host.
+
+Does NOT prove: that the caps are useless. They bound the blast radius (memory.current
+never exceeded memory.max, so the kernel never had to reclaim globally). What is missing
+is a swap bound: with MemorySwapMax unset, the hard cap cannot be reached.
+
+Remedy to verify next: emit MemorySwapMax (0, or a small fraction of MemoryMax) in
+UnitFile so the cgroup cannot swap, making the hard cap binding again. That needs a code
+change plus a re-run of this window, and it interacts with the stack's swapfile decision:
+unbounded cgroup swap converts a contained OOM kill into a host-wide thrash.

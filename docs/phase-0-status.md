@@ -29,16 +29,16 @@ Status values: `not started`, `in progress`, `blocked`, `host-gated`,
 | --- | --- | --- | --- | --- | --- |
 | P0-01 | Real crash/kill harness | **done** | merged `4e8fe7e`; `internal/daemon/crash_harness*_test.go` | [record](evidence/phase-0/2026-09-29-p0-01-crash-harness.txt) — Linux `ok 33.2s`, harness deterministic over 3 runs, 3 mutations red→green. Verifier removed `Pdeathsig`: 53 child survivals and 10 duplicated chains, so "none executed twice" is load-bearing. Appendix A: FM-01 **Real (Linux)**, FM-02 **Real (atomicity)** | VERIFIED @ `42ca217` |
 | P0-02 | Retry release/environment binding | **done** | merged `7b990bc`; `retry_binding_test.go` + `recoveryRetryPolicy` in `recovery.go` | four tests (six cases) prove the retry half, the managed environment and the prune, and the verifier's three mutations — live policy, live release, live environment — each break them. `runtime-contract.md` §5.1 promoted from non-guarantee to guarantee; `OT-011` retired. Findings: the recovery live-vs-bound policy defect was fixed; a transiently unreadable snapshot strands a retry → `OT-012` | VERIFIED @ `05e3187`, corrections applied |
-| P0-03 | Full-fidelity backup and restore | in progress — **host-gated** | merged `fa233e8`; `scripts/drill/backup-restore.sh`; [operations.md](operations.md#backups). Clean-host mode in flight: **W-E**, `.worktrees/p0-03` (`p0-03-clean-host-mode`) | [record](evidence/phase-0/2026-09-29-p0-03-backup-restore-drill.txt) — drill clean ×3, three sabotage modes red at the run assertion. Verifier wrote 9 additional independent sabotages and confirmed the repointing is a legitimate restore step, not a masked defect. **The task's evidence bar is a real host, so this is not closed**: the drill proves same-host, different-data-directory | VERIFIED @ `91b8cd3` (drill and doc) |
-| P0-04 | Resource caps in the generated unit | **done** | merged `f5dc220`; `UnitOptions` + `scripts/drill/unit-caps.sh` | [drill](evidence/phase-0/2026-09-29-p0-04-unit-caps-drill.txt), [mutation](evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt) — runaway OOM-killed at the cap, `MainPID` survived, `NRestarts 0`, host answered. Verifier removed `OOMPolicy`: drill fails with `MainPID after: 0`, so it detects daemon death. Zero-cap validation defect found and fixed. Re-run on the Castor VM once P0-07 exists | VERIFIED @ `def32b8` |
+| P0-03 | Full-fidelity backup and restore | in progress — **host-gated** | merged `fa233e8`; clean-host mode on branch `p0-03-clean-host-mode` @ `3bb2a16`: a two-host mode plus a preflight gate that refuses a dirty target, a same-machine pair, a path or version mismatch; hostless selfcheck wired into `go test ./...` via `internal/drill`; default mode unchanged. **HW-7 is now runnable.** Merges cleanly with W-B (verified: both features survive, `sh -n` clean). `operations.md` wording proposed but not applied | [record](evidence/phase-0/2026-09-29-p0-03-backup-restore-drill.txt) — drill clean ×3, three sabotage modes red at the run assertion. Verifier wrote 9 additional independent sabotages and confirmed the repointing is a legitimate restore step, not a masked defect. **The task's evidence bar is a real host, so this is not closed**: the drill proves same-host, different-data-directory. The new mode's *halves* are exercised locally; the two-host composition has never run, and its first execution is HW-7 | VERIFIED @ `91b8cd3` (drill and doc) |
+| P0-04 | Resource caps in the generated unit | **done in the container; reopens on the host** | merged `f5dc220`; `UnitOptions` + `scripts/drill/unit-caps.sh` | Container [drill](evidence/phase-0/2026-09-29-p0-04-unit-caps-drill.txt), [mutation](evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt) — runaway OOM-killed at the cap, `MainPID` survived, `NRestarts 0`, host answered. **The Castor re-run contradicts it:** with the deployed `MemoryMax=75%`/`MemoryHigh=60%` and an unbounded cgroup swap, the runaway is throttled and swapped, never killed — swap exhausted and otterd stopped answering ([failure](evidence/phase-0/2026-09-30-p0-04-unit-caps-host-failure.txt)). The container passed because it sets `MemoryHigh=off` and has no swap. Needs `MemorySwapMax` emitted in `UnitFile` | VERIFIED @ `def32b8` (container only) |
 | P0-05 | Pin the version; no auto-upgrade | **done** | `main` (W0) | [pin recorded](#pinned-runtime-version) + [operations.md](operations.md#upgrades); no code path updates the runtime — 2026-09-29 baseline | 2026-09-29 baseline run |
 | P0-06 | Deployment-failure recovery | **done** | merged `30f4fd9`; `scripts/drill/deploy-failure.sh` + a containerised SSH/systemd deploy target | [record](evidence/phase-0/2026-09-29-p0-06-deploy-failure-drill.txt) — the real `otter deploy` converges a systemd container over ssh; clean ×2 (21s/24s). The candidate is staged, then its preparation is refused, so it never activates: `MainPID` unchanged, `/health` answered, and a new run succeeds bound to the previous release **and** environment digests. Verifier: both sabotages red on their matching assertion, the injection confirmed after staging and before activation, and the checkout verified clean after every run. Scope: container not the Castor VM, no binary/unit swap, stub `uv` | VERIFIED @ `bb6f6a9`; `30f4fd9` delta (stub rename, re-recorded transcript) reviewed |
-| P0-07 | Provision the Castor host | in progress — **host-gated** | Infra deployed (`otter-platform` stack `CastorRuntime`). Provisioning script + permission assertions in flight: **W-A**, `.worktrees/p0-07` (`p0-07-provisioning-script`) | pending — windows HW-0, HW-8 | pending |
-| P0-08 | Egress and managed Python | in progress — **host-gated** | Mirror/index passthrough + prepare-time egress preflight in flight: **W-B**, `.worktrees/p0-08` (`p0-08-egress-managed-python`) | pending — window HW-2 (critical path to P0-13) | pending |
+| P0-07 | Provision the Castor host | in progress — **host-gated** | Infra deployed (`otter-platform` stack `CastorRuntime`). HW-0 baseline and HW-1 deploy are **done** on the real host ([baseline](evidence/phase-0/2026-09-30-p0-07-host-baseline.txt), [deploy](evidence/phase-0/2026-09-30-p0-07-hw1-deploy.txt)). **Finding:** the stack's cloud-init failed — a socket-activated `sshd` reload aborted it under `set -e`, so the host had no swap and no provisioning report until converged by hand. Provisioning script + permission assertions still in flight: **W-A** | pending — HW-8 posture re-scan | pending |
+| P0-08 | Egress and managed Python | in progress — **host-gated** | Branch `p0-08-egress-managed-python` @ `3f9f300`: `internal/pyenv/egress.go` (prepare-time egress preflight that fails before any fetch, with platform/catalogue attribution only when the preflight passed), `--index`/`--python-mirror`/`--egress-endpoint`/`--skip-egress-check` threaded through prepare, release and deploy; route deliberately excluded from environment identity; 22 packages green; 12 mutations recorded. **HW-2's core is already met**: the deploy prepared CPython 3.13.1 on arm64. It also edited `scripts/drill/backup-restore.sh` and `deploy-failure.sh` (other tasks' files) — merge conflict expected with W-E | pending — HW-2 preflight line | pending |
 | P0-09 | Failure notification | blocked on human | code already complete | pending — needs a real channel | pending |
 | P0-10 | Independent liveness detection | in progress — artifact done, **evidence host-gated** | `main`; `scripts/heartbeat.sh`, `heartbeat.service`, `heartbeat.timer`, `scripts/drill/liveness.sh` | [record](evidence/phase-0/2026-09-29-p0-10-liveness-drill.txt) — no runtime → no ping and a non-zero exit; real `otterd` → the ping is logged; runtime killed → pings stop. `DRILL_SABOTAGE=ping-always` goes red on the first assertion, so the drill tests the dead-man property rather than a script's exit code. The task's own evidence — kill the daemon and watch an alert arrive — still needs the external service and the host | pending |
 | P0-11 | Disk retention and thresholds | not started | — | pending | pending |
-| P0-12 | Scope Castor's credentials | blocked on human (values) | Code already complete; assertion tests in flight: **W-D**, `.worktrees/p0-12` (`p0-12-credentials`) | pending — needs names, scopes, values; window HW-5 | pending |
+| P0-12 | Scope Castor's credentials | blocked on human (values) | Branch `p0-12-credentials` @ `a162f51` (6 commits): value-in-list, `secrets:` mapping, a never-started tripwire, 0600 env files — each mutation-checked; `manifest-reference.md` corrected; [capture](evidence/phase-0/2026-09-30-p0-12-secret-scoping.txt). Finding: an identifier-shaped value is a legal env-var name, so syntactic validation cannot separate name from value; pinned by test and documented | pending — needs names, scopes, values; window HW-5 | pending |
 | P0-13 | Select and harden the job | blocked on customer | — | pending | pending |
 | P0-14 | Shadow run beside the Lambda | not started | after P0-13 | pending | pending |
 | P0-15 | Cutover | not started | after all blockers | pending | pending |
@@ -56,15 +56,24 @@ A window with no transcript is an open window.
 
 | Window | Task | Status | Transcript |
 | --- | --- | --- | --- |
-| HW-0 host identity + clean baseline | P0-07 | not started | — |
-| HW-1 deploy the pin | P0-05, P0-07 | blocked on the pin decision | — |
-| HW-2 egress + managed Python | P0-08 | waiting on W-B | — |
-| HW-3 unit caps on the real host | P0-04 | not started | — |
-| HW-4a notification / HW-4b liveness | P0-09, P0-10 | blocked on the notify channel | — |
+| HW-0 host identity + clean baseline | P0-07 | **done** 2026-09-30 | [baseline](evidence/phase-0/2026-09-30-p0-07-host-baseline.txt) |
+| HW-1 deploy the pin | P0-05, P0-07 | **done** 2026-09-30 — `v0.3.0-rc1` @ `dd8bb28` | [deploy](evidence/phase-0/2026-09-30-p0-07-hw1-deploy.txt) |
+| HW-2 egress + managed Python | P0-08 | core assertion met: CPython 3.13.1 prepared for both jobs on arm64. W-B's explicit preflight still pending | [deploy](evidence/phase-0/2026-09-30-p0-07-hw1-deploy.txt) |
+| HW-3 unit caps on the real host | P0-04 | **ran, FAILED** — a runaway job is throttled and swapped, never OOM-killed; swap hit 100%, otterd stopped answering. Remedy: emit `MemorySwapMax` | [failure](evidence/phase-0/2026-09-30-p0-04-unit-caps-host-failure.txt) |
+| HW-4a notification / HW-4b liveness | P0-09, P0-10 | channel exists (Slack webhook in `otter.daemon.env`); not yet run | — |
 | HW-5 credentials | P0-12 | blocked on Castor's values | — |
 | HW-6 retention + disk pressure | P0-11 | blocked on WS1/WS4 | — |
 | HW-7 backup → restore onto a clean host | P0-03 | waiting on W-E and a second host | — |
 | HW-8 final posture re-scan | P0-07 | not started | — |
+
+**Deployed workspace (stand-in, not Castor):** `otter-examples-b379f933` on
+`ubuntu@44.198.213.184`, unit `otterd-otter-examples-b379f933.service`, running
+`v0.3.0-rc1`. The project is the public `otter_examples` repo (Shopify →
+Salesforce). It is a **stand-in** for P0-13's job, chosen because it is a real
+managed-Python project with real schedules. **Both jobs are paused** (`otter
+pause`), the pause is persisted (it survives a unit restart), and no credentials
+are deployed, so nothing can reach a vendor API. Tear it down before Castor's
+real project is deployed.
 
 ## Shared prerequisites
 
@@ -85,15 +94,22 @@ only by a written decision recorded here.
 
 | | |
 | --- | --- |
-| Pinned version | **v0.2.0** — the newest published release with release notes ([docs/releases/v0.2.0.md](releases/v0.2.0.md)) |
-| Recorded | 2026-09-29 |
-| Confirmed by | *host owner — pending* |
-| Re-evaluate after | P0-01 and P0-02 land, since both change runtime behavior and are scheduled in the `v0.3.0` line |
+| Pinned version | **v0.3.0-rc1** — a from-source build of `main` @ `dd8bb28`, deployed to the host 2026-09-30 |
+| Recorded | 2026-09-30 |
+| Confirmed by | conductor, under the host owner's instruction to deploy the pinned build |
+| Re-evaluate after | the real `v0.3.0` tag exists and its exit gate has passed with a named second operator |
 
-`v0.2.0` is recorded as the current pin because it is the only version with
-published artifacts, not because it is the version Phase 0 should cut over on.
-The cutover pin is the release that carries P0-01's and P0-02's fixes, and it
-should be re-recorded here when those close.
+`v0.3.0-rc1` is deliberately **not** a published release: `release.yml` publishes
+only on a `v*.*.*` tag, and nothing has been tagged or pushed. It is a label on a
+build of `main`, which carries P0-01's and P0-02's fixes, and the local `otter`
+CLI was built with `make build VERSION=v0.3.0-rc1` so the host's `/health` reports
+the same string the ledger records. `v0.2.0` is therefore superseded as the pin:
+it was recorded only because it was the newest version with published artifacts,
+not because Phase 0 should validate it.
+
+The pin cannot be mistaken for a fetchable release: `v0.3.0-rc1` fails
+`IsReleasedVersion`, so `otter deploy` will never try to download it — it compiles
+from the named checkout instead.
 
 **There is no unattended upgrade path.** Verified in the code, not assumed:
 

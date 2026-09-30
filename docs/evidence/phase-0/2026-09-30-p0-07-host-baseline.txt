@@ -1,0 +1,136 @@
+=== Phase 0 evidence: HW-0 Castor host baseline (read-only) ===
+task:      P0-07 (baseline input; the P0-07 verdict is the HW-8 posture re-scan)
+claim:     the host is a clean, arm64, Ubuntu 24.04 VM with no Otter deployment yet
+date:      2026-09-30 16:07:15 EDT
+where:     Castor EC2 host i-00dcd4c34a0dcb0ef / 44.198.213.184 (us-east-1a), from the operator checkout
+build:     otter @ dd8bb28 (v0.2.0-38-gdd8bb28)
+method:    read-only. No install, no deploy, no unit change. sudo used only for reading root-owned files.
+
+--- host key (recorded, so a later connection can be checked) ---
+# 44.198.213.184:22 SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19
+44.198.213.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB0DtDjHu7PaB/WTnFjgc7uO0XrxDkRZTstgCYwca8iY
+
+--- remote transcript ---
+### os-release
+PRETTY_NAME="Ubuntu 24.04.5 LTS"
+VERSION_ID="24.04"
+### uname
+Linux ip-10-42-0-103 7.0.0-1013-aws #13~24.04.1-Ubuntu SMP PREEMPT Fri Sep  4 21:20:04 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+### arch / cpus
+aarch64
+2
+### memory (MiB)
+               total        used        free      shared  buff/cache   available
+Mem:             904         277         240           0         469         627
+Swap:              0           0           0
+### swap
+### root filesystem
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        19G  2.3G   17G  13% /
+### tool preflight (otter deploy hard-requires rsync and find)
+rsync      /usr/bin/rsync
+find       /usr/bin/find
+systemctl  /usr/bin/systemctl
+curl       /usr/bin/curl
+git        /usr/bin/git
+python3    /usr/bin/python3
+### provisioning report
+cat: /var/log/otter-provision-report.txt: No such file or directory
+NO provisioning report at /var/log/otter-provision-report.txt
+### otter deployment state (expect: nothing yet)
+no otter service account
+ls: cannot access '/opt/otter': No such file or directory
+ls: cannot access '/opt/otter/data': No such file or directory
+ls: cannot access '/etc/otter': No such file or directory
+  UNIT LOAD ACTIVE SUB DESCRIPTION
+
+0 loaded units listed.
+To show all installed unit files use 'systemctl list-unit-files'.
+otterd is-enabled: not-found
+### listening TCP sockets
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                                                 
+LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*    users:(("systemd-resolve",pid=361,fd=15))              
+LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=1689,fd=3),("systemd",pid=1,fd=185))
+LISTEN 0      4096      127.0.0.54:53        0.0.0.0:*    users:(("systemd-resolve",pid=361,fd=17))              
+LISTEN 0      4096            [::]:22           [::]:*    users:(("sshd",pid=1689,fd=4),("systemd",pid=1,fd=186))
+### sshd effective config
+allowtcpforwarding yes
+kbdinteractiveauthentication no
+passwordauthentication no
+permitemptypasswords no
+permitrootlogin no
+port 22
+pubkeyauthentication yes
+x11forwarding no
+### IMDSv2 enforcement (IMDSv1 must be refused: expect 401)
+IMDSv1 GET /latest/meta-data/ -> 401
+IMDSv2 token PUT            -> 200
+### instance identity via IMDSv2 (must match the CloudFormation output)
+instance-id: i-00dcd4c34a0dcb0ef
+availability-zone: us-east-1a
+instance-type: t4g.micro
+### cloud-init status
+status: error
+
+(the transcript above is unedited raw output)
+
+
+--- external port scan (P0-07 evidence bar) ---
+nmap is not installed on the operator machine and the Docker pull is blocked in this
+environment, so this is a full-range external TCP connect scan by a local script
+(python3, 1-65535, 0.7s timeout). The tool differs from the `nmap -Pn -p-` the stack
+output suggests; the scan is still external and still covers every port.
+
+$ python3 portscan.py 44.198.213.184 1-65535
+open ports on 44.198.213.184 (1-65535):
+  22/tcp open  ssh
+
+RESULT: only 22/tcp is open. Matches the single approved inbound rule.
+On-host corroboration (ss -ltnp above): sshd on 0.0.0.0:22 and [::]:22, plus
+systemd-resolved on loopback only. No 7337, nothing else.
+
+
+--- FINDING: cloud-init failed; the host was left missing its swap ---
+cloud-init status: error
+  errors: ('scripts_user', RuntimeError('Runparts: 1 failures (part-001) in 1 attempted commands'))
+
+The user-data script sets `set -euo pipefail` and runs:
+
+    systemctl reload ssh || systemctl reload sshd
+
+On Ubuntu 24.04 sshd is socket-activated. The provision log records:
+
+    ssh.service is not active, cannot reload.
+    Failed to reload sshd.service: Unit sshd.service not found.
+
+Both sides of the `||` fail, so `set -e` aborts the script -- before the swap block,
+the vm.swappiness write, and the provisioning report were reached.
+
+Consequences observed:
+  - Swap: 0 MiB (the stack declares enableSwap: true and otter-platform/README.md
+    treats the 2 GiB swapfile as part of the 1 GiB sizing rationale).
+  - /var/log/otter-provision-report.txt does not exist, so the documented first-run
+    step `cat /var/log/otter-provision-report.txt` fails.
+  - vm.swappiness was never set.
+  - SSH hardening did apply: the config file is written before the reload, and a
+    socket-activated sshd re-reads config per connection. sshd -T confirms
+    permitrootlogin no, passwordauthentication no, permitemptypasswords no.
+
+Converged manually (not by the provisioning script), to restore the declared state:
+  - /swapfile 2 GiB, mkswap, swapon, added to /etc/fstab  -> Swap: 2047 MiB
+  - /etc/sysctl.d/99-otter-swap.conf vm.swappiness=10
+
+Deliberately NOT converged: the provisioning report. That file is the provisioning
+script's own output, and writing it by hand would fabricate evidence for the very
+step that failed. It stays absent until the user-data bug is fixed.
+
+The defect is in otter-platform (the CDK stack user-data), not in this repository.
+The user-data comment also says "a 2 GiB host", which is stale: this host is 1 GiB.
+
+--- verdict ---
+Proves: the host is a clean arm64 Ubuntu 24.04 VM matching the declared shape, with
+only 22/tcp reachable externally, IMDSv2 enforced, hardened sshd, no Otter deployment
+present, and the tool preflight (rsync, find) satisfied.
+
+Does NOT prove: that the stack provisions a working host. It does not -- cloud-init
+failed and swap was missing until it was created by hand. P0-07 remains open.
