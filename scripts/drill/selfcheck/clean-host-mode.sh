@@ -297,29 +297,51 @@ TOKETC="$WORK/probe/etc/otter"
 EMPTY_ETC="$WORK/probe/empty/etc/otter"
 mkdir -p "$TOKETC/workspaces" "$EMPTY_ETC/workspaces" "$WORK/probe/bin"
 printf 'OTTER_API_TOKEN=GOODTOKEN\n' >"$TOKETC/workspaces/app-1a2b3c4d.env"
-# A decoy: a second workspace on the same host with a different token. The
-# unit's own environment file must win, or a multi-workspace host authenticates
-# as the wrong workspace and every call is a 401.
+# Decoys in both other layouts, each with a token that is NOT the serving
+# workspace's: another workspace beside it, and the flat /etc/otter/*.env that
+# the CLI's own glob searches and that operations.md/security.md still document.
+# The unit's own file must win over both, or a multi-workspace host
+# authenticates as the wrong workspace and every call is a 401.
 printf 'OTTER_API_TOKEN=OTHERTOKEN\n' >"$TOKETC/workspaces/decoy-9f8e7d6c.env"
+printf 'OTTER_API_TOKEN=FLATTOKEN\n' >"$TOKETC/otter.env"
 FAKE_UNIT_ENV="$TOKETC/workspaces/app-1a2b3c4d.env"
 FAKE_UNIT_DAEMON_ENV="$TOKETC/workspaces/app-1a2b3c4d.daemon.env"
+# The daemon-settings file, in the real layout: it is loaded first and holds no
+# token at all.
 printf 'OTTER_DATA_DIR=/should/not/win\n' >"$FAKE_UNIT_DAEMON_ENV"
 
 cat >"$WORK/probe/bin/systemctl" <<'FAKESYSTEMCTL'
 #!/bin/sh
 # Test double for systemctl: the property output a real one prints for a
-# deployed unit. The paths arrive through the environment so the selfcheck can
-# point the unit at its own temporary workspace.
+# deployed unit. The shape is captured from systemd 255 (Ubuntu 24.04) and
+# systemd 252 (Amazon Linux 2023), including the fact that
+# `systemctl show -p EnvironmentFiles` prints ONE LINE PER FILE:
+#
+#   EnvironmentFiles=/etc/otter/workspaces/app-1a2b3c4d.daemon.env (ignore_errors=yes)
+#   EnvironmentFiles=/etc/otter/workspaces/app-1a2b3c4d.env (ignore_errors=yes)
+#
+# `otter deploy` renders the daemon-settings file first and the credentials
+# file second, and only the second holds OTTER_API_TOKEN.
+#
+# FAKE_UNIT_SHAPE=drop-shared removes the credentials line, which is what the
+# pre-R1 parse effectively saw when it kept only the first line: the mutation
+# used to prove the token resolution's assertion can go red.
 svc=""
 for a in "$@"; do svc=$a; done
 case "$svc" in
 otterd-app-1a2b3c4d)
-	cat <<EOF
-ActiveState=active
-LoadState=loaded
-ExecStart={ path=$FAKE_UNIT_BIN ; argv[]=$FAKE_UNIT_BIN --jobs $FAKE_UNIT_JOBS --data $FAKE_UNIT_DATA --listen $FAKE_UNIT_LISTEN --log-format json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
-EnvironmentFiles=$FAKE_UNIT_DAEMON_ENV (ignore_errors=yes) $FAKE_UNIT_ENV (ignore_errors=yes)
-EOF
+	echo "ActiveState=active"
+	echo "LoadState=loaded"
+	echo "ExecStart={ path=$FAKE_UNIT_BIN ; argv[]=$FAKE_UNIT_BIN --jobs $FAKE_UNIT_JOBS --data $FAKE_UNIT_DATA --listen $FAKE_UNIT_LISTEN --log-format json ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }"
+	case "${FAKE_UNIT_SHAPE:-real}" in
+	drop-shared)
+		echo "EnvironmentFiles=$FAKE_UNIT_DAEMON_ENV (ignore_errors=yes)"
+		;;
+	*)
+		echo "EnvironmentFiles=$FAKE_UNIT_DAEMON_ENV (ignore_errors=yes)"
+		echo "EnvironmentFiles=$FAKE_UNIT_ENV (ignore_errors=yes)"
+		;;
+	esac
 	;;
 *)
 	echo "ActiveState=inactive"
@@ -336,20 +358,25 @@ FAKE_UNIT_DATA=/var/lib/otter
 FAKE_UNIT_JOBS=/srv/otter/jobs
 FAKE_UNIT_LISTEN=127.0.0.1:7337
 
-# probe_auth <out> <unit-env-file|-> <etc-dir> [api_token] [env_file]
-# Runs the real probe with the fake systemctl on PATH.
+# probe_auth <out> <unit-env-file|-> <etc-dir> [api_token] [env_file] [shape]
+# Runs the real probe with the fake systemctl on PATH. `shape=drop-shared` makes
+# systemd report only the first EnvironmentFiles line, which is what the
+# pre-R1 parse effectively kept.
 probe_auth() {
 	auth_out=$1
 	auth_unit_env=$2
 	auth_etc=$3
 	auth_token=${4:-}
 	auth_env_file=${5:-}
+	auth_shape=${6:-real}
+	auth_bin=${7:-$AUTHBIN}
 	[ "$auth_unit_env" = "-" ] && auth_unit_env=""
 	env PATH="$WORK/probe/bin:$PATH" \
 		FAKE_UNIT_BIN="$FAKE_UNIT_BIN" FAKE_UNIT_DATA="$FAKE_UNIT_DATA" \
 		FAKE_UNIT_JOBS="$FAKE_UNIT_JOBS" FAKE_UNIT_LISTEN="$FAKE_UNIT_LISTEN" \
 		FAKE_UNIT_ENV="$auth_unit_env" FAKE_UNIT_DAEMON_ENV="$FAKE_UNIT_DAEMON_ENV" \
-		sh "$LIB/host-report.sh" source "$FAKE_UNIT_DATA" "$FAKE_UNIT_JOBS" "$AUTHBIN" \
+		FAKE_UNIT_SHAPE="$auth_shape" \
+		sh "$LIB/host-report.sh" source "$FAKE_UNIT_DATA" "$FAKE_UNIT_JOBS" "$auth_bin" \
 		http://127.0.0.1:7337 otterd-app-1a2b3c4d "$auth_token" "$auth_env_file" "$auth_etc" >"$auth_out"
 }
 
@@ -379,10 +406,30 @@ say "  ok  the probe reads the unit's data dir, jobs root, listen address, binar
 	fail "a good token must authenticate: auth=$(report_get "$UNIT_REPORT" auth)"
 [ "$(report_get "$UNIT_REPORT" auth_required)" = no ] ||
 	fail "a good token must not leave auth_required=yes"
-say "  ok  the token comes from the unit's own env file and authenticates (a decoy workspace file does not win)"
+say "  ok  the token comes from the unit's SECOND EnvironmentFiles line (two Workspace decoys, flat and nested, do not win)"
 
+# D2 mutation: systemd reports only the daemon-settings line, which is what the
+# pre-fix parse (head -n 1) effectively kept. The serving workspace's token is
+# then invisible, the flat /etc/otter/*.env decoy wins, and the probe must say
+# so -- the assertion above is what goes red.
+D2_REPORT="$WORK/d2.report"
+probe_auth "$D2_REPORT" "$FAKE_UNIT_ENV" "$TOKETC" "" "" drop-shared
+[ "$(report_get "$D2_REPORT" token_source)" != unit-env ] ||
+	fail "the D2 mutation still resolved the unit's token; the fixture no longer reproduces the defect"
+[ "$(report_get "$D2_REPORT" auth)" = unauthorized ] ||
+	fail "the D2 mutation should authenticate as the wrong workspace, got auth=$(report_get "$D2_REPORT" auth)"
+say "  ok  D2 mutation: dropping the unit's second EnvironmentFiles line loses the token (source=$(report_get "$D2_REPORT" token_source), auth=$(report_get "$D2_REPORT" auth)) -- the assertion above is what catches it"
+
+# Two workspace files and no unit evidence is the ambiguous case. (A flat
+# /etc/otter/*.env is a different, older layout rather than a competing
+# candidate; when there is no unit evidence the probe prefers it, exactly as the
+# CLI's own lookup does, and says so. The case below covers both.)
+AMBIG_ETC="$WORK/probe/ambig/etc/otter"
+mkdir -p "$AMBIG_ETC/workspaces"
+printf 'OTTER_API_TOKEN=OTHERTOKEN\n' >"$AMBIG_ETC/workspaces/one.env"
+printf 'OTTER_API_TOKEN=THIRDTOKEN\n' >"$AMBIG_ETC/workspaces/two.env"
 AMBIG_REPORT="$WORK/ambiguous.report"
-probe_auth "$AMBIG_REPORT" "-" "$TOKETC"
+probe_auth "$AMBIG_REPORT" "-" "$AMBIG_ETC"
 [ "$(report_get "$AMBIG_REPORT" token_source)" = ambiguous ] ||
 	fail "two token files and no unit evidence must be reported ambiguous, got $(report_get "$AMBIG_REPORT" token_source)"
 [ "$(report_get "$AMBIG_REPORT" token_file)" = - ] ||
@@ -391,6 +438,52 @@ probe_auth "$AMBIG_REPORT" "-" "$TOKETC"
 	fail "the ambiguous report did not count both candidates"
 has "$(report_get "$AMBIG_REPORT" token_reason)" "several files hold a token" "the ambiguous report must say why"
 say "  ok  two candidate token files are reported ambiguous instead of guessing one"
+
+FLAT_REPORT="$WORK/flat-token.report"
+probe_auth "$FLAT_REPORT" "-" "$TOKETC"
+[ "$(report_get "$FLAT_REPORT" token_source)" = etc-otter ] ||
+	fail "with no unit evidence the probe must use the CLI's own flat lookup, got $(report_get "$FLAT_REPORT" token_source)"
+[ "$(report_get "$FLAT_REPORT" token_file)" = "$TOKETC/otter.env" ] ||
+	fail "the flat lookup resolved the wrong file: $(report_get "$FLAT_REPORT" token_file)"
+say "  ok  with no unit evidence the probe falls back to the CLI's own /etc/otter/*.env lookup, and names the file"
+
+# The operator's DRILL_REMOTE_BIN default is deploy's host dispatcher, which
+# refuses `--version` outside a workspace once the host holds two or more
+# workspaces. The serving unit names the workspace's own otterd, and the CLI
+# beside it is the right one; the probe must find it and say which it used.
+cat >"$WORK/bin-dispatcher" <<'DISPATCHER'
+#!/bin/sh
+echo "otter: more than one workspace on this host; run me inside one" >&2
+exit 1
+DISPATCHER
+chmod +x "$WORK/bin-dispatcher"
+WSBIN="$WORK/probe/ws/bin"
+mkdir -p "$WSBIN"
+cp "$AUTHBIN" "$WSBIN/otter"
+: >"$WSBIN/otterd"
+chmod +x "$WSBIN/otterd"
+
+saved_unit_bin=$FAKE_UNIT_BIN
+FAKE_UNIT_BIN="$WSBIN/otterd"
+BIN_REPORT="$WORK/bin-fallback.report"
+probe_auth "$BIN_REPORT" "-" "$EMPTY_ETC" "" "" real "$WORK/bin-dispatcher"
+FAKE_UNIT_BIN=$saved_unit_bin
+[ "$(report_get "$BIN_REPORT" otter_bin_given)" = "$WORK/bin-dispatcher" ] ||
+	fail "the probe did not report the CLI it was given"
+[ "$(report_get "$BIN_REPORT" otter_bin)" = "$WSBIN/otter" ] ||
+	fail "the probe did not fall back to the serving workspace's CLI, got $(report_get "$BIN_REPORT" otter_bin)"
+[ "$(report_get "$BIN_REPORT" otter_version)" = "otter v0.0.0-authstub" ] ||
+	fail "the fallback CLI's version was not read: $(report_get "$BIN_REPORT" otter_version)"
+say "  ok  a dispatcher that refuses --version falls back to the serving workspace's CLI, named in the report"
+
+saved_unit_bin=$FAKE_UNIT_BIN
+FAKE_UNIT_BIN="$WORK/probe/ws/bin/otterd"
+rm -f "$WSBIN/otter"
+probe_auth "$BIN_REPORT" "-" "$EMPTY_ETC" "" "" real "$WORK/bin-dispatcher"
+FAKE_UNIT_BIN=$saved_unit_bin
+[ "$(report_get "$BIN_REPORT" otter_version)" = missing ] ||
+	fail "with no runnable CLI anywhere the probe must report missing, got $(report_get "$BIN_REPORT" otter_version)"
+say "  ok  with no runnable CLI anywhere the probe reports missing, so the gate refuses"
 
 WRONG_REPORT="$WORK/wrong-token.report"
 probe_auth "$WRONG_REPORT" "-" "$EMPTY_ETC" "" "$TOKETC/workspaces/decoy-9f8e7d6c.env"
@@ -492,8 +585,9 @@ kernel=Linux
 release=6.8.0
 arch=x86_64
 uid=0
-otter_bin=/usr/local/bin/otter
-otter_version=otter v0.0.0-selfcheck
+otter_bin=/opt/otter/workspaces/app-1a2b3c4d/bin/otter
+otter_bin_given=/usr/local/bin/otter
+otter_version=otter v0.2.0-47-g2a32ca7
 data_dir=/var/lib/otter
 data_real=/var/lib/otter
 data_exists=yes
@@ -512,8 +606,11 @@ jobs_entries=1
 jobs_clean=no
 jobs_reason=not empty
 find=yes
+# D1: these two strings are captured from a live otterd, verbatim.
+# `otter --version` prints the program name; `otter status` reports the daemon's
+# health version without it. The gate must treat them as the same build.
 daemon=running
-daemon_version=otter v0.0.0-selfcheck
+daemon_version=v0.2.0-47-g2a32ca7
 daemon_detail=-
 auth=ok
 auth_required=no
@@ -553,6 +650,7 @@ sed -e 's/^role=source/role=target/' \
 	-e 's/^jobs_reason=.*/jobs_reason=-/' \
 	-e 's/^jobs_entries=1/jobs_entries=0/' \
 	-e 's/^daemon=running/daemon=stopped/' \
+	-e 's/^daemon_version=.*/daemon_version=-/' \
 	-e 's/^auth=ok/auth=unknown/' \
 	-e 's/^auth_required=no/auth_required=unknown/' \
 	-e 's/^service_state=active/service_state=inactive/' \
@@ -561,6 +659,8 @@ out=$(sh "$LIB/assert-clean-host.sh" "$WORK/good-source.report" "$WORK/good-targ
 	fail "the gate refused reports that satisfy every condition:$out"
 has "$out" "ok: the target is a clean, empty host" "the passing path must say what it concluded"
 has "$out" "token      unit-env" "the passing path must report the token it resolved"
+has "$out" "the source daemon and its CLI agree" "the real daemon/CLI version pair must be treated as one build (D1)"
+say "      D1: with the raw strings the old comparison failed every pair; here it agrees on v0.2.0-47-g2a32ca7"
 say "  ok  a fully good pair passes the gate (fixture reports; the gate's own happy path)"
 
 # R1/R2: each mutation below is one broken measurement away from that good pair,
@@ -602,6 +702,10 @@ say "  ok  a unit that listens on another port is refused, by name"
 mutation "unit paths unreadable" 's|^unit_data_dir=.*|unit_data_dir=-|' ""
 has "$out" "names no data directory" "an undeterminable unit must say so"
 say "  ok  a unit the drill cannot read is refused with instructions, not guessed at"
+
+mutation "daemon and CLI builds differ" 's|^daemon_version=.*|daemon_version=v0.2.0-46-gdeadbee|' ""
+has "$out" "different builds" "a genuinely different daemon build must still refuse (D1's check must bite)"
+say "  ok  D1 mutation: a daemon on another build is refused, so the comparison was not weakened into agreement"
 
 mutation "ambiguous token" 's|^token_source=.*|token_source=ambiguous|
 s|^token_file=.*|token_file=-|
@@ -828,7 +932,9 @@ case "$cmd" in
 	# A running daemon on the source runs the same build as its CLI, which is
 	# what the real probe would report.
 	cli_version=$(printf '%s' "$probe_out" | sed -n 's/^otter_version=//p')
-	if [ "$daemon" = running ]; then daemon_version=$cli_version; else daemon_version=-; fi
+	# `otter --version` prints "otter <v>"; the daemon's health version is "<v>"
+	# with no program name, exactly as `otter status` reports it.
+	if [ "$daemon" = running ]; then daemon_version=${cli_version#otter }; else daemon_version=-; fi
 	printf '%s' "$probe_out" | sed \
 		-e "s|^data_dir=.*|data_dir=$FAKE_LOGICAL_DATA|" \
 		-e "s|^data_real=.*|data_real=$FAKE_LOGICAL_DATA|" \

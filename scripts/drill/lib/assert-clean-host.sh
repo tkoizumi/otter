@@ -220,13 +220,39 @@ t_version=$(get "$TARGET_REPORT" otter_version)
 [ "$s_version" = "$t_version" ] || fail "the hosts run different versions ($s_version vs $t_version): restore the version that was backed up, because the schema is versioned"
 ok "version    $s_version on both hosts"
 
-# The CLI on the source must be the build its daemon is, or the operator is
-# driving one build, backing up a second and restoring onto a third.
+# When the CLI the operator named did not answer, say which one the probe used
+# instead. `otter deploy` puts a host dispatcher at /usr/local/bin/otter that
+# refuses --version outside a workspace once a host holds two or more
+# workspaces; the serving unit's own <workspace>/bin/otter does not.
+for side in source target; do
+	if [ "$side" = source ]; then report=$SOURCE_REPORT; else report=$TARGET_REPORT; fi
+	given=$(get "$report" otter_bin_given)
+	effective=$(get "$report" otter_bin)
+	if [ -n "$given" ] && [ "$given" != "$effective" ]; then
+		note "the $side host's $given did not answer --version; the drill uses the serving workspace's CLI at $effective"
+	fi
+done
+
+# The daemon's version and the CLI's are two spellings of the same build, and
+# they are NOT the same string: `otter --version` prints `otter v0.2.0-1-gabc`
+# (internal/cli/cli.go), while `otter status` prints the daemon's own health
+# version, `v0.2.0-1-gabc`, with no program name. Comparing them raw refuses
+# every correct pair -- which is exactly what a real host did -- so both are
+# reduced to the version token before they are compared.
+version_token() {
+	token=$1
+	case "$token" in
+	"otter "*) token=${token#otter } ;;
+	"otterd "*) token=${token#otterd } ;;
+	esac
+	printf '%s' "$token"
+}
+
 s_daemon_version=$(get "$SOURCE_REPORT" daemon_version)
 if [ -n "$s_daemon_version" ] && [ "$s_daemon_version" != "-" ]; then
-	[ "$s_daemon_version" = "$s_version" ] ||
+	[ "$(version_token "$s_daemon_version")" = "$(version_token "$s_version")" ] ||
 		fail "the source daemon reports $s_daemon_version but its otter CLI reports $s_version: the database and the tooling around it are different builds"
-	ok "version    the source daemon and its CLI agree ($s_daemon_version)"
+	ok "version    the source daemon and its CLI agree ($s_daemon_version, CLI $s_version)"
 fi
 
 # --- the tools each side needs ------------------------------------------------

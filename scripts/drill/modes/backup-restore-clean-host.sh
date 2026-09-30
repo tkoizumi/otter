@@ -443,11 +443,24 @@ remote_otter() {
 		# The explicit override travels in the command line, so it is visible in
 		# the host's process list for the length of the call. That is the cost of
 		# the override; the discovered-file path above does not pay it.
-		remote_cmd "$remote_host" "OTTER_API_TOKEN=$API_TOKEN OTTER_API_URL=$API_URL $REMOTE_BIN $*"
+		remote_cmd "$remote_host" "OTTER_API_TOKEN=$API_TOKEN OTTER_API_URL=$API_URL $(bin_for "$remote_host") $*"
 		return
 	fi
 	remote_script "$remote_host" "$LIB/run-otter.sh" "$(token_file_for "$remote_host")" \
-		"$API_URL" "$REMOTE_BIN" $*
+		"$API_URL" "$(bin_for "$remote_host")" $*
+}
+
+# bin_for echoes the CLI the probe found runnable on a host. `otter deploy`
+# leaves a host dispatcher at DRILL_REMOTE_BIN's default that refuses
+# `--version` once a host holds two or more workspaces; the probe falls back to
+# the serving workspace's own <workspace>/bin/otter, and this is what makes the
+# drill use the same one.
+bin_for() {
+	case "$1" in
+	"$SOURCE_HOST") printf '%s' "${SRC_BIN:-$REMOTE_BIN}" ;;
+	"$TARGET_HOST") printf '%s' "${TGT_BIN:-$REMOTE_BIN}" ;;
+	*) printf '%s' "$REMOTE_BIN" ;;
+	esac
 }
 
 # token_file_for echoes the token file the probe resolved on a host, or `-`.
@@ -478,10 +491,33 @@ say "probing $TARGET_HOST"
 remote_script "$TARGET_HOST" "$LIB/host-report.sh" target "$DATA_DIR" "$JOBS_DIR" "$REMOTE_BIN" "$API_URL" "$SERVICE" "$API_TOKEN" "$ENV_FILE" "$ETC_DIR" >"$WORK/target.report" ||
 	fail "could not probe the target host $TARGET_HOST"
 
-# The token file each host resolved, for remote_otter. `-` means the daemon
-# needs none.
+# The token file and the CLI each host resolved, for remote_otter. `-` means the
+# daemon needs no token.
 SRC_TOKEN_FILE=$(get token_file "$WORK/source.report")
 TGT_TOKEN_FILE=$(get token_file "$WORK/target.report")
+SRC_BIN=$(get otter_bin "$WORK/source.report")
+TGT_BIN=$(get otter_bin "$WORK/target.report")
+for pair in "$SOURCE_HOST|$SRC_BIN" "$TARGET_HOST|$TGT_BIN"; do
+	bin_host=${pair%%|*}
+	bin_path=${pair#*|}
+	[ -n "$bin_path" ] || fail "the probe on $bin_host reported no usable otter CLI"
+	case "$bin_path" in
+	/*) ;;
+	*) fail "the probe on $bin_host reported a relative otter CLI path: $bin_path" ;;
+	esac
+	case "$bin_path" in
+	*[!A-Za-z0-9@._:/=+,-]*)
+		fail "the probe on $bin_host reported a CLI path the drill cannot pass to a remote shell: $bin_path"
+		;;
+	esac
+done
+for pair in "$SOURCE_HOST|$SRC_BIN" "$TARGET_HOST|$TGT_BIN"; do
+	bin_host=${pair%%|*}
+	bin_path=${pair#*|}
+	if [ "$bin_path" != "$REMOTE_BIN" ]; then
+		say "note: $bin_host has no runnable CLI at $REMOTE_BIN; using $bin_path"
+	fi
+done
 
 say "source  $(get hostname "$WORK/source.report") (kernel $(get kernel "$WORK/source.report"), version $(get otter_version "$WORK/source.report"), daemon $(get daemon "$WORK/source.report"))"
 say "target  $(get hostname "$WORK/target.report") (kernel $(get kernel "$WORK/target.report"), version $(get otter_version "$WORK/target.report"), daemon $(get daemon "$WORK/target.report"))"

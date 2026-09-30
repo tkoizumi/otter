@@ -285,10 +285,21 @@ if have systemctl; then
 	[ "$load" = "loaded" ] && SERVICE_EXISTS=yes
 
 	exec_line=$(printf '%s\n' "$show" | sed -n 's/^ExecStart=//p' | head -n 1)
-	# The unit's own environment files, in the order systemd loads them. The
-	# property prints them space-separated with a `(ignore_errors=...)` suffix;
-	# the unit file's leading dash is not part of the property.
-	UNIT_ENV_FILES=$(printf '%s\n' "$show" | sed -n 's/^EnvironmentFiles=//p' | head -n 1 |
+	# The unit's own environment files, in the order systemd loads them.
+	#
+	# `systemctl show -p EnvironmentFiles` prints ONE LINE PER FILE, even though
+	# the manual page describes a single space-separated list:
+	#
+	#   EnvironmentFiles=/etc/otter/workspaces/app-1a2b3c4d.daemon.env (ignore_errors=yes)
+	#   EnvironmentFiles=/etc/otter/workspaces/app-1a2b3c4d.env (ignore_errors=yes)
+	#
+	# (captured on systemd 255 and 252; `otter deploy` renders the
+	# daemon-settings file first and the credentials file second). Keeping only
+	# the first line therefore drops the file that holds the token, and the
+	# drill falls back to a glob that can pick another workspace's token. So
+	# every line is collected, in order, and the `(ignore_errors=...)` suffix
+	# and any unit-file leading dash are stripped.
+	UNIT_ENV_FILES=$(printf '%s\n' "$show" | sed -n 's/^EnvironmentFiles=//p' |
 		tr ' ' '\n' | sed -n 's/^-*\(\/.*\)$/\1/p' | tr '\n' ' ' || true)
 	[ -n "$UNIT_ENV_FILES" ] || UNIT_ENV_FILES="-"
 
@@ -459,9 +470,33 @@ have timeout && TIMEOUT=yes
 GETENT=no
 have getent && GETENT=yes
 
+# The CLI the operator names may be deploy's host dispatcher
+# (`/usr/local/bin/otter`), which refuses `--version` and `status` outside a
+# workspace when the host holds more than one workspace. The serving unit knows
+# which CLI belongs to the runtime: its ExecStart names <workspace>/bin/otterd,
+# and the workspace's CLI is that file's sibling. Fall back to it -- and report
+# both paths, so a transcript shows the drill switched.
+OTTER_BIN_EFFECTIVE=$BIN
 OTTER_VERSION=missing
 if [ -x "$BIN" ]; then
 	OTTER_VERSION=$(value "$("$BIN" --version 2>/dev/null || echo missing)")
+fi
+if [ "$OTTER_VERSION" = missing ]; then
+	# `case`, not `[ ... = */otterd ]`: an unquoted pattern inside `[ ]` is
+	# pathname-expanded first, so a checkout holding bin/otterd would turn the
+	# test into "too many arguments".
+	case "${SERVICE_BIN:--}" in
+	*/otterd)
+		sibling=$(dirname "$SERVICE_BIN")/otter
+		if [ -x "$sibling" ]; then
+			candidate=$(value "$("$sibling" --version 2>/dev/null || echo missing)")
+			if [ "$candidate" != missing ]; then
+				OTTER_BIN_EFFECTIVE=$sibling
+				OTTER_VERSION=$candidate
+			fi
+		fi
+		;;
+	esac
 fi
 
 # --- the report ---------------------------------------------------------------
@@ -475,7 +510,8 @@ printf 'kernel=%s\n' "$(value "$(uname -s 2>/dev/null || echo unknown)")"
 printf 'release=%s\n' "$(value "$(uname -r 2>/dev/null || echo unknown)")"
 printf 'arch=%s\n' "$(value "$(uname -m 2>/dev/null || echo unknown)")"
 printf 'uid=%s\n' "$(id -u 2>/dev/null || echo unknown)"
-printf 'otter_bin=%s\n' "$BIN"
+printf 'otter_bin=%s\n' "$OTTER_BIN_EFFECTIVE"
+printf 'otter_bin_given=%s\n' "$BIN"
 printf 'otter_version=%s\n' "$OTTER_VERSION"
 printf 'data_dir=%s\n' "$DATA"
 printf 'data_real=%s\n' "$DATA_REAL"
