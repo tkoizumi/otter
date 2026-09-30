@@ -103,10 +103,15 @@ func (d *Daemon) recoverRuns(ctx context.Context) error {
 // only policy it has.
 //
 // A bound run whose snapshot cannot be read gets no successor. The fallback is
-// deliberately NOT extended to that case: executeRun refuses the same run for
-// the same reason, so a successor could only fail, and if one were planned from
-// the live manifest it would be a retry of one release governed by another --
-// precisely the defect this function exists to remove.
+// deliberately NOT extended to that case, because planning a successor from the
+// live manifest would be a retry of one release governed by another -- precisely
+// the defect this function exists to remove.
+//
+// The cost of that choice is stated rather than hidden: this check cannot tell a
+// permanently missing snapshot from a transiently unreadable one, so a snapshot
+// that is unreadable here and readable moments later loses a retry that
+// executeRun would otherwise have been able to run. The warning names the run,
+// and restoring the snapshot later does not bring that attempt back.
 func (d *Daemon) recoveryRetryPolicy(run *runs.Run) *config.Manifest {
 	if run.ReleaseSourceDir != "" {
 		bound, err := config.LoadAndValidate(filepath.Join(run.ReleaseSourceDir, config.ManifestFileName))

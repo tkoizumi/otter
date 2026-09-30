@@ -15,9 +15,11 @@ package daemon
 //     environment digest A recorded, not the one a newer release pins.
 //  3. TestPendingBacklogKeepsItsDigestThroughAReleasePrune -- a pending retry
 //     survives a retention pass that would otherwise remove its snapshot.
-//  4. TestRecoveryAppliesTheLiveRetryPolicyToABoundRun -- the probe the task
-//     list does not mention: crash recovery plans the successor from the LIVE
-//     registry manifest while binding it to the run's recorded release.
+//  4. TestRecoveryPlansRetriesFromTheBoundRelease -- the probe the task list
+//     does not mention: crash recovery plans the successor from the run's BOUND
+//     release, in both directions. A looser live policy must not extend the
+//     bound run's retry budget, and a stricter one must not withhold the retry
+//     the bound release promises.
 
 import (
 	"context"

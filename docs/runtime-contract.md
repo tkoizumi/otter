@@ -293,23 +293,43 @@ Guarantees:
   [Appendix A](#appendix-a--the-ws4-fault-matrix-and-its-evidence)). *Scenario
   FM-04.*
 
-**Retry release and environment binding (not yet proven).** Every attempt
-records the release digest and source directory, the Python mode, and — for
-managed Python — the prepared interpreter and environment digest at submission
-(`daemon/view.go`). A retry successor copies those fields rather than
-re-resolving them from the live tree (`daemon/workers.go` `planRetry`), and
-execution resolves the attempt's recorded release and environment
-(`daemon/workers.go` `executeRun`). Submission-side binding is tested by
-`TestRunExecutesTheActiveReleaseNotTheLiveTree`.
+**Retry release and environment binding.** Every attempt records the release
+digest and source directory, the Python mode and version, and — for managed
+Python — the prepared interpreter and environment digest (`daemon/view.go`). The
+first attempt resolves those at submission; a retry successor copies them from
+its parent rather than re-resolving them from the live tree
+(`daemon/workers.go` `planRetry`), and execution re-reads the manifest from the
+attempt's *bound* snapshot and rebuilds the recorded environment identity
+(`daemon/workers.go` `executeRun`). The retry policy — whether a successor is
+owed, and how long it waits — is decided from the bound release's manifest too,
+both on the ordinary path and when crash recovery plans a successor for an
+interrupted run (`daemon/recovery.go` `recoveryRetryPolicy`). Activating a newer
+release, changing the interpreter, or changing the retry policy while a retry is
+pending therefore cannot move that retry onto different code, a different
+environment, or a different policy.
 
-What is **not** proven is the retry half: that a retry executes its parent's
-bound release after a newer release has become active, and that a managed-Python
-retry resolves its parent's prepared environment. `FM-02`'s anchor tests prove
-that the terminal outcome and its successor are committed atomically; they do
-not assert that the successor's bound fields are re-used at execution time. The
-binding is therefore described here as implemented behavior and is an
-**explicit non-guarantee** until that scenario exists. It is tracked as `OT-011`
-in [open-work.md](open-work.md).
+If the bound snapshot is unreadable at execution time the attempt fails with that
+cause rather than falling back to the live tree or the active release, and crash
+recovery grants such a run no successor. That last behaviour is deliberate and
+carries a stated cost: recovery cannot tell a permanently missing snapshot from a
+transiently unreadable one, so a snapshot that is unreadable during recovery and
+readable moments later loses a retry it would otherwise have run. The warning
+names the run; restoring the snapshot later does not bring the attempt back. The
+only case that consults the live manifest for execution or retry policy is a run
+with no release binding at all — a legacy run, or one submitted before releases
+existed. The capture policy is a separate decision, deliberately read from the
+live manifest (§5.3).
+
+Pinned by `TestRunExecutesTheActiveReleaseNotTheLiveTree` (submission binding),
+`TestRetryExecutesTheParentsReleaseSnapshot` and
+`TestRetryResolvesTheParentsManagedEnvironment` (the retry half, including under
+managed Python), `TestPendingBacklogKeepsItsDigestThroughAReleasePrune` (through
+a retention pass — it pins the `Retain` contract with the same query the CLI
+uses, and the CLI entry point is covered by
+`TestReleaseKeepPrunesToTheWindowAndProtectsPins`), and
+`TestRecoveryPlansRetriesFromTheBoundRelease` (both directions: a looser live
+policy must not extend a bound run's budget, and a stricter one must not withhold
+the retry the bound release promises). This closes `OT-011`.
 
 ### 5.2 Exactly-once execution is not promised
 

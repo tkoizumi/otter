@@ -61,7 +61,7 @@ exit gate requires. This table remains their intake record.
 | OT-004 | Expose queue age, per-job depth, and last-success freshness | feature | `/health` reports counts only (`api/server.go:353-391`); no `created_at` age anywhere | open |
 | OT-005 | Ship a `migration_applied` log line, or stop promising one | doc | promised at `operations.md:698`; `Migrate` has no logger and `schema_migrations` has no description column | open |
 | OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | open |
-| OT-011 | Prove queued and retry attempts retain their bound release and environment | test | [see below](#reproducible-releases-not-yet-proven) | open |
+| OT-011 | Prove queued and retry attempts retain their bound release and environment | test | closed by P0-02: `TestRetryExecutesTheParentsReleaseSnapshot`, `TestRetryResolvesTheParentsManagedEnvironment`, `TestPendingBacklogKeepsItsDigestThroughAReleasePrune`, `TestRecoveryPlansRetriesFromTheBoundRelease` | done |
 
 The retention work was ordered by dependency: the documented SQL was wrong
 before retention existed, retention had to understand pinning before it pruned,
@@ -73,31 +73,33 @@ pinned"; the deploy release step passes a keep window (default 3), so a deploy
 converges the release directory instead of leaving every snapshot on disk. See
 [v0.3.0-release-plan.md](v0.3.0-release-plan.md#ws2--release-retention-and-deploy-pruning).
 
-#### Reproducible releases not yet proven
+#### Reproducible releases — closed
 
-Detail for `OT-011`. Raised by the WS7 audit against the roadmap's
-[Reproducible releases](product-roadmap.md#v020--phase-1-dependable-execution)
-bullet ("queued runs and retries retain their bound code and environment").
+`OT-011` is done. The retry half is now proven and the contract states it as a
+guarantee: a retry executes its parent's bound snapshot, under managed Python it
+resolves its parent's prepared environment, a pending backlog keeps its digest
+through a prune, and crash recovery plans the successor's policy from the bound
+release in both directions (a looser live policy must not extend a bound run's
+budget, a stricter one must not withhold the retry it promises). See
+[runtime-contract.md §5.1](runtime-contract.md#51-retries-use-the-bound-release-and-environment).
 
-- **What is proven.** A queued run executes its bound release snapshot, not the
-  live tree (`TestRunExecutesTheActiveReleaseNotTheLiveTree`). Retention protects
-  releases bound to non-terminal runs (`TestPinnedReleasesIncludesOnlyNonTerminalRuns`,
-  `TestRetainKeepsTheActiveAndReferenced`).
-- **What is not.** No test asserts that a *retry* re-uses its parent's
-  `release_digest` / `release_source_dir`, or that a managed-Python retry
-  resolves its parent's `environment_digest`. No test references
-  `ReleaseSourceDir` at all. `planRetry` copies the fields
-  (`internal/daemon/workers.go`), so the behavior is implemented, but nothing
-  exercises it end to end.
-- **Why it was missed.** The contract cited `FM-02` for the retry-binding
-  guarantee, but `FM-02`'s anchor tests prove only that the terminal outcome and
-  its successor are committed atomically. The citation was corrected when the
-  gap was found; the retry binding is now an explicit non-guarantee in
-  [runtime-contract.md](runtime-contract.md#5-retries-and-external-effects).
-- **Exit.** A matrix scenario that activates a newer release between a failed
-  attempt and its retry, and asserts the retry ran the parent's snapshot (and,
-  for managed Python, the parent's environment), plus a retention case that a
-  pending backlog keeps its digest.
+#### Phase 0 findings — found while verifying P0-01…P0-04
+
+Raised by the independent verifiers. These are the early entries in the ranked
+gap list P0-18 produces: none blocks the cutover, and each is a real behaviour
+or documentation boundary that was previously unstated. Ordered by how much a
+paying operator would care.
+
+| ID | Task | Kind | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| OT-012 | A transiently unreadable release snapshot strands an interrupted run's retry | design | `internal/daemon/recovery.go` `recoveryRetryPolicy`; demonstrated by the P0-02 verifier: fixed code gives a chain of 1, the live-policy fallback gave a chain of 2 whose attempt 2 succeeded. Stated in `runtime-contract.md` §5.1 | open |
+| OT-013 | A restore to a different data directory needs manual repointing of two absolute paths | design | `internal/release/stage.go` (absolute symlink), `internal/pyenv/manager.go` (absolute `interpreter`). A relative activation symlink and an interpreter derived from the env dir would remove the step; documented as a restore step today | open |
+| OT-014 | Recovery's intent to never run work twice is not delivered for a kill before the journal write | design | The FM-02 harness records 2 completion side effects per finish-window kill; a pre-commit journal would close it. `recovery.go`'s comment no longer overstates it | open |
+| OT-015 | The unit's resource caps are unit-wide, not per-job | design | `internal/deploy/render.go`; a per-job cgroup is what would make "the runaway job dies, the daemon does not" literal rather than a consequence of `OOMPolicy=continue` | open |
+| OT-016 | `requirePython` skips rather than fails, so a runner without `python3` silently drops job-execution evidence | test | `internal/daemon/daemon_test.go`; CI now pins Python 3.13, so the hole is closed there but the skip remains | open |
+| OT-017 | The backup/restore drill never runs the case where the original data directory still exists | test | `scripts/drill/backup-restore.sh` moves the original away, so silent resolution against the old directory is untested; the drill's own `release_source_dir` assertion would catch it | open |
+| OT-018 | The prune test copies the CLI's pin query instead of exercising it | test | `internal/daemon/retry_binding_test.go` (import cycle keeps `internal/cli` out); the CLI's own test covers that entry point | open |
+| OT-019 | The backup drill does not cover the secrets file or the pinned binary | test | `docs/operations.md` §Backups lists both; the drill covers database, releases, environments, tools and job sources | open |
 
 #### Backlog behavior to document
 
