@@ -45,6 +45,18 @@ Status values: `not started`, `in progress`, `blocked`, `host-gated`,
 | P0-17 | Write the runbook | not started | written while operating | pending | pending |
 | P0-18 | Produce the ranked gap list | not started | after P0-16 | pending | pending |
 
+## Shared prerequisites
+
+Not Phase 0 tasks themselves, but the machinery several tasks' evidence depends
+on. Each was verified rather than assumed.
+
+| Prerequisite | Status | Where |
+| --- | --- | --- |
+| Evidence convention — one dated record per run, raw output, named host | done 2026-09-29 | [evidence/phase-0/README.md](evidence/phase-0/README.md) |
+| Drill harness — `scripts/drill.sh`, `make drill`, `scripts/drill/<name>.sh` | done 2026-09-29; dispatcher verified for the empty, failing, aggregate and unknown-name cases | [scripts/drill.sh](../scripts/drill.sh) |
+| Linux container route for Linux-only evidence | done 2026-09-29; the `Pdeathsig` test builds and passes in a container | [2026-09-29-linux-docker-probe.txt](evidence/phase-0/2026-09-29-linux-docker-probe.txt) |
+| Worktree isolation for workers (`.worktrees/`, one branch per task) | done 2026-09-29; verified from inside a subagent | gitignored, see [phase-0-execution-plan.md](phase-0-execution-plan.md) §2 |
+
 ## Pinned runtime version
 
 **P0-05 deliverable.** The Castor host runs a named release, and the pin moves
