@@ -1,0 +1,17 @@
+# Linux-only test under Docker — 2026-09-29 21:32 EDT
+# Host: macOS 15.7.3 arm64 / Docker linux container golang:1.24
+# Purpose: prove the Linux-only test path (internal/executor/proc_linux_test.go, //go:build linux)
+#   runs here, so Linux-gated Phase 0 evidence (P0-01, P0-04) has a local route and not only CI.
+# Also proves the module cache inside the checkout is mountable and reusable.
+
+$ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/w/.cache/go-build -e GOMODCACHE=/w/.cache/gomod -v "$PWD":/w -w /w golang:1.24 go test ./internal/executor/ -run TestChildDiesWhenDaemonIsKilled -v
+
+=== RUN   TestChildDiesWhenDaemonIsKilled
+--- PASS: TestChildDiesWhenDaemonIsKilled (0.02s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/executor	(cached)
+
+EXIT=0
+
+# Verdict: the Linux-only Pdeathsig test passes in a container against this checkout.
+# Limitation: this is not yet the P0-01 daemon-kill harness, and not a systemd host.

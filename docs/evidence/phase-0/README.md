@@ -40,3 +40,4 @@ is not.
 | Date | Task | Record | Host |
 | --- | --- | --- | --- |
 | 2026-09-29 | baseline, P0-05 | [2026-09-29-baseline.txt](2026-09-29-baseline.txt) | macOS 15 arm64, developer checkout |
+| 2026-09-29 | tooling for P0-01/P0-04 | [2026-09-29-linux-docker-probe.txt](2026-09-29-linux-docker-probe.txt) | Linux container (`golang:1.24`) on macOS |
