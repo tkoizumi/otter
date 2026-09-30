@@ -28,7 +28,7 @@ Status values: `not started`, `in progress`, `blocked`, `host-gated`,
 | --- | --- | --- | --- | --- | --- |
 | P0-01 | Real crash/kill harness | in progress | `.worktrees/p0-01` | pending | pending |
 | P0-02 | Retry release/environment binding | in progress | `.worktrees/p0-02` | pending | pending |
-| P0-03 | Full-fidelity backup and restore | in progress | `main` — documentation half; drill not written | [operations.md §Backups](operations.md#backups) corrected against the real on-disk layout (2026-09-29); drill → pending | pending |
+| P0-03 | Full-fidelity backup and restore | in progress | `main` (documentation half) + `.worktrees/p0-03` (drill) | [operations.md §Backups](operations.md#backups) corrected 2026-09-29; drill + record → pending | pending |
 | P0-04 | Resource caps in the generated unit | in progress | `.worktrees/p0-04` | pending | pending |
 | P0-05 | Pin the version; no auto-upgrade | **done** | `main` (W0) | [pin recorded](#pinned-runtime-version) + [operations.md](operations.md#upgrades); no code path updates the runtime — 2026-09-29 baseline | 2026-09-29 baseline run |
 | P0-06 | Deployment-failure recovery | not started | after P0-03 | pending | pending |
