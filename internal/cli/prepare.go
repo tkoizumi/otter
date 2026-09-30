@@ -4,11 +4,66 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/pyenv"
 )
+
+// prepareOptions are the preparation-time settings a command passes to
+// internal/pyenv. They describe how the host reaches its dependencies, not
+// what the environment is, so they are never part of the environment identity.
+//
+// The zero value is the documented default: uv's own package index and
+// interpreter source, the egress preflight enabled, nothing extra checked. A
+// command that configures nothing therefore behaves exactly as it did before
+// these settings existed.
+type prepareOptions struct {
+	// UV is the uv executable. Empty lets the manager choose.
+	UV string
+	// Index replaces the package index dependencies are synced from.
+	Index string
+	// PythonMirror replaces the root managed interpreter downloads come from.
+	PythonMirror string
+	// ExtraEndpoints are further endpoints the egress preflight must reach.
+	ExtraEndpoints []string
+	// SkipEgressCheck turns the preflight off.
+	SkipEgressCheck bool
+}
+
+// manager assembles the environment manager these options describe. Progress,
+// including the preflight's, goes to w.
+func (o prepareOptions) manager(dataDir string, w io.Writer) pyenv.Manager {
+	return pyenv.Manager{
+		DataDir:         dataDir,
+		Index:           o.Index,
+		PythonMirror:    o.PythonMirror,
+		ExtraEndpoints:  o.ExtraEndpoints,
+		SkipEgressCheck: o.SkipEgressCheck,
+		// The preflight is the reason a host with no egress fails as a network
+		// problem instead of as a mysterious download error, so say when it
+		// ran and what it checked. It is one line per environment that
+		// actually had to be built.
+		Logf: func(format string, args ...any) { fmt.Fprintf(w, "otter: "+format, args...) },
+	}
+}
+
+// registerPrepareFlags binds the preparation settings shared by `otter
+// prepare` and `otter release`.
+func (o *prepareOptions) registerPrepareFlags(fs *flag.FlagSet) {
+	// Empty means "let the manager choose": a vendored copy under the data
+	// directory is preferred, and PATH is the fallback. Defaulting to the bare
+	// name "uv" would skip the vendored copy on a host that has no global uv.
+	fs.StringVar(&o.UV, "uv", "", "uv executable used only during preparation (default: the vendored copy, then PATH)")
+	// The fetch route, for a host whose egress goes through an internal mirror
+	// rather than the public endpoints. Both default to empty, which keeps
+	// uv's own defaults.
+	fs.StringVar(&o.Index, "index", "", "package index for managed dependencies (default PyPI; replaces it rather than adding to it)")
+	fs.StringVar(&o.PythonMirror, "python-mirror", "", "source for managed interpreter downloads (default uv's python-build-standalone releases)")
+	fs.BoolVar(&o.SkipEgressCheck, "skip-egress-check", false, "skip the preflight that checks preparation can reach the endpoints it needs")
+	fs.Var((*stringList)(&o.ExtraEndpoints), "egress-endpoint", "extra endpoint the preflight must reach, such as an API a job calls (repeatable)")
+}
 
 // cmdPrepare prepares managed jobs before they can execute.
 //
@@ -28,7 +83,8 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 	// Empty means "let the manager choose": a vendored copy under the data
 	// directory is preferred, and PATH is the fallback. Defaulting to the bare
 	// name "uv" would skip the vendored copy on a host that has no global uv.
-	uv := fs.String("uv", "", "uv executable used only during preparation (default: the vendored copy, then PATH)")
+	var opts prepareOptions
+	opts.registerPrepareFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -65,7 +121,7 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 		return code
 	}
 
-	manager := pyenv.Manager{DataDir: dataDir}
+	manager := opts.manager(dataDir, a.Stderr)
 	count := 0
 	for _, target := range targets {
 		label := target.Label()
@@ -80,7 +136,7 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 			}
 			continue
 		}
-		ready, err := manager.Prepare(ctx, target.Dir, target.ID, *uv)
+		ready, err := manager.Prepare(ctx, target.Dir, target.ID, opts.UV)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: prepare %s: %v\n", label, err)
 			return 1

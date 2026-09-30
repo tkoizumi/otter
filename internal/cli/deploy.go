@@ -126,6 +126,10 @@ Examples:
 		UV:                f.UV,
 		NoUV:              f.NoUV,
 		UVVersionOverride: f.UVVersion,
+		Index:             f.Index,
+		PythonMirror:      f.PythonMirror,
+		SkipEgressCheck:   f.SkipEgressCheck,
+		EgressEndpoints:   f.EgressEndpoints,
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)

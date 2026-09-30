@@ -571,6 +571,69 @@ func TestRunReleasesManagedPythonBeforeRestart(t *testing.T) {
 	}
 }
 
+// A host that reaches its dependencies through an internal mirror must have
+// that route carried into the release the deploy runs on it. A deploy that
+// dropped it would prepare against PyPI and fail on a host that has no route
+// there -- which is exactly the host the flags exist for.
+func TestDeployPassesThePreparationRouteToTheHostRelease(t *testing.T) {
+	const (
+		index  = "https://mirror.internal.example/simple"
+		mirror = "https://mirror.internal.example/python-build-standalone"
+		jobAPI = "https://api.example.com/graphql"
+	)
+
+	releaseScript := func(t *testing.T, configure func(*Deployer)) string {
+		t.Helper()
+		runner := &fakeRunner{healthy: true}
+		builder := newFakeBuilder(t)
+		builder.contents = map[string]string{
+			"jobs/counter/otter.yaml": "version: 1\nname: counter\npython:\n  mode: managed\n",
+			"jobs/counter/main.py":    "print('counter')",
+		}
+		deployer, _, stderr := newTestDeployer(t, runner, builder)
+		mustWriteManifest(t, deployer.Config, "counter", "managed")
+		configure(deployer)
+		if _, err := deployer.Run(context.Background()); err != nil {
+			t.Fatalf("Run: %v\n%s", err, stderr.String())
+		}
+		for _, script := range runner.scripts() {
+			if strings.Contains(script, `"$CLI" release`) {
+				return script
+			}
+		}
+		t.Fatal("no release script was run")
+		return ""
+	}
+
+	t.Run("configured route is passed through", func(t *testing.T) {
+		script := releaseScript(t, func(d *Deployer) {
+			d.Index = index
+			d.PythonMirror = mirror
+			d.EgressEndpoints = []string{jobAPI}
+			d.SkipEgressCheck = true
+		})
+		for _, want := range []string{
+			"--index " + ShellQuote(index),
+			"--python-mirror " + ShellQuote(mirror),
+			"--egress-endpoint " + ShellQuote(jobAPI),
+			"--skip-egress-check",
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("release on the host is missing %q:\n%s", want, script)
+			}
+		}
+	})
+
+	t.Run("an unconfigured deploy passes nothing", func(t *testing.T) {
+		script := releaseScript(t, func(*Deployer) {})
+		for _, unwanted := range []string{"--index", "--python-mirror", "--egress-endpoint", "--skip-egress-check"} {
+			if strings.Contains(script, unwanted) {
+				t.Errorf("an unconfigured deploy passed %q to the host:\n%s", unwanted, script)
+			}
+		}
+	})
+}
+
 // A job that did not opt into managed Python is still released -- a
 // run executes the active release -- but nothing about it needs uv, so a host
 // with no managed jobs gets no vendored toolchain.

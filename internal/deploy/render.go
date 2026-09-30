@@ -478,6 +478,29 @@ fi
 `
 }
 
+// ReleaseOptions are the preparation-time settings a deploy hands to the
+// release it runs on the host. They all describe the host: which uv to use,
+// how long to retain releases, and how that host reaches the endpoints
+// preparation fetches from.
+type ReleaseOptions struct {
+	// UVPath is the uv executable on the host. Empty names none, which is what
+	// a deploy with no managed jobs passes.
+	UVPath string
+	// Keep is the retention window in inactive releases. Zero keeps every
+	// release.
+	Keep int
+	// Index is the package index managed dependencies are synced from. Empty
+	// keeps uv's default.
+	Index string
+	// PythonMirror is the root managed interpreter downloads come from. Empty
+	// keeps uv's default.
+	PythonMirror string
+	// SkipEgressCheck skips the host's preparation-time egress preflight.
+	SkipEgressCheck bool
+	// EgressEndpoints are extra endpoints that preflight must also reach.
+	EgressEndpoints []string
+}
+
 // ReleaseScript stages, prepares and activates a release for each job
 // on the host.
 //
@@ -505,7 +528,7 @@ fi
 // window is a bound, not a target -- the active release, the rollback target
 // and any release a non-terminal run is bound to are always kept, and a prune
 // is refused outright when the run registry cannot be read.
-func ReleaseScript(t Target, jobs []string, uvPath string, keep int) string {
+func ReleaseScript(t Target, jobs []string, opts ReleaseOptions) string {
 	script := `set -e
 RUN_AS=` + ShellQuote(t.RunAsUser) + `
 WORKSPACE_DIR=` + ShellQuote(t.WorkspaceDir()) + `
@@ -532,11 +555,27 @@ cd "$WORKSPACE_DIR"
 		command := runAs + `"$CLI" release` +
 			" --jobs " + ShellQuote(t.JobsDir()) +
 			" --data " + ShellQuote(t.DataDir)
-		if keep > 0 {
-			command += " --keep " + strconv.Itoa(keep)
+		if opts.Keep > 0 {
+			command += " --keep " + strconv.Itoa(opts.Keep)
 		}
-		if uvPath != "" {
-			command += " --uv " + ShellQuote(uvPath)
+		if opts.UVPath != "" {
+			command += " --uv " + ShellQuote(opts.UVPath)
+		}
+		// The host's route to its dependencies travels with the release: the
+		// release runs preparation, and a host with no route to PyPI or to
+		// python-build-standalone has to be told where to go. Left empty, the
+		// flags are omitted entirely and uv keeps its own defaults.
+		if opts.Index != "" {
+			command += " --index " + ShellQuote(opts.Index)
+		}
+		if opts.PythonMirror != "" {
+			command += " --python-mirror " + ShellQuote(opts.PythonMirror)
+		}
+		if opts.SkipEgressCheck {
+			command += " --skip-egress-check"
+		}
+		for _, endpoint := range opts.EgressEndpoints {
+			command += " --egress-endpoint " + ShellQuote(endpoint)
 		}
 		// The destination path, not a bare basename. A basename is read as a
 		// label, so a directory whose name differs from the manifest's would

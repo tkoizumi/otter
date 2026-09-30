@@ -370,7 +370,7 @@ func TestEnvFilePathsAreStable(t *testing.T) {
 // host never has to guess which directory to scan for manifests.
 func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
 	target := testTarget()
-	script := ReleaseScript(target, []string{"counter", "invoices"}, "/opt/otter/tools/uv/uv", DefaultKeep)
+	script := ReleaseScript(target, []string{"counter", "invoices"}, ReleaseOptions{UVPath: "/opt/otter/tools/uv/uv", Keep: DefaultKeep})
 
 	for _, want := range []string{
 		`"$CLI" release`,
@@ -404,7 +404,7 @@ func TestReleaseScriptNamesTheDiscoveryRoot(t *testing.T) {
 func TestReleaseScriptPrunesToTheConfiguredKeep(t *testing.T) {
 	target := testTarget()
 
-	script := ReleaseScript(target, []string{"counter"}, "", 3)
+	script := ReleaseScript(target, []string{"counter"}, ReleaseOptions{Keep: 3})
 	if !strings.Contains(script, " --keep 3") {
 		t.Errorf("release script does not prune to the configured keep:\n%s", script)
 	}
@@ -412,7 +412,7 @@ func TestReleaseScriptPrunesToTheConfiguredKeep(t *testing.T) {
 		t.Errorf("release script passed --keep more than once per job:\n%s", script)
 	}
 
-	keepAll := ReleaseScript(target, []string{"counter"}, "", 0)
+	keepAll := ReleaseScript(target, []string{"counter"}, ReleaseOptions{})
 	if strings.Contains(keepAll, "--keep") {
 		t.Errorf("keep 0 still passed a --keep flag:\n%s", keepAll)
 	}
@@ -427,7 +427,7 @@ func TestServiceScriptsRunFromAReachableDirectory(t *testing.T) {
 	target := testTarget()
 
 	// The release script works in variables, so it moves to $REMOTE_DIR.
-	release := ReleaseScript(target, []string{"counter"}, "", DefaultKeep)
+	release := ReleaseScript(target, []string{"counter"}, ReleaseOptions{Keep: DefaultKeep})
 	cdAt := strings.Index(release, `cd "$WORKSPACE_DIR"`)
 	cliAt := strings.Index(release, `"$CLI" release`)
 	if cdAt < 0 {

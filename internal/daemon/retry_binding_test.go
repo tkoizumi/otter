@@ -318,7 +318,7 @@ func TestRetryResolvesTheParentsManagedEnvironment(t *testing.T) {
 	// production prepares and resolves by identity, so a fixture keyed by label
 	// would prepare a different environment than the one a run resolves.
 	p0WriteManagedJob(t, root, "p0-retry", "print(\"managed-a\")", "version = 1\n", "  attempts: 2\n  backoff: linear\n  initial_delay: 3s")
-	manager := pyenv.Manager{DataDir: dataDir}
+	manager := pyenv.Manager{DataDir: dataDir, Probe: func(context.Context, string) error { return nil }}
 	pythonVersion := p0LocalPythonVersion(t)
 	jobID := identityIDFor(t, root, dataDir, "p0-retry")
 	envA := p0PrepareEnvironment(t, manager, root, "p0-retry", jobID, pythonVersion, "version = 1\n")
