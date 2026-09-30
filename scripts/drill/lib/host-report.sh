@@ -403,6 +403,40 @@ if [ "$TOKEN_SOURCE" != "explicit" ] && [ "$TOKEN_SOURCE" != "ambiguous" ] && [ 
 	TOKEN_FILE=$(printf '%s' "$candidates" | tr ' ' '\n' | grep . | head -n 1)
 fi
 
+# --- which otter CLI answers --------------------------------------------------
+#
+# Resolved BEFORE the daemon is measured, because `otter status` is asked of
+# this binary: resolving it afterwards left the daemon call using a dispatcher
+# that refuses to answer, and a live runtime was reported as "no daemon
+# answers". The CLI the operator names may be deploy's host dispatcher
+# (`/usr/local/bin/otter`), which refuses `--version` and `status` outside a
+# workspace when the host holds more than one workspace. The serving unit knows
+# which CLI belongs to the runtime: its ExecStart names <workspace>/bin/otterd,
+# and the workspace's CLI is that file's sibling. Fall back to it -- and report
+# both paths, so a transcript shows the drill switched.
+OTTER_BIN_EFFECTIVE=$BIN
+OTTER_VERSION=missing
+if [ -x "$BIN" ]; then
+	OTTER_VERSION=$(value "$("$BIN" --version 2>/dev/null || echo missing)")
+fi
+if [ "$OTTER_VERSION" = missing ]; then
+	# `case`, not `[ ... = */otterd ]`: an unquoted pattern inside `[ ]` is
+	# pathname-expanded first, so a checkout holding bin/otterd would turn the
+	# test into "too many arguments".
+	case "${SERVICE_BIN:--}" in
+	*/otterd)
+		sibling=$(dirname "$SERVICE_BIN")/otter
+		if [ -x "$sibling" ]; then
+			candidate=$(value "$("$sibling" --version 2>/dev/null || echo missing)")
+			if [ "$candidate" != missing ]; then
+				OTTER_BIN_EFFECTIVE=$sibling
+				OTTER_VERSION=$candidate
+			fi
+		fi
+		;;
+	esac
+fi
+
 # --- the daemon ---------------------------------------------------------------
 #
 # A non-zero exit is the normal answer on a clean target; the detail keeps
@@ -426,9 +460,9 @@ elif [ -n "$TOKEN_FILE" ] && [ "$TOKEN_FILE" != "-" ]; then
 fi
 ERRFILE=$(mktemp 2>/dev/null || echo /tmp/otter-probe-status.$$)
 if have timeout; then
-	status_out=$(OTTER_API_URL="$API" timeout 15 "$BIN" status 2>"$ERRFILE") || true
+	status_out=$(OTTER_API_URL="$API" timeout 15 "$OTTER_BIN_EFFECTIVE" status 2>"$ERRFILE") || true
 else
-	status_out=$(OTTER_API_URL="$API" "$BIN" status 2>"$ERRFILE") || true
+	status_out=$(OTTER_API_URL="$API" "$OTTER_BIN_EFFECTIVE" status 2>"$ERRFILE") || true
 fi
 status_err=$(cat "$ERRFILE" 2>/dev/null || true)
 rm -f "$ERRFILE" 2>/dev/null || true
@@ -470,34 +504,6 @@ have timeout && TIMEOUT=yes
 GETENT=no
 have getent && GETENT=yes
 
-# The CLI the operator names may be deploy's host dispatcher
-# (`/usr/local/bin/otter`), which refuses `--version` and `status` outside a
-# workspace when the host holds more than one workspace. The serving unit knows
-# which CLI belongs to the runtime: its ExecStart names <workspace>/bin/otterd,
-# and the workspace's CLI is that file's sibling. Fall back to it -- and report
-# both paths, so a transcript shows the drill switched.
-OTTER_BIN_EFFECTIVE=$BIN
-OTTER_VERSION=missing
-if [ -x "$BIN" ]; then
-	OTTER_VERSION=$(value "$("$BIN" --version 2>/dev/null || echo missing)")
-fi
-if [ "$OTTER_VERSION" = missing ]; then
-	# `case`, not `[ ... = */otterd ]`: an unquoted pattern inside `[ ]` is
-	# pathname-expanded first, so a checkout holding bin/otterd would turn the
-	# test into "too many arguments".
-	case "${SERVICE_BIN:--}" in
-	*/otterd)
-		sibling=$(dirname "$SERVICE_BIN")/otter
-		if [ -x "$sibling" ]; then
-			candidate=$(value "$("$sibling" --version 2>/dev/null || echo missing)")
-			if [ "$candidate" != missing ]; then
-				OTTER_BIN_EFFECTIVE=$sibling
-				OTTER_VERSION=$candidate
-			fi
-		fi
-		;;
-	esac
-fi
 
 # --- the report ---------------------------------------------------------------
 

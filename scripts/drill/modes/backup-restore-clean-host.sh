@@ -136,6 +136,9 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 LIB="$root/scripts/drill/lib"
+# Quoting an argument list for a remote shell is subtle enough to be its own
+# file, shared with the selfcheck that tests it. It defines remote_args().
+. "$LIB/remote-args.sh"
 
 # --- the transport ------------------------------------------------------------
 # `ssh` and nothing else in a recorded run. The selfcheck points DRILL_TRANSPORT
@@ -416,10 +419,15 @@ remote_script() {
 	remote_host=$1
 	remote_file=$2
 	shift 2
+	# Each parameter is quoted for the REMOTE shell by lib/remote-args.sh.
+	# `$*` here silently dropped empty parameters -- which shifted the probe's
+	# arguments and left hot-backup.sh a parameter short, so the clean path
+	# could not run. See that file for the whole story.
+	remote_quoted=$(remote_args "$@")
 	if [ -n "$SUDO" ]; then
-		"$TRANSPORT" $SSH_OPTS "$remote_host" "$SUDO sh -s -- $*" <"$remote_file"
+		"$TRANSPORT" $SSH_OPTS "$remote_host" "$SUDO sh -s --$remote_quoted" <"$remote_file"
 	else
-		"$TRANSPORT" $SSH_OPTS "$remote_host" "sh -s -- $*" <"$remote_file"
+		"$TRANSPORT" $SSH_OPTS "$remote_host" "sh -s --$remote_quoted" <"$remote_file"
 	fi
 }
 
@@ -799,6 +807,13 @@ if ! NEW=$(remote_otter "$TARGET_HOST" "run --no-wait $JOB" 2>"$WORK/run-refused
 	fail "the restored job cannot run"
 fi
 [ -n "$NEW" ] || fail "the restored runtime returned no run id"
+# The id comes back from the host and is used to build remote commands like
+# every other cross-ssh value; it gets the same check.
+case "$NEW" in
+*[!A-Za-z0-9@._:/=+,-]*)
+	fail "the restored runtime returned a run id the drill cannot pass to a remote shell: $NEW"
+	;;
+esac
 i=0
 NEW_STATUS=""
 while [ "$i" -lt 1200 ]; do

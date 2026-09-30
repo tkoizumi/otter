@@ -57,6 +57,11 @@ cleanup() {
 	status=$?
 	[ "$cleaning" -eq 1 ] && exit "$status"
 	cleaning=1
+	# The live-daemon case starts a real otterd; it must not outlive the run.
+	if [ -n "${LIVE_PID:-}" ]; then
+		kill "$LIVE_PID" 2>/dev/null || true
+		wait "$LIVE_PID" 2>/dev/null || true
+	fi
 	if [ -n "${OTTER_SELFCHECK_KEEP:-}" ] || { [ "$status" -ne 0 ] && [ -z "${CI:-}" ]; }; then
 		echo "selfcheck: keeping $WORK" >&2
 	else
@@ -344,10 +349,10 @@ otterd-app-1a2b3c4d)
 	esac
 	;;
 *)
+	# Real systemd omits ExecStart= and EnvironmentFiles= for a unit it does not
+	# know; inventing empty lines here would be a shape no host produces.
 	echo "ActiveState=inactive"
 	echo "LoadState=not-found"
-	echo "ExecStart="
-	echo "EnvironmentFiles="
 	;;
 esac
 FAKESYSTEMCTL
@@ -534,6 +539,105 @@ has "$out" "token=unset" "with no token file the CLI must see no token at all"
 say "  ok  run-otter.sh reads the token file into the CLI environment and passes arguments through"
 
 
+# --- 2b. the probe against a LIVE daemon --------------------------------------
+#
+# Everything above measures directories. That is not enough: a probe that never
+# sees a running daemon can pass while its daemon measurement is broken, which
+# is how one round's D4 -- `otter status` asked of the wrong binary -- survived
+# the whole suite. So this case starts a REAL otterd and probes it.
+#
+# The binaries are the checkout's own. `make drill` supplies OTTER_BIN; a bare
+# selfcheck builds the pair into its work directory, so the case always runs
+# rather than skipping.
+
+mkdir -p "$WORK/live/bin" "$WORK/live/jobs"
+LIVE_CLI=${OTTER_BIN:-}
+LIVE_DAEMON=${OTTERD_BIN:-}
+if [ -n "$LIVE_CLI" ] && [ -x "$(dirname "$LIVE_CLI")/otterd" ]; then
+	LIVE_DAEMON=${LIVE_DAEMON:-$(dirname "$LIVE_CLI")/otterd}
+fi
+if [ -z "$LIVE_CLI" ] || [ ! -x "$LIVE_CLI" ]; then
+	"$root/scripts/go" build -trimpath -o "$WORK/live/bin/otter" ./cmd/otter ||
+		fail "could not build the otter CLI for the live-daemon case"
+	LIVE_CLI="$WORK/live/bin/otter"
+fi
+if [ -z "$LIVE_DAEMON" ] || [ ! -x "$LIVE_DAEMON" ]; then
+	"$root/scripts/go" build -trimpath -o "$WORK/live/bin/otterd" ./cmd/otterd ||
+		fail "could not build otterd for the live-daemon case"
+	LIVE_DAEMON="$WORK/live/bin/otterd"
+fi
+
+LIVE_DATA="$WORK/live/data"
+LIVE_JOBS="$WORK/live/jobs"
+LIVE_PORT=$(( 47000 + ($$ % 700) ))
+LIVE_PID=""
+i=0
+while [ "$i" -lt 8 ]; do
+	LIVE_PORT=$((LIVE_PORT + 7))
+	i=$((i + 1))
+	# A port something already answers on is taken; try the next one.
+	if "$LIVE_CLI" --api "http://127.0.0.1:$LIVE_PORT" status >/dev/null 2>&1; then
+		continue
+	fi
+	"$LIVE_DAEMON" -jobs "$LIVE_JOBS" -data "$LIVE_DATA" \
+		-listen "127.0.0.1:$LIVE_PORT" -log-format json >"$WORK/live/otterd.log" 2>&1 &
+	LIVE_PID=$!
+	j=0
+	while [ "$j" -lt 100 ]; do
+		"$LIVE_CLI" --api "http://127.0.0.1:$LIVE_PORT" status >/dev/null 2>&1 && break
+		kill -0 "$LIVE_PID" 2>/dev/null || break
+		j=$((j + 1))
+		sleep 0.1
+	done
+	if "$LIVE_CLI" --api "http://127.0.0.1:$LIVE_PORT" status >/dev/null 2>&1; then
+		break
+	fi
+	kill "$LIVE_PID" 2>/dev/null || true
+	wait "$LIVE_PID" 2>/dev/null || true
+	LIVE_PID=""
+done
+[ -n "$LIVE_PID" ] || fail "could not start a real otterd for the live-daemon case (see $WORK/live/otterd.log)"
+
+LIVE_REPORT="$WORK/live.report"
+sh "$LIB/host-report.sh" source "$LIVE_DATA" "$LIVE_JOBS" "$LIVE_CLI" \
+	"http://127.0.0.1:$LIVE_PORT" otter-live "" "" "$WORK/live/etc" >"$LIVE_REPORT" ||
+	fail "the probe exited non-zero against a live daemon"
+[ "$(report_get "$LIVE_REPORT" daemon)" = running ] ||
+	fail "a real probe against a live daemon reported daemon=$(report_get "$LIVE_REPORT" daemon), want running"
+LIVE_CLI_VERSION=$("$LIVE_CLI" --version 2>/dev/null || echo missing)
+LIVE_DAEMON_VERSION=$(report_get "$LIVE_REPORT" daemon_version)
+[ -n "$LIVE_DAEMON_VERSION" ] && [ "$LIVE_DAEMON_VERSION" != "-" ] ||
+	fail "a live daemon's version was not reported"
+[ "$LIVE_DAEMON_VERSION" = "${LIVE_CLI_VERSION#otter }" ] ||
+	fail "the live daemon reports $LIVE_DAEMON_VERSION and its CLI $LIVE_CLI_VERSION: those are the same build"
+[ "$(report_get "$LIVE_REPORT" auth)" = ok ] ||
+	fail "a daemon with no token must answer with counters: auth=$(report_get "$LIVE_REPORT" auth)"
+[ "$(report_get "$LIVE_REPORT" uid)" = "$(id -u)" ] ||
+	fail "the probe reported uid=$(report_get "$LIVE_REPORT" uid)"
+say "  ok  a real probe against a live otterd reports daemon=running, version $LIVE_DAEMON_VERSION, auth=ok"
+
+# Platform branches the fixtures cannot cover. On Linux (which is what CI runs)
+# this exercises /etc/machine-id and GNU stat; on macOS the hostname fallback
+# and BSD stat. The assertion is the same either way, so a branch that stops
+# working on either platform is caught here.
+case "$(report_get "$LIVE_REPORT" machine_id_source)" in
+/etc/machine-id | /var/lib/dbus/machine-id | hostname) ;;
+*)
+	fail "the probe reported an unknown machine-id source: $(report_get "$LIVE_REPORT" machine_id_source)"
+	;;
+esac
+[ -n "$(report_get "$LIVE_REPORT" machine_id)" ] || fail "the probe reported no machine id"
+[ "$(report_get "$LIVE_REPORT" machine_id)" != "-" ] || fail "the probe reported an empty machine id"
+[ "$(report_get "$LIVE_REPORT" data_owner)" != "-" ] ||
+	fail "the probe could not measure the data directory's owner (stat branch)"
+[ "$(report_get "$LIVE_REPORT" data_mode)" != "-" ] ||
+	fail "the probe could not measure the data directory's mode (stat branch)"
+say "  ok  machine id ($(report_get "$LIVE_REPORT" machine_id_source)), owner and mode are measured on this platform"
+
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+LIVE_PID=""
+
 # --- 3. the preflight gate ----------------------------------------------------
 
 say "3/6 gate (lib/assert-clean-host.sh)"
@@ -623,7 +727,7 @@ etc_dir=/etc/otter
 service=otter
 service_state=active
 service_exists=yes
-service_bin=/usr/local/bin/otterd
+service_bin=/opt/otter/workspaces/app-1a2b3c4d/bin/otterd
 unit_data_dir=/var/lib/otter
 unit_jobs_dir=/srv/otter/jobs
 unit_listen=127.0.0.1:7337
@@ -866,9 +970,18 @@ say "5/6 the drill refuses a dirty target before writing anything"
 FAKE="$WORK/fake-ssh"
 cat >"$FAKE" <<'FAKE_SSH'
 #!/bin/sh
-# Test double for ssh: answers the preflight probe from a per-host sandbox and
-# refuses everything else, so a bug that skipped the gate shows up as a call to
-# a step that should never have run.
+# Test double for ssh: it answers the preflight probe from a per-host sandbox
+# and refuses every other step, so a bug that skipped the gate shows up as a
+# call to a step that must never have run.
+#
+# Two things it deliberately does NOT do, because doing them hid real defects:
+#   * it does not overwrite the probe's `daemon`/`daemon_version` fields. Those
+#     come from whatever the probe actually measured;
+#   * it does not re-split the command line by hand. It parses it exactly as the
+#     remote shell would (`eval "set -- ..."`), so an argument the drill failed
+#     to quote disappears here just as it does over ssh. D5 -- empty arguments
+#     vanishing out of `sh -s -- $*` -- was invisible while the double split the
+#     string itself.
 set -eu
 prev=""
 last=""
@@ -878,7 +991,7 @@ for arg in "$@"; do
 done
 host=$prev
 cmd=$last
-printf '%s\n' "$cmd" >>"$FAKE_LOG"
+printf 'CMD %s\n' "$cmd" >>"$FAKE_LOG"
 stdin=$(mktemp)
 cat >"$stdin"
 
@@ -888,53 +1001,49 @@ if [ "$host" = "$FAKE_SRC_HOST" ]; then
 	machine=fake-source-machine
 	hostkey=fake-source-hostkey
 	hostname=source.drill.invalid
-	daemon=running
 elif [ "$host" = "$FAKE_TGT_HOST" ]; then
 	data=$FAKE_TGT_DATA
 	jobs=$FAKE_TGT_JOBS
 	machine=fake-target-machine
 	hostkey=fake-target-hostkey
 	hostname=target.drill.invalid
-	daemon=stopped
 else
 	echo "fake-ssh: unknown host $host" >&2
 	rm -f "$stdin"
 	exit 96
 fi
 
-# Only the preflight probe is answered. The drill also pipes other scripts over
-# ssh (lib/run-otter.sh, lib/hot-backup.sh, lib/restore-host.sh); refusing those
-# is what makes "the gate refused a dirty target before touching it" checkable,
-# so the probe is identified by the script actually on stdin rather than by the
-# shape of the command line.
-is_probe=no
-if head -n 3 "$stdin" 2>/dev/null | grep -q 'host-report.sh'; then
-	is_probe=yes
-fi
-
 case "$cmd" in
 *"sh -s --"*)
-	if [ "$is_probe" != yes ]; then
+	# Only the preflight probe is answered. The drill also pipes other scripts
+	# over ssh (lib/run-otter.sh, lib/hot-backup.sh, lib/restore-host.sh);
+	# refusing those is what makes "the gate refused a dirty target before
+	# touching it" checkable, so the probe is identified by the script actually
+	# on stdin rather than by the shape of the command line.
+	if ! head -n 3 "$stdin" 2>/dev/null | grep -q 'host-report.sh'; then
 		echo "fake-ssh: not the preflight probe; this selfcheck refuses: $(head -n 1 "$stdin" 2>/dev/null)" >&2
 		rm -f "$stdin"
 		exit 97
 	fi
-	args=$(printf '%s' "$cmd" | sed -e 's/^ *//' -e 's/^sudo -n env //' -e 's/^sudo -n //' -e 's/^sh -s -- //')
+	# Parse the remote command line the way the remote shell would, so empty
+	# arguments survive. Then log exactly what the remote program received.
+	args=$(printf '%s' "$cmd" | sed -e 's/^ *//' -e 's/^sudo -n env //' -e 's/^sudo -n //' -e 's/^sh -s --//')
+	eval "set -- $args"
+	printf 'ARGC %s' "$#" >>"$FAKE_LOG"
+	for a in "$@"; do printf ' [%s]' "$a" >>"$FAKE_LOG"; done
+	printf '\n' >>"$FAKE_LOG"
 	translated=""
-	for a in $args; do
+	for a in "$@"; do
 		case "$a" in
 		"$FAKE_LOGICAL_DATA") a=$data ;;
 		"$FAKE_LOGICAL_JOBS") a=$jobs ;;
 		esac
-		translated="$translated $a"
+		case "$a" in
+		*"'"*) a=$(printf '%s' "$a" | sed "s/'/'\\''/g") ;;
+		esac
+		translated="$translated '$a'"
 	done
-	probe_out=$(sh -s -- $translated <"$stdin")
-	# A running daemon on the source runs the same build as its CLI, which is
-	# what the real probe would report.
-	cli_version=$(printf '%s' "$probe_out" | sed -n 's/^otter_version=//p')
-	# `otter --version` prints "otter <v>"; the daemon's health version is "<v>"
-	# with no program name, exactly as `otter status` reports it.
-	if [ "$daemon" = running ]; then daemon_version=${cli_version#otter }; else daemon_version=-; fi
+	probe_out=$(sh -c "sh -s --$translated" <"$stdin")
 	printf '%s' "$probe_out" | sed \
 		-e "s|^data_dir=.*|data_dir=$FAKE_LOGICAL_DATA|" \
 		-e "s|^data_real=.*|data_real=$FAKE_LOGICAL_DATA|" \
@@ -942,9 +1051,7 @@ case "$cmd" in
 		-e "s|^jobs_real=.*|jobs_real=$FAKE_LOGICAL_JOBS|" \
 		-e "s|^machine_id=.*|machine_id=$machine|" \
 		-e "s|^ssh_host_key=.*|ssh_host_key=$hostkey|" \
-		-e "s|^hostname=.*|hostname=$hostname|" \
-		-e "s|^daemon=.*|daemon=$daemon|" \
-		-e "s|^daemon_version=.*|daemon_version=$daemon_version|"
+		-e "s|^hostname=.*|hostname=$hostname|"
 	;;
 *)
 	echo "fake-ssh: the selfcheck only answers the preflight probe; got: $cmd" >&2
@@ -992,7 +1099,7 @@ has "$out" "is not clean" "the drill must go red at the cleanliness assertion"
 has "$out" "otter.db" "the red run must name the offending entry"
 has "$out" "TRANSPORT OVERRIDDEN" "the substituted-transport run must announce itself"
 hasnot "$out" "the target is a clean, empty host" "the drill printed the clean-host conclusion while refusing a dirty target"
-CALLS=$(wc -l <"$WORK/fake-dirty.log" | tr -d ' ')
+CALLS=$(grep -c '^CMD ' "$WORK/fake-dirty.log" || true)
 [ "$CALLS" = 2 ] ||
 	fail "the dirty-target run made $CALLS remote calls, want only the two probes; it touched the target"
 case "$(cat "$WORK/fake-dirty.log")" in
@@ -1004,6 +1111,37 @@ DIRTY_REASON=$(printf '%s\n' "$out" | sed -n 's/^drill: FAILED: //p' | head -n 1
 [ -n "$DIRTY_REASON" ] || fail "the dirty-target run did not report why it stopped"
 say "  ok  a dirty target goes red at the cleanliness assertion after exactly the two probes"
 say "      red reason: $DIRTY_REASON"
+
+# D5: this run is the DOCUMENTED invocation -- no DRILL_REMOTE_API_TOKEN, no
+# DRILL_REMOTE_ENV_FILE -- so two of the probe's nine parameters are empty and
+# sit in the middle of the list. `sh -s -- $*` dropped them, and `/etc/otter`
+# landed in the token slot. The transport double parses its command line the way
+# the remote shell does, so a reintroduced bug shows up right here.
+PROBE_ARGS=$(grep '^ARGC ' "$WORK/fake-dirty.log" | head -n 1)
+[ "$(printf '%s' "$PROBE_ARGS" | awk '{print $2}')" = 9 ] ||
+	fail "the probe was called with $(printf '%s' "$PROBE_ARGS" | awk '{print $2}') parameters, want 9: $PROBE_ARGS"
+case "$PROBE_ARGS" in
+*"[source]"*"[]"*"[]"*"[/etc/otter]"*)
+	say "  ok  the no-token invocation passes all nine probe parameters, the two empty ones included"
+	;;
+*)
+	fail "the probe's empty parameters did not survive the remote shell: $PROBE_ARGS"
+	;;
+esac
+
+# And the same quoting carries hot-backup.sh's empty sabotage, which is what
+# makes the clean path runnable at all: the library requires five parameters.
+BACKUP_ARGS=$(sh -c '. "'"$LIB"'/remote-args.sh"; remote_args /d /j /stage "" abcdef123456')
+eval "set -- $BACKUP_ARGS"
+[ "$#" = 5 ] || fail "remote_args turned the five hot-backup parameters into $#"
+[ -z "$4" ] || fail "remote_args did not preserve the empty sabotage parameter"
+[ "$5" = abcdef123456 ] || fail "remote_args shifted the parameters after the empty one"
+say "  ok  remote_args preserves hot-backup.sh's empty sabotage: five parameters, the fourth empty"
+out=$(sh -c '. "'"$LIB"'/remote-args.sh"; remote_args "a b" "" "c'"'"'d"')
+eval "set -- $out"
+[ "$#" = 3 ] && [ "$1" = "a b" ] && [ -z "$2" ] && [ "$3" = "c'd" ] ||
+	fail "remote_args did not round-trip spaces and a quote: $out"
+say "  ok  remote_args round-trips a space and a single quote through a real shell parse"
 
 # The same drill with an empty target passes the gate: the refusal above is
 # about the dirt, not about running at all. It then fails on the next unmet
@@ -1031,7 +1169,7 @@ say "  ok  an empty target passes the gate; the run then stops on the next preco
 : >"$FAKE_TGT/data/otter.db"
 fake_run "$WORK/fake-sudo.log" 1
 has "$out" "sudo=1" "the run must report the privilege mode it was given"
-first_cmd=$(head -n 1 "$WORK/fake-sudo.log")
+first_cmd=$(sed -n 's/^CMD //p' "$WORK/fake-sudo.log" | head -n 1)
 case "$first_cmd" in
 "sudo -n env sh -s -- "*)
 	say "  ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: $first_cmd)"
@@ -1040,7 +1178,7 @@ case "$first_cmd" in
 	fail "with DRILL_REMOTE_SUDO=1 the first remote command was '$first_cmd', want it to start with 'sudo -n env'"
 	;;
 esac
-CALLS=$(wc -l <"$WORK/fake-sudo.log" | tr -d ' ')
+CALLS=$(grep -c '^CMD ' "$WORK/fake-sudo.log" || true)
 [ "$CALLS" = 2 ] ||
 	fail "the sudo run made $CALLS remote calls, want the two probes before the dirty target was refused"
 
