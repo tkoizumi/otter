@@ -16,9 +16,10 @@ import (
 //
 // The zero value asks systemd for its own defaults: no resource cap is emitted
 // and the standard hardening below is. A cap that is empty, or the explicit
-// "off" sentinel, emits no directive at all, which is deliberately different
-// from emitting a zero: systemd reads a zero memory limit as "no memory", not
-// as "no limit".
+// "off" sentinel, emits no directive at all. Emitting a zero is not the same
+// thing and is not offered: systemd logs a zero size as out of range, ignores
+// it, and runs the cgroup uncapped, so the unit would look capped while
+// enforcing nothing. The deploy validator refuses a zero for that reason.
 //
 // The caps are unit-wide, and that is the point of them. otterd and every
 // Python child it spawns share one cgroup, so MemoryMax bounds the *sum* of the

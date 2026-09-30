@@ -282,8 +282,8 @@ a failed deploy never claims success.
 ## Resource caps and the sandbox
 
 The unit `otter deploy` writes bounds the whole workspace and confines it. Both
-are part of the generated file, so they cannot drift from what the deploy does,
-and `--dry-run` prints the plan without changing them.
+are part of the generated file, so they cannot drift from what the deploy does;
+`--dry-run` prints the plan and changes nothing.
 
 Every cap applies to the **whole unit's cgroup**, not to one job: `otterd` and
 every Python child it starts share it, so `MemoryMax` bounds the sum of the
@@ -316,9 +316,16 @@ ReadWritePaths=/opt/otter/workspaces/<workspace> /opt/otter/workspaces/<workspac
 
 `--memory-max off` (and the same for the other three) emits no directive at all,
 leaving systemd's own default; the value is emitted verbatim, so `4G`, `512M`,
-`75%` and `infinity` all work. The same keys can be committed in
-`otter.deploy.yaml` (`memory_max`, `memory_high`, `cpu_quota`, `tasks_max`), and
-an explicit flag wins over the file.
+`75%` and `infinity` all work. A size must be positive: `0`, `0M` and `0G` are
+refused before the push, because systemd discards an out-of-range zero and would
+leave the unit uncapped while it looked capped.
+
+The four caps can be committed in `otter.deploy.yaml` (`memory_max`,
+`memory_high`, `cpu_quota`, `tasks_max`), and an explicit flag wins over the
+file. `read_write_paths` is the exception: the committed list and every
+`--rw-path` are **merged**, so a one-off extra path on the command line does not
+drop the committed ones. The same applies to the repeatable flag itself — each
+`--rw-path` adds a path rather than replacing the previous one.
 
 ### The sandbox
 
@@ -554,7 +561,9 @@ read_write_paths:          # optional: scratch a job writes outside its workspac
 Precedence, lowest to highest: built-in defaults, `otter.deploy.yaml`, the
 previous successful deploy, then the command line. The resource caps follow the
 same order except that the previous deploy is not consulted — a cap describes
-the host, so it is not carried to a different machine. See
+the host, so it is not carried to a different machine — and
+`read_write_paths`, which is merged across the file and every `--rw-path`
+rather than overridden. See
 [Resource caps and the sandbox](#resource-caps-and-the-sandbox).
 
 | Flag | Meaning | Default |

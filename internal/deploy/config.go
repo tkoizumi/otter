@@ -205,8 +205,9 @@ const (
 	DefaultTasksMax   = "512"
 
 	// CapOff is the explicit "emit no directive" value for any cap. It is
-	// deliberately not "0": systemd reads a zero memory limit as a real limit
-	// of zero, which would kill the daemon at once.
+	// deliberately not "0": systemd logs a zero size as out of range, ignores
+	// it, and leaves the cgroup uncapped, so a zero would look like a cap
+	// while enforcing nothing. validateMemoryCap rejects it for that reason.
 	CapOff = "off"
 )
 
@@ -879,12 +880,20 @@ func (c Config) UnitOptions() UnitOptions {
 // validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
 // the CapOff opt-out, a size with an optional binary or decimal suffix, or a
 // percentage of the host's physical RAM.
+// validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
+// the CapOff opt-out, a positive size with an optional binary or decimal
+// suffix, or a positive percentage of the host's physical RAM.
+//
+// A zero is rejected even though systemd parses it: systemd logs "memory limit
+// is out of range, ignoring" and leaves the cgroup uncapped, so accepting it
+// would write a unit that looks capped and enforces nothing.
 func validateMemoryCap(name, value string) error {
 	s := strings.TrimSpace(value)
 	if s == "" || strings.EqualFold(s, CapOff) || strings.EqualFold(s, "infinity") {
 		return nil
 	}
-	bad := fmt.Errorf("%s must be a size (4G, 512M), a percent of RAM (75%%), or %q, got %q", name, CapOff, value)
+	bad := fmt.Errorf("%s must be a positive size (4G, 512M), a positive percent of RAM (75%%), or %q, got %q",
+		name, CapOff, value)
 	if strings.HasSuffix(s, "%") {
 		number := strings.TrimSuffix(s, "%")
 		percent, err := strconv.ParseFloat(number, 64)
@@ -898,6 +907,10 @@ func validateMemoryCap(name, value string) error {
 		digits++
 	}
 	if digits == 0 {
+		return bad
+	}
+	size, err := strconv.ParseFloat(s[:digits], 64)
+	if err != nil || size <= 0 {
 		return bad
 	}
 	switch strings.ToUpper(s[digits:]) {

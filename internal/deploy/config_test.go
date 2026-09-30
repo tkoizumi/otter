@@ -881,9 +881,15 @@ func TestDeployRejectsMalformedCaps(t *testing.T) {
 	}{
 		{"memory size", func(c *Config) { c.MemoryMax = "lots" }, "memory-max"},
 		{"memory suffix", func(c *Config) { c.MemoryMax = "4X" }, "memory-max"},
+		{"memory zero", func(c *Config) { c.MemoryMax = "0" }, "memory-max"},
+		{"memory zero M", func(c *Config) { c.MemoryMax = "0M" }, "memory-max"},
+		{"memory zero G", func(c *Config) { c.MemoryMax = "0G" }, "memory-max"},
+		{"memory zero percent", func(c *Config) { c.MemoryMax = "0%" }, "memory-max"},
+		{"memory high zero", func(c *Config) { c.MemoryHigh = "0" }, "memory-high"},
 		{"cpu quota", func(c *Config) { c.CPUQuota = "half" }, "cpu-quota"},
 		{"cpu quota zero", func(c *Config) { c.CPUQuota = "0%" }, "cpu-quota"},
 		{"tasks max", func(c *Config) { c.TasksMax = "many" }, "tasks-max"},
+		{"tasks max zero", func(c *Config) { c.TasksMax = "0" }, "tasks-max"},
 		{"rw path relative", func(c *Config) { c.ReadWritePaths = []string{"srv/scratch"} }, "rw-path"},
 		{"rw path in home", func(c *Config) { c.ReadWritePaths = []string{"/home/deploy/scratch"} }, "ProtectHome"},
 	} {

@@ -203,9 +203,39 @@ fi
 echo "cgroup: $(systemctl show -p ControlGroup --value "$SERVICE")"
 
 pid_before=$(systemctl show -p MainPID --value "$SERVICE")
-echo "otterd MainPID before: $pid_before"
-echo "memory.max:  $(cat "$CG/memory.max")"
+
+# The cap must actually be in force. A unit that sets MemoryMax but whose
+# cgroup ends up at "max" -- an out-of-range value systemd quietly ignored, or a
+# memory controller that was never delegated -- would otherwise only be caught
+# by luck when the OOM kill failed to happen.
+want_cap=$(sed -n 's/^MemoryMax=//p' /hostunit/unit.service | head -1)
+got_cap=$(cat "$CG/memory.max")
+case "$want_cap" in
+"")
+	[ "$got_cap" = "max" ] || {
+		echo "unit-caps: FAIL: the unit sets no MemoryMax but the cgroup is capped at $got_cap" >&2
+		exit 1
+	}
+	echo "memory.max:  $got_cap (unit sets no MemoryMax)"
+	;;
+*% | infinity)
+	# systemd resolves a percentage against host RAM, so only report it.
+	echo "memory.max:  $got_cap (from MemoryMax=$want_cap)"
+	;;
+*)
+	want_bytes=$(numfmt --from=iec "$want_cap" 2>/dev/null) || {
+		echo "unit-caps: FAIL: cannot convert MemoryMax=$want_cap to bytes; use an IEC size such as 192M" >&2
+		exit 1
+	}
+	if [ "$got_cap" != "$want_bytes" ]; then
+		echo "unit-caps: FAIL: the unit sets MemoryMax=$want_cap ($want_bytes bytes) but memory.max is $got_cap" >&2
+		exit 1
+	fi
+	echo "memory.max:  $got_cap (set from MemoryMax=$want_cap)"
+	;;
+esac
 echo "memory.high: $(cat "$CG/memory.high")"
+echo "otterd MainPID before: $pid_before"
 
 echo
 echo "unit-caps: triggering the runaway job"
@@ -253,21 +283,25 @@ runuser -u otter -- env OTTER_API_URL=http://127.0.0.1:7337 OTTER_API_TOKEN="$TO
 	"$WS/bin/otter" runs runaway --limit 3 || true
 
 echo "--- host responsiveness ---"
-if ! timeout 5 sh -c 'echo host-responsive'; then
-	echo "unit-caps: FAIL: the host did not answer a trivial command after the OOM kill" >&2
+host_state=$(systemctl is-system-running 2>/dev/null || true)
+echo "is-system-running: $host_state"
+case "$host_state" in
+running | degraded) ;;
+*)
+	echo "unit-caps: FAIL: systemd is no longer running the host ($host_state)" >&2
 	exit 1
-fi
-echo "is-system-running: $(systemctl is-system-running 2>/dev/null || true)"
-
-echo "--- daemon journal, OOM lines ---"
-journalctl -u "$SERVICE" --no-pager 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -20 || true
-
-echo "--- otterd still serving ---"
-if ! curl -fsS http://127.0.0.1:7337/health; then
-	echo "unit-caps: FAIL: otterd stopped serving after the OOM kill" >&2
+	;;
+esac
+# A bounded request to the daemon is the real responsiveness check: timeout
+# fails if the host cannot schedule it, and curl fails if otterd is not serving.
+if ! timeout 5 curl -fsS http://127.0.0.1:7337/health; then
+	echo "unit-caps: FAIL: otterd did not answer /health within 5s of the OOM kill" >&2
 	exit 1
 fi
 echo
+
+echo "--- daemon journal, OOM lines ---"
+journalctl -u "$SERVICE" --no-pager 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -20 || true
 
 # The evidence clause is that otterd survives, not merely that it is restarted.
 if [ "$pid_before" != "$pid_after" ]; then
