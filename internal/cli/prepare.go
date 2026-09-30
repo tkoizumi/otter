@@ -59,7 +59,7 @@ func (o *prepareOptions) registerPrepareFlags(fs *flag.FlagSet) {
 	// The fetch route, for a host whose egress goes through an internal mirror
 	// rather than the public endpoints. Both default to empty, which keeps
 	// uv's own defaults.
-	fs.StringVar(&o.Index, "index", "", "package index for managed dependencies (default PyPI; replaces it rather than adding to it)")
+	fs.StringVar(&o.Index, "index", "", "package index for managed dependencies (must be the index uv.lock records; default: the lock's registries)")
 	fs.StringVar(&o.PythonMirror, "python-mirror", "", "source for managed interpreter downloads (default uv's python-build-standalone releases)")
 	fs.BoolVar(&o.SkipEgressCheck, "skip-egress-check", false, "skip the preflight that checks preparation can reach the endpoints it needs")
 	fs.Var((*stringList)(&o.ExtraEndpoints), "egress-endpoint", "extra endpoint the preflight must reach, such as an API a job calls (repeatable)")

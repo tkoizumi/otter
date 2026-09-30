@@ -87,13 +87,17 @@ type Manager struct {
 	DataDir string
 
 	// Index is the package index dependencies are resolved and synced from.
-	// Empty keeps uv's default (PyPI). It is passed to uv explicitly, as
-	// `--default-index`, because preparation runs uv with configuration
-	// discovery disabled (UV_NO_CONFIG=1): the flag needs no config file, and
-	// no inherited user-level uv configuration can redirect the fetch.
+	// Empty keeps whatever the lock records, which uv installs from when no
+	// index is configured. It is passed to uv explicitly, as `--default-index`,
+	// because preparation runs uv with configuration discovery disabled
+	// (UV_NO_CONFIG=1): the flag needs no config file, and no inherited
+	// user-level uv configuration can redirect the fetch.
 	//
-	// It replaces the default index rather than being an additional one, so a
-	// host with an internal mirror and no route to PyPI never needs one.
+	// It replaces the default index rather than being an additional one, and it
+	// has to be the index `uv.lock` records: `uv sync --locked` re-resolves
+	// against the configured index and refuses when the result would change the
+	// lock, so preparation refuses the disagreement itself, before fetching
+	// (see lock.go).
 	Index string
 
 	// PythonMirror is the root managed interpreter downloads come from. Empty

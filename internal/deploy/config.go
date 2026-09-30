@@ -348,7 +348,7 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.UV, "uv", "", "uv executable on the host for Python preparation (default the vendored copy)")
 	fs.BoolVar(&f.NoUV, "no-uv", false, "do not vendor uv; use one already present on the host")
 	fs.StringVar(&f.UVVersion, "uv-version", "", "uv release to vendor (default "+PinnedUVVersion+")")
-	fs.StringVar(&f.Index, "index", "", "package index for managed dependencies on the host (default PyPI; replaces it rather than adding to it)")
+	fs.StringVar(&f.Index, "index", "", "package index for managed dependencies on the host (must be the index the lock records)")
 	fs.StringVar(&f.PythonMirror, "python-mirror", "", "source for managed interpreter downloads on the host (default uv's python-build-standalone releases)")
 	fs.BoolVar(&f.SkipEgressCheck, "skip-egress-check", false, "skip the host's preparation-time egress preflight")
 	fs.Var(&f.EgressEndpoints, "egress-endpoint", "extra endpoint the host's egress preflight must reach, such as an API a job calls (repeatable)")

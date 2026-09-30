@@ -78,8 +78,8 @@ func lockRegistries(path string) ([]string, error) {
 	return out, nil
 }
 
-// configuredIndex is the index preparation hands to uv, or "" when it
-// configures none. The flag wins; the variables uv itself reads are the
+// configuredIndex is the index preparation will resolve packages against, or ""
+// when it configures none. The flag wins; the variables uv itself reads are the
 // fallback, because preparation passes its environment through and uv would
 // honour them even though otter never set them.
 func (m Manager) configuredIndex() string {
