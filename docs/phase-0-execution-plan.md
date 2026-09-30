@@ -265,6 +265,17 @@ while capture defaults to 7 days (`:27–30`). Automatic run/log retention is
 in-repo part is small; the drill (fill the disk, watch the alert fire) is host
 work.
 
+**Drill harness — fixed before the first drill was written.** Three separate
+workers would otherwise have invented three incompatible shapes, so the interface
+is decided and in the tree: `scripts/drill.sh` dispatches
+`scripts/drill/<name>.sh`; `make drill` runs all of them and
+`make drill DRILL=<name>` runs one. Every drill prints a header naming date, host
+and checkout, asserts its own outcome, and exits non-zero with the failing
+output. A drill that cannot run on the platform **fails rather than skips** — a
+skipped drill has produced no evidence, which is precisely `R-19`'s failure mode.
+The dispatcher is itself verified: with no drills it exits non-zero, a failing
+drill propagates its status, and the aggregate run names what failed.
+
 ### W2 — Host artifacts authored here, executed on the VM
 
 P0-07 (provisioning script; permissions asserted, not documented; no public

@@ -49,7 +49,7 @@ export GOCACHE    ?= $(ROOT)/.cache/go-build
 export GOMODCACHE ?= $(ROOT)/.cache/gomod
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-go test-python smoke lint fmt tidy clean clean-pycache cross cross-build
+.PHONY: help build test test-go test-python smoke drill lint fmt tidy clean clean-pycache cross cross-build
 
 ## help: list the available targets (default goal)
 help:
@@ -89,6 +89,14 @@ test-python:
 ## smoke: init, release, run and read back state in a temporary workspace
 smoke: build
 	@OTTER_BIN=$(OTTER) sh $(ROOT)/scripts/smoke.sh
+
+## drill: run the operating drills (DRILL=<name> runs one; see scripts/drill.sh)
+drill:
+	@if [ -n "$(DRILL)" ]; then \
+		sh $(ROOT)/scripts/drill.sh "$(DRILL)"; \
+	else \
+		sh $(ROOT)/scripts/drill.sh; \
+	fi
 
 ## lint: gofmt check, go vet, and golangci-lint when it is installed
 lint:

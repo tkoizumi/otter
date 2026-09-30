@@ -27,10 +27,11 @@ make build     # ./bin/otterd and ./bin/otter
 make test      # Go suite plus the embedded Python SDK
 make lint      # gofmt (fails on offenders), go vet, golangci-lint if installed
 make smoke     # `otter init` end to end in a temporary workspace
+make drill     # run the operating drills and assert their outcomes
 make cross     # cross-compile for Linux and macOS
 ```
 
-`make help` lists every target. The four that matter:
+`make help` lists every target. The five that matter:
 
 - **`make test`** runs the Go suite, which starts real daemons and real Python
   child processes, and the SDK suite, which drives the SDK against a fake
@@ -43,6 +44,14 @@ make cross     # cross-compile for Linux and macOS
   canonical sample is `otter init`'s output, the scaffold users get is the
   scaffold this repository tests — which is why no example directories ship.
 - **`make cross`** proves the four release targets compile.
+- **`make drill`** runs the operating drills (`scripts/drill/<name>.sh`). A drill
+  is evidence rather than a procedure: it builds its own world, asserts the
+  behavior it claims, and exits non-zero with the failing output when the
+  behavior does not hold, so its transcript can be recorded as the evidence a
+  Phase 0 task is closed by. `make drill DRILL=<name>` runs one;
+  `scripts/drill.sh --list` lists them. A drill that cannot run on this platform
+  fails loudly instead of skipping, because a drill that did not run has produced
+  no evidence. See [docs/phase-0-tasks.md](docs/phase-0-tasks.md).
 
 Run a single package while iterating. Use `scripts/go`, not `go` directly:
 
