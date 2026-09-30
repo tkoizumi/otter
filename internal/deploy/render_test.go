@@ -24,9 +24,21 @@ func testTarget() Target {
 	return t.fillWorkspaceDefaults()
 }
 
+// testUnitOptions is the resource policy a plain deploy writes: the built-in
+// defaults. Tests that do not care about caps use it so the unit they assert on
+// is the one production emits.
+func testUnitOptions() UnitOptions {
+	return UnitOptions{
+		MemoryMax:  DefaultMemoryMax,
+		MemoryHigh: DefaultMemoryHigh,
+		CPUQuota:   DefaultCPUQuota,
+		TasksMax:   DefaultTasksMax,
+	}
+}
+
 func TestUnitFileRendersEnvironment(t *testing.T) {
 	target := testTarget()
-	unit := UnitFile(target)
+	unit := UnitFile(target, testUnitOptions())
 
 	required := []string{
 		"User=otter",
@@ -59,12 +71,155 @@ func TestUnitFileRendersEnvironment(t *testing.T) {
 }
 
 func TestUnitFileNeverTouchesTheDataDirectory(t *testing.T) {
-	unit := UnitFile(testTarget())
+	unit := UnitFile(testTarget(), testUnitOptions())
 	// The data directory is only ever an argument. Anything that deletes or
 	// recreates it on deploy would destroy every job's watermark.
 	for _, forbidden := range []string{"ExecStartPre", "ExecStopPost", "rm -rf"} {
 		if strings.Contains(unit, forbidden) {
 			t.Errorf("unit file contains %q, which could disturb the data directory:\n%s", forbidden, unit)
+		}
+	}
+}
+
+// CA-08: the unit bounds the whole workspace. Every cap is emitted verbatim so
+// systemd, not this package, interprets the size.
+func TestUnitFileEmitsResourceCaps(t *testing.T) {
+	opts := UnitOptions{
+		MemoryMax:  "4G",
+		MemoryHigh: "3G",
+		CPUQuota:   "150%",
+		TasksMax:   "256",
+	}
+	unit := UnitFile(testTarget(), opts)
+
+	for _, want := range []string{
+		"MemoryMax=4G",
+		"MemoryHigh=3G",
+		"CPUQuota=150%",
+		"TasksMax=256",
+	} {
+		if !strings.Contains(unit, "\n"+want+"\n") {
+			t.Errorf("unit file is missing %q\n---\n%s", want, unit)
+		}
+	}
+}
+
+// The defaults are what a plain `otter deploy` writes, so they must be present
+// without any flag being passed.
+func TestUnitFileEmitsTheDefaultCaps(t *testing.T) {
+	unit := UnitFile(testTarget(), testUnitOptions())
+	for _, want := range []string{
+		"\nMemoryMax=" + DefaultMemoryMax + "\n",
+		"\nMemoryHigh=" + DefaultMemoryHigh + "\n",
+		"\nCPUQuota=" + DefaultCPUQuota + "\n",
+		"\nTasksMax=" + DefaultTasksMax + "\n",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("unit file is missing the default cap %q\n---\n%s", want, unit)
+		}
+	}
+}
+
+// The unset case: an empty value or the explicit "off" emits no directive at
+// all, so systemd's own default applies. It must not emit "MemoryMax=0", which
+// systemd reads as a real limit of zero.
+func TestUnitFileOmitsCapsThatAreOff(t *testing.T) {
+	for _, opts := range []UnitOptions{
+		{},
+		{MemoryMax: CapOff, MemoryHigh: CapOff, CPUQuota: CapOff, TasksMax: CapOff},
+		{MemoryMax: "OFF", MemoryHigh: " off ", CPUQuota: "", TasksMax: CapOff},
+	} {
+		unit := UnitFile(testTarget(), opts)
+		for _, forbidden := range []string{"MemoryMax=", "MemoryHigh=", "CPUQuota=", "TasksMax="} {
+			if strings.Contains(unit, forbidden) {
+				t.Errorf("cap %q was emitted for %+v:\n%s", forbidden, opts, unit)
+			}
+		}
+	}
+}
+
+// The sandbox the docs promise. Each directive has to be in the unit body, not
+// only in prose.
+func TestUnitFileEmitsSandboxHardening(t *testing.T) {
+	target := testTarget()
+	unit := UnitFile(target, testUnitOptions())
+
+	for _, want := range []string{
+		"NoNewPrivileges=true",
+		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"PrivateTmp=true",
+		// ProtectSystem=strict makes everything read-only, so the two
+		// directories the runtime writes must be reopened explicitly.
+		"ReadWritePaths=" + target.WorkspaceDir() + " " + target.DataDir,
+	} {
+		if !strings.Contains(unit, "\n"+want+"\n") {
+			t.Errorf("unit file is missing %q\n---\n%s", want, unit)
+		}
+	}
+}
+
+// systemd's default OOMPolicy=stop stops the whole unit when the OOM killer
+// kills any process in it, so a runaway job killed by MemoryMax would take
+// otterd and every other in-flight run down with it. The generated unit has to
+// opt out of that, or the cap contradicts its own purpose.
+func TestUnitFileKeepsTheDaemonAliveOnAnOOMKill(t *testing.T) {
+	unit := UnitFile(testTarget(), testUnitOptions())
+	if !strings.Contains(unit, "\nOOMPolicy=continue\n") {
+		t.Errorf("unit file does not set OOMPolicy=continue:\n%s", unit)
+	}
+}
+
+// A job that writes scratch outside its workspace needs its path reopened, and
+// an opaque mount failure at start is the wrong way to learn the path was
+// missing: operator paths are prefixed with "-" so systemd ignores a
+// not-yet-existing one. Duplicates are dropped.
+func TestUnitFileReadWritePathsAddsOperatorPaths(t *testing.T) {
+	target := testTarget()
+	unit := UnitFile(target, UnitOptions{ReadWritePaths: []string{"/srv/scratch", "/srv/scratch", target.WorkspaceDir()}})
+
+	want := "ReadWritePaths=" + target.WorkspaceDir() + " " + target.DataDir + " -/srv/scratch"
+	if !strings.Contains(unit, want) {
+		t.Errorf("unit file ReadWritePaths is wrong:\nwant %q\n---\n%s", want, unit)
+	}
+	if strings.Count(unit, "/srv/scratch") != 1 {
+		t.Errorf("a duplicate ReadWritePaths entry survived:\n%s", unit)
+	}
+}
+
+// ProtectHome=true makes /home, /root and /run/user inaccessible, and
+// ReadWritePaths= cannot reopen a path beneath one. A deploy under any of them
+// must fail before the push with a message naming the path.
+func TestValidateUnitPathsRejectsProtectedHome(t *testing.T) {
+	for _, remoteDir := range []string{"/home/deploy/otter", "/root/otter", "/run/user/1000/otter"} {
+		target := Target{RemoteDir: remoteDir, WorkspaceSlug: "demo"}
+		target = target.fillWorkspaceDefaults()
+		if err := ValidateUnitPaths(target, nil); err == nil {
+			t.Errorf("ValidateUnitPaths accepted a workspace under %s", remoteDir)
+		}
+	}
+
+	// The default install root and an operator's extra path outside a home
+	// directory both pass.
+	ok := testTarget()
+	if err := ValidateUnitPaths(ok, []string{"/srv/scratch"}); err != nil {
+		t.Errorf("ValidateUnitPaths rejected /opt/otter with a scratch path: %v", err)
+	}
+	// An extra writable path under a protected home is rejected too, because
+	// it would be just as unreachable.
+	if err := ValidateUnitPaths(ok, []string{"/home/deploy/scratch"}); err == nil {
+		t.Error("ValidateUnitPaths accepted an extra path under /home")
+	}
+}
+
+// CapEnabled is the single decision the renderer and the operators share.
+func TestCapEnabled(t *testing.T) {
+	for value, want := range map[string]bool{
+		"4G": true, "75%": true, "off": false, "OFF": false,
+		" off ": false, "": false, "   ": false,
+	} {
+		if got := CapEnabled(value); got != want {
+			t.Errorf("CapEnabled(%q) = %v, want %v", value, got, want)
 		}
 	}
 }
@@ -97,7 +252,7 @@ func TestEnvFileWithoutToken(t *testing.T) {
 
 func TestInstallScriptBakesTheUnit(t *testing.T) {
 	target := testTarget()
-	script := InstallScript(target)
+	script := InstallScript(target, testUnitOptions())
 
 	for _, want := range []string{
 		"set -e",
@@ -122,7 +277,7 @@ func TestInstallScriptBakesTheUnit(t *testing.T) {
 }
 
 func TestInstallScriptCreatesDirectoriesBeforePushing(t *testing.T) {
-	script := InstallScript(testTarget())
+	script := InstallScript(testTarget(), testUnitOptions())
 	for _, want := range []string{
 		`install -d -m 0755 -o "$RUN_AS" -g "$RUN_AS" "$WORKSPACE_DIR" "$WORKSPACE_DIR/bin" "$WORKSPACE_DIR/jobs" "$WORKSPACE_DIR/tools"`,
 		`install -d -m 0700 -o "$RUN_AS" -g "$RUN_AS" "$DATA_DIR"`,
@@ -163,7 +318,7 @@ func TestPrepareScriptDoesNotRewriteTheDatabase(t *testing.T) {
 }
 
 func TestInstallScriptOwnsTheVendoredToolchain(t *testing.T) {
-	script := InstallScript(testTarget())
+	script := InstallScript(testTarget(), testUnitOptions())
 	// A vendored uv is provisioned out of band; it must end up owned by the
 	// service account that runs preparation.
 	if !strings.Contains(script, "for dir in bin jobs lib tools; do") {
@@ -176,7 +331,7 @@ func TestInstallScriptOwnsTheVendoredToolchain(t *testing.T) {
 // still starts.
 func TestUnitFileLoadsTheEnvironmentFilesInPrecedenceOrder(t *testing.T) {
 	target := testTarget()
-	unit := UnitFile(target)
+	unit := UnitFile(target, testUnitOptions())
 
 	for _, want := range []string{
 		"EnvironmentFile=-" + target.DaemonEnvFilePath(),
@@ -294,7 +449,7 @@ func TestServiceScriptsRunFromAReachableDirectory(t *testing.T) {
 // working directory, the same rule every other command uses.
 func TestActivateScriptInstallsAHostWideDispatcher(t *testing.T) {
 	target := testTarget()
-	script := ActivateScript(target)
+	script := ActivateScript(target, testUnitOptions())
 
 	if !strings.Contains(script, "cat > "+ShellQuote(CLIDispatcherPath)) {
 		t.Errorf("activate script does not install %s:\n%s", CLIDispatcherPath, script)

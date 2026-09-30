@@ -756,3 +756,148 @@ func TestDeployRejectsANegativeKeep(t *testing.T) {
 		t.Errorf("refusal does not name --keep: %v", err)
 	}
 }
+
+// CA-08: the caps a deploy writes are explicit, defaulted, and overridable from
+// either a flag or the committed config, with the flag winning.
+func TestDeployUnitCapsSurface(t *testing.T) {
+	newRepo := func(t *testing.T) string {
+		t.Helper()
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		job := filepath.Join(repo, "jobs", "counter")
+		if err := os.MkdirAll(job, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(job, "otter.yaml"),
+			[]byte("version: 1\nname: counter\nentrypoint: main.py\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(job, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+
+	load := func(t *testing.T, repo string, f *Flags) Config {
+		t.Helper()
+		cfg, err := LoadConfig(repo, f, HostDeploy{})
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("defaults", func(t *testing.T) {
+		cfg := load(t, newRepo(t), &Flags{set: map[string]bool{}})
+		if cfg.MemoryMax != DefaultMemoryMax || cfg.MemoryHigh != DefaultMemoryHigh ||
+			cfg.CPUQuota != DefaultCPUQuota || cfg.TasksMax != DefaultTasksMax {
+			t.Errorf("caps = %q/%q/%q/%q, want the defaults %q/%q/%q/%q",
+				cfg.MemoryMax, cfg.MemoryHigh, cfg.CPUQuota, cfg.TasksMax,
+				DefaultMemoryMax, DefaultMemoryHigh, DefaultCPUQuota, DefaultTasksMax)
+		}
+		// The unit the deploy would write must actually carry them.
+		unit := UnitFile(cfg.Target, cfg.UnitOptions())
+		if !strings.Contains(unit, "\nMemoryMax="+DefaultMemoryMax+"\n") {
+			t.Errorf("the rendered unit does not carry the default cap:\n%s", unit)
+		}
+	})
+
+	t.Run("flags override", func(t *testing.T) {
+		f := &Flags{MemoryMax: "8G", MemoryHigh: "6G", CPUQuota: "400%", TasksMax: "1024", set: map[string]bool{}}
+		cfg := load(t, newRepo(t), f)
+		if cfg.MemoryMax != "8G" || cfg.MemoryHigh != "6G" || cfg.CPUQuota != "400%" || cfg.TasksMax != "1024" {
+			t.Errorf("flags did not override the defaults: %+v", cfg.UnitOptions())
+		}
+	})
+
+	t.Run("the config file sets them", func(t *testing.T) {
+		repo := newRepo(t)
+		config := "memory_max: 2G\nmemory_high: 1G\ncpu_quota: 100%\ntasks_max: 128\nread_write_paths:\n  - /srv/scratch\n"
+		if err := os.WriteFile(filepath.Join(repo, ConfigFileName), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := load(t, repo, &Flags{set: map[string]bool{}})
+		if cfg.MemoryMax != "2G" || cfg.MemoryHigh != "1G" || cfg.CPUQuota != "100%" || cfg.TasksMax != "128" {
+			t.Errorf("config file caps did not apply: %+v", cfg.UnitOptions())
+		}
+		if len(cfg.ReadWritePaths) != 1 || cfg.ReadWritePaths[0] != "/srv/scratch" {
+			t.Errorf("config file read_write_paths = %v", cfg.ReadWritePaths)
+		}
+	})
+
+	t.Run("a flag beats the config file and extends its paths", func(t *testing.T) {
+		repo := newRepo(t)
+		config := "memory_max: 2G\nread_write_paths:\n  - /srv/committed\n"
+		if err := os.WriteFile(filepath.Join(repo, ConfigFileName), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f := &Flags{MemoryMax: "8G", ReadWritePaths: stringList{"/srv/scratch"}}
+		cfg := load(t, repo, f)
+		if cfg.MemoryMax != "8G" {
+			t.Errorf("MemoryMax = %q, want the flag's 8G", cfg.MemoryMax)
+		}
+		if len(cfg.ReadWritePaths) != 2 || cfg.ReadWritePaths[0] != "/srv/committed" || cfg.ReadWritePaths[1] != "/srv/scratch" {
+			t.Errorf("ReadWritePaths = %v, want the committed path plus the flag's", cfg.ReadWritePaths)
+		}
+	})
+
+	t.Run("off is a real opt-out", func(t *testing.T) {
+		f := &Flags{MemoryMax: CapOff, set: map[string]bool{}}
+		cfg := load(t, newRepo(t), f)
+		if cfg.MemoryMax != CapOff {
+			t.Errorf("MemoryMax = %q, want the explicit %q", cfg.MemoryMax, CapOff)
+		}
+		unit := UnitFile(cfg.Target, cfg.UnitOptions())
+		if strings.Contains(unit, "MemoryMax=") {
+			t.Errorf("an opted-out cap was still emitted:\n%s", unit)
+		}
+	})
+
+	t.Run("the rw-path flag is repeatable", func(t *testing.T) {
+		f, err := ParseDeployFlags([]string{"--rw-path", "/srv/a", "--rw-path", "/srv/b"}, io.Discard)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(f.ReadWritePaths) != 2 || f.ReadWritePaths[0] != "/srv/a" || f.ReadWritePaths[1] != "/srv/b" {
+			t.Errorf("--rw-path collected %v, want both paths", f.ReadWritePaths)
+		}
+	})
+}
+
+// A malformed cap would be written into the unit and only fail on the host, at
+// restart, after the deploy claimed success. Each is refused locally.
+func TestDeployRejectsMalformedCaps(t *testing.T) {
+	base := func() Config {
+		target := DefaultTarget()
+		target.Host = "example.test"
+		return Config{ProjectRoot: t.TempDir(), Timeout: time.Minute, Target: target, Keep: DefaultKeep}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"memory size", func(c *Config) { c.MemoryMax = "lots" }, "memory-max"},
+		{"memory suffix", func(c *Config) { c.MemoryMax = "4X" }, "memory-max"},
+		{"cpu quota", func(c *Config) { c.CPUQuota = "half" }, "cpu-quota"},
+		{"cpu quota zero", func(c *Config) { c.CPUQuota = "0%" }, "cpu-quota"},
+		{"tasks max", func(c *Config) { c.TasksMax = "many" }, "tasks-max"},
+		{"rw path relative", func(c *Config) { c.ReadWritePaths = []string{"srv/scratch"} }, "rw-path"},
+		{"rw path in home", func(c *Config) { c.ReadWritePaths = []string{"/home/deploy/scratch"} }, "ProtectHome"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base()
+			cfg.MemoryMax, cfg.MemoryHigh, cfg.CPUQuota, cfg.TasksMax = DefaultMemoryMax, DefaultMemoryHigh, DefaultCPUQuota, DefaultTasksMax
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("%s was accepted", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("refusal %q does not name %q", err, tc.want)
+			}
+		})
+	}
+}
