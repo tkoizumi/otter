@@ -113,7 +113,7 @@ write_fixture() {
 		printf 'match *MemTotal*|0|%s\n' "${FIX_MEM_KIB:-926448}"
 		printf 'match *df -Pk*|0|%s\n' "${FIX_DISK_KIB:-19000000}"
 		printf 'match */proc/swaps*|0|%s\n' "${FIX_SWAP_KIB:-2097148}"
-		printf 'match *sshd -T*|0|%s\n' "${FIX_SSHD:-passwordauthentication no\\npermitrootlogin no}"
+		printf 'match *sshd -T*|%s|%s\n' "${FIX_SSHD_STATUS:-0}" "${FIX_SSHD:-passwordauthentication no\\npermitrootlogin no}"
 		printf 'match *test -d*workspaces*|%s|\n' "${FIX_WS_ROOT_EXISTS:-1}"
 		printf 'match *test -e /etc/otter/workspaces*|%s|\n' "${FIX_ENV_ROOT_EXISTS:-1}"
 		# A missing report means the `test -s` half fails, so the command
@@ -179,6 +179,7 @@ expect() {
 
 	unset FIX_LOGIN_UID_STATUS FIX_LOGIN_UID FIX_SUDO_STATUS FIX_UNAME FIX_OS \
 		FIX_TOOLS FIX_MEM_KIB FIX_DISK_KIB FIX_SWAP_KIB FIX_SSHD \
+		FIX_SSHD_STATUS \
 		FIX_USER_EXISTS FIX_WS_ROOT_EXISTS FIX_ENV_ROOT_EXISTS \
 		FIX_REPORT_STATUS FIX_REPORT FIX_WORKSPACE_DIR FIX_WS_OUT FIX_ASSERT_STATUS \
 		FIX_ASSERT_OUT OTTER_FAKE_OTTER_STATUS OTTER_FAKE_OTTER_OUT || true
@@ -223,6 +224,8 @@ expect "too little RAM fails" 1 "below the " "FIX_MEM_KIB=524288"
 expect "too little disk fails" 1 "below the " "FIX_DISK_KIB=1048576"
 expect "a missing tool fails" 1 "missing on " "FIX_TOOLS= rsync find"
 expect "a non-Ubuntu host fails" 1 "not 'ubuntu 24.04'" "FIX_OS=debian 12"
+expect "a failed sshd -T probe fails" 1 "could not read the effective sshd configuration" \
+	"FIX_SSHD_STATUS=1" "FIX_SSHD="
 expect "sshd accepting passwords fails" 1 "passwordauthentication=yes" \
 	"FIX_SSHD=passwordauthentication yes\npermitrootlogin no"
 expect "sshd permitting root login fails" 1 "permitrootlogin=yes" \
@@ -234,6 +237,14 @@ expect "an unsupported architecture fails" 1 "not an amd64 or arm64 host" "FIX_U
 
 expect "an already-provisioned host fails" 1 "already provisioned" \
 	"FIX_USER_EXISTS=0" "FIX_WS_ROOT_EXISTS=0" "FIX_ENV_ROOT_EXISTS=0"
+# Each half of the freshness probe carries its own case: the service account
+# alone, the workspace root alone, and the env root alone.
+expect "an existing service account alone fails" 1 "service-account:otter" \
+	"FIX_USER_EXISTS=0"
+expect "an existing workspace root alone fails" 1 "/opt/otter/workspaces" \
+	"FIX_WS_ROOT_EXISTS=0"
+expect "an existing env root alone fails" 1 "/etc/otter/workspaces" \
+	"FIX_ENV_ROOT_EXISTS=0"
 expect "an already-provisioned host converges with --allow-existing" 0 "converging" \
 	"--allow-existing" "FIX_USER_EXISTS=0" "FIX_WS_ROOT_EXISTS=0"
 

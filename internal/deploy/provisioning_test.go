@@ -215,6 +215,27 @@ func TestHostPermissionScriptAssertsEveryClaim(t *testing.T) {
 		"approved_ports",
 		"/proc/swaps",
 		"otter-provision-report.txt",
+		"vm.swappiness",
+		// The record `otter deploy` writes has no service_name and no data_dir
+		// key: the script must read `unit` and derive `<workspace>/.otter/data`.
+		`json_string unit`,
+		".otter/data",
+		// systemd reads EnvironmentFile= as root before dropping to User=, so
+		// the env files are root-owned, not service-owned. Asserting the
+		// service-owned shape would make a correct host fail.
+		"root:root",
+	}
+	// Each of those is exercised by a named case in
+	// scripts/test-assert-host-permissions.sh; this is the in-repo half that
+	// notices the whole check being deleted.
+	harness := repoFile(t, "scripts/test-assert-host-permissions.sh")
+	if !strings.Contains(harness, "unset_mutations") {
+		t.Errorf("scripts/test-assert-host-permissions.sh has no mutation reset, so cases can leak into each other")
+	}
+	// The fixture must feed the script the record `otter deploy` actually
+	// writes, or the derivation above stops being exercised.
+	if !strings.Contains(harness, `"unit":"%s"`) || strings.Contains(harness, `"service_name"`) {
+		t.Errorf("the fixture's workspace.json is not the record `otter deploy` writes")
 	}
 	for _, want := range required {
 		if !strings.Contains(script, want) {

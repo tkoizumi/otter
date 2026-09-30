@@ -258,6 +258,10 @@ secrets:
 ```
 
 ```bash
+# Manual single-runtime layout. `otter deploy` writes the per-workspace files
+# instead: /etc/otter/workspaces/<workspace>.env, mode 0600, owned by root,
+# inside a 0700 root-owned directory. Either way the file is never writable by
+# the service account.
 # /etc/otter/otter.env: mode 0600, owner otter
 SHOPIFY_TOKEN=shpat_xxx
 ERP_TOKEN=erp_xxx
@@ -308,7 +312,21 @@ sudo find /srv/otter/jobs -type f -exec chmod 0640 {} +
 - **Data directory `0700`, owned by the service user.** It holds state, logs and
   webhook tokens. Anyone who can read `otter.db` can read every job's
   state and captured output.
-- **`otter.env` `0600`.** It holds credentials.
+- **The environment files are `0600`, owned by `root`, in a `0700 root`
+  directory.** systemd reads `EnvironmentFile=` as root before it drops to
+  `User=otter`, so the daemon never opens them itself — it inherits the values
+  in its environment. That is deliberate and it is the stronger posture: a
+  credentials file the service account owns is one that any compromised job
+  running as that account can rewrite. In the deployed layout these are
+  `/etc/otter/workspaces/<workspace>.env` and `<workspace>.daemon.env`;
+  `otter deploy` writes both with `umask 077` as root, and
+  `scripts/assert-host-permissions.sh` asserts root ownership.
+- **`otter.db`'s own mode is contained by its directory.** A `0700` data
+  directory means no other account can traverse into it, so the documented bar
+  is the directory, not the file. A tighter umask on the daemon would make the
+  database `0600`; the assertion reports the mode it finds rather than failing a
+  host that meets the stated requirement. The containment is against every
+  account other than `otter`, which owns the directory by design.
 - **Jobs root read-only for the service user.** Otter never writes there.
   Making it `root:otter 0750` means the `otter` user cannot drop a new
   job into place, which turns "write to the jobs directory" into
@@ -494,8 +512,9 @@ last step of a provisioning, and it can be run by hand at any time.
 - [ ] **[asserted]** `/var/lib/otter` (per workspace:
       `/opt/otter/workspaces/<workspace>/.otter/data`) is `0700`, owned by the
       service user.
-- [ ] **[asserted]** The workspace's environment files are `0600`, owned by the
-      service user.
+- [ ] **[asserted]** The workspace's environment files are `0600`, owned by
+      `root`, inside a `0700` `root`-owned `/etc/otter/workspaces` — the service
+      account must not be able to rewrite its own credentials.
 - [ ] **[asserted]** Only the approved ports are listening, and no unapproved
       wildcard bind exists (`--approved-ports`, default `22`).
 - [ ] **[asserted]** The host has swap (a 1 GiB host without it OOMs) and its

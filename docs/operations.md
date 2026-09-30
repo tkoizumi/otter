@@ -83,8 +83,8 @@ Two settings decide whether a small host survives:
 | --- | --- | --- |
 | `scripts/provision.sh` | your workstation | Empty Ubuntu 24.04 host → `otter deploy` → asserted host. Drills the plan with `--dry-run`. |
 | `scripts/assert-host-permissions.sh` | the host | Asserts CA-09/CA-10 on a deployed host: account, modes, ownership, unit state and sandbox, loopback-only API, approved ports, swap, provisioning report. |
-| `scripts/test-provision.sh` | your workstation | Falsifiability for `provision.sh`: a ready fixture must pass, and a missing swap, missing report, bad `sshd` or failed deploy must each fail. |
-| `scripts/test-assert-host-permissions.sh` | your workstation | Falsifiability for the assertion script: 30 fixture cases, each mutation tied to the check that must notice it. |
+| `scripts/test-provision.sh` | your workstation | Falsifiability for `provision.sh`: 27 fixture cases. A ready fixture must pass, and a missing swap, missing report, unreadable `sshd`, half-provisioned host or failed deploy must each fail the named check. |
+| `scripts/test-assert-host-permissions.sh` | your workstation | Falsifiability for the assertion script: 48 fixture cases, one per assertion it names. Every check can be disabled by mutating the script and the case that names it goes red. |
 
 The assertion script can also be run by hand against a deployed host:
 
@@ -93,11 +93,29 @@ sudo sh scripts/assert-host-permissions.sh \
   --workspace-dir /opt/otter/workspaces/castor-24856da9
 ```
 
-It reads the unit name and data directory out of the workspace's own
-`workspace.json`, so it checks the paths the deploy wrote rather than paths an
-operator remembered. `--approved-ports` sets the port list an external scan is
-allowed to find (default `22`); `--provision-report ''` skips the report check
-for a host that was provisioned by other means.
+It reads the unit, environment-file basename and listen address out of the
+workspace's own `workspace.json` — the record the deploy writes, whose keys are
+`unit`, `name` and `listen` — and derives the data directory as
+`<workspace>/.otter/data`, so it checks the paths the deploy wrote rather than
+paths an operator remembered. On a normally-deployed host the invocation above
+is therefore enough; no other flags are needed.
+
+`--approved-ports` is the list of ports the host may be listening on (default
+`22`): the script enumerates the host's own listening sockets with `ss -tln` and
+fails on anything else, or on a wildcard bind on an unapproved port. It does
+**not** scan from outside the host — CA-10's external port scan is a separate
+step (`nmap` from another machine), and this check is the on-host half of the
+same claim. `--provision-report ''` skips the report check for a host that was
+provisioned by other means.
+
+Two ownership rules it asserts are worth stating because they look backwards at
+first glance. The data directory is `0700` owned by the service account; the
+environment files are `0600` owned by **root**, inside a `0700` root-owned
+`/etc/otter/workspaces`. systemd reads `EnvironmentFile=` as root before it
+drops to `User=otter`, so the daemon never opens them; making them
+service-owned would let any compromised job rewrite its own credentials. The
+`otter.db` file mode is reported rather than failed: its `0700` directory
+already contains it, and the documented requirement is the directory.
 
 ### Doing it by hand
 

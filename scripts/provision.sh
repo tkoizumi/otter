@@ -363,8 +363,12 @@ fi
 
 # --- 3. packages and tools `otter deploy` needs -----------------------------
 #
-# The list mirrors internal/deploy/remote.go's requiredTools, so a host that
-# passes here cannot then fail the deploy's own preflight.
+# The list is a superset of internal/deploy/remote.go's requiredTools: the same
+# twelve, plus curl (deployer.go's post-deploy /health poll), python3 (the
+# daemon needs an interpreter even with no Python jobs) and swapon (the
+# fallback when /proc/swaps is unreadable). Superset on purpose: a host that
+# passes here cannot then fail a check the deploy or the assertion later makes,
+# and the two lists are allowed to drift only in this direction.
 
 say "checking required tools are installed"
 if [ "$dry_run" -eq 1 ]; then
@@ -448,13 +452,20 @@ say "checking the host is not already provisioned"
 if [ "$dry_run" -eq 1 ]; then
 	say "dry-run: would check for the $service_user account, $remote_dir/workspaces and /etc/otter/workspaces"
 else
+	# Each probe is independent: `A && mark; B && mark` stops at the first
+	# false, so a host with the account but no workspace was reported as
+	# "already provisioned" using only its account and the other two halves of
+	# the check were never exercised.
 	existing=""
-	remote "id -u $(quote "$service_user") >/dev/null 2>&1" &&
+	if remote "id -u $(quote "$service_user") >/dev/null 2>&1"; then
 		existing="$existing service-account:$service_user"
-	remote "test -d $(quote "$remote_dir/workspaces")" &&
+	fi
+	if remote "test -d $(quote "$remote_dir/workspaces")"; then
 		existing="$existing $remote_dir/workspaces"
-	remote "test -e /etc/otter/workspaces" &&
+	fi
+	if remote "test -e /etc/otter/workspaces"; then
 		existing="$existing /etc/otter/workspaces"
+	fi
 	if [ -n "$existing" ]; then
 		if [ "$allow_existing" -eq 1 ]; then
 			say "host is already provisioned (${existing# }); converging because --allow-existing"

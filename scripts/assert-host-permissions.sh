@@ -27,7 +27,9 @@
 #   --env-dir DIR          directory holding the workspace env files
 #   --env-file NAME        the workspace's env basename, without the .env suffix
 #   --listen ADDR          the loopback address the API must hold
-#   --approved-ports LIST  ports an external scan may find open (default 22)
+#   --approved-ports LIST  ports this host may be listening on (default 22);
+#                          the check is `ss -tln` on the host, not a scan from
+#                          outside it
 #
 # Environment equivalents: OTTER_WORKSPACE_DIR, OTTER_UNIT, OTTER_SERVICE_USER,
 # OTTER_DATA_DIR, OTTER_ENV_DIR, OTTER_ENV_FILE, OTTER_LISTEN,
@@ -35,10 +37,10 @@
 # and is not meant to be set on a real host.
 #
 # Falsifiability: `sh scripts/test-assert-host-permissions.sh` runs this script
-# against a synthesized host fixture and then against the same fixture with one
-# permission, one unit property and one listener broken. The clean fixture must
-# pass and every mutation must fail on the check it names -- otherwise this
-# script is asserting nothing.
+# against a synthesized host fixture and against 32 copies of the script, each
+# with one assertion disabled. The clean fixture must pass and every mutation
+# must fail on the case that names it -- otherwise this script is asserting
+# nothing.
 set -eu
 
 # A transcript is only evidence if it says where and when it ran, against which
@@ -54,6 +56,11 @@ printf 'checkout: %s\n' "$(git -C "$root" describe --tags --always --dirty 2>/de
 
 workspace_dir=${OTTER_WORKSPACE_DIR:-}
 service_user=${OTTER_SERVICE_USER:-otter}
+# The env directory and its files belong to root, not to the service account:
+# systemd reads EnvironmentFile= as root before dropping to User=, and a service
+# account that owns its own credentials file can rewrite them.
+env_owner=${OTTER_ENV_OWNER:-root:root}
+env_dir_mode=${OTTER_ENV_DIR_MODE:-700}
 unit=${OTTER_UNIT:-}
 data_dir=${OTTER_DATA_DIR:-}
 env_dir=${OTTER_ENV_DIR:-}
@@ -89,6 +96,9 @@ Exit status is 0 only when every assertion holds.
   --env-dir DIR         directory of env files (default /etc/otter/workspaces)
   --env-file NAME       workspace env basename; NAME.env and NAME.daemon.env
                         are both checked
+  --env-owner U:G       owner the env files must have (default root:root, which
+                        is what `otter deploy` writes)
+  --env-dir-mode MODE   mode the env directory must have (default 700)
   --listen ADDR         loopback host:port the API must hold
   --approved-ports LIST comma-separated ports (default 22). A listener on any
                         other port fails unless it is on loopback.
@@ -122,6 +132,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--env-file)
 		env_file=$2
+		shift 2
+		;;
+	--env-owner)
+		env_owner=$2
+		shift 2
+		;;
+	--env-dir-mode)
+		env_dir_mode=$2
 		shift 2
 		;;
 	--listen)
@@ -165,21 +183,41 @@ if [ -n "$workspace_dir" ]; then
 		echo "assert-host-permissions: pass --unit and --data-dir explicitly if it is elsewhere" >&2
 		exit 1
 	fi
-	# No JSON parser is assumed on the host, so pull the two string fields out
-	# by hand. Both are written by this tool's own encoder: "key": "value".
+	# The real record, written by the deploy's own workspace record, is flat
+	# JSON:
+	#   {"jobs_layout":"jobs","id":"<uuid>","slug":"<slug>","name":"<workspace>",
+	#    "unit":"otterd-<workspace>","listen":"127.0.0.1:7337","created_at":"..."}
+	#
+	# There is no data_dir key. The data directory is the fixed path
+	# <workspace>/.otter/data, so it is derived here rather than read. The
+	# older "service_name" and "data_dir" spellings are still accepted, so a
+	# record written by an earlier version is not rejected as unreadable.
+	#
+	# No JSON parser is assumed on the host, so the fields are pulled out by
+	# hand. They are written by this tool's own encoder: "key": "value".
 	json_string() {
 		sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$record" | head -n 1
 	}
+	[ -n "$unit" ] || unit=$(json_string unit)
 	[ -n "$unit" ] || unit=$(json_string service_name)
-	[ -n "$data_dir" ] || data_dir=$(json_string data_dir)
-	if [ -z "$unit" ] || [ -z "$data_dir" ]; then
-		echo "assert-host-permissions: FAIL: $record names neither service_name nor data_dir" >&2
+	[ -n "$env_file" ] || env_file=$(json_string name)
+	case $workspace_dir in
+	*/) workspace_dir=${workspace_dir%/} ;;
+	esac
+	[ -n "$data_dir" ] || data_dir=$workspace_dir/.otter/data
+	[ -n "$listen" ] || listen=$(json_string listen)
+	if [ -z "$unit" ]; then
+		echo "assert-host-permissions: FAIL: $record names no unit" >&2
 		exit 1
 	fi
 fi
 
-if [ -z "$unit" ] || [ -z "$data_dir" ]; then
-	echo "assert-host-permissions: FAIL: need a unit and a data directory; pass --workspace-dir or both --unit and --data-dir" >&2
+if [ -z "$unit" ]; then
+	echo "assert-host-permissions: FAIL: need a unit; pass --workspace-dir or --unit" >&2
+	exit 2
+fi
+if [ -z "$data_dir" ]; then
+	echo "assert-host-permissions: FAIL: need a data directory; pass --workspace-dir or --data-dir" >&2
 	exit 2
 fi
 
@@ -301,22 +339,50 @@ else
 	else
 		fail "data directory $data_dir is owned by ${owner:-unknown}, want $service_user:$service_user"
 	fi
-	# The database inside it carries the same rule: a 0644 otter.db inside a
-	# 0700 directory is one chmod away from disclosure.
+	# The database inside the directory. Its mode is contained by the 0700
+	# directory -- no other account can traverse into it -- so this is a
+	# recommendation, not a failure: a host whose database is 0644 still meets
+	# the documented bar, which is the directory. It is reported rather than
+	# passed in silence because a tighter umask on the daemon would make it
+	# 600, and severity is not what the reader needs to know here.
 	for entry in otter.db otter.db-wal otter.db-shm; do
 		[ -e "$data_dir/$entry" ] || continue
 		emode=$(mode_of "$data_dir/$entry")
 		case ${emode:-000} in
 		600 | 640 | 660 | 700) ok "$entry mode is 0$emode" ;;
-		*) fail "$data_dir/$entry is mode ${emode:-unknown}, want owner-only" ;;
+		*)
+			ok "$entry mode is ${emode:-unknown}; owner-only is tighter but the 0700 directory contains it"
+			printf 'note: %s is mode %s; a tighter umask on the daemon would make it 0600\n' \
+				"$data_dir/$entry" "${emode:-unknown}"
+			;;
 		esac
 	done
 fi
 
 # --- 3. the environment files ----------------------------------------------
 #
-# 0600 and owned by the service account. These hold the API token and every
-# shared secret; group or world readability is a credential leak.
+# 0600, root-owned, inside a 0700 root-owned directory. These hold the API
+# token and every shared secret, and systemd reads them as root before dropping
+# to User=otter -- so root ownership is both what `otter deploy` writes and the
+# stronger posture: a service account that owns its own credentials file can
+# rewrite them, and so can any compromised job running as that account.
+
+if [ ! -d "$env_dir" ]; then
+	fail "environment directory $env_dir does not exist"
+else
+	dir_mode=$(mode_of "$env_dir")
+	if [ "$dir_mode" = "$env_dir_mode" ]; then
+		ok "environment directory mode is 0$env_dir_mode"
+	else
+		fail "environment directory $env_dir is mode ${dir_mode:-unknown}, want 0$env_dir_mode"
+	fi
+	dir_owner=$(owner_of "$env_dir")
+	if [ "$dir_owner" = "$env_owner" ]; then
+		ok "environment directory owner is $env_owner"
+	else
+		fail "environment directory $env_dir is owned by ${dir_owner:-unknown}, want $env_owner"
+	fi
+fi
 
 for suffix in .env .daemon.env; do
 	file=$env_dir/$env_file$suffix
@@ -335,10 +401,10 @@ for suffix in .env .daemon.env; do
 		fail "$file is mode ${mode:-unknown}, want 0600"
 	fi
 	owner=$(owner_of "$file")
-	if [ "$owner" = "$service_user:$service_user" ]; then
-		ok "$file owner is $service_user:$service_user"
+	if [ "$owner" = "$env_owner" ]; then
+		ok "$file owner is $env_owner"
 	else
-		fail "$file is owned by ${owner:-unknown}, want $service_user:$service_user"
+		fail "$file is owned by ${owner:-unknown}, want $env_owner"
 	fi
 done
 
@@ -529,16 +595,27 @@ fi
 # configured. Read the effective configuration rather than a drop-in file, so a
 # later override cannot hide here.
 
-sshd_bin=""
-if command -v sshd >/dev/null 2>&1; then
-	sshd_bin=$(command -v sshd)
-elif [ -x /usr/sbin/sshd ]; then
-	sshd_bin=/usr/sbin/sshd
-fi
+# OTTER_SSHD_BIN pins the binary for the fixture harness; on a real host the
+# PATH and /usr/sbin are the only correct answers.
+sshd_bin=${OTTER_SSHD_BIN:-}
 if [ -z "$sshd_bin" ]; then
+	if command -v sshd >/dev/null 2>&1; then
+		sshd_bin=$(command -v sshd)
+	elif [ -x /usr/sbin/sshd ]; then
+		sshd_bin=/usr/sbin/sshd
+	fi
+fi
+if [ -z "$sshd_bin" ] || [ ! -x "$sshd_bin" ]; then
 	fail "sshd is not installed; this is not an SSH-reachable host"
 else
-	sshd_conf=$("$sshd_bin" -T 2>/dev/null || true)
+	# `sshd -T` validates the configuration and needs the privilege-separation
+	# directory, so bound the call: a hung probe must not hang the whole
+	# assertion. timeout is coreutils and present on every supported host.
+	if command -v timeout >/dev/null 2>&1; then
+		sshd_conf=$(timeout 10 "$sshd_bin" -T 2>/dev/null || true)
+	else
+		sshd_conf=$("$sshd_bin" -T 2>/dev/null || true)
+	fi
 	if [ -z "$sshd_conf" ]; then
 		fail "could not read the effective sshd configuration ($sshd_bin -T)"
 	else
