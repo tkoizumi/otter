@@ -1,0 +1,132 @@
+=== Phase 0 evidence: the host rebuilt from a fixed stack, and P0-07 asserted ===
+task:      P0-07. The stack fix, the rebuild, the deploy, and the permission assertion.
+date:      2026-09-30 16:59:25 EDT
+where:     Castor host rebuilt: i-01ed07dce59ba3f5b / 44.213.227.52 (us-east-1a),
+           replacing i-00dcd4c34a0dcb0ef / 44.198.213.184, which was destroyed with the stack
+build:     otter @ 43d2132, CLI built as v0.3.0-rc1 (make build VERSION=v0.3.0-rc1)
+project:   otter_examples @ 264e004 (stand-in), workspace otter-examples-e0309b8c
+
+--- why the host was rebuilt ---
+The first host had no swap and no provisioning report. The stack user-data ran
+`set -euo pipefail` and then `systemctl reload ssh || systemctl reload sshd`, which fails
+on Ubuntu 24.04 because sshd is socket-activated; the abort skipped the swap block and
+the report. Fixing that exposed a second instance of the same mistake: the `sshd -t`
+validation added in its place exits 255 with "Missing privilege separation directory:
+/run/sshd" on a first boot, before anything has connected. Reproduced locally in
+otter-deploy-target: 255 without /run/sshd, 0 after `install -d -m 0755 /run/sshd`.
+Both are fixed, and both now have regression tests that go red when reverted.
+
+--- the rebuilt host, provisioned by cloud-init with no manual step ---
+$ sudo cloud-init status --long
+status: done
+extended_status: done
+errors: []
+recoverable_errors: {}
+
+$ free -m | grep -i swap ; swapon --show
+Swap:           2047           0        2047
+/swapfile file   2G   0B   -1
+
+$ sudo ls -l /var/log/otter-provision-report.txt
+-rw-r--r-- 1 root root 1076 Sep 30 20:56 /var/log/otter-provision-report.txt
+
+$ sudo grep -E "otter-provision: (starting|done)" /var/log/otter-provision.log
+otter-provision: starting 2026-09-30T20:55:49+00:00
+otter-provision: done 2026-09-30T20:56:17+00:00
+
+The report exists and the log reaches "done" in 28s. On the previous host both were
+absent while the host still looked plausible -- 1 GiB, sshd answering, nothing obviously
+wrong. That is why the report and the swap floor are hard failures in the new scripts.
+
+--- external port scan (P0-07 evidence bar, first half) ---
+$ python3 portscan.py 44.213.227.52 1-65535   # full range; see the baseline record for why not nmap
+open ports on 44.213.227.52 (1-65535):
+  22/tcp open  ssh
+
+Only 22/tcp. Nothing else is reachable.
+
+--- otter deploy, and the version label ---
+First deploy reported version v0.2.0-40-g8ec3194-dirty: `make smoke` had rebuilt bin/otter
+with its default git-describe label, so the host reported a dirty dev build rather than the
+pin the ledger records. Rebuilt with the explicit label and redeployed:
+
+verify:   healthy: {"status":"ok","version":"v0.3.0-rc1",...}
+done:     v0.3.0-rc1 deployed to ubuntu@44.213.227.52 in 15s
+
+Worth knowing for any future deploy: the version a host reports comes from the CLI binary
+you run, not from the checkout you compile, so `make build VERSION=` must precede a deploy
+whose label matters.
+
+--- assert-host-permissions.sh on the real host (second half) ---
+Run as root. Without explicit paths it cannot start at all: it reads workspace.json for
+`service_name` and `data_dir`, but otter deploy writes:
+
+  {"jobs_layout":"jobs","id":"e0309b8c-...","slug":"otter-examples",
+   "name":"otter-examples-e0309b8c","unit":"otterd-otter-examples-e0309b8c",
+   "listen":"127.0.0.1:7337","created_at":"..."}
+
+There is no service_name and no data_dir; the unit key is `unit` and the data directory is
+<workspace>/.otter/data. So it was run with the paths supplied explicitly:
+
+$ ssh ... "sudo sh assert-host-permissions.sh --workspace-dir <ws> --unit otterd-<ws> \
+      --data-dir <ws>/.otter/data --env-dir /etc/otter/workspaces --env-file <ws> \
+      --listen 127.0.0.1:7337 --approved-ports 22"
+
+PASSED (21), and these are the ones that matter:
+  unit file exists; unit is enabled; unit is active; unit runs as otter
+  unit NoNewPrivileges=yes; ProtectSystem=strict; ProtectHome=yes; PrivateTmp=yes
+  unit ReadWritePaths=<ws> <ws>/.otter/data; ReadWritePaths includes the data directory
+  daemon --listen is 127.0.0.1:7337; listen address is loopback; the API is listening on 7337
+  wildcard listener on approved port 22 (both 0.0.0.0 and ::); sshd passwordauthentication=no
+  sshd permitrootlogin=no; active swap is 2047 MiB (floor 256 MiB)
+  vm.swappiness=10; provisioning report is present
+
+FAILED (5). Three of the five are the script is wrong, not the host:
+
+  - otter.db is mode 644, want owner-only          [expectation beyond the bar]
+  - otter.db-wal is mode 644, want owner-only
+  - otter.db-shm is mode 644, want owner-only
+        The data directory is 700 otter:otter and no other account can enter it, so the
+        file mode is contained. The task requires the DIRECTORY to be 0700, which it is.
+        A tighter umask would give 600 and is a fair defence-in-depth suggestion, but
+        failing a host that meets the stated requirement is the wrong response.
+
+  - /etc/otter/workspaces/<ws>.env is owned by root:root, want otter:otter
+  - /etc/otter/workspaces/<ws>.daemon.env is owned by root:root, want otter:otter
+        This one is backwards, and satisfying it would make the host LESS safe.
+        Measured: /etc/otter/workspaces is 700 root:root, both env files are 600 root:root,
+        and the otter account CANNOT read its own credentials file. systemd reads
+        EnvironmentFile= as root before dropping to User=otter. P0-12 independently
+        verified this shape (umask 077, 0700 env dir, root-owned 0600 file). Making the
+        service account the owner would let it -- and any compromised job -- rewrite its
+        own credentials. The assertion encodes an outdated line in phase-0-tasks.md
+        ("environment file 0600, owned by the service account"), which is the thing to
+        reconcile; the host is right.
+
+--- verdict ---
+Proves: the stack now provisions a host end to end with no manual step -- cloud-init done,
+no errors, swap and the provisioning report both present and produced by the script. The
+runtime deploys and serves as v0.3.0-rc1. Only 22/tcp is reachable externally.
+
+Does NOT yet prove: P0-07 as a task. The permission assertion test does not currently
+pass -- it exits non-zero on three expectations that contradict the implementation and
+the task bar. Once those are corrected the assertion should pass unchanged, and P0-07
+has both halves of its evidence bar. Also unchanged: otter_examples is a stand-in.
+
+--- correction, recorded rather than quietly fixed ---
+The first draft of this record ended "both of its schedules are paused on this host too".
+That was not true when written. The deploy activates the two cron jobs, and on this host
+they were left live for about two minutes before being paused, exactly as on the previous
+host. Nothing came of it -- the jobs have no credentials, so a run fails before Python,
+and this deployment carries no OTTER_NOTIFY_URL, so no channel was touched -- and a check
+immediately after pausing reported "no runs", so cron never fired.
+
+It is corrected here rather than silently because an evidence record that overstates the
+state of the host is worse than no record. The pause was then verified:
+
+  $ otter pause shopify-product-to-salesforce-product   -> paused
+  $ otter pause shopify_customer_to_salesforce_contact  -> paused
+  $ otter jobs --schedule
+  JOB                                       CRON             NEXT RUN   LAST RUN
+  shopify_customer_to_salesforce_contact    */5 * * * *      paused     no runs yet
+  shopify-product-to-salesforce-product     */5 * * * *      paused     no runs yet
