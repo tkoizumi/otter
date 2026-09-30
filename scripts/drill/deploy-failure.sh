@@ -307,9 +307,14 @@ ssh -i "$work/key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
 deploy() {
 	label=$1
 	out="$work/deploy-$label.out"
+	# --skip-egress-check: preparation on the target is this drill's uv stub,
+	# which never downloads anything, and the drill is deliberately offline (see
+	# the stub's header). Without the flag the release would probe PyPI and
+	# python-build-standalone from inside the container before it reached the
+	# stub, which is a network dependency this drill does not have.
 	( cd "$ws" && OTTER_UV_CACHE="$uv_cache" "$host_otter" deploy \
 		--host 127.0.0.1 --user root --port "$ssh_port" --identity "$work/key" \
-		--binaries "$work/linux-bin" --timeout 5m ) >"$out" 2>&1
+		--binaries "$work/linux-bin" --skip-egress-check --timeout 5m ) >"$out" 2>&1
 }
 
 # --- the project: one managed-Python job, released by the deploy -------------

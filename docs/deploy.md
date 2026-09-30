@@ -243,6 +243,27 @@ In order:
    failure here still leaves the previous release active, which is why this
    happens before the restart.
 
+   Preparation on the host checks that it can reach the endpoints it downloads
+   from — the package index and python-build-standalone — before it fetches
+   anything, so a host with no egress fails *here*, during the deploy, as a
+   network problem rather than at the first scheduled run as an unexplained
+   download error. If the host reaches its dependencies through an internal
+   mirror, name it for the deploy and it travels to the release that runs there:
+
+   ```sh
+   otter deploy --host droplet \
+     --index https://mirror.internal/simple \
+     --python-mirror https://mirror.internal/python-build-standalone
+   ```
+
+   `--egress-endpoint <url>`, repeatable, adds an endpoint the jobs themselves
+   need (an API, say) to the same check, and `--skip-egress-check` turns the
+   check off for a host that is deliberately air-gapped but already primed.
+   Like `--uv` and `--uv-version`, these describe the host's network and
+   toolchain rather than the project, so they are per-invocation flags and are
+   not written to `otter.deploy.yaml`. See
+   [managed-python.md](managed-python.md#reaching-the-endpoints-mirrors-and-the-egress-preflight).
+
    Every job lands at `<workspace>/jobs/<name>`, and each shared
    tree lands at the relative depth its manifest declares from there. A manifest
    saying `python.path: [../lib/python]` therefore puts shared code at
@@ -586,6 +607,10 @@ rather than overridden. See
 | `--verbose` | stream every remote command | off |
 | `--timeout` | overall bound | `10m` |
 | `--keep` | inactive releases retained per job (`0` keeps every release) | `3` |
+| `--index` | package index managed dependencies are synced from on the host; replaces PyPI rather than adding to it | PyPI |
+| `--python-mirror` | root managed interpreter downloads come from on the host | python-build-standalone |
+| `--egress-endpoint` | extra endpoint the host's preparation-time egress preflight must reach (repeatable) | — |
+| `--skip-egress-check` | skip the host's egress preflight (air-gapped host, already primed) | off |
 | `--memory-max`, `--memory-high` | systemd memory caps for the unit (`off` emits none) | `75%`, `60%` |
 | `--cpu-quota` | systemd CPU cap, percent of one core (`off` emits none) | `200%` |
 | `--tasks-max` | systemd process/thread cap (`off` emits none) | `512` |

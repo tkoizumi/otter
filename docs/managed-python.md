@@ -307,6 +307,16 @@ Runs record the identity they were submitted against, so a retry after a
 dependency or toolchain change still resolves the environment its parent
 selected rather than moving to the new one.
 
+The **fetch route** — `--index` and `--python-mirror` — is deliberately not part
+of the identity. It chooses how the same pinned artifacts are reached, not what
+they are: the lock pins every dependency by hash, and uv verifies the
+interpreter download against the hash in the catalogue it carries. Folding the
+route in would also break the two places that re-resolve an identity without
+ever being told it — the daemon binds a run at submission, and
+`otter release --activate` re-resolves on a rollback — so a release prepared
+through a mirror would come back as "not prepared" the moment either of them
+looked at it.
+
 Environments are content-addressed and may be shared by several jobs, so
 `otter delete` never removes them: it purges only what the identity exclusively
 owns. Reclaiming environment disk is a separate, deliberate operation.
@@ -349,9 +359,11 @@ Preparation:
 1. Validates the manifest, the Python pin, the project metadata and the lock.
 2. Resolves the environment identity and takes an advisory lock on it.
 3. Reuses an existing ready environment when the identity matches — this is
-   the common case and costs nothing.
-4. Otherwise installs the pinned interpreter into `python/`, creates the
-   environment, and installs the locked production dependencies.
+   the common case and costs nothing. A reused environment is never checked
+   against the network: it is already built.
+4. Otherwise checks that the endpoints it needs are reachable (below), then
+   installs the pinned interpreter into `python/`, creates the environment, and
+   installs the locked production dependencies.
 5. Verifies the interpreter reports the pinned version, then publishes the
    readiness marker.
 
@@ -365,13 +377,103 @@ Preparation constraints, all deliberate:
 
 - No automatic lock updates. A stale `uv.lock` is an error, not something to
   silently resolve.
-- No inherited user-level uv configuration.
+- No inherited user-level uv configuration. The index and the interpreter
+  source are passed to uv as explicit flags instead (see
+  [Reaching the endpoints](#reaching-the-endpoints-mirrors-and-the-egress-preflight)),
+  which is also why a mirror does not need a config file.
 - No development dependencies.
 - No builds from source: the first release installs wheels only, so a
   dependency without a wheel for the target fails clearly instead of trying to
   compile.
 - No job credentials reach the installer. Package-index credentials are
   configured separately, through the environment.
+
+### Reaching the endpoints: mirrors and the egress preflight
+
+Preparation downloads, so it needs a route to two places: the package index the
+locked dependencies come from, and python-build-standalone, which is where the
+pinned interpreter comes from. Neither has an offline bundle (see the limits
+below), and on a host with no route the failure arrives in the middle of a
+fetch, wearing whatever disguise that fetch was under — a DNS error, a TLS
+timeout, or uv's `No download found for request` when the *catalogue* has no
+build for the pin and the platform.
+
+`otter prepare` and `otter release` therefore ask the network question first,
+before anything is fetched:
+
+```
+$ otter prepare --jobs ./jobs --data /var/lib/otter
+otter: egress preflight ok for environment 4b1f0c9e2a7d: package index https://pypi.org/simple/, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+my-job: Python 3.13.1, environment 4b1f0c9e2a7d
+```
+
+The check is on the **route**, not on the download. An endpoint that answers at
+all has been reached, so the 404 that the root of a download path returns and
+the 401 a private mirror returns before it is authenticated both count, while a
+DNS failure, a refused connection, or a timeout does not. Proxy and TLS settings
+(`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`) are honoured, because uv honours
+them.
+
+A failure names the endpoint, the pin, and the platform, and says what to do
+about each:
+
+```
+otter: prepare my-job: egress preflight failed for CPython 3.13.1 on linux/arm64:
+managed Python downloads is unreachable (https://github.com/.../releases/download):
+dial tcp: lookup github.com: no such host
+hint: preparation fetches the managed interpreter and the locked dependencies, and has
+no offline bundle. Check the host's route and proxy (HTTPS_PROXY and NO_PROXY are
+honoured), point preparation at an internal mirror with --index and --python-mirror,
+provision python/ and cache/uv/ out of band, or run with --skip-egress-check when the
+host is deliberately air-gapped and already primed.
+```
+
+That separation is the point of the check. When the preflight passes and the
+interpreter install then fails with `No download found for request`, the network
+has been ruled out and what is left is the platform/catalogue problem: not every
+patch version is published for every architecture, uv decides that from the
+catalogue it carries, and the fix is a pin that is published or a host of an
+architecture that is. Otter says so in the error, and names the platform and what
+to compare against:
+
+```
+hint: the egress preflight passed, so this is not a network failure:
+python-build-standalone has no CPython 3.13.1 build for linux/arm64. Not every patch
+version is published for every platform; check the catalogue with
+`uv python list --all-versions`, or prepare on a host whose architecture publishes
+this pin (linux/amd64 is the fallback when arm64 does not).
+```
+
+#### Pointing preparation at a mirror
+
+```sh
+otter prepare --index https://mirror.internal/simple \
+              --python-mirror https://mirror.internal/python-build-standalone
+```
+
+- `--index` replaces the default package index (uv's `--default-index`) rather
+  than adding to it, so a host with no route to PyPI is never asked to reach it.
+- `--python-mirror` is the **root** the interpreter archives live under: uv
+  appends the release tag and the file name to it exactly as it does to its own
+  default, so the value is a mirror of
+  `https://github.com/indygreg/python-build-standalone/releases/download`.
+- `--egress-endpoint <url>`, repeatable, adds an endpoint the job itself needs —
+  its API, say — to the check. Otter cannot discover those, so they are
+  configured; they are checked, never fetched from.
+- `otter release` accepts the same flags, and `otter deploy` passes them to the
+  release it runs on the host, which is how a host that reaches its
+  dependencies through a mirror is deployed without any uv configuration file.
+
+They are per-invocation flags and not uv configuration files. Package-index
+*credentials* still come from the environment, as they always have.
+
+`--skip-egress-check` turns the check off, for the one case that needs it: a
+host that is deliberately air-gapped but already primed — the interpreter is
+under `python/` and `cache/uv/` is warm — where a probe would refuse a
+preparation that would otherwise have succeeded from what is already on disk.
+Nothing else should skip it: a host that can reach its endpoints gains nothing
+by not being checked, and the check costs one request per endpoint per
+environment that actually has to be built.
 
 ### uv
 
@@ -472,7 +574,11 @@ Additionally, for a managed job:
   ```
 
   `otter prepare` fails with "No download found for request" when the pin is not
-  obtainable, which is a clear failure rather than a silent fallback.
+  obtainable, which is a clear failure rather than a silent fallback. Because
+  the egress preflight has already answered the network question by then, that
+  error is also *diagnosed*: it names the pin and the target platform and says
+  that no endpoint was unreachable
+  ([Reaching the endpoints](#reaching-the-endpoints-mirrors-and-the-egress-preflight)).
 - **No system packages.** If a dependency needs a shared library the host does
   not have, preparation fails with the installer's error. Otter does not install
   OS packages.
@@ -481,8 +587,9 @@ Additionally, for a managed job:
   until environments are known to be unreferenced by queued or running work.
 - **No offline bundle yet.** Preparation fetches the interpreter and wheels. On
   a host with no egress, provision `tools/uv/uv`, `python/` and a populated
-  `cache/uv/` out of band, or point uv at an internal mirror. A complete offline
-  bundle is planned separately.
+  `cache/uv/` out of band, or point preparation at an internal mirror with
+  `--index` and `--python-mirror`. A complete offline bundle is planned
+  separately.
 
 ## What this does not promise
 

@@ -338,8 +338,13 @@ chmod +x "$DATA_ORIG/tools/uv/uv"
 # preparation (the stub cannot build one). That is how the drill learns the
 # environment digest the run path will ask for. The staged snapshot is the
 # real artifact; only the environment is stubbed.
+#
+# --skip-egress-check keeps the failure where it is expected: the stub uv above
+# is what refuses, and the drill is offline by design (see the header). Without
+# the flag the release would first probe PyPI and python-build-standalone, which
+# turns a stub-refusal into a network test.
 say "staging release (environment preparation fails here by design)"
-if "$OTTER_BIN" release "$JOB" >"$WORK/release-1.out" 2>&1; then
+if "$OTTER_BIN" release --skip-egress-check "$JOB" >"$WORK/release-1.out" 2>&1; then
 	fail "the first release was expected to fail at environment preparation, but it succeeded"
 fi
 tail -n 1 "$WORK/release-1.out" | sed 's/^/drill:   /'
@@ -385,7 +390,7 @@ JSON
 say "stub environment written under $ENVDIR"
 
 say "releasing with the stub environment"
-"$OTTER_BIN" release "$JOB" >/dev/null || fail "release failed with a prepared environment"
+"$OTTER_BIN" release --skip-egress-check "$JOB" >/dev/null || fail "release failed with a prepared environment"
 
 "$OTTER_BIN" start --detach >/dev/null
 wait_ready "initial"
