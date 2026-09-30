@@ -64,7 +64,7 @@ A window with no transcript is an open window.
 | HW-5 credentials | P0-12 | blocked on Castor's values | — |
 | HW-6 retention + disk pressure | P0-11 | blocked on WS1/WS4 | — |
 | HW-7 backup → restore onto a clean host | P0-03 | **second host exists**: `CastorDrillTarget` (i-0454a0f5372fe572c / 13.216.223.122), deployed from the same `hostProps` definition as the runtime host, so the two cannot drift in AMI, architecture or absolute paths. It provisioned cleanly from the fixed stack — `cloud-init: done`, `errors: []`, swap and the provisioning report present — and its `machine-id` differs from the runtime host, which the drill requires. Its own key pair is `otter-castor-drill.pem`; termination protection is off because it is disposable. Still waiting on P0-03's D4/D5 fix being verified before the drill can run | — |
-| HW-8 final posture re-scan | P0-07 | not started | — |
+| HW-8 final posture re-scan | P0-07 | **done** 2026-09-30 — the external full-range scan found only 22/tcp, and `assert-host-permissions.sh` exited 0 on the real host, reading the sandbox directives back from the loaded unit, the real `workspace.json`, the root-owned `0600` credential files in a `0700` directory, swap and the provisioning report | [assertion](evidence/phase-0/2026-09-30-p0-07-hw8-assertion.txt) |
 
 **Deployed workspace (stand-in, not Castor):** `otter-examples-b379f933` on
 `ubuntu@44.198.213.184`, unit `otterd-otter-examples-b379f933.service`, running

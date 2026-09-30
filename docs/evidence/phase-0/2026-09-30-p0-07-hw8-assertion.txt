@@ -1,0 +1,107 @@
+=== Phase 0 evidence: HW-8, the permission assertion on the real host ===
+task:      P0-07. Both halves of its evidence bar.
+claim:     an external port scan shows only the approved ports, AND a permission
+           assertion test passes against the real host rather than the docs being read.
+date:      2026-09-30 18:10:39 EDT
+where:     Castor runtime host, rebuilt from the fixed stack: i-01ed07dce59ba3f5b / 44.213.227.52
+build:     script from branch p0-07-provisioning-script @ aa12a6e; the host runs otter v0.3.0-rc1
+workspace: otter-examples-e0309b8c (the otter_examples stand-in, both schedules paused)
+
+--- half one: the external port scan ---
+$ python3 portscan.py 44.213.227.52 1-65535    # full range, from the operator machine
+open ports on 44.213.227.52 (1-65535):
+  22/tcp open  ssh
+
+Only the approved port. nmap is not installed on the operator machine, so this is an
+external full-range TCP connect scan by a local script -- the tool differs from the
+stack's suggested nmap command, the scan is external and covers every port.
+
+--- half two: the permission assertion, run on the host as root ---
+$ ssh -i <key> ubuntu@44.213.227.52 \
+      'sudo sh -s -- --workspace-dir /opt/otter/workspaces/otter-examples-e0309b8c' \n      < scripts/assert-host-permissions.sh
+
+
+===== assert-host-permissions =====
+date:     2026-09-30 22:10:30 UTC
+host:     Linux 7.0.0-1013-aws (aarch64)
+checkout: unknown
+unit:     otterd-otter-examples-e0309b8c
+user:     otter
+data:     /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data
+env dir:  /etc/otter/workspaces
+env file: otter-examples-e0309b8c
+approved: 22
+min swap: 256 MiB
+report:   /var/log/otter-provision-report.txt
+ok:   service account otter exists
+ok:   service account shell is /usr/sbin/nologin
+ok:   service account uid 999 is in the system range
+ok:   data directory mode is 0700
+ok:   data directory owner is otter:otter
+ok:   otter.db mode is 644; owner-only is tighter but the 0700 directory contains it
+note: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db is mode 644; a tighter umask on the daemon would make it 0600
+ok:   otter.db-wal mode is 644; owner-only is tighter but the 0700 directory contains it
+note: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db-wal is mode 644; a tighter umask on the daemon would make it 0600
+ok:   otter.db-shm mode is 644; owner-only is tighter but the 0700 directory contains it
+note: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db-shm is mode 644; a tighter umask on the daemon would make it 0600
+ok:   environment directory mode is 0700
+ok:   environment directory owner is root:root
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.env mode is 0600
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.env owner is root:root
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.daemon.env mode is 0600
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.daemon.env owner is root:root
+ok:   unit file /etc/systemd/system/otterd-otter-examples-e0309b8c.service exists
+ok:   unit is enabled (enabled)
+ok:   unit is active
+ok:   unit runs as otter
+ok:   unit NoNewPrivileges=yes
+ok:   unit ProtectSystem=strict
+ok:   unit ProtectHome=yes
+ok:   unit PrivateTmp=yes
+ok:   unit ReadWritePaths=/opt/otter/workspaces/otter-examples-e0309b8c /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data
+ok:   ReadWritePaths includes the data directory
+ok:   daemon --listen is 127.0.0.1:7337
+ok:   listen address 127.0.0.1:7337 is loopback
+ok:   the API is listening on 7337 over loopback
+ok:   wildcard listener on approved port 22
+ok:   wildcard listener on approved port 22
+ok:   port 22 is approved (bound to 0.0.0.0)
+ok:   port 22 is approved (bound to ::)
+ok:   sshd passwordauthentication=no
+ok:   sshd permitrootlogin=no
+ok:   active swap is 2047 MiB (floor 256 MiB, from /proc/swaps)
+ok:   vm.swappiness=10
+ok:   provisioning report /var/log/otter-provision-report.txt is present
+assert-host-permissions: all assertions passed
+
+EXIT=0
+
+--- what this run establishes, and why each part is load-bearing ---
+workspace.json: `--workspace-dir` alone now suffices. The script reads the record the
+deployer actually writes (unit, name, listen) and derives <workspace>/.otter/data, where
+the earlier revision looked for service_name/data_dir and could not start at all.
+
+The sandbox directives are read back from the LOADED unit (systemctl show), not from the
+unit file, so a directive present on disk but absent from what systemd runs fails.
+
+Credential files are asserted root-owned 0600 inside a 0700 root directory -- the posture
+an independent verifier confirmed in P0-12, and the one that stops a compromised job from
+rewriting the credentials it runs under. The earlier revision demanded service-account
+ownership, which is the weaker posture and is not what otter deploy does.
+
+otter.db at 644 is reported as ok with an explicit note, not failed: the 0700 data
+directory contains it and the documented bar is the directory. A tighter umask would make
+it 0600, and the note says so.
+
+Swap (2047 MiB) and the provisioning report are both present because the stack fix works:
+the report did not exist on the first host, which is what started that investigation.
+
+--- verdict ---
+Both halves of P0-07 evidence bar are met on the real host: an external scan finds only
+22/tcp, and the permission assertion exits 0 having read the loaded unit, the real
+workspace record, the real file modes and the real listener set.
+
+This does not by itself close P0-07: the scripts are on a branch that is still being
+verified (round 2, on whether the fixture suite is now genuinely falsifiable), and the
+provisioning script itself refuses an already-provisioned host by design, so it is the
+assertion half -- not provision.sh -- that this host can evidence.
