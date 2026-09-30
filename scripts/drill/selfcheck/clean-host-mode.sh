@@ -32,7 +32,16 @@
 #      host evidence.
 #
 # What it CANNOT prove, and does not claim: that a restore onto a second host
-# works. That needs two hosts, and it is what the drill exists for.
+# works. That needs two hosts, and it is what the drill examines.
+#
+# Platform branches. The probe has Linux-only paths (GNU `stat -c`,
+# `/etc/machine-id`, `getent`) and portable fallbacks (BSD `stat -f`, `hostname`);
+# the selfcheck runs on the developer's machine, which may be macOS, so the
+# Linux paths are only exercised for real when the suite runs on Linux -- which
+# is what CI does (`ubuntu-latest`). Rather than add a Docker dependency to the
+# unit-test path, the live-daemon case asserts the *observable outcome* of
+# whichever branch the platform takes (a machine id and its source, an owner and
+# a mode), so a branch that stops working on either platform fails here.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
@@ -633,6 +642,39 @@ esac
 [ "$(report_get "$LIVE_REPORT" data_mode)" != "-" ] ||
 	fail "the probe could not measure the data directory's mode (stat branch)"
 say "  ok  machine id ($(report_get "$LIVE_REPORT" machine_id_source)), owner and mode are measured on this platform"
+
+# D4: the same live daemon, but with deploy's host dispatcher as the CLI the
+# operator named and the unit naming the workspace's own binaries. `otter
+# status` must be asked of the resolved CLI: a probe that measures the daemon
+# with the dispatcher reports "no daemon answers" for a running runtime, which
+# is exactly what a two-workspace host did.
+UNIT_BIN_DIR="$WORK/live/unit/bin"
+mkdir -p "$UNIT_BIN_DIR"
+ln -s "$LIVE_DAEMON" "$UNIT_BIN_DIR/otterd"
+ln -s "$LIVE_CLI" "$UNIT_BIN_DIR/otter"
+cat >"$WORK/live/dispatcher" <<'DISPATCH'
+#!/bin/sh
+echo "otter: not inside a workspace, and this host holds several" >&2
+exit 1
+DISPATCH
+chmod +x "$WORK/live/dispatcher"
+DISP_REPORT="$WORK/live-dispatcher.report"
+env PATH="$WORK/probe/bin:$PATH" \
+	FAKE_UNIT_BIN="$UNIT_BIN_DIR/otterd" FAKE_UNIT_DATA="$LIVE_DATA" \
+	FAKE_UNIT_JOBS="$LIVE_JOBS" FAKE_UNIT_LISTEN="127.0.0.1:$LIVE_PORT" \
+	FAKE_UNIT_ENV="" FAKE_UNIT_DAEMON_ENV="" FAKE_UNIT_SHAPE=real \
+	sh "$LIB/host-report.sh" source "$LIVE_DATA" "$LIVE_JOBS" "$WORK/live/dispatcher" \
+	"http://127.0.0.1:$LIVE_PORT" otterd-app-1a2b3c4d "" "" "$WORK/live/etc" >"$DISP_REPORT" ||
+	fail "the probe failed with a dispatcher as the named CLI"
+[ "$(report_get "$DISP_REPORT" otter_bin_given)" = "$WORK/live/dispatcher" ] ||
+	fail "the probe did not report the CLI it was given"
+[ "$(report_get "$DISP_REPORT" otter_bin)" = "$UNIT_BIN_DIR/otter" ] ||
+	fail "the probe did not fall back to the unit's workspace CLI: $(report_get "$DISP_REPORT" otter_bin)"
+[ "$(report_get "$DISP_REPORT" daemon)" = running ] ||
+	fail "with a dispatcher as the named CLI the probe reported daemon=$(report_get "$DISP_REPORT" daemon): the daemon was measured with the wrong binary (D4)"
+[ "$(report_get "$DISP_REPORT" daemon_version)" = "$LIVE_DAEMON_VERSION" ] ||
+	fail "the fallback measured daemon version $(report_get "$DISP_REPORT" daemon_version), want $LIVE_DAEMON_VERSION"
+say "  ok  a real daemon is measured with the serving workspace's CLI, not the dispatcher that cannot answer (D4)"
 
 kill "$LIVE_PID" 2>/dev/null || true
 wait "$LIVE_PID" 2>/dev/null || true
