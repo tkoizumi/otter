@@ -44,15 +44,19 @@ will sit idle for a long time.
 ## Merged to `main`
 
 - **P0-12** (credentials) — independently verified.
-- **P0-04** (resource caps) — independently verified, and its host claim now proven by HW-3.
+- **P0-04** (resource caps) — independently verified, and its host claim proven by HW-3.
+- **P0-03** (backup and restore) — merged on HW-7 passing twice.
+- **P0-08** (egress and managed Python) — merged as "merge-safe, record not"; its record is corrected in place.
 
-## Unmerged, with honest status
+Six follow-ups are listed in [phase-0-status.md](phase-0-status.md) under "Follow-ups
+recorded, not blocking". None blocks anything.
 
-| Branch | State |
-| --- | --- |
-| `p0-07-provisioning-script` @ `aa12a6e` | Both halves of its evidence bar are met on the real host. Its fixture-falsifiability fix has a verification that had not returned when this was written. **Merge if that verdict is VERIFIED.** |
-| `p0-03-clean-host-mode` @ `93f046b` | HW-7 passed twice, which is the task's evidence bar. A focused verification of the layout-fix delta was in flight. **Merge if VERIFIED**, or merge on HW-7's evidence and note the delta as unverified. |
-| `p0-08-egress-managed-python` @ `15f027e` | Five rounds; the last shipped under-refusal is closed and the deliberate refusals are a labelled table. Not on Castor's critical path — its host has ordinary egress. **Merge if the merge-gate verdict is VERIFIED**, otherwise leave it: it is bounded and documented. |
+## Not merged
+
+- `p0-07-provisioning-script` @ `aa12a6e` — both halves of its evidence bar are met on
+  the real host (HW-8 passed). Its fixture-falsifiability fix had a verification still
+  in flight when this was written. **Merge if VERIFIED**; if not, its already-evidenced
+  host half still stands and the branch can be merged with the residual recorded.
 
 ## Blocked on people, not work
 
