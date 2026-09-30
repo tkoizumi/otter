@@ -83,12 +83,14 @@ func (p *probeRecorder) probe(_ context.Context, url string) error {
 	return nil
 }
 
-// clearRouteEnv removes the uv variables the preflight follows, so a test that
-// asserts the *default* endpoints does not depend on the environment it happens
-// to run in.
+// clearRouteEnv removes every uv variable preparation follows or refuses, so a
+// test does not depend on the environment it happens to run in.
 func clearRouteEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR"} {
+	for _, name := range []string{
+		"UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR",
+		"UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS", "UV_NO_INDEX",
+	} {
 		t.Setenv(name, "")
 	}
 }
