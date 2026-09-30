@@ -26,10 +26,10 @@ Status values: `not started`, `in progress`, `blocked`, `host-gated`,
 
 | ID | Task | Status | Work | Evidence → record | Verifier |
 | --- | --- | --- | --- | --- | --- |
-| P0-01 | Real crash/kill harness | in progress | `.worktrees/p0-01` | pending | pending |
-| P0-02 | Retry release/environment binding | in progress | `.worktrees/p0-02` | pending | pending |
-| P0-03 | Full-fidelity backup and restore | in progress | `main` (documentation half) + `.worktrees/p0-03` (drill) | [operations.md §Backups](operations.md#backups) corrected 2026-09-29; drill + record → pending | pending |
-| P0-04 | Resource caps in the generated unit | in progress | `.worktrees/p0-04` | pending | pending |
+| P0-01 | Real crash/kill harness | in progress — verification | `.worktrees/p0-01` @ `42ca217`, three new files | Linux package `ok 33.2s`; harness 3× deterministic (FM-01 ~2.9s, FM-02 ~0.3s); mutations M1/M2/M3 red→green; record → pending verifier verdict | in flight |
+| P0-02 | Retry release/environment binding | in progress — verification | `.worktrees/p0-02` @ `05e3187`, new test file + recovery fix | five tests pass (13.7s); recovery retry-policy defect found and fixed; mutations M1–M5, M4b recorded; record → pending verifier verdict | in flight |
+| P0-03 | Full-fidelity backup and restore | in progress — verification | `main` (documentation half) + `.worktrees/p0-03` @ `91b8cd3` | [operations.md §Backups](operations.md#backups) corrected 2026-09-29; drill `scripts/drill/backup-restore.sh` clean ×3 and all three sabotage modes red at the run assertion; record → pending verifier verdict | in flight |
+| P0-04 | Resource caps in the generated unit | in progress — corrections | `.worktrees/p0-04` @ `629449c` | drill green: runaway OOM-killed, `MainPID` survived, `NRestarts 0`, host answered; verifier VERIFIED and named corrections (zero-cap defect, stale evidence header, doc nits) now with the worker | verified, corrections pending |
 | P0-05 | Pin the version; no auto-upgrade | **done** | `main` (W0) | [pin recorded](#pinned-runtime-version) + [operations.md](operations.md#upgrades); no code path updates the runtime — 2026-09-29 baseline | 2026-09-29 baseline run |
 | P0-06 | Deployment-failure recovery | not started | after P0-03 | pending | pending |
 | P0-07 | Provision the Castor host | host-gated | artifact not written | pending | pending |

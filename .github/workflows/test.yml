@@ -20,6 +20,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # The Go suite starts real Python child processes. Without this, the
+      # daemon tests call requirePython, which *skips* rather than fails
+      # (internal/daemon/daemon_test.go), so a runner missing python3 would
+      # silently drop the crash/kill harness and every job-execution
+      # assertion — a green job with no evidence behind it. Pin the same
+      # version the SDK job uses.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       # `gofmt -l` prints offenders and exits 0, so it has to be wrapped to
       # fail the job. Printing filenames on its own enforces nothing.
       - name: gofmt
