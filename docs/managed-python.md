@@ -392,10 +392,9 @@ Preparation constraints, all deliberate:
   still inherited, though, so the variables uv reads are honoured: a mirror set
   only in `UV_DEFAULT_INDEX`/`UV_INDEX_URL` or `UV_PYTHON_INSTALL_MIRROR` is
   used and checked, and the variables that *add* a source
-  (`UV_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_FIND_LINKS`) are refused while a lock
-  records a registry, because nothing can check a lock against them and uv
-  fails the sync with a bare "lockfile needs to be updated" when they change
-  the resolution.
+  (`UV_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_FIND_LINKS`) are accepted when the lock
+  already records what they name, and refused when it does not — uv turns an
+  unrecorded one into a bare "lockfile needs to be updated" at the sync.
 - No development dependencies.
 - No builds from source: the first release installs wheels only, so a
   dependency without a wheel for the target fails clearly instead of trying to
@@ -492,11 +491,10 @@ can add to a job that was locked somewhere else.
   preparation is configured with https://mirror.internal/simple
   hint: --index cannot redirect an existing lock. `uv sync --locked` re-resolves against the
   configured index and refuses when the result would change the lock, even when the two
-  indexes serve identical artifacts. Prepare against the index the lock records
-  (--index https://pypi.org/simple, or no --index at all, which makes uv fetch from the URLs
-  the lock itself records), or regenerate the lock against the index you are deploying with
-  (uv lock --default-index https://mirror.internal/simple) and commit it: uv records that
-  index in the canonical spelling this check compares.
+  indexes serve identical artifacts. Omit --index and uv installs from the URLs the lock
+  records (https://pypi.org/simple), which always satisfies --locked; or re-lock against
+  the index you are deploying with (uv lock --default-index https://mirror.internal/simple)
+  and commit it.
   ```
 
   On a host that can only reach an internal mirror, a project locked against
@@ -510,11 +508,17 @@ can add to a job that was locked somewhere else.
   inputs, so the new lock produces a new environment identity and preparation
   builds the environment from the mirror.
 
-  Index URLs are compared the way uv parses them: a bare host is the root
-  index (`http://mirror` and `http://mirror/` are one index) and dot segments
-  are removed (`http://mirror/a/../b` is `http://mirror/b`). A *non-empty*
-  trailing slash and a percent escape are not folded, because uv treats
-  `…/simple`, `…/simple/` and `…/sim%70le` as three different indexes.
+  Index URLs are compared the way uv parses them. Folded: host case, a
+  redundant default port, the root slash a bare host gets (`http://mirror` and
+  `http://mirror/` are one index), literal and percent-encoded dot segments
+  (`http://mirror/a/../b` is `http://mirror/b`), and the short IPv4 spellings
+  (`http://127.1:8080/x` is `http://127.0.0.1:8080/x`). Not folded, because uv
+  refuses those pairs: a differently-cased *scheme* (`HTTP://…` is not an index
+  uv can use), a non-empty trailing slash, an empty query, and a percent escape
+  — `…/simple`, `…/simple/`, `…/simple?` and `…/sim%70le` are four different
+  indexes, and `%2f` and `%2F` are two more. The hint leads with the remedy that
+  needs none of this: omit `--index`, and uv installs from the URLs the lock
+  records.
 - **With no `--index`, uv installs from the registries the lock records.** A
   lock already cut against a reachable mirror therefore needs no flag at all,
   and the preflight checks that mirror rather than PyPI. What cannot be done is
@@ -541,24 +545,33 @@ interpreter. An endpoint set only in the environment is therefore checked, and
 is not mistaken for "no route to PyPI".
 
 The variables that *add* a source rather than replacing the default one —
-`UV_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_FIND_LINKS` — are a different problem, and
-preparation refuses them outright while the lock records a registry:
+`UV_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_FIND_LINKS` — are honoured only to the
+extent the lock already records what they name. A lock cut with
+`--default-index A --extra-index-url B` records **both** registries, and
+`--default-index A` alone then cannot resolve it (`uv` reports "not found in the
+package registry", exit 1) while the same command with `UV_EXTRA_INDEX_URL=B`
+succeeds. Preparation accepts that, because the variable supplies a source the
+lock records; it refuses a variable naming a source the lock does **not** record:
 
 ```
-otter: prepare my-job: uv.lock and the configured package index disagree: UV_EXTRA_INDEX_URL is
-set, which adds a package source the lock cannot be checked against;
-/srv/otter/jobs/my-job/uv.lock records https://pypi.org/simple
+otter: prepare my-job: uv.lock and the configured package index disagree: UV_EXTRA_INDEX_URL names
+http://mirror.internal/b/simple, which the lock does not record;
+/srv/otter/jobs/my-job/uv.lock records http://mirror.internal/a/simple
 hint: `uv sync --locked` re-resolves with that added source and refuses when the result would
-change the lock -- the failure this check exists to explain. Unset UV_EXTRA_INDEX_URL and prepare
-against the index the lock records (--index https://pypi.org/simple, or no --index at all), or
-re-lock against the source you actually need (uv lock --default-index <url>) and configure it
-with --index <url>, which preparation can check.
+change the lock. Omit UV_EXTRA_INDEX_URL and --index, and uv installs from the URLs the lock
+records (http://mirror.internal/a/simple), which always satisfies --locked; or re-lock with that
+source configured (UV_EXTRA_INDEX_URL=http://mirror.internal/b/simple uv lock ...) and keep it
+set: a lock that records it is accepted.
 ```
 
-They are refused rather than followed because nothing in the lock says whether
-they changed the resolution, and uv 0.5.9 turns all three into the same bare
-lockfile error when they do. `UV_NO_INDEX` is not among them: with no index
-configured uv installs from the URLs the lock records, so it changes nothing.
+A lock that records several sources needs all of them supplied, and the refusal
+says which one is missing and how to supply it (`UV_EXTRA_INDEX_URL=<url>`, which
+is accepted precisely because the lock records it, or omit `--index` and the
+variables). `UV_NO_INDEX` is not among the refused variables: with no index
+configured uv installs from the URLs the lock records, and disabling an index
+that is not used changes nothing. A find-links lock records the directory,
+relative to the lock file, so a `UV_FIND_LINKS` naming that directory is
+accepted too.
 
 `--skip-egress-check` turns the check off, for the one case that needs it: a
 host that is deliberately air-gapped but already primed — the interpreter is
