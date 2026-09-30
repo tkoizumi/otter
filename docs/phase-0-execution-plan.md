@@ -254,7 +254,7 @@ committed `Dockerfile` so the drill is reproducible.
 
 **P0-06.** The code intends this guarantee in two places —
 `internal/cli/release.go:28` ("a bad candidate can never take down a working
-runtime") and `internal/deploy/render.go:331` ("failure here must leave the
+runtime") and `internal/deploy/render.go:486` ("failure here must leave the
 previous release active") — but nothing injects a mid-deploy failure. Treat it as
 "claim exists, evidence does not", which is exactly the state `R-19` forbids.
 

@@ -1,9 +1,10 @@
 P0-06 deployment-failure recovery — recorded drill transcript
 ============================================================
+Note added 2026-09-29 by the conductor: the header citation below was corrected from render.go:331 to render.go:486. An independent verifier found that the comment "failure here must leave the previous release active" lives at :486. The recorded machine output is unaltered; only this citation was fixed.
 
 Task:    P0-06 (CA-23), "Inject a failure midway through a deploy; the previous
          known-good release remains active and serving."
-Claim:   internal/cli/release.go:28 and internal/deploy/render.go:331 — a release
+Claim:   internal/cli/release.go:28 and internal/deploy/render.go:486 — a release
          that fails after staging must not become active, and the runtime that
          was already deployed must keep serving.
 Date:    2026-09-29 23:2x-23:3x EDT

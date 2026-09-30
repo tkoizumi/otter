@@ -4,7 +4,7 @@
 #
 # Why this exists: `otter deploy` claims this property in two places --
 # internal/cli/release.go:28 ("a bad candidate can never take down a working
-# runtime") and internal/deploy/render.go:331 ("failure here must leave the
+# runtime") and internal/deploy/render.go:486 ("failure here must leave the
 # previous release active") -- and nothing injected a failure to prove it.
 # Claim-without-evidence is what R-19 forbids, and the observation period
 # explicitly exercises upgrades (P0-06, CA-23, v0.3.0 WS6 "Scripted drills").
