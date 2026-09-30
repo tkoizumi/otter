@@ -408,8 +408,8 @@ which is this document's. Evidence status is deliberately literal:
 
 | ID | Scenario | Evidence | Anchor tests |
 | --- | --- | --- | --- |
-| FM-01 | SIGKILL the daemon mid-run; every interrupted run reaches a terminal state or is re-enqueued; >50 at once | **Simulated** | `TestCrashRecoveryMarksRunningRunsFailedAndRetries`, `TestCrashRecoveryHandlesMoreThanOneListingPage` (240 seeded rows), `TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed`, `TestStartupFailClosedOnIncompleteRecovery`, `TestReconcileQueueReenqueuesMoreThanOneListingPage`. Admission/refusal: `TestSubmitRunRejectsUnknownAndInvalidJobs`, `TestUnreleasedJobIsRefused`, `TestDrainingRuntimeRejectsNewRuns`, `TestPausedWebhookIsUnavailableButManualRunsStillWork`. A real SIGKILL, and a submit→close→reopen→read durability test: none. |
-| FM-02 | SIGKILL the daemon between finish and retry; no terminal failure without its retry | **Simulated** | `TestFinishRunPersistsOutcomeAndSuccessorAtomically`, `TestFinishCommitFailureLeavesNoPartialOutcome`, `TestFallbackJournalIsAppliedOnRestart`, `TestUnreadableFallbackJournalDoesNotReRunRunningRuns`. Retry release/environment retention: none (`OT-011`). |
+| FM-01 | SIGKILL the daemon mid-run; every interrupted run reaches a terminal state or is re-enqueued; >50 at once | **Real (Linux)** | `TestCrashHarnessSIGKILLAndRecovery` boots the real daemon as a separate OS process against a temporary data directory, submits 80 runs, waits until more than 50 children are genuinely executing rather than queued, `SIGKILL`s it, restarts over the same data directory, and asserts every accepted run terminal across 144 rows with all 64 interrupted runs re-enqueued. On Linux it additionally asserts every recorded interrupted child died with the daemon (`Pdeathsig`) and every accepted chain completed exactly once — removing `Pdeathsig` makes it fail — so the row is Real on the platform CI runs, and the no-duplicate half stays the Darwin non-guarantee ([architecture.md](architecture.md#child-lifetime-is-platform-specific)). Seeded anchors kept: `TestCrashRecoveryMarksRunningRunsFailedAndRetries`, `TestCrashRecoveryHandlesMoreThanOneListingPage` (240 seeded rows), `TestCrashRecoveryWithoutRetryPolicyLeavesRunFailed`, `TestStartupFailClosedOnIncompleteRecovery`, `TestReconcileQueueReenqueuesMoreThanOneListingPage`. Admission/refusal: `TestSubmitRunRejectsUnknownAndInvalidJobs`, `TestUnreleasedJobIsRefused`, `TestDrainingRuntimeRejectsNewRuns`, `TestPausedWebhookIsUnavailableButManualRunsStillWork`. A submit→close→reopen→read durability test: still none. |
+| FM-02 | SIGKILL the daemon between finish and retry; no terminal failure without its retry | **Real (atomicity; retry binding still `OT-011`)** | `TestCrashHarnessSIGKILLBetweenFinishAndRetry` holds the finish transaction open through the existing `finishCommit` seam after the child has exited, `SIGKILL`s the daemon inside that window, restarts, and asserts the interrupted attempt is terminal **with** its successor — deterministically, and red if recovery drops the successor. It deliberately does **not** claim the attempt ran only once: the child is re-executed, which §2 and §5.2 already disclaim. Seeded anchors kept: `TestFinishRunPersistsOutcomeAndSuccessorAtomically`, `TestFinishCommitFailureLeavesNoPartialOutcome`, `TestFallbackJournalIsAppliedOnRestart`, `TestUnreadableFallbackJournalDoesNotReRunRunningRuns`. Retry release/environment binding: still open (`OT-011`). |
 | FM-03 | Kill the child, leave the daemon; attempt recorded, descendants do not survive | **Partial** | Linux direct child: `TestChildDiesWhenDaemonIsKilled` (real SIGKILL of a stand-in, no DB). In-process child death: `TestTimeoutMarksRunTimedOut`, `TestTimeoutIsRetriedWhenPolicyAllows`. Attempt-recorded-under-a-real-kill: none. |
 | FM-04 | Crash during retry backoff; retry claimable after `available_at`, backoff preserved | **Partial** | `TestClaimRespectsAvailableAt`, `TestRetryPolicyRetriesUntilSuccess`, `TestClaimedRunIsRequeuedWhenMarkRunningFails`. A real restart mid-backoff: none. |
 | FM-05 | Cancel a running run; process group dies, status `cancelled`, not retried | **Partial** | `TestCancelRunningRunIsNotRetried`, `TestCancelQueuedRunRemovesItFromTheQueue`. Process-group death under cancel: none. |
@@ -425,11 +425,14 @@ Partial test, and the untested half of a Partial scenario is written as an
 explicit non-guarantee rather than a promise. No scenario below is yet at the
 strength the release plan intends:
 
-- **FM-01, FM-02, FM-06** need a harness that kills the daemon and the child
-  for real, and a second connection or process for the claim race. Simulated
-  coverage is real coverage of the recovery logic, but it cannot detect a bug
-  that only a genuine SIGKILL exposes. FM-02 also does not yet prove that a
-  retry re-uses its parent's bound release and environment (`OT-011`).
+- **FM-06** still needs a second connection or process for the claim race.
+  FM-01 and FM-02 now run against a real `SIGKILL` of a real daemon process
+  (`TestCrashHarnessSIGKILLAndRecovery`, `TestCrashHarnessSIGKILLBetweenFinishAndRetry`).
+  What is *not* covered there is stated rather than implied: on Darwin the
+  no-duplicate half is the [child-lifetime
+  non-guarantee](architecture.md#child-lifetime-is-platform-specific), and FM-02
+  does not yet prove that a retry re-uses its parent's bound release and
+  environment (`OT-011`).
 - **FM-03, FM-04, FM-05, FM-08** need the real crash/kill halves of the
   scenario.
 - **FM-07** needs a same-key read-modify-write race to turn the
@@ -437,8 +440,8 @@ strength the release plan intends:
 - **FM-09** needs a guard in the store, or a test, that a terminal row cannot be
   overwritten.
 
-When those land, this appendix moves from Partial/Simulated to Real and the
-contract version increments.
+As the remaining rows land, this appendix moves from Partial/Simulated to Real
+and the contract version increments.
 
 ## Appendix B — where this fits
 

@@ -53,19 +53,22 @@ func crashAssertPlatform(t *testing.T, ev *crashPlatformEvidence) {
 	if checked <= 50 {
 		t.Errorf("only %d interrupted children had a recorded pid, want more than one listing page (>50)", checked)
 	}
-	t.Logf("all %d recorded interrupted children died with the daemon (Pdeathsig)", checked)
+	t.Logf("checked %d recorded interrupted children for parent death; a survival is reported above", checked)
 
 	for _, root := range ev.accepted {
 		count := 0
 		for _, attempt := range ev.chains[root] {
 			count += ev.effects[attempt.ID]
 		}
-		if count != 1 {
+		switch {
+		case count == 0:
+			t.Errorf("run chain %s produced no completion side effect, want exactly 1: the work was lost", root)
+		case count > 1:
 			t.Errorf("run chain %s produced %d completion side effects, want exactly 1: an attempt was executed twice (an orphaned child outlived the daemon)",
 				root, count)
 		}
 	}
-	t.Logf("every one of %d accepted run chains completed exactly once", len(ev.accepted))
+	t.Logf("checked %d accepted run chains; a duplicate or missing completion is reported above", len(ev.accepted))
 }
 
 // crashProcessAlive reports whether pid is still executing. A zombie has

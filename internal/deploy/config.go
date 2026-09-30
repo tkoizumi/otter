@@ -878,9 +878,6 @@ func (c Config) UnitOptions() UnitOptions {
 }
 
 // validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
-// the CapOff opt-out, a size with an optional binary or decimal suffix, or a
-// percentage of the host's physical RAM.
-// validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
 // the CapOff opt-out, a positive size with an optional binary or decimal
 // suffix, or a positive percentage of the host's physical RAM.
 //

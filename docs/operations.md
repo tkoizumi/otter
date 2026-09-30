@@ -487,17 +487,32 @@ needs.
 
 1. Install the **pinned** runtime ([Upgrades](#upgrades)).
 2. Stop the daemon if it is running.
-3. Restore the data directory: `otter.db`, `.releases/`, `environments/`, and
-   `python/` + `cache/uv/` if you copied them. Owned by the service account, data
-   directory mode `0700`, environment file mode `0600`.
+3. Restore the data directory: `otter.db`, `.releases/`, `environments/`,
+   `tools/uv`, and `python/` + `cache/uv/` if you copied them. Owned by the
+   service account, data directory mode `0700`, environment file mode `0600`.
 4. Restore the job source directories **at the same absolute paths**. Identity,
    and the `source` recorded in each release, are path-bound: a restore into a
    different path is a different instance with different state.
-5. Remove `otter.db-wal` and `otter.db-shm` if any came along.
-6. Start the daemon and verify in this order: `otter status` (serving),
+5. **If the restored data directory is not at the path it was backed up from,
+   repoint the absolute paths it records.** Two are stored as absolutes and are
+   otherwise resolved against the *old* directory:
+   - `.releases/active/<job>` is a symlink to
+     `<old-data>/.releases/<job>/<digest>`; recreate it pointing into the
+     restored directory;
+   - `environments/<digest>/otter-ready.json` records `interpreter` as an
+     absolute path; rewrite it to
+     `<new-data>/environments/<digest>/bin/python`.
+
+   Without both, the daemon reports either `no active release` or `managed
+   Python interpreter is missing`. A restore to the same absolute path needs
+   neither step — which is the simpler restore, and the reason this is easy to
+   miss. `scripts/drill/backup-restore.sh` performs both, and demonstrates why:
+   omit either and the restored job cannot run.
+6. Remove `otter.db-wal` and `otter.db-shm` if any came along.
+7. Start the daemon and verify in this order: `otter status` (serving),
    `otter jobs` (manifests resolve from the snapshots), `otter runs --all
    --limit 10` (history reads back), then **execute one job for real**.
-7. Step 6 is the test. A restore that starts and lists history but cannot run a
+8. Step 7 is the test. A restore that starts and lists history but cannot run a
    job has not restored a runtime.
 
 A complete backup is a script, not a memory:
@@ -507,11 +522,21 @@ A complete backup is a script, not a memory:
 # Quiesce deploys first: they are the only writer to .releases/.
 set -eu
 data=/var/lib/otter
+jobs=${JOBS_ROOT:?set JOBS_ROOT to the jobs root before running this}
 dest=/var/backups/otter/$(date +%F)
 install -d -o root -g root -m 0700 "$dest"
+# The database: a hot, atomic copy while the daemon is writing.
 sqlite3 "$data/otter.db" ".backup '$dest/otter.db'"
-cp -a "$data/.releases"    "$dest/.releases"
-cp -a "$data/environments" "$dest/environments"
+# Everything the database references. Not every directory exists on every
+# host: tools/, python/ and cache/ are managed-Python state.
+for d in .releases environments tools python cache; do
+  if [ -e "$data/$d" ]; then
+    cp -a "$data/$d" "$dest/$d"
+  fi
+done
+# The job sources, because identity is a .otter-id marker inside each one and
+# every release records its absolute source path.
+cp -a "$jobs" "$dest/jobs"
 ```
 
 Keep the secrets file out of that archive and store it encrypted. Retain as many
@@ -519,12 +544,14 @@ generations as you are willing to lose, and keep each database **together with
 its releases** — a database whose releases were rotated away is exactly the
 failure this section exists to prevent.
 
-**Status of this procedure.** It is corrected against the real on-disk layout,
-but it is not yet *verified*: P0-03 requires it to be exercised by a recorded
-drill that restores onto a clean host and runs a job
-(`scripts/drill.sh backup-restore`, not yet written). Until that drill's output
-exists, this section is a corrected procedure rather than demonstrated behavior —
-see [phase-0-tasks.md](phase-0-tasks.md) P0-03.
+**Status of this procedure.** The inventory above is corrected against the real
+on-disk layout, and `scripts/drill/backup-restore.sh` exercises it: it takes a
+hot backup while a run is in flight, restores onto a *different, empty* data
+directory served by a fresh daemon, and asserts the job is runnable there. Its
+recorded transcript is in [evidence/phase-0/](evidence/phase-0/). What the drill
+does **not** prove is a restore onto a *different host* — it stays on one
+machine, and the job source path is unchanged — so P0-03's clean-host drill
+remains open. See [phase-0-tasks.md](phase-0-tasks.md) P0-03.
 
 ## Reading a run's logs
 

@@ -20,7 +20,9 @@ const crashMessage = "otter daemon restarted during execution"
 // be completed. It is marked failed and, when the manifest's retry policy
 // allows another attempt, a fresh attempt is enqueued -- both in one
 // transaction. Doing this at startup, before triggers are registered,
-// guarantees the work is picked up again without ever running twice.
+// guarantees the work is picked up again rather than left stranded. It does not
+// make an attempt run only once: a kill before the terminal write is durable
+// leaves no journal record, so the attempt is re-executed (§5.2).
 //
 // Before treating a `running` run as interrupted it consults the fallback
 // journal: a run whose child actually finished may have been left running only
