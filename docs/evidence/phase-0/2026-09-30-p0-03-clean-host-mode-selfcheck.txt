@@ -1,0 +1,273 @@
+# P0-03 — the clean-host mode of the backup/restore drill — hostless selfcheck
+# and the local drill's regression, recorded
+#
+# Claim this record supports:
+#   * scripts/drill/backup-restore.sh now has a two-host **clean-host mode**
+#     (DRILL_CLEAN_HOST=1, scripts/drill/modes/backup-restore-clean-host.sh)
+#     that proves a live runtime's backup restores onto a second, initially
+#     empty host and the job runs there;
+#   * the mode REFUSES rather than falls back: the opt-in without its
+#     parameters, and the parameters without the opt-in, both exit non-zero and
+#     name what is wrong;
+#   * its preflight gate refuses a target that is not genuinely clean, and that
+#     refusal fires before anything is written to the target;
+#   * the backup and restore halves (scripts/drill/lib/hot-backup.sh,
+#     restore-host.sh) round-trip a runtime's on-disk state against real
+#     directories, and a corrupted archive is refused by the manifest;
+#   * the existing same-host drill is unchanged: it still passes clean, and its
+#     recorded sabotage modes still go red, plus a new one that makes the
+#     `.otter-id` identity assertion falsifiable on one host.
+#
+# This is NOT P0-03's clean-host evidence. The task's evidence bar is a restore
+# onto a second, real host; that is window HW-7, run by the custodian against
+# two provisioned instances. Nothing here can substitute for it, and the
+# clean-host drill says in its own output when it is running against a
+# substituted transport that the run is not host evidence.
+#
+# When:   2026-09-30 16:15-16:20 EDT
+# Where:  macOS 15.7.3 (Darwin 24.6.0) arm64, developer checkout. The clean-host
+#         mode itself never ran against a host here; the two-host preflight was
+#         driven by a test double that answers the probe from local directories
+#         (the selfcheck prints which fields it substitutes).
+# Build:  branch p0-03-clean-host-mode @ 07e6484 (v0.2.0-38-g07e6484)
+# Commands: the five sections below, in order.
+# Falsifiability:
+#   * DRILL_SABOTAGE=drop-marker must make the same-host drill exit non-zero at
+#     the `.otter-id` assertion (section 2);
+#   * DRILL_SABOTAGE=drop-releases must still make it exit non-zero at the run
+#     assertion (section 3);
+#   * the selfcheck's dirty-target case must make the two-host drill exit
+#     non-zero at the cleanliness assertion after exactly the two probe calls
+#     and no restore step (section 4).
+# Verdict: implementation and falsification evidence for the *hostless* half of
+#   the clean-host mode. The clean-host claim itself remains open until HW-7.
+
+===== 1. the same-host drill still passes, clean =====
+$ make drill DRILL=backup-restore
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-38-g07e6484" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-38-g07e6484" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-38-g07e6484)
+
+===== drill: backup-restore =====
+date:     2026-09-30 16:17:47 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-38-g07e6484
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.zZN3dl/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         db5d8dc1-de7a-4798-a1c9-9a67a0926c76
+drill: release     d1ded52100e5a9502a5a87a4cef82041fe32741d1fe5254bced81b8db749e9a9
+drill: environment a51c27e09b508aff49f1b4679e1aa0096fa5a00464e10f73bfdcaec065648766
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.zZN3dl/ws/.otter/data/environments/a51c27e09b508aff49f1b4679e1aa0096fa5a00464e10f73bfdcaec065648766
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.zZN3dl/ws/.otter/data
+drill: run 1       3e143d00-d4f6-481b-b2cb-94f3c25f74db succeeded (state count=1)
+drill: run 2       8a5276d0-f3a6-47cb-9a21-6f4c18fb8a23 is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.zZN3dl/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.zZN3dl/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (db5d8dc1-de7a-4798-a1c9-9a67a0926c76)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run 791cde58-5466-4226-ae90-fd9e13f7f0e9 succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.zZN3dl/restore-data/.releases/db5d8dc1-de7a-4798-a1c9-9a67a0926c76/d1ded52100e5a9502a5a87a4cef82041fe32741d1fe5254bced81b8db749e9a9/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 20s
+exit=0
+
+===== 2. sabotage: the identity marker is omitted =====
+$ DRILL_SABOTAGE=drop-marker make drill DRILL=backup-restore
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-38-g07e6484" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-38-g07e6484" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-38-g07e6484)
+
+===== drill: backup-restore =====
+date:     2026-09-30 16:18:08 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-38-g07e6484
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         3e0744cd-5810-49e4-b470-a267c30ab252
+drill: release     d5a3d739fd1e3313ba3d403a1e56fa100fb1ca89cb6029281f548f9569cb8c8e
+drill: environment 7de3772e9b7030a0ff5760bd02516f02ab9851f305da2b239a4a118269363129
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws/.otter/data/environments/7de3772e9b7030a0ff5760bd02516f02ab9851f305da2b239a4a118269363129
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws/.otter/data
+drill: run 1       09506d3e-b4cf-48eb-bb41-59841a759afc succeeded (state count=1)
+drill: run 2       1b1e5322-386a-447c-8adf-879e597fcd52 is running; taking the hot backup (daemon still writing)
+drill: sabotage: omitting .otter-id from the backed-up source directory
+drill: backup      ok (database + drop-marker); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: FAILED: the restored source directory lost its .otter-id marker
+drill: failed; last daemon log lines:
+{"event":"identity_bootstrap_complete","level":"info","mode":"fresh","timestamp":"2026-09-30T20:18:09.046751Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws/.otter/data/sdk/python","timestamp":"2026-09-30T20:18:09.049321Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T20:18:09.049335Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T20:18:09.049344Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws","timestamp":"2026-09-30T20:18:09.05049Z","total":1,"valid":1}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws/.otter/data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws/.otter/data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T20:18:09.050813Z","version":"v0.2.0-38-g07e6484","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T20:18:09.050918Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T20:18:09.051087Z","url":"http://127.0.0.1:7403"}
+{"event":"run_queued","id":"3e0744cd-5810-49e4-b470-a267c30ab252","job":"drill-job","level":"info","run_id":"09506d3e-b4cf-48eb-bb41-59841a759afc","timestamp":"2026-09-30T20:18:09.1197Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"09506d3e-b4cf-48eb-bb41-59841a759afc","timestamp":"2026-09-30T20:18:09.120402Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":1,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6220,"event":"run_succeeded","exit_code":0,"job":"3e0744cd-5810-49e4-b470-a267c30ab252","level":"info","run_id":"09506d3e-b4cf-48eb-bb41-59841a759afc","status":"succeeded","timestamp":"2026-09-30T20:18:15.34136Z"}
+{"event":"run_queued","id":"3e0744cd-5810-49e4-b470-a267c30ab252","job":"drill-job","level":"info","run_id":"1b1e5322-386a-447c-8adf-879e597fcd52","timestamp":"2026-09-30T20:18:15.461043Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"1b1e5322-386a-447c-8adf-879e597fcd52","timestamp":"2026-09-30T20:18:15.461674Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":2,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6220,"event":"run_succeeded","exit_code":0,"job":"3e0744cd-5810-49e4-b470-a267c30ab252","level":"info","run_id":"1b1e5322-386a-447c-8adf-879e597fcd52","status":"succeeded","timestamp":"2026-09-30T20:18:21.681979Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T20:18:21.757917Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T20:18:21.757994Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T20:18:21.760329Z"}
+drill: workspace was /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk
+drill: elapsed 13s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.NrJJKk
+make: *** [drill] Error 1
+exit=2
+
+===== 3. sabotage: the releases are omitted (pre-existing mode) =====
+$ DRILL_SABOTAGE=drop-releases make drill DRILL=backup-restore
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-38-g07e6484" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-38-g07e6484" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-38-g07e6484)
+
+===== drill: backup-restore =====
+date:     2026-09-30 16:18:22 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-38-g07e6484
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         5576b402-7f79-4b4e-8e1e-0c9e92077f22
+drill: release     21c977192395f57974cc905a02e16e0ca62d1439a3ea2693b7a476b258a807f5
+drill: environment 30325a6f712532c901460c9230d512d6e8caa8002d0a11ec43bca1fb3c8a2b7c
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/data/environments/30325a6f712532c901460c9230d512d6e8caa8002d0a11ec43bca1fb3c8a2b7c
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/data
+drill: run 1       44701d1f-1949-41d8-ae4f-9be3fb7e1910 succeeded (state count=1)
+drill: run 2       7a955185-2806-48bd-8d88-0613fef132c7 is running; taking the hot backup (daemon still writing)
+drill: sabotage: omitting releases from the backup
+drill: backup      ok (database + drop-releases); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (5576b402-7f79-4b4e-8e1e-0c9e92077f22)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: the restored runtime refused to submit a run:
+drill:   otter: job drill-job has no active release; run otter release drill-job before submitting runs: conflict (conflict, HTTP 409)
+drill: FAILED: the restored job cannot run
+drill: failed; last daemon log lines:
+{"event":"identity_bootstrap_complete","level":"info","mode":"fresh","timestamp":"2026-09-30T20:18:23.146673Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/data/sdk/python","timestamp":"2026-09-30T20:18:23.150844Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T20:18:23.150883Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T20:18:23.150895Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws","timestamp":"2026-09-30T20:18:23.151863Z","total":1,"valid":1}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T20:18:23.152713Z","version":"v0.2.0-38-g07e6484","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T20:18:23.152915Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T20:18:23.153283Z","url":"http://127.0.0.1:7403"}
+{"event":"run_queued","id":"5576b402-7f79-4b4e-8e1e-0c9e92077f22","job":"drill-job","level":"info","run_id":"44701d1f-1949-41d8-ae4f-9be3fb7e1910","timestamp":"2026-09-30T20:18:23.219395Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"44701d1f-1949-41d8-ae4f-9be3fb7e1910","timestamp":"2026-09-30T20:18:23.220176Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":1,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6207,"event":"run_succeeded","exit_code":0,"job":"5576b402-7f79-4b4e-8e1e-0c9e92077f22","level":"info","run_id":"44701d1f-1949-41d8-ae4f-9be3fb7e1910","status":"succeeded","timestamp":"2026-09-30T20:18:29.427679Z"}
+{"event":"run_queued","id":"5576b402-7f79-4b4e-8e1e-0c9e92077f22","job":"drill-job","level":"info","run_id":"7a955185-2806-48bd-8d88-0613fef132c7","timestamp":"2026-09-30T20:18:29.530896Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"7a955185-2806-48bd-8d88-0613fef132c7","timestamp":"2026-09-30T20:18:29.531508Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":2,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6192,"event":"run_succeeded","exit_code":0,"job":"5576b402-7f79-4b4e-8e1e-0c9e92077f22","level":"info","run_id":"7a955185-2806-48bd-8d88-0613fef132c7","status":"succeeded","timestamp":"2026-09-30T20:18:35.724084Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T20:18:35.827474Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T20:18:35.827546Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T20:18:35.829139Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/restore-data/sdk/python","timestamp":"2026-09-30T20:18:35.989131Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T20:18:35.989168Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T20:18:35.989175Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws","timestamp":"2026-09-30T20:18:35.990486Z","total":1,"valid":1}
+{"count":1,"event":"recovering_interrupted_runs","level":"warn","timestamp":"2026-09-30T20:18:35.990634Z"}
+{"error":"open manifest: open /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/data/.releases/5576b402-7f79-4b4e-8e1e-0c9e92077f22/21c977192395f57974cc905a02e16e0ca62d1439a3ea2693b7a476b258a807f5/drill-job/otter.yaml: no such file or directory","event":"recovery_bound_manifest_unreadable","job":"5576b402-7f79-4b4e-8e1e-0c9e92077f22","level":"warn","release":"21c977192395","run_id":"7a955185-2806-48bd-8d88-0613fef132c7","timestamp":"2026-09-30T20:18:35.990659Z"}
+{"attempt":1,"event":"run_recovered","job":"5576b402-7f79-4b4e-8e1e-0c9e92077f22","level":"warn","run_id":"7a955185-2806-48bd-8d88-0613fef132c7","timestamp":"2026-09-30T20:18:35.99083Z"}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/restore-data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/restore-data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T20:18:35.99105Z","version":"v0.2.0-38-g07e6484","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T20:18:35.991359Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T20:18:35.991572Z","url":"http://127.0.0.1:7403"}
+{"event":"capture_stale_marked","level":"info","runs":1,"timestamp":"2026-09-30T20:18:35.99181Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T20:18:36.125305Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T20:18:36.125362Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T20:18:36.126653Z"}
+drill: workspace was /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1
+drill: elapsed 14s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.2jMVI1
+make: *** [drill] Error 1
+exit=2
+
+===== 4. the hostless selfcheck of the clean-host mode =====
+selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.sWa0KZ/otter)
+selfcheck:   ok  opt-in without parameters names all seven missing values and does not fall back
+selfcheck:   ok  parameters without the opt-in refuse instead of silently running the local drill
+selfcheck:   ok  an unknown opt-in value refuses
+selfcheck:   ok  a parameter that cannot cross a remote shell refuses
+selfcheck:   ok  a missing ssh key refuses
+selfcheck:   ok  the same host twice refuses before any connection
+selfcheck:   ok  with no clean-host parameter the entry point is still the local drill
+selfcheck: 2/6 probe (lib/host-report.sh) against real directories
+selfcheck:   ok  an absent data directory, an empty jobs root and a closed port report clean/stopped
+selfcheck:   ok  a leftover otter.db, otter.yaml or .otter-id is reported dirty, with the offender named
+selfcheck: 3/6 gate (lib/assert-clean-host.sh)
+selfcheck:   ok  two reports from one machine are refused as 'not a second host'
+selfcheck:   ok  a dirty target is refused at the cleanliness assertion, with the offender named
+selfcheck:   ok  an empty target passes the cleanliness assertion (then failed on: the target has no systemd unit named otter-selfcheck (service_state=no)
+selfcheck:   ok  a fully good pair passes the gate (fixture reports; the gate's own happy path)
+selfcheck: 4/6 backup + restore halves (lib/hot-backup.sh, lib/restore-host.sh)
+selfcheck:   ok  a complete backup holds the database, releases, environments, tools, python, cache and job sources
+selfcheck:   ok  a corrupted archive is refused by MANIFEST.sha256 before anything is written
+selfcheck:   ok  the drop-jobs sabotage leaves no job source and no .otter-id to restore
+selfcheck:   ok  restoring the sabotage yields a jobs root with no identity marker (the identity assertion's red condition)
+selfcheck:   ok  the clean backup round-trips: identity, releases, environments, sources and database rows
+selfcheck:   ok  a restore into a non-empty target refuses
+selfcheck: 5/6 the drill refuses a dirty target before writing anything
+selfcheck:   ok  a dirty target goes red at the cleanliness assertion after exactly the two probes
+selfcheck:       red reason: the target data directory /var/lib/otter is not clean (not empty (1 entries: otter.db )): a restore onto a host that alr
+selfcheck:   ok  an empty target passes the gate; the run then stops on the next precondition (the target has no systemd unit named otter-selfcheck (service_state=no)
+selfcheck: ok: the clean-host mode validates, refuses, gates, backs up and restores without a host
+exit=0
+
+===== 5. the same selfcheck through the Go suite (what CI runs) =====
+$ scripts/go test ./internal/drill/ -count=1 -v
+=== RUN   TestSelfchecks
+=== RUN   TestSelfchecks/clean-host-mode.sh
+    selfcheck_test.go:41: selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.GfGyxC/otter)
+        selfcheck:   ok  opt-in without parameters names all seven missing values and does not fall back
+        selfcheck:   ok  parameters without the opt-in refuse instead of silently running the local drill
+        selfcheck:   ok  an unknown opt-in value refuses
+        selfcheck:   ok  a parameter that cannot cross a remote shell refuses
+        selfcheck:   ok  a missing ssh key refuses
+        selfcheck:   ok  the same host twice refuses before any connection
+        selfcheck:   ok  with no clean-host parameter the entry point is still the local drill
+        selfcheck: 2/6 probe (lib/host-report.sh) against real directories
+        selfcheck:   ok  an absent data directory, an empty jobs root and a closed port report clean/stopped
+        selfcheck:   ok  a leftover otter.db, otter.yaml or .otter-id is reported dirty, with the offender named
+        selfcheck: 3/6 gate (lib/assert-clean-host.sh)
+        selfcheck:   ok  two reports from one machine are refused as 'not a second host'
+        selfcheck:   ok  a dirty target is refused at the cleanliness assertion, with the offender named
+        selfcheck:   ok  an empty target passes the cleanliness assertion (then failed on: the target has no systemd unit named otter-selfcheck (service_state=no)
+        selfcheck:   ok  a fully good pair passes the gate (fixture reports; the gate's own happy path)
+        selfcheck: 4/6 backup + restore halves (lib/hot-backup.sh, lib/restore-host.sh)
+        selfcheck:   ok  a complete backup holds the database, releases, environments, tools, python, cache and job sources
+        selfcheck:   ok  a corrupted archive is refused by MANIFEST.sha256 before anything is written
+        selfcheck:   ok  the drop-jobs sabotage leaves no job source and no .otter-id to restore
+        selfcheck:   ok  restoring the sabotage yields a jobs root with no identity marker (the identity assertion's red condition)
+        selfcheck:   ok  the clean backup round-trips: identity, releases, environments, sources and database rows
+        selfcheck:   ok  a restore into a non-empty target refuses
+        selfcheck: 5/6 the drill refuses a dirty target before writing anything
+        selfcheck:   ok  a dirty target goes red at the cleanliness assertion after exactly the two probes
+        selfcheck:       red reason: the target data directory /var/lib/otter is not clean (not empty (1 entries: otter.db )): a restore onto a host that alr
+        selfcheck:   ok  an empty target passes the gate; the run then stops on the next precondition (the target has no systemd unit named otter-selfcheck (service_state=no)
+        selfcheck: ok: the clean-host mode validates, refuses, gates, backs up and restores without a host
+--- PASS: TestSelfchecks (3.26s)
+    --- PASS: TestSelfchecks/clean-host-mode.sh (3.26s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/drill	3.421s
+exit=0
