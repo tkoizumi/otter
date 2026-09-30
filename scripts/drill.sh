@@ -47,7 +47,11 @@ run_one() {
 	script=$dir/$name.sh
 	if [ ! -f "$script" ]; then
 		echo "drill: no such drill: $name" >&2
-		echo "drill: available: $(list | tr '\n' ' ')" >&2
+		if available=$(list); then
+			echo "drill: available: $(printf '%s' "$available" | tr '\n' ' ')" >&2
+		else
+			echo "drill: no drills defined yet — add scripts/drill/<name>.sh" >&2
+		fi
 		exit 2
 	fi
 	header "$name"
