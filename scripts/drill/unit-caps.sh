@@ -251,9 +251,22 @@ fi
 # swapon is global to the kernel, not namespaced to the container: removing the
 # container does not undo it, and the loop device keeps the backing file alive
 # (and its disk allocated) until the VM reboots. Undo both on the way out.
+# swapoff can fail transiently -- the device is shared with every process in the
+# VM, and faulting their pages back in needs memory, which is scarce right after
+# an OOM kill -- so retry. A device that still cannot be released fails the case:
+# a leaked swap device is a real side effect, not a footnote.
 cleanup_swap() {
-	swapoff "$loop" >/dev/null 2>&1 || true
-	losetup -d "$loop" >/dev/null 2>&1 || true
+	i=0
+	while [ "$i" -lt 30 ]; do
+		if swapoff "$loop" >/dev/null 2>&1; then
+			losetup -d "$loop" >/dev/null 2>&1 || true
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	echo "unit-caps: FAIL: could not release swap device $loop after 30 attempts; run: swapoff $loop && losetup -d $loop" >&2
+	exit 1
 }
 trap cleanup_swap EXIT INT TERM
 cat /proc/swaps
