@@ -11,16 +11,22 @@
 #   `otter deploy` vendors) against a loopback PEP 503 index built for this
 #   capture; every URL in these transcripts is 127.0.0.1 and no remote host was
 #   contacted.
-# Build: v0.2.0-41-g7a0f229 (see below)
-# Code under test: 7a0f229 ("Refuse a lock the configured package index cannot
-#   satisfy"). Everything after it on the branch is documentation, this capture,
-#   and flag help text -- no Go behavior.
+# Build: starts at v0.2.0-41-g7a0f229 and ends at v0.2.0-44-gf718d63 for the
+#   ROUND 3 sections.
+# Code under test: 7a0f229 for the UV/OTTER/TESTS/SUITE/DRILLS sections below,
+#   and f718d63 for the ROUND 3 sections. The commits between them are the
+#   round-3 fix and its tests; nothing after f718d63 on the branch changes Go
+#   behavior.
 #
-# Falsifiability: seventeen mutations, one per assertion, applied to the
-#   committed tree with the failing test recorded in the MUTATIONS section. The decisive
-#   one is the verifier's finding: with a lock cut against one index and
-#   `--default-index` naming another, uv 0.5.9 exits 2 -- even when both indexes
-#   serve byte-identical artifacts -- which no test that stubs uv can see.
+# Falsifiability: twenty-four mutations (one re-run cleanly, so it appears twice),
+#   one per assertion, applied to the
+#   committed tree with the failing test recorded in the MUTATIONS and ROUND 3
+#   sections. The decisive one is the verifier's first finding: with a lock cut
+#   against one index and `--default-index` naming another, uv 0.5.9 exits 2 --
+#   even when both indexes serve byte-identical artifacts -- which no test that
+#   stubs uv can see. Round 3 adds the two pairs the second verification found:
+#   a bare-host index and dot segments, which uv folds and otter had refused, and
+#   the additive UV_* source variables otter had ignored until uv's bare exit 2.
 #
 # What this does and does not prove:
 #   * proves the configured index and mirror reach the real fetch path (uv's
@@ -601,6 +607,323 @@ FAIL	github.com/tkoizumi/otter/internal/cli	0.679s
 --- FAIL: TestReadyEnvironmentIsNotBlockedByAnIndexMismatch (0.21s)
     lock_test.go:309: a ready environment was refused because of the current index: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestReadyEnvironmentIsNotBlockedByAnIndexMismatch591454723/001/uv.lock was locked against https://pypi.org/simple, but preparation is configured with https://mirror.internal/simple
 
+# ===== ROUND 3 =====
+#
+# Code under test: f718d6349c24fb547111f7bd4d0eaac4dfb27154 ("Fold index URLs the way uv parses them, and
+#   refuse added index sources"). Prompted by the round-2 verification, which
+#   measured two over/under-refusals: a bare-host index uv accepts but otter
+#   refused (with a hint whose advice looped), and the additive UV_* source
+#   variables that reach uv through the inherited environment while the lock
+#   check ignored them.
+# When:  2026-09-30 (later the same day), macOS 15.7.3 arm64, loopback only.
+
+## ROUND 3 — what uv folds, and what the additive source variables do
+
+$ sh /tmp/p0-08-uv/canonical.sh
+=== bare-host index: what does uv record, and what does it accept? ===
+Using CPython 3.13.1
+Resolved 2 packages in 25ms
+lock registry = http://127.0.0.1:62728/   (locked with --default-index http://127.0.0.1:62728)
+ + demo==0.1.0
+sync --default-index http://127.0.0.1:62728   -> exit 0
+Audited 1 package in 0.01ms
+sync --default-index http://127.0.0.1:62728/  -> exit 0
+
+=== dot segments and percent-encoding ===
+Using CPython 3.13.1
+Resolved 2 packages in 4ms
+lock registry = http://127.0.0.1:62727/a/simple   (locked with --default-index http://127.0.0.1:62727/a/simple)
+ + demo==0.1.0
+sync --default-index http://127.0.0.1:62727/a/../a/simple -> exit 0
+error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+sync --default-index http://127.0.0.1:62727/a/sim%70le -> exit 0
+error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+sync --default-index http://127.0.0.1:62727/a/%73imple -> exit 0
+
+=== the additive source variables, against a lock that records only A ===
+Using CPython 3.13.1
+Resolved 2 packages in 4ms
+Using CPython 3.13.1
+Resolved 2 packages in 3ms
+Using CPython 3.13.1
+Resolved 2 packages in 4ms
+Using CPython 3.13.1
+Resolved 2 packages in 3ms
+Using CPython 3.13.1
+Resolved 2 packages in 4ms
+--- -
+    lock registry = http://127.0.0.1:62727/a/simple
+ + demo==0.1.0
+--- UV_EXTRA_INDEX_URL=B, no --default-index
+    lock registry = http://127.0.0.1:62727/a/simple
+error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+--- UV_INDEX=B, no --default-index
+    lock registry = http://127.0.0.1:62727/a/simple
+error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+--- UV_FIND_LINKS=<packages dir>, no --default-index
+    lock registry = http://127.0.0.1:62727/a/simple
+error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+--- UV_NO_INDEX=1, no --default-index
+    lock registry = http://127.0.0.1:62727/a/simple
+ + demo==0.1.0
+
+## ROUND 3 — otter, end to end
+
+$ OTTER_BIN=bin/otter sh /tmp/p0-08-round3-demo.sh
+lock registry (what uv records for a bare host): http://127.0.0.1:63268/
+operator spelling (bare):                        http://127.0.0.1:63268
+
+=== 3. bare-host config against uv's canonical lock: accepted ===
+otter: egress preflight ok for environment 1980ccc5db22: package index http://127.0.0.1:63268, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+counter: Python 3.13.5, environment 1980ccc5db22
+
+=== 4. an additive source variable: refused, naming it, before any fetch ===
+otter: prepare counter: uv.lock and the configured package index disagree: UV_INDEX is set, which adds a package source the lock cannot be checked against; /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/p0-08-round3.I97Kks/jobs4/counter/uv.lock records http://127.0.0.1:63268/
+hint: `uv sync --locked` re-resolves with that added source and refuses when the result
+would change the lock -- the failure this check exists to explain. Unset UV_INDEX and prepare
+against the index the lock records (--index http://127.0.0.1:63268/, or no --index at all), or re-lock
+against the source you actually need (uv lock --default-index <url>) and configure it with
+--index <url>, which preparation can check.
+(exit 1)
+uv invocations (install/sync would appear here):
+(none: nothing was fetched)
+/tmp/p0-08-round3-demo.sh: line 96: 48774 Terminated: 15          python3 -m http.server "$port" --bind 127.0.0.1 --directory "$root/docroot" > "$root/server.log" 2>&1
+
+## ROUND 3 — focused tests
+
+$ scripts/go test ./internal/pyenv/ -run "TestPrepare|TestPreflight|TestLockIndex|TestCanonical|TestRelocking|TestEnvironmentIdentity|TestReused|TestSkipEgress|TestHTTPProbe|TestReadyEnvironment" -count=1 -v
+=== RUN   TestPrepareFailsBeforeFetchingWhenAnEndpointIsUnreachable
+--- PASS: TestPrepareFailsBeforeFetchingWhenAnEndpointIsUnreachable (0.18s)
+=== RUN   TestPreflightChecksTheConfiguredEndpoints
+=== RUN   TestPreflightChecksTheConfiguredEndpoints/defaults_when_nothing_is_configured
+=== RUN   TestPreflightChecksTheConfiguredEndpoints/configured_index,_mirror_and_job_endpoint
+--- PASS: TestPreflightChecksTheConfiguredEndpoints (0.00s)
+    --- PASS: TestPreflightChecksTheConfiguredEndpoints/defaults_when_nothing_is_configured (0.00s)
+    --- PASS: TestPreflightChecksTheConfiguredEndpoints/configured_index,_mirror_and_job_endpoint (0.00s)
+=== RUN   TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured
+--- PASS: TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured (0.00s)
+=== RUN   TestPreflightFollowsTheDeprecatedIndexVariable
+--- PASS: TestPreflightFollowsTheDeprecatedIndexVariable (0.00s)
+=== RUN   TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured
+=== RUN   TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/unconfigured_leaves_both_commands_at_their_defaults
+=== RUN   TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/configured_index_and_mirror_reach_the_fetching_commands
+--- PASS: TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured (0.45s)
+    --- PASS: TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/unconfigured_leaves_both_commands_at_their_defaults (0.20s)
+    --- PASS: TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/configured_index_and_mirror_reach_the_fetching_commands (0.25s)
+=== RUN   TestEnvironmentIdentityDoesNotDependOnTheRoute
+--- PASS: TestEnvironmentIdentityDoesNotDependOnTheRoute (0.00s)
+=== RUN   TestReusedEnvironmentIsNotProbed
+--- PASS: TestReusedEnvironmentIsNotProbed (0.32s)
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_blocked_endpoint_does_not_fail_a_skipped_check
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_passing_check_attributes_a_catalogue_miss
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_skipped_check_does_not_attribute_it
+--- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint (0.59s)
+    --- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_blocked_endpoint_does_not_fail_a_skipped_check (0.22s)
+    --- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_passing_check_attributes_a_catalogue_miss (0.15s)
+    --- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_skipped_check_does_not_attribute_it (0.15s)
+=== RUN   TestHTTPProbeAcceptsAnyAnswerAndRejectsNoRoute
+--- PASS: TestHTTPProbeAcceptsAnyAnswerAndRejectsNoRoute (0.00s)
+=== RUN   TestPrepareRefusesALockLockedAgainstADifferentIndex
+--- PASS: TestPrepareRefusesALockLockedAgainstADifferentIndex (0.17s)
+=== RUN   TestLockIndexCheckAcceptsTheIndexTheLockRecords
+--- PASS: TestLockIndexCheckAcceptsTheIndexTheLockRecords (0.30s)
+=== RUN   TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse
+--- PASS: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+=== RUN   TestRelockingAgainstTheConfiguredIndexIsAccepted
+--- PASS: TestRelockingAgainstTheConfiguredIndexIsAccepted (0.64s)
+=== RUN   TestPrepareRefusesAdditiveIndexVariables
+=== RUN   TestPrepareRefusesAdditiveIndexVariables/UV_INDEX
+=== RUN   TestPrepareRefusesAdditiveIndexVariables/UV_EXTRA_INDEX_URL
+=== RUN   TestPrepareRefusesAdditiveIndexVariables/UV_FIND_LINKS
+=== RUN   TestPrepareRefusesAdditiveIndexVariables/no_registry_package_in_the_lock
+=== RUN   TestPrepareRefusesAdditiveIndexVariables/UV_NO_INDEX_is_not_a_conflicting_source
+--- PASS: TestPrepareRefusesAdditiveIndexVariables (0.90s)
+    --- PASS: TestPrepareRefusesAdditiveIndexVariables/UV_INDEX (0.17s)
+    --- PASS: TestPrepareRefusesAdditiveIndexVariables/UV_EXTRA_INDEX_URL (0.16s)
+    --- PASS: TestPrepareRefusesAdditiveIndexVariables/UV_FIND_LINKS (0.16s)
+    --- PASS: TestPrepareRefusesAdditiveIndexVariables/no_registry_package_in_the_lock (0.20s)
+    --- PASS: TestPrepareRefusesAdditiveIndexVariables/UV_NO_INDEX_is_not_a_conflicting_source (0.20s)
+=== RUN   TestLockIndexCheckFollowsTheUVEnvironment
+=== RUN   TestLockIndexCheckFollowsTheUVEnvironment/matching_environment_index
+=== RUN   TestLockIndexCheckFollowsTheUVEnvironment/mismatching_environment_index
+--- PASS: TestLockIndexCheckFollowsTheUVEnvironment (0.36s)
+    --- PASS: TestLockIndexCheckFollowsTheUVEnvironment/matching_environment_index (0.19s)
+    --- PASS: TestLockIndexCheckFollowsTheUVEnvironment/mismatching_environment_index (0.17s)
+=== RUN   TestLockIndexCheckIsSilentWhenNoIndexIsConfigured
+--- PASS: TestLockIndexCheckIsSilentWhenNoIndexIsConfigured (0.19s)
+=== RUN   TestLockIndexCheckIgnoresNonRegistrySources
+--- PASS: TestLockIndexCheckIgnoresNonRegistrySources (0.19s)
+=== RUN   TestLockIndexCheckToleratesALockItCannotRead
+--- PASS: TestLockIndexCheckToleratesALockItCannotRead (0.19s)
+=== RUN   TestPreflightChecksTheRegistriesTheLockRecords
+--- PASS: TestPreflightChecksTheRegistriesTheLockRecords (0.19s)
+=== RUN   TestReadyEnvironmentIsNotBlockedByAnIndexMismatch
+--- PASS: TestReadyEnvironmentIsNotBlockedByAnIndexMismatch (0.19s)
+=== RUN   TestPreparePublishesOnlyAfterValidation
+--- PASS: TestPreparePublishesOnlyAfterValidation (0.19s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/pyenv	5.254s
+
+$ scripts/go test ./internal/cli/ ./internal/deploy/ -run "TestPrepare|TestSkipEgress|TestDeployPassesThePreparationRoute|TestReleaseScript" -count=1 -v
+=== RUN   TestPreparePassesTheConfiguredRouteToTheFetchPath
+--- PASS: TestPreparePassesTheConfiguredRouteToTheFetchPath (0.28s)
+=== RUN   TestPrepareUnconfiguredPassesNoRouteFlags
+--- PASS: TestPrepareUnconfiguredPassesNoRouteFlags (0.22s)
+=== RUN   TestSkipEgressCheckReachesTheManager
+=== RUN   TestSkipEgressCheckReachesTheManager/without_the_flag_the_failing_probe_stops_preparation
+=== RUN   TestSkipEgressCheckReachesTheManager/with_the_flag_preparation_proceeds
+--- PASS: TestSkipEgressCheckReachesTheManager (0.41s)
+    --- PASS: TestSkipEgressCheckReachesTheManager/without_the_flag_the_failing_probe_stops_preparation (0.18s)
+    --- PASS: TestSkipEgressCheckReachesTheManager/with_the_flag_preparation_proceeds (0.22s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/cli	1.356s
+=== RUN   TestDeployPassesThePreparationRouteToTheHostRelease
+=== RUN   TestDeployPassesThePreparationRouteToTheHostRelease/configured_route_is_passed_through
+=== RUN   TestDeployPassesThePreparationRouteToTheHostRelease/an_unconfigured_deploy_passes_nothing
+--- PASS: TestDeployPassesThePreparationRouteToTheHostRelease (0.01s)
+    --- PASS: TestDeployPassesThePreparationRouteToTheHostRelease/configured_route_is_passed_through (0.00s)
+    --- PASS: TestDeployPassesThePreparationRouteToTheHostRelease/an_unconfigured_deploy_passes_nothing (0.00s)
+=== RUN   TestPrepareScriptDoesNotRewriteTheDatabase
+--- PASS: TestPrepareScriptDoesNotRewriteTheDatabase (0.00s)
+=== RUN   TestReleaseScriptNamesTheDiscoveryRoot
+--- PASS: TestReleaseScriptNamesTheDiscoveryRoot (0.00s)
+=== RUN   TestReleaseScriptPrunesToTheConfiguredKeep
+--- PASS: TestReleaseScriptPrunesToTheConfiguredKeep (0.00s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/deploy	0.239s
+
+## ROUND 3 — suite and lint
+
+$ scripts/go test ./... -count=1
+ok  	github.com/tkoizumi/otter/internal/api	0.818s
+ok  	github.com/tkoizumi/otter/internal/cli	13.377s
+ok  	github.com/tkoizumi/otter/internal/config	1.060s
+ok  	github.com/tkoizumi/otter/internal/daemon	55.172s
+ok  	github.com/tkoizumi/otter/internal/database	0.707s
+ok  	github.com/tkoizumi/otter/internal/datalock	1.494s
+ok  	github.com/tkoizumi/otter/internal/deploy	5.050s
+ok  	github.com/tkoizumi/otter/internal/executor	3.041s
+ok  	github.com/tkoizumi/otter/internal/identity	2.037s
+ok  	github.com/tkoizumi/otter/internal/inspection	1.528s
+ok  	github.com/tkoizumi/otter/internal/logging	1.745s
+ok  	github.com/tkoizumi/otter/internal/notify	1.362s
+ok  	github.com/tkoizumi/otter/internal/pause	1.420s
+ok  	github.com/tkoizumi/otter/internal/pyenv	11.191s
+ok  	github.com/tkoizumi/otter/internal/queue	1.442s
+ok  	github.com/tkoizumi/otter/internal/release	1.734s
+ok  	github.com/tkoizumi/otter/internal/retry	1.027s
+ok  	github.com/tkoizumi/otter/internal/runs	1.740s
+ok  	github.com/tkoizumi/otter/internal/scheduler	1.441s
+ok  	github.com/tkoizumi/otter/internal/secrets	0.804s
+ok  	github.com/tkoizumi/otter/internal/state	1.050s
+ok  	github.com/tkoizumi/otter/internal/timeline	6.830s
+
+$ make lint
+go vet ./...
+golangci-lint not found on PATH — skipping (install it for the full lint pass)
+
+## ROUND 3 — mutations
+
+Each mutation was applied to f718d6349c24fb547111f7bd4d0eaac4dfb27154 and the file restored.
+
+===== folding: accept what uv accepts =====
+##### MUTATION: an empty path is not given the root slash uv records
+     internal/pyenv/lock.go | 5 +----
+     1 file changed, 1 insertion(+), 4 deletions(-)
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:137: uv treats "http://127.0.0.1:8080" and "http://127.0.0.1:8080/" as the same index, and this check does not
+    lock_test.go:137: uv treats "http://mirror.internal" and "http://mirror.internal/" as the same index, and this check does not
+--- FAIL: TestRelockingAgainstTheConfiguredIndexIsAccepted (0.51s)
+    lock_test.go:191: a lock uv would record for "http://127.0.0.1:8080" was refused: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestRelockingAgainstTheConfiguredIndexIsAccepted3544202168/001/uv.lock was locked against http://127.0.0.1:8080/, but preparation is configured with http://127.0.0.1:8080
+    lock_test.go:191: a lock uv would record for "http://mirror.internal" was refused: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestRelockingAgainstTheConfiguredIndexIsAccepted3544202168/005/uv.lock was locked against http://mirror.internal/, but preparation is configured with http://mirror.internal
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.721s
+
+##### MUTATION: dot segments are not removed
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:137: uv treats "http://mirror.internal/a/../a/simple" and "http://mirror.internal/a/simple" as the same index, and this check does not
+    lock_test.go:137: uv treats "http://mirror.internal/a/./simple" and "http://mirror.internal/a/simple" as the same index, and this check does not
+    lock_test.go:137: uv treats "http://mirror.internal/a/b/../simple" and "http://mirror.internal/a/simple" as the same index, and this check does not
+    lock_test.go:137: uv treats "http://mirror.internal/a/simple/.." and "http://mirror.internal/a/" as the same index, and this check does not
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.205s
+FAIL
+
+##### MUTATION: the comparison is a raw string compare
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+--- FAIL: TestRelockingAgainstTheConfiguredIndexIsAccepted (0.49s)
+    lock_test.go:191: a lock uv would record for "http://127.0.0.1:8080" was refused: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestRelockingAgainstTheConfiguredIndexIsAccepted270634099/001/uv.lock was locked against http://127.0.0.1:8080/, but preparation is configured with http://127.0.0.1:8080
+    lock_test.go:191: a lock uv would record for "http://127.0.0.1:8080/a/../a/simple" was refused: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestRelockingAgainstTheConfiguredIndexIsAccepted270634099/003/uv.lock was locked against http://127.0.0.1:8080/a/simple, but preparation is configured with http://127.0.0.1:8080/a/../a/simple
+    lock_test.go:191: a lock uv would record for "http://mirror.internal" was refused: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestRelockingAgainstTheConfiguredIndexIsAccepted270634099/005/uv.lock was locked against http://mirror.internal/, but preparation is configured with http://mirror.internal
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.693s
+FAIL
+
+===== folding: refuse what uv refuses =====
+##### MUTATION: percent escapes are decoded
+     internal/pyenv/lock.go | 6 +++++-
+     1 file changed, 5 insertions(+), 1 deletion(-)
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:155: uv treats "http://mirror.internal/simple" and "http://mirror.internal/sim%70le" as different indexes, and this check does not
+    lock_test.go:155: uv treats "http://mirror.internal/simple" and "http://mirror.internal/%73imple" as different indexes, and this check does not
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.194s
+FAIL
+
+===== the additive-source refusal =====
+##### MUTATION: the additive-source variables are ignored
+     internal/pyenv/lock.go | 6 ------
+     1 file changed, 6 deletions(-)
+--- FAIL: TestPrepareRefusesAdditiveIndexVariables (0.96s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	1.222s
+FAIL
+
+##### MUTATION: the refusal fires even when the lock records no registry
+     internal/pyenv/lock.go | 4 ++--
+     1 file changed, 2 insertions(+), 2 deletions(-)
+--- FAIL: TestPrepareRefusesAdditiveIndexVariables (0.81s)
+FAIL	github.com/tkoizumi/otter/internal/pyenv	1.016s
+FAIL
+
+##### MUTATION: UV_NO_INDEX is treated as a conflicting source
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+--- FAIL: TestPrepareRefusesAdditiveIndexVariables (1.32s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	1.520s
+FAIL
+
+The scope mutation above was re-run with the refusal's hint replaced by a safe
+placeholder, because the first form bypassed the guard that guarantees a
+recorded registry exists and tripped an index panic instead of the assertion:
+
+##### MUTATION: the refusal fires even when the lock records no registry
+    lock_test.go:248: a lock with no registry package was refused: uv.lock and the configured package index disagree: UV_INDEX is set
+    --- FAIL: TestPrepareRefusesAdditiveIndexVariables (0.83s)
+    --- FAIL: TestPrepareRefusesAdditiveIndexVariables/no_registry_package_in_the_lock (0.16s)
+    FAIL
+
+## ROUND 3 — verdict
+
+* uv 0.5.9 records the root-slash form for a bare-host index and accepts either
+  spelling; it removes dot segments; it does not decode percent escapes and does
+  not fold a non-empty trailing slash. otter now folds exactly that set, so it
+  accepts what uv accepts (bare host, dot segments) and refuses what uv refuses
+  (trailing slash, percent escape).
+* The mismatch hint's advice terminates: `uv lock --default-index <configured>`
+  produces the canonical spelling this check compares
+  (TestRelockingAgainstTheConfiguredIndexIsAccepted, demo case 3).
+* With a lock that records a registry, UV_INDEX, UV_EXTRA_INDEX_URL and
+  UV_FIND_LINKS each turn a working sync into uv's bare lockfile exit 2
+  (measured, one case each), so otter refuses them and names the variable before
+  any fetch. UV_NO_INDEX was measured to change nothing there, and a lock with no
+  registry package has no source an index could change, so neither is refused.
+
 ## VERDICT
 
 * uv 0.5.9 refuses a configured index that differs from the lock's recorded
@@ -616,4 +939,6 @@ FAIL	github.com/tkoizumi/otter/internal/cli	0.679s
   uv's real argv in the tests and uv's real behavior in the UV section.
 * The two drills that stub uv (`backup-restore`, `deploy-failure`) still pass,
   and the injected failure is the stub refusing, not the preflight.
+* Round 3 refined the comparison and the additive-source handling; see its
+  verdict above for what the second verification changed.
 * Not proven here: the Castor arm64 host. That is HW-2, run by the custodian.
