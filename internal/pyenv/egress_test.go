@@ -83,11 +83,22 @@ func (p *probeRecorder) probe(_ context.Context, url string) error {
 	return nil
 }
 
+// clearRouteEnv removes the uv variables the preflight follows, so a test that
+// asserts the *default* endpoints does not depend on the environment it happens
+// to run in.
+func clearRouteEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR"} {
+		t.Setenv(name, "")
+	}
+}
+
 // The preflight must run before anything is fetched, and its failure must name
 // the endpoint, the pin and the platform. Removing the check from Prepare makes
 // this test fail two ways: preparation reaches uv and succeeds, and no error
 // mentions reachability.
 func TestPrepareFailsBeforeFetchingWhenAnEndpointIsUnreachable(t *testing.T) {
+	clearRouteEnv(t)
 	python, pin := localPython(t)
 	dir, data := t.TempDir(), t.TempDir()
 	writeInputs(t, dir, pin)
@@ -140,6 +151,7 @@ func TestPreflightChecksTheConfiguredEndpoints(t *testing.T) {
 	)
 
 	t.Run("defaults when nothing is configured", func(t *testing.T) {
+		clearRouteEnv(t)
 		probe := &probeRecorder{fail: map[string]error{}}
 		m := Manager{DataDir: t.TempDir(), Probe: probe.probe}
 		if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
@@ -170,6 +182,58 @@ func TestPreflightChecksTheConfiguredEndpoints(t *testing.T) {
 	})
 }
 
+// uv reads UV_DEFAULT_INDEX and UV_PYTHON_INSTALL_MIRROR itself, and
+// preparation passes the environment through, so the preflight has to follow
+// them: an operator whose mirror lives only in the environment would otherwise
+// be checked against PyPI and refused a preparation uv would have completed.
+func TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured(t *testing.T) {
+	const (
+		envIndex  = "https://env-mirror.internal/simple"
+		envMirror = "https://env-mirror.internal/python-build-standalone"
+		flagIndex = "https://flag-mirror.internal/simple"
+	)
+	clearRouteEnv(t)
+	t.Setenv("UV_DEFAULT_INDEX", envIndex)
+	t.Setenv("UV_PYTHON_INSTALL_MIRROR", envMirror)
+
+	probe := &probeRecorder{fail: map[string]error{}}
+	m := Manager{DataDir: t.TempDir(), Probe: probe.probe}
+	if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{envIndex, envMirror}
+	if fmt.Sprint(probe.seen) != fmt.Sprint(want) {
+		t.Errorf("probed %v, want the environment's endpoints %v", probe.seen, want)
+	}
+
+	// A configured flag still wins: it is what the fetch will actually use.
+	probe.seen = nil
+	configured := Manager{DataDir: t.TempDir(), Index: flagIndex, Probe: probe.probe}
+	if err := configured.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{flagIndex, envMirror}
+	if fmt.Sprint(probe.seen) != fmt.Sprint(want) {
+		t.Errorf("probed %v, want the flag to override the environment %v", probe.seen, want)
+	}
+}
+
+// The deprecated UV_INDEX_URL spelling is still honoured by uv, so it is still
+// an endpoint preparation can fetch from.
+func TestPreflightFollowsTheDeprecatedIndexVariable(t *testing.T) {
+	clearRouteEnv(t)
+	t.Setenv("UV_INDEX_URL", "https://deprecated-mirror.internal/simple")
+
+	probe := &probeRecorder{fail: map[string]error{}}
+	m := Manager{DataDir: t.TempDir(), Probe: probe.probe}
+	if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if probe.seen[0] != "https://deprecated-mirror.internal/simple" {
+		t.Errorf("probed %v, want UV_INDEX_URL to be followed", probe.seen)
+	}
+}
+
 // The configured index and mirror must reach the commands that fetch, and must
 // be absent from them when nothing is configured: this is a passthrough, not a
 // new default.
@@ -193,6 +257,7 @@ func TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured(t *testing.T) {
 	}
 
 	t.Run("unconfigured leaves both commands at their defaults", func(t *testing.T) {
+		clearRouteEnv(t)
 		log := run(t, Manager{})
 		install, sync := "", ""
 		for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
@@ -270,6 +335,7 @@ func TestEnvironmentIdentityDoesNotDependOnTheRoute(t *testing.T) {
 // the network: preparation of nothing is not a network operation, and a host
 // whose mirror has since gone away keeps serving its runs.
 func TestReusedEnvironmentIsNotProbed(t *testing.T) {
+	clearRouteEnv(t)
 	python, pin := localPython(t)
 	dir, data := t.TempDir(), t.TempDir()
 	writeInputs(t, dir, pin)

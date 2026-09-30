@@ -467,6 +467,15 @@ otter prepare --index https://mirror.internal/simple \
 They are per-invocation flags and not uv configuration files. Package-index
 *credentials* still come from the environment, as they always have.
 
+The check itself follows what uv will use, not only what was passed on the
+command line: with neither flag set, `UV_DEFAULT_INDEX` (or its deprecated
+`UV_INDEX_URL`) and `UV_PYTHON_INSTALL_MIRROR` are honoured, because uv reads
+them too. An endpoint set only in the environment is therefore checked, and is
+not mistaken for "no route to PyPI". The additional-source variables
+(`UV_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_FIND_LINKS`) are not followed: they add
+sources to the default index rather than replacing it, so the default index is
+still what answers whether the host can reach an index at all.
+
 `--skip-egress-check` turns the check off, for the one case that needs it: a
 host that is deliberately air-gapped but already primed — the interpreter is
 under `python/` and `cache/uv/` is warm — where a probe would refuse a

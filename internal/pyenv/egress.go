@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -103,15 +104,19 @@ var ErrEgressUnreachable = errors.New("egress preflight failed")
 // endpoints is what a fresh preparation has to reach, in the order it needs
 // it: the dependencies, then the interpreter, then any endpoint the operator
 // declared for the job itself.
+//
+// A configured field wins. When one is empty the environment uv itself reads is
+// consulted, because preparation passes its environment through to uv: an
+// operator who pointed uv at a mirror with UV_DEFAULT_INDEX or
+// UV_PYTHON_INSTALL_MIRROR -- the documented route for index credentials -- is
+// fetching from there, and checking PyPI instead would refuse a preparation
+// that would have worked. The additional-index variables (UV_INDEX,
+// UV_EXTRA_INDEX_URL, UV_FIND_LINKS) are deliberately not followed: they add
+// sources to the default one rather than replacing it, so the default index is
+// still what answers "can this host reach an index at all".
 func (m Manager) endpoints() []EgressEndpoint {
-	index := strings.TrimSpace(m.Index)
-	if index == "" {
-		index = DefaultPackageIndex
-	}
-	mirror := strings.TrimSpace(m.PythonMirror)
-	if mirror == "" {
-		mirror = DefaultPythonMirror
-	}
+	index := firstSet(m.Index, os.Getenv("UV_DEFAULT_INDEX"), os.Getenv("UV_INDEX_URL"), DefaultPackageIndex)
+	mirror := firstSet(m.PythonMirror, os.Getenv("UV_PYTHON_INSTALL_MIRROR"), DefaultPythonMirror)
 	out := []EgressEndpoint{
 		{Name: "package index", URL: index},
 		{Name: "managed Python downloads", URL: mirror},
@@ -122,6 +127,17 @@ func (m Manager) endpoints() []EgressEndpoint {
 		}
 	}
 	return out
+}
+
+// firstSet returns the first value that is not blank after trimming, so an
+// explicitly empty flag falls back the same way an unset one does.
+func firstSet(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // EgressTargets reports the endpoints preparation would check on this host,
