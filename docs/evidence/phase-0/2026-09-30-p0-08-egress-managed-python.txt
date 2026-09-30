@@ -14,11 +14,11 @@
 # Build: starts at v0.2.0-41-g7a0f229 and ends at v0.2.0-46-g9f96397 (the capture
 #   commit after the ROUND 4 fix).
 # Code under test: 7a0f229 for the UV/OTTER/TESTS/SUITE/DRILLS sections, f718d63
-#   for ROUND 3, and 669f6b7 for ROUND 4. Each round's section names the
-#   commit it was measured against; the commits between them are that round's
-#   fix and its tests.
+#   for ROUND 3, 669f6b7 for ROUND 4, and 5fbb336 for ROUND 5. Each round's
+#   section names the commit it was measured against; the commits between them
+#   are that round's fix and its tests.
 #
-# Falsifiability: thirty-two mutations (three re-run cleanly, so they appear twice),
+# Falsifiability: forty-two mutations (three re-run cleanly, so they appear twice),
 #   one per assertion, applied to the
 #   committed tree with the failing test recorded in the MUTATIONS and ROUND 3
 #   sections. The decisive one is the verifier's first finding: with a lock cut
@@ -1467,6 +1467,495 @@ unused, so the package would not build):
   depends on this comparison modelling uv perfectly.
 * Unmodeled and refused rather than guessed at, documented in the code: hex or
   octal IPv4 parts, an IDNA host in Unicode, an empty fragment.
+
+# ===== ROUND 5 =====
+#
+# Code under test: 5fbb336 ("Close the last divergences: fragments,
+#   credentials, hosts, ports, names" and "Probe the canonical index URL").
+#   Prompted by the round-4 verification, which measured an empty fragment uv
+#   refuses and otter folded, a looping remedy in the additive hint, uv's
+#   name=url index spelling, and a list of spellings it wanted disclosed.
+# When:  2026-09-30 (later the same day), macOS 15.7.3 arm64, loopback only.
+#
+# This is the last round; the residual is enumerated rather than chased.
+
+## ROUND 5 — the remaining spellings, measured
+
+$ python3 /tmp/p0-08-uv/measure2.py
+A=http://127.0.0.1:65182/a/simple
+B=http://127.0.0.1:65182/b/simple
+C (empty)=http://127.0.0.1:65182/c/simple
+
+case                                                 uv
+empty fragment in the configured index               exit 2: error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To upda
+                                                     (does uv treat /simple# as /simple?)
+empty fragment in the lock                           exit 2: error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To upda
+                                                     (and the other direction)
+fragment text                                        exit 2: error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To upda
+three dots as a segment                              exit 1:       requirements are unsatisfiable.
+lone %2e segment                                     exit 0:  + demo-a==0.1.0
+name=url in UV_INDEX, source recorded                exit 0:  + demo-a==0.1.0
+                                                     (uv's named-index spelling)
+name=url in UV_INDEX, source harmless                exit 0:  + demo-a==0.1.0
+                                                     (named, unrecorded, changes nothing)
+unrecorded but harmless UV_EXTRA_INDEX_URL           exit 0:  + demo-a==0.1.0
+                                                     (the realistic A04 case)
+unrecorded UV_EXTRA_INDEX_URL carrying a needed package exit 0:  + demo-a==0.1.0
+                                                     (control: this one really does change the lock)
+userinfo present in both                             exit 0:  + demo-a==0.1.0
+userinfo only in the lock                            exit 0:  + demo-a==0.1.0
+                                                     (does uv fold credentials away?)
+hex IPv4 part                                        exit 0:  + demo-a==0.1.0
+octal IPv4 part                                      exit 0:  + demo-a==0.1.0
+leading-zero port                                    exit 0:  + demo-a==0.1.0
+backslash separators                                 exit 2: For more information, try '--help'.
+                                                     (WHATWG treats \ as / in http)
+percent-encoded host                                 exit 0:  + demo-a==0.1.0
+                                                     (WHATWG decodes the host before parsing it)
+unrecorded UV_INDEX, harmless                        exit 0:  + demo-a==0.1.0
+
+$ python3 /tmp/p0-08-uv/measure3.py
+A=http://127.0.0.1:65461/a/simple
+B=http://127.0.0.1:65461/b/simple
+
+case                                                             uv
+backslash separators in the configured index                     exit 0:  + demo-a==0.1.0
+different credentials in the configured index                    exit 0:  + demo-a==0.1.0
+unrecorded UV_EXTRA_INDEX_URL carrying the locked package from elsewhere exit 0:  + demo-a==0.1.0
+harmless unrecorded UV_FIND_LINKS (an empty directory)           exit 0:  + demo-a==0.1.0
+
+Reading the transcripts:
+
+* an empty fragment is significant in both directions (uv exits 2 with `…#`
+  against a lock without it, and the reverse): otter folded it, which was the
+  one shipped case of the original defect class still getting through.
+* `...` is a literal segment (uv fails to resolve, exit 1), a lone `%2e` is a
+  dot segment (exit 0), and hex/octal IPv4 parts, a percent-encoded host, a
+  port's leading zeros and backslash separators are all folded by uv (exit 0).
+  Credentials are folded too: a lock recording `http://u:p@host/…` matches a
+  configured `http://host/…`, and mismatched credentials as well (exit 0).
+* `name=url` in `UV_INDEX` names an index (exit 0), and an unrecorded source
+  that changes nothing also exits 0 -- which preparation refuses deliberately
+  (below), because it cannot resolve and so cannot tell that case from the one
+  that exits 2.
+
+## ROUND 5 — otter, end to end
+
+$ OTTER_BIN=bin/otter sh /tmp/p0-08-round5-demo.sh
+##### acceptances #####
+=== named-index: uv's name=url spelling for a recorded source
+    env: UV_INDEX=extra=http://127.0.0.1:50654/b/simple
+    --index http://127.0.0.1:50654/a/simple
+    otter: egress preflight ok for environment a1575332c8f1: package index http://127.0.0.1:50654/a/simple, package index http://127.0.0.1:50654/b/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+    counter: Python 3.13.5, environment a1575332c8f1
+    (exit 0)
+    uv fetched: yes
+
+=== hex-ipv4: hex IPv4 host
+    --index http://0x7f.0.0.1:50654/a/simple
+    otter: egress preflight ok for environment 1055a3f91c59: package index http://127.0.0.1:50654/a/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+    counter: Python 3.13.5, environment 1055a3f91c59
+    (exit 0)
+    uv fetched: yes
+
+=== pct-host: percent-encoded host
+    --index http://%31%32%37.0.0.1:50654/a/simple
+    otter: egress preflight ok for environment 8ad8b66a2ae0: package index http://127.0.0.1:50654/a/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+    counter: Python 3.13.5, environment 8ad8b66a2ae0
+    (exit 0)
+    uv fetched: yes
+
+=== backslash: backslash separators
+    --index http://127.0.0.1:50654\a\simple
+    otter: egress preflight ok for environment abdc71635926: package index http://127.0.0.1:50654/a/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+    counter: Python 3.13.5, environment abdc71635926
+    (exit 0)
+    uv fetched: yes
+
+=== leading-zero-port: leading-zero port
+    --index http://127.0.0.1:050654/a/simple
+    otter: egress preflight ok for environment fb43e953e5ce: package index http://127.0.0.1:50654/a/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+    counter: Python 3.13.5, environment fb43e953e5ce
+    (exit 0)
+    uv fetched: yes
+
+=== credentials: credentials in the lock only
+    --index http://127.0.0.1:50654/a/simple
+    otter: egress preflight ok for environment d3485686495d: package index http://127.0.0.1:50654/a/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+    counter: Python 3.13.5, environment d3485686495d
+    (exit 0)
+    uv fetched: yes
+
+##### refusals #####
+=== empty-fragment: empty fragment (uv refuses it too)
+    --index http://127.0.0.1:50654/a/simple#
+    otter: prepare counter: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/p0-08-round5.N9OfIE/jobs/empty-fragment/uv.lock was locked against http://127.0.0.1:50654/a/simple, but preparation is configured with http://127.0.0.1:50654/a/simple#
+    hint: --index cannot redirect an existing lock. `uv sync --locked` re-resolves against the
+    configured index and refuses when the result would change the lock, even when the two
+    indexes serve identical artifacts. Omit --index and uv installs from the URLs the lock
+    records (http://127.0.0.1:50654/a/simple), which always satisfies --locked; or re-lock against
+    the index you are deploying with (uv lock --default-index http://127.0.0.1:50654/a/simple#) and commit it.
+    (exit 1)
+    uv fetched: no
+
+=== harmless-unrecorded: unrecorded empty index (uv accepts it; refusal is deliberate)
+    env: UV_EXTRA_INDEX_URL=http://127.0.0.1:50654/c/simple
+    --index http://127.0.0.1:50654/a/simple
+    otter: prepare counter: uv.lock and the configured package index disagree: UV_EXTRA_INDEX_URL names http://127.0.0.1:50654/c/simple, which the lock does not record; /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/p0-08-round5.N9OfIE/jobs/harmless-unrecorded/uv.lock records http://127.0.0.1:50654/a/simple
+    hint: otter cannot tell from the lock whether this source would change the resolution, so it
+    refuses rather than let `uv sync --locked` fail with a bare lockfile error. Omit UV_EXTRA_INDEX_URL and
+    --index, and uv installs from the URLs the lock records (http://127.0.0.1:50654/a/simple), which always
+    satisfies --locked. If the added source really does supply a package the lock needs, re-lock with
+    it configured (UV_EXTRA_INDEX_URL=http://127.0.0.1:50654/c/simple uv lock ...) so the lock records that source, and
+    preparation accepts a source the lock records.
+    (exit 1)
+    uv fetched: no
+
+/tmp/p0-08-round5-demo.sh: line 117: 75836 Terminated: 15          python3 -m http.server "$port" --bind 127.0.0.1 --directory "$root/docroot" > "$root/server.log" 2>&1
+
+## ROUND 5 — focused tests
+
+$ scripts/go test ./internal/pyenv/ -run "TestPrepare|TestPreflight|TestLockIndex|TestCanonical|TestConfiguredIndex|TestAdditiveSource|TestMultiIndex|TestDeliberate|TestEnvironmentIdentity|TestReused|TestSkipEgress|TestHTTPProbe|TestReadyEnvironment" -count=1 -v
+=== RUN   TestPrepareFailsBeforeFetchingWhenAnEndpointIsUnreachable
+--- PASS: TestPrepareFailsBeforeFetchingWhenAnEndpointIsUnreachable (0.17s)
+=== RUN   TestPreflightChecksTheConfiguredEndpoints
+=== RUN   TestPreflightChecksTheConfiguredEndpoints/defaults_when_nothing_is_configured
+=== RUN   TestPreflightChecksTheConfiguredEndpoints/configured_index,_mirror_and_job_endpoint
+--- PASS: TestPreflightChecksTheConfiguredEndpoints (0.01s)
+    --- PASS: TestPreflightChecksTheConfiguredEndpoints/defaults_when_nothing_is_configured (0.00s)
+    --- PASS: TestPreflightChecksTheConfiguredEndpoints/configured_index,_mirror_and_job_endpoint (0.01s)
+=== RUN   TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured
+--- PASS: TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured (0.00s)
+=== RUN   TestPreflightFollowsTheDeprecatedIndexVariable
+--- PASS: TestPreflightFollowsTheDeprecatedIndexVariable (0.00s)
+=== RUN   TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured
+=== RUN   TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/unconfigured_leaves_both_commands_at_their_defaults
+=== RUN   TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/configured_index_and_mirror_reach_the_fetching_commands
+--- PASS: TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured (0.38s)
+    --- PASS: TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/unconfigured_leaves_both_commands_at_their_defaults (0.19s)
+    --- PASS: TestPreparePassesTheRouteToUVAndNothingWhenUnconfigured/configured_index_and_mirror_reach_the_fetching_commands (0.19s)
+=== RUN   TestEnvironmentIdentityDoesNotDependOnTheRoute
+--- PASS: TestEnvironmentIdentityDoesNotDependOnTheRoute (0.00s)
+=== RUN   TestReusedEnvironmentIsNotProbed
+--- PASS: TestReusedEnvironmentIsNotProbed (0.19s)
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_blocked_endpoint_does_not_fail_a_skipped_check
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_passing_check_attributes_a_catalogue_miss
+=== RUN   TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_skipped_check_does_not_attribute_it
+--- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint (0.45s)
+    --- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_blocked_endpoint_does_not_fail_a_skipped_check (0.16s)
+    --- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_passing_check_attributes_a_catalogue_miss (0.14s)
+    --- PASS: TestSkipEgressCheckSkipsTheProbeAndWithholdsTheHint/a_skipped_check_does_not_attribute_it (0.13s)
+=== RUN   TestHTTPProbeAcceptsAnyAnswerAndRejectsNoRoute
+--- PASS: TestHTTPProbeAcceptsAnyAnswerAndRejectsNoRoute (0.00s)
+=== RUN   TestPrepareRefusesALockLockedAgainstADifferentIndex
+--- PASS: TestPrepareRefusesALockLockedAgainstADifferentIndex (0.15s)
+=== RUN   TestLockIndexCheckAcceptsTheIndexTheLockRecords
+--- PASS: TestLockIndexCheckAcceptsTheIndexTheLockRecords (0.19s)
+=== RUN   TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse
+--- PASS: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+=== RUN   TestDeliberateConservativeDivergences
+=== RUN   TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_EXTRA_INDEX_URL
+=== RUN   TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_INDEX
+=== RUN   TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_FIND_LINKS
+=== RUN   TestDeliberateConservativeDivergences/IDNA_host_against_punycode
+--- PASS: TestDeliberateConservativeDivergences (0.00s)
+    --- PASS: TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_EXTRA_INDEX_URL (0.00s)
+    --- PASS: TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_INDEX (0.00s)
+    --- PASS: TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_FIND_LINKS (0.00s)
+    --- PASS: TestDeliberateConservativeDivergences/IDNA_host_against_punycode (0.00s)
+=== RUN   TestPrepareRefusesAnUnrecordedAddedSource
+--- PASS: TestPrepareRefusesAnUnrecordedAddedSource (0.15s)
+=== RUN   TestLockIndexDecisionMatchesUV
+=== RUN   TestLockIndexDecisionMatchesUV/identical
+=== RUN   TestLockIndexDecisionMatchesUV/bare_host_against_uv's_root-slash_lock
+=== RUN   TestLockIndexDecisionMatchesUV/host_case
+=== RUN   TestLockIndexDecisionMatchesUV/literal_dot_segments
+=== RUN   TestLockIndexDecisionMatchesUV/percent-encoded_dot_segments
+=== RUN   TestLockIndexDecisionMatchesUV/IPv4_short_form
+=== RUN   TestLockIndexDecisionMatchesUV/IPv4_integer_form
+=== RUN   TestLockIndexDecisionMatchesUV/hex_IPv4_part
+=== RUN   TestLockIndexDecisionMatchesUV/octal_IPv4_part
+=== RUN   TestLockIndexDecisionMatchesUV/percent-encoded_host
+=== RUN   TestLockIndexDecisionMatchesUV/lone_%2e_segment
+=== RUN   TestLockIndexDecisionMatchesUV/backslash_separators
+=== RUN   TestLockIndexDecisionMatchesUV/leading-zero_port
+=== RUN   TestLockIndexDecisionMatchesUV/credentials_folded
+=== RUN   TestLockIndexDecisionMatchesUV/trailing_slash_on_a_non-empty_path
+=== RUN   TestLockIndexDecisionMatchesUV/empty_query
+=== RUN   TestLockIndexDecisionMatchesUV/empty_fragment
+=== RUN   TestLockIndexDecisionMatchesUV/fragment_text
+=== RUN   TestLockIndexDecisionMatchesUV/three_dots_are_not_a_dot_segment
+=== RUN   TestLockIndexDecisionMatchesUV/percent-decoded_unreserved
+=== RUN   TestLockIndexDecisionMatchesUV/percent-escape_hex_case
+=== RUN   TestLockIndexDecisionMatchesUV/scheme_case
+=== RUN   TestLockIndexDecisionMatchesUV/different_port
+=== RUN   TestLockIndexDecisionMatchesUV/different_host
+=== RUN   TestLockIndexDecisionMatchesUV/doubled_slash
+--- PASS: TestLockIndexDecisionMatchesUV (0.02s)
+    --- PASS: TestLockIndexDecisionMatchesUV/identical (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/bare_host_against_uv's_root-slash_lock (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/host_case (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/literal_dot_segments (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/percent-encoded_dot_segments (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/IPv4_short_form (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/IPv4_integer_form (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/hex_IPv4_part (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/octal_IPv4_part (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/percent-encoded_host (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/lone_%2e_segment (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/backslash_separators (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/leading-zero_port (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/credentials_folded (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/trailing_slash_on_a_non-empty_path (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/empty_query (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/empty_fragment (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/fragment_text (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/three_dots_are_not_a_dot_segment (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/percent-decoded_unreserved (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/percent-escape_hex_case (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/scheme_case (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/different_port (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/different_host (0.00s)
+    --- PASS: TestLockIndexDecisionMatchesUV/doubled_slash (0.00s)
+=== RUN   TestConfiguredIndexSpellingsUVAcceptsAreAccepted
+--- PASS: TestConfiguredIndexSpellingsUVAcceptsAreAccepted (1.10s)
+=== RUN   TestMultiIndexLockNeedsEveryRecordedSource
+--- PASS: TestMultiIndexLockNeedsEveryRecordedSource (0.16s)
+=== RUN   TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt
+=== RUN   TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_INDEX=http://127.0.0.1:8080/b/simple
+=== RUN   TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_EXTRA_INDEX_URL=http://127.0.0.1:8080/b/simple
+=== RUN   TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_INDEX=extra=http://127.0.0.1:8080/b/simple
+=== RUN   TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_FIND_LINKS_recorded_as_a_relative_path
+--- PASS: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt (0.74s)
+    --- PASS: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_INDEX=http://127.0.0.1:8080/b/simple (0.18s)
+    --- PASS: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_EXTRA_INDEX_URL=http://127.0.0.1:8080/b/simple (0.19s)
+    --- PASS: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_INDEX=extra=http://127.0.0.1:8080/b/simple (0.19s)
+    --- PASS: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_FIND_LINKS_recorded_as_a_relative_path (0.18s)
+=== RUN   TestLockIndexCheckFollowsTheUVEnvironment
+=== RUN   TestLockIndexCheckFollowsTheUVEnvironment/matching_environment_index
+=== RUN   TestLockIndexCheckFollowsTheUVEnvironment/mismatching_environment_index
+--- PASS: TestLockIndexCheckFollowsTheUVEnvironment (0.33s)
+    --- PASS: TestLockIndexCheckFollowsTheUVEnvironment/matching_environment_index (0.18s)
+    --- PASS: TestLockIndexCheckFollowsTheUVEnvironment/mismatching_environment_index (0.15s)
+=== RUN   TestLockIndexCheckIsSilentWhenNoIndexIsConfigured
+--- PASS: TestLockIndexCheckIsSilentWhenNoIndexIsConfigured (0.21s)
+=== RUN   TestLockIndexCheckIgnoresNonRegistrySources
+--- PASS: TestLockIndexCheckIgnoresNonRegistrySources (0.19s)
+=== RUN   TestLockIndexCheckToleratesALockItCannotRead
+--- PASS: TestLockIndexCheckToleratesALockItCannotRead (0.18s)
+=== RUN   TestPreflightChecksTheRegistriesTheLockRecords
+--- PASS: TestPreflightChecksTheRegistriesTheLockRecords (0.18s)
+=== RUN   TestReadyEnvironmentIsNotBlockedByAnIndexMismatch
+--- PASS: TestReadyEnvironmentIsNotBlockedByAnIndexMismatch (0.19s)
+=== RUN   TestPreparePublishesOnlyAfterValidation
+--- PASS: TestPreparePublishesOnlyAfterValidation (0.19s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/pyenv	5.403s
+
+$ scripts/go test ./internal/cli/ ./internal/deploy/ -run "TestPrepare|TestSkipEgress|TestDeployPassesThePreparationRoute|TestReleaseScript" -count=1 -v
+=== RUN   TestPreparePassesTheConfiguredRouteToTheFetchPath
+--- PASS: TestPreparePassesTheConfiguredRouteToTheFetchPath (0.36s)
+=== RUN   TestPrepareUnconfiguredPassesNoRouteFlags
+--- PASS: TestPrepareUnconfiguredPassesNoRouteFlags (0.24s)
+=== RUN   TestSkipEgressCheckReachesTheManager
+=== RUN   TestSkipEgressCheckReachesTheManager/without_the_flag_the_failing_probe_stops_preparation
+=== RUN   TestSkipEgressCheckReachesTheManager/with_the_flag_preparation_proceeds
+--- PASS: TestSkipEgressCheckReachesTheManager (0.44s)
+    --- PASS: TestSkipEgressCheckReachesTheManager/without_the_flag_the_failing_probe_stops_preparation (0.18s)
+    --- PASS: TestSkipEgressCheckReachesTheManager/with_the_flag_preparation_proceeds (0.25s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/cli	1.296s
+=== RUN   TestDeployPassesThePreparationRouteToTheHostRelease
+=== RUN   TestDeployPassesThePreparationRouteToTheHostRelease/configured_route_is_passed_through
+=== RUN   TestDeployPassesThePreparationRouteToTheHostRelease/an_unconfigured_deploy_passes_nothing
+--- PASS: TestDeployPassesThePreparationRouteToTheHostRelease (0.01s)
+    --- PASS: TestDeployPassesThePreparationRouteToTheHostRelease/configured_route_is_passed_through (0.00s)
+    --- PASS: TestDeployPassesThePreparationRouteToTheHostRelease/an_unconfigured_deploy_passes_nothing (0.00s)
+=== RUN   TestPrepareScriptDoesNotRewriteTheDatabase
+--- PASS: TestPrepareScriptDoesNotRewriteTheDatabase (0.00s)
+=== RUN   TestReleaseScriptNamesTheDiscoveryRoot
+--- PASS: TestReleaseScriptNamesTheDiscoveryRoot (0.00s)
+=== RUN   TestReleaseScriptPrunesToTheConfiguredKeep
+--- PASS: TestReleaseScriptPrunesToTheConfiguredKeep (0.00s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/deploy	0.472s
+
+## ROUND 5 — suite and lint
+
+$ scripts/go test -p 1 ./... -count=1   # serial, to keep the load-sensitive timeline test out of contention
+ok  	github.com/tkoizumi/otter/internal/api	0.764s
+ok  	github.com/tkoizumi/otter/internal/cli	6.999s
+ok  	github.com/tkoizumi/otter/internal/config	0.259s
+ok  	github.com/tkoizumi/otter/internal/daemon	52.671s
+ok  	github.com/tkoizumi/otter/internal/database	0.275s
+ok  	github.com/tkoizumi/otter/internal/datalock	0.156s
+ok  	github.com/tkoizumi/otter/internal/deploy	3.525s
+ok  	github.com/tkoizumi/otter/internal/executor	2.834s
+ok  	github.com/tkoizumi/otter/internal/identity	0.916s
+ok  	github.com/tkoizumi/otter/internal/inspection	0.538s
+ok  	github.com/tkoizumi/otter/internal/logging	0.191s
+ok  	github.com/tkoizumi/otter/internal/notify	0.311s
+ok  	github.com/tkoizumi/otter/internal/pause	0.326s
+ok  	github.com/tkoizumi/otter/internal/pyenv	5.923s
+ok  	github.com/tkoizumi/otter/internal/queue	0.435s
+ok  	github.com/tkoizumi/otter/internal/release	0.806s
+ok  	github.com/tkoizumi/otter/internal/retry	0.244s
+ok  	github.com/tkoizumi/otter/internal/runs	0.850s
+ok  	github.com/tkoizumi/otter/internal/scheduler	0.608s
+ok  	github.com/tkoizumi/otter/internal/secrets	0.173s
+ok  	github.com/tkoizumi/otter/internal/state	0.311s
+ok  	github.com/tkoizumi/otter/internal/timeline	2.127s
+
+$ make lint
+go vet ./...
+golangci-lint not found on PATH — skipping (install it for the full lint pass)
+
+## ROUND 5 — mutations
+
+Each mutation was applied to 5fbb336 and the file restored.
+
+===== the shipped under-refusal, and the pairs uv refuses =====
+##### MUTATION: an empty fragment is dropped again
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+    lock_test.go:185: uv treats "http://mirror.internal/a/simple" and "http://mirror.internal/a/simple#" as different indexes, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:334: uv refuses "http://mirror.internal:8080/simple#" against a lock recording "http://mirror.internal:8080/simple", and preparation accepts it
+--- FAIL: TestLockIndexDecisionMatchesUV (0.03s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/empty_fragment (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.233s
+FAIL
+
+##### MUTATION: three dots are treated as a dot segment
+     internal/pyenv/lock.go | 4 ++--
+     1 file changed, 2 insertions(+), 2 deletions(-)
+    lock_test.go:334: uv refuses "http://mirror.internal:8080/a/.../simple" against a lock recording "http://mirror.internal:8080/simple", and preparation accepts it
+--- FAIL: TestLockIndexDecisionMatchesUV (0.02s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/three_dots_are_not_a_dot_segment (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.230s
+FAIL
+
+===== the pairs uv accepts =====
+##### MUTATION: a lone %2e is no longer a dot segment
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+    lock_test.go:157: uv treats "http://mirror.internal/a/%2e/simple" and "http://mirror.internal/a/simple" as the same index, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:330: uv accepts "http://mirror.internal:8080/%2e/simple" against a lock recording "http://mirror.internal:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVlone_%2e_segment2353512600/001/uv.lock was locked against http://mirror.internal:8080/simple, but preparation is configured with http://mirror.internal:8080/%2e/simple
+--- FAIL: TestLockIndexDecisionMatchesUV (0.03s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/lone_%2e_segment (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.235s
+FAIL
+
+##### MUTATION: credentials are part of the comparison again
+     internal/pyenv/lock.go | 6 +++---
+     1 file changed, 3 insertions(+), 3 deletions(-)
+    lock_test.go:157: uv treats "http://user:secret@mirror.internal/simple" and "http://mirror.internal/simple" as the same index, and this check does not
+    lock_test.go:157: uv treats "http://user:secret@mirror.internal/simple" and "http://other:creds@mirror.internal/simple" as the same index, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:330: uv accepts "http://u:p@mirror.internal:8080/simple" against a lock recording "http://mirror.internal:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVcredentials_folded147446301/001/uv.lock was locked against http://mirror.internal:8080/simple, but preparation is configured with http://u:p@mirror.internal:8080/simple
+--- FAIL: TestLockIndexDecisionMatchesUV (0.03s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/credentials_folded (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.241s
+
+##### MUTATION: a port's leading zeros are kept
+     internal/pyenv/lock.go | 5 +----
+     1 file changed, 1 insertion(+), 4 deletions(-)
+    lock_test.go:157: uv treats "http://127.0.0.1:08080/a/simple" and "http://127.0.0.1:8080/a/simple" as the same index, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:330: uv accepts "http://mirror.internal:08080/simple" against a lock recording "http://mirror.internal:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVleading-zero_port3231861511/001/uv.lock was locked against http://mirror.internal:8080/simple, but preparation is configured with http://mirror.internal:08080/simple
+--- FAIL: TestLockIndexDecisionMatchesUV (0.02s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/leading-zero_port (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.225s
+FAIL
+
+##### MUTATION: backslashes are not folded
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+    lock_test.go:157: uv treats "http://mirror.internal\\a\\simple" and "http://mirror.internal/a/simple" as the same index, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:330: uv accepts "http://mirror.internal:8080\\simple" against a lock recording "http://mirror.internal:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVbackslash_separators4273205983/001/uv.lock was locked against http://mirror.internal:8080/simple, but preparation is configured with http://mirror.internal:8080\simple
+--- FAIL: TestLockIndexDecisionMatchesUV (0.02s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/backslash_separators (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.212s
+FAIL
+
+##### MUTATION: a percent-encoded host is not decoded
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+    lock_test.go:157: uv treats "http://%31%32%37.0.0.1:8080/a/simple" and "http://127.0.0.1:8080/a/simple" as the same index, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:330: uv accepts "http://%31%32%37.0.0.1:8080/simple" against a lock recording "http://127.0.0.1:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVpercent-encoded_host921412566/001/uv.lock was locked against http://127.0.0.1:8080/simple, but preparation is configured with http://%31%32%37.0.0.1:8080/simple
+--- FAIL: TestLockIndexDecisionMatchesUV (0.03s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/percent-encoded_host (0.00s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.217s
+FAIL
+
+##### MUTATION: hex and octal IPv4 parts are not folded
+     internal/pyenv/lock.go | 13 ++-----------
+     1 file changed, 2 insertions(+), 11 deletions(-)
+    lock_test.go:157: uv treats "http://0x7f.0.0.1:8080/a/simple" and "http://127.0.0.1:8080/a/simple" as the same index, and this check does not
+    lock_test.go:157: uv treats "http://0177.0.0.1:8080/a/simple" and "http://127.0.0.1:8080/a/simple" as the same index, and this check does not
+--- FAIL: TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse (0.00s)
+    lock_test.go:330: uv accepts "http://0x7f.0.0.1:8080/simple" against a lock recording "http://127.0.0.1:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVhex_IPv4_part845276410/001/uv.lock was locked against http://127.0.0.1:8080/simple, but preparation is configured with http://0x7f.0.0.1:8080/simple
+    lock_test.go:330: uv accepts "http://0177.0.0.1:8080/simple" against a lock recording "http://127.0.0.1:8080/simple", and preparation refuses it: uv.lock and the configured package index disagree: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestLockIndexDecisionMatchesUVoctal_IPv4_part3911734676/001/uv.lock was locked against http://127.0.0.1:8080/simple, but preparation is configured with http://0177.0.0.1:8080/simple
+--- FAIL: TestLockIndexDecisionMatchesUV (0.02s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/hex_IPv4_part (0.00s)
+    --- FAIL: TestLockIndexDecisionMatchesUV/octal_IPv4_part (0.00s)
+
+===== the additive route =====
+##### MUTATION: uv's name=url spelling is not unwrapped
+     internal/pyenv/lock.go | 2 +-
+     1 file changed, 1 insertion(+), 1 deletion(-)
+    lock_test.go:433: a source the lock records was refused: uv.lock and the configured package index disagree: UV_INDEX names extra=http://127.0.0.1:8080/b/simple, which the lock does not record; /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/TestAdditiveSourceIsAcceptedWhenTheLockRecordsItUV_INDEX=extra=2667669287/001/uv.lock records http://127.0.0.1:8080/a/simple, http://127.0.0.1:8080/b/simple
+--- FAIL: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt (0.70s)
+    --- FAIL: TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt/UV_INDEX=extra=http://127.0.0.1:8080/b/simple (0.15s)
+FAIL
+FAIL	github.com/tkoizumi/otter/internal/pyenv	0.912s
+FAIL
+
+##### MUTATION: the unrecorded-source refusal is deleted
+     internal/pyenv/lock.go | 6 ------
+     1 file changed, 6 deletions(-)
+    lock_test.go:226: uv exits 0 for this pair; preparation refusing it is deliberate, got <nil>
+    lock_test.go:226: uv exits 0 for this pair; preparation refusing it is deliberate, got <nil>
+    lock_test.go:243: an unrecorded find-links directory is refused deliberately; got <nil>
+--- FAIL: TestDeliberateConservativeDivergences (0.00s)
+    --- FAIL: TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_EXTRA_INDEX_URL (0.00s)
+    --- FAIL: TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_INDEX (0.00s)
+    --- FAIL: TestDeliberateConservativeDivergences/unrecorded_but_harmless_UV_FIND_LINKS (0.00s)
+    lock_test.go:273: an unrecorded added source was not refused: <nil>
+
+## ROUND 5 — verdict
+
+* The empty fragment is refused, so no measured pair remains where otter
+  accepts what uv refuses: the under-refusal class is closed. The comparison
+  folds what uv was measured to fold (host case, credentials, default and
+  leading-zero ports, backslashes, empty paths, literal and percent-encoded dot
+  segments including a lone `%2e`, and the IPv4 spellings including hex, octal
+  and percent-encoded hosts) and refuses what uv refuses (scheme case, trailing
+  slash, empty query, empty fragment, escape case, doubled slash, `...`).
+* The additive hint has no looping remedy: omitting the variable always
+  satisfies --locked, and re-locking is offered only for a source that really
+  supplies packages, which is when uv records it. The conservatism is stated at
+  the refusal ("otter cannot tell from the lock whether this source would change
+  the resolution") and in the comment there.
+* The pairs otter refuses although uv accepts are listed in
+  TestDeliberateConservativeDivergences -- a harmless unrecorded added source
+  (three variables) and a Unicode IDNA host -- so a future fix edits that table
+  instead of turning a "uv behaves like this" assertion red. The unrecorded-
+  source refusal itself is now guarded at the Prepare level, which is the gap
+  the round-4 verification found.
+* uv's name=url index spelling is unwrapped, so the one route otter cannot see
+  through a config file is no longer over-refused.
 
 ## VERDICT
 
