@@ -11,10 +11,15 @@
 # one of the two differences that hid the defect; a swap-bound assertion is
 # vacuous without a swap device to bound. Four cases run by default:
 #
-#   deployed-style   memory-max=25%  memory-high=off  memory-swap-max=0
-#       The deployed defaults as they now ship, with the percentage scaled down
-#       from 75% because this container shares a 3.9 GiB VM with the rest of the
-#       machine. The runaway must be OOM-killed, with no survivor.
+#   deployed-style   memory-max=25%  memory-high=DEFAULT  memory-swap-max=0
+#       The deployed defaults as they now ship, and the one case that renders
+#       them: -memory-high is not passed at all, so the generator falls back to
+#       deploy.DefaultMemoryHigh and the unit is what a plain `otter deploy`
+#       writes. It asserts no MemoryHigh directive and memory.high == max, so
+#       putting a soft cap back into the default turns this case red. The
+#       percentage is scaled down from 75% because this container shares a
+#       3.9 GiB VM with the rest of the machine; the shape is what is under
+#       test. The runaway must be OOM-killed, with no survivor.
 #   hard-cap         memory-max=192M memory-high=off  memory-swap-max=0
 #       The same shape with an absolute cap, which exercises the byte-for-byte
 #       comparison of memory.max against an IEC size.
@@ -23,11 +28,12 @@
 #   soft-cap         memory-max=192M memory-high=128M memory-swap-max=0
 #       The soft cap is a real feature, and this case records its honest cost.
 #       It asserts no OOM kill, memory.current below memory.max, no swap use,
-#       otterd un-restarted and the host answering, and that the run ends at its
-#       (short, 30s) manifest timeout rather than by the kernel. It is the
-#       executable reason MemoryHigh defaults to off: with the swap bound in
-#       place the kernel cannot reclaim the allocator's pages, so a
-#       hold-everything job parks above memory.high and creeps toward memory.max.
+#       no process left in the cgroup after the run ends, otterd un-restarted
+#       and the host answering, and that the run ends at its (short, 30s)
+#       manifest timeout rather than by the kernel. It is the executable reason
+#       MemoryHigh defaults to off: with the swap bound in place the kernel
+#       cannot reclaim the allocator's pages, so a hold-everything job parks
+#       above memory.high and creeps toward memory.max.
 #
 # The three "kill" cases assert all four clauses of the claim: the runaway is
 # OOM-killed, no process but otterd is left in the unit's cgroup, otterd is not
@@ -57,7 +63,8 @@
 #   MEMORY_MAX=256M MEMORY_HIGH=200M MEMORY_SWAP_MAX=0 sh scripts/drill.sh unit-caps
 # and bound the observation window with KILL_WINDOW (seconds, default 180), pick
 # the expectation with EXPECT=kill|soft-cap, or set the job's manifest timeout
-# with JOB_TIMEOUT (seconds).
+# with JOB_TIMEOUT (seconds). MEMORY_HIGH=default omits the flag and renders the
+# deploy's own default, the same way the deployed-style case does.
 #
 # Or override the image, the container's swap device, or the other caps with
 # OTTER_SYSTEMD_IMAGE, SWAP_MB, CPU_QUOTA and TASKS_MAX.
@@ -144,15 +151,20 @@ run_case() {
 		echo "unit-caps: observe    the OOM kill for up to ${kill_window}s"
 	fi
 
+	# "default" means the drill does not pass the flag at all, so the generator
+	# uses deploy.DefaultMemoryHigh and the rendered unit is what a plain
+	# `otter deploy` writes. That is the only way the drill exercises the
+	# constant; every other case passes an explicit value.
 	echo "unit-caps: rendering the unit the deployer would write"
+	set -- -remote-dir /opt/otter -workspace drill -service otterd-drill -user otter \
+		-listen 127.0.0.1:7337 -memory-max "$memory_max"
+	if [ "$memory_high" != default ]; then
+		set -- "$@" -memory-high "$memory_high"
+	fi
+	set -- "$@" -memory-swap-max "$memory_swap_max" -cpu-quota "$cpu_quota" -tasks-max "$tasks_max"
 	(
 		cd "$root"
-		scripts/go run ./scripts/drill/unit-caps-gen \
-			-remote-dir /opt/otter -workspace drill -service otterd-drill -user otter \
-			-listen 127.0.0.1:7337 \
-			-memory-max "$memory_max" -memory-high "$memory_high" \
-			-memory-swap-max "$memory_swap_max" \
-			-cpu-quota "$cpu_quota" -tasks-max "$tasks_max"
+		scripts/go run ./scripts/drill/unit-caps-gen "$@"
 	) >"$work/unit-$case_name.service"
 	cat "$work/unit-$case_name.service"
 
@@ -183,6 +195,7 @@ run_case() {
 
 	docker exec -i \
 		-e CASE_NAME="$case_name" \
+		-e CASE_MEMORY_HIGH="$memory_high" \
 		-e CASE_MEMORY_SWAP_MAX="$memory_swap_max" \
 		-e CASE_KILL_WINDOW="$kill_window" \
 		-e CASE_EXPECT="$case_expect" \
@@ -345,7 +358,52 @@ case "$want_cap" in
 	echo "memory.max:  $got_cap (set from MemoryMax=$want_cap)"
 	;;
 esac
-echo "memory.high: $(cat "$CG/memory.high")"
+
+# The soft cap is the default this drill now protects. The deployed-style case
+# omits -memory-high entirely, so the generator falls back to
+# deploy.DefaultMemoryHigh and the rendered unit is what a plain `otter deploy`
+# writes; if that constant ever becomes a value again, the directive appears
+# here and the case fails before anything runs. "off" (or empty) must leave
+# memory.high at max, and an explicit value must match what systemd resolved.
+want_high=$CASE_MEMORY_HIGH
+emitted_high=$(sed -n 's/^MemoryHigh=//p' /hostunit/unit.service | head -1)
+got_high=$(cat "$CG/memory.high")
+case "$want_high" in
+default | off | "")
+	if [ -n "$emitted_high" ]; then
+		echo "unit-caps: FAIL: the default unit emits MemoryHigh=$emitted_high; a soft cap parks a runaway below memory.max instead of letting the OOM killer run." >&2
+		exit 1
+	fi
+	if [ "$got_high" != "max" ]; then
+		echo "unit-caps: FAIL: the unit sets no MemoryHigh but memory.high is $got_high" >&2
+		exit 1
+	fi
+	echo "memory.high: max (the unit sets no MemoryHigh)"
+	;;
+*% | infinity)
+	if [ "$emitted_high" != "$want_high" ]; then
+		echo "unit-caps: FAIL: the drill requested MemoryHigh=$want_high but the unit has '$emitted_high'" >&2
+		exit 1
+	fi
+	# systemd resolves a percentage against host RAM, so only report it.
+	echo "memory.high: $got_high (from MemoryHigh=$want_high)"
+	;;
+*)
+	if [ "$emitted_high" != "$want_high" ]; then
+		echo "unit-caps: FAIL: the drill requested MemoryHigh=$want_high but the unit has '$emitted_high'" >&2
+		exit 1
+	fi
+	want_high_bytes=$(numfmt --from=iec "$emitted_high" 2>/dev/null) || {
+		echo "unit-caps: FAIL: cannot convert MemoryHigh=$emitted_high to bytes; use an IEC size such as 128M" >&2
+		exit 1
+	}
+	if [ "$got_high" != "$want_high_bytes" ]; then
+		echo "unit-caps: FAIL: the unit sets MemoryHigh=$emitted_high ($want_high_bytes bytes) but memory.high is $got_high" >&2
+		exit 1
+	fi
+	echo "memory.high: $got_high (set from MemoryHigh=$emitted_high)"
+	;;
+esac
 
 # The swap bound must be in force too, and it is the one cap that makes
 # MemoryMax binding on a host with a swapfile: an unset or ignored
@@ -411,6 +469,7 @@ if [ "$CASE_EXPECT" = "soft-cap" ]; then
 	# memory.high and creeps toward memory.max instead of being killed; the run
 	# ends only at its own manifest timeout. Nothing here waits for an OOM kill,
 	# because under this configuration there must not be one.
+	soft_started=$(date +%s)
 	sleep 10
 	soft_current=$(cat "$CG/memory.current")
 	soft_high=$(cat "$CG/memory.high")
@@ -435,13 +494,34 @@ if [ "$CASE_EXPECT" = "soft-cap" ]; then
 		i=$((i + 1))
 		sleep 1
 	done
-	echo "run ended after ${i}s with status '${run_status}' (manifest timeout ${CASE_JOB_TIMEOUT}s)"
+	soft_elapsed=$(($(date +%s) - soft_started))
+	echo "run ended after ${soft_elapsed}s of wall clock with status '${run_status}' (manifest timeout ${CASE_JOB_TIMEOUT}s)"
 	oom=$(awk '/^oom_kill /{print $2}' "$CG/memory.events" 2>/dev/null || echo 0)
 	[ "${oom:-0}" = "0" ] || claim_fail "the soft cap OOM-killed the job (oom_kill=$oom); this case documents that MemoryHigh parks a runaway below memory.max instead"
 	{ [ -n "$soft_high" ] && [ "$soft_high" != "max" ]; } || claim_fail "memory.high is '${soft_high}', so the case did not run with a soft cap"
 	[ "$soft_current" -lt "$soft_max" ] || claim_fail "memory.current ($soft_current) reached memory.max ($soft_max) with MemoryHigh on"
 	[ "$soft_swap" = "0" ] || claim_fail "the cgroup swapped ${soft_swap} bytes despite MemorySwapMax=0"
 	[ "$run_status" = "timed_out" ] || claim_fail "the run ended as '${run_status}', not by its ${CASE_JOB_TIMEOUT}s manifest timeout"
+
+	# The survivor clause applies to this case too, checked at the terminal
+	# state: the run ended by timeout, so the runtime has reaped the job and
+	# only otterd should be left in the cgroup. (The kill cases run the same
+	# scan in the shared block below, guarded so it does not run twice.)
+	echo "--- soft-cap processes left in the unit cgroup (want only otterd) ---"
+	echo "cgroup.procs: $(tr '\n' ' ' <"$CG/cgroup.procs")"
+	soft_pids=""
+	for pid in $(cat "$CG/cgroup.procs" 2>/dev/null); do
+		[ "$pid" = "$(systemctl show -p MainPID --value "$SERVICE")" ] && continue
+		comm=$(cat "/proc/$pid/comm" 2>/dev/null || echo "(gone)")
+		cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+		echo "  survivor: pid $pid comm=$comm cmdline=${cmdline:-?}"
+		soft_pids="$soft_pids $pid"
+	done
+	if [ -n "$soft_pids" ]; then
+		claim_fail "a runaway process survived the soft-cap run in the unit cgroup:$soft_pids"
+	else
+		echo "  (none: only otterd)"
+	fi
 else
 	i=0
 	oom=0
@@ -489,21 +569,26 @@ echo "OOMPolicy:             $(systemctl show -p OOMPolicy --value "$SERVICE")"
 # nothing even while the runaway is alive -- it reported clean on the Castor
 # host while a 615 MiB python3 was still running. Anything but otterd itself
 # left in the unit's cgroup is a survivor.
-echo "--- processes left in the unit cgroup (want only otterd) ---"
-echo "cgroup.procs: $(tr '\n' ' ' <"$CG/cgroup.procs")"
-survivors=""
-for pid in $(cat "$CG/cgroup.procs" 2>/dev/null); do
-	[ "$pid" = "$pid_after" ] && continue
-	comm=$(cat "/proc/$pid/comm" 2>/dev/null || echo "(gone)")
-	cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-	rss=$(awk '/^VmRSS:/{print $2" "$3}' "/proc/$pid/status" 2>/dev/null || true)
-	echo "  survivor: pid $pid comm=$comm rss=${rss:-?} cmdline=${cmdline:-?}"
-	survivors="$survivors $pid"
-done
-if [ -n "$survivors" ]; then
-	claim_fail "a runaway process survived in the unit cgroup:$survivors"
-else
-	echo "  (none: only otterd pid $pid_after)"
+#
+# The soft-cap case runs this scan in its own branch (against the terminal
+# state) and guards this one off, so the clause is never checked twice.
+if [ "$CASE_EXPECT" != "soft-cap" ]; then
+	echo "--- processes left in the unit cgroup (want only otterd) ---"
+	echo "cgroup.procs: $(tr '\n' ' ' <"$CG/cgroup.procs")"
+	survivors=""
+	for pid in $(cat "$CG/cgroup.procs" 2>/dev/null); do
+		[ "$pid" = "$pid_after" ] && continue
+		comm=$(cat "/proc/$pid/comm" 2>/dev/null || echo "(gone)")
+		cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+		rss=$(awk '/^VmRSS:/{print $2" "$3}' "/proc/$pid/status" 2>/dev/null || true)
+		echo "  survivor: pid $pid comm=$comm rss=${rss:-?} cmdline=${cmdline:-?}"
+		survivors="$survivors $pid"
+	done
+	if [ -n "$survivors" ]; then
+		claim_fail "a runaway process survived in the unit cgroup:$survivors"
+	else
+		echo "  (none: only otterd pid $pid_after)"
+	fi
 fi
 
 echo "--- run history ---"
@@ -547,7 +632,7 @@ if [ -n "$claim_failures" ]; then
 fi
 
 if [ "$CASE_EXPECT" = "soft-cap" ]; then
-	echo "unit-caps: PASS [$CASE_NAME]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), otterd (PID $pid_after) was not restarted, the host answered, and the run ended at its ${CASE_JOB_TIMEOUT}s manifest timeout rather than by OOM."
+	echo "unit-caps: PASS [$CASE_NAME]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), no runaway process survived the timeout, otterd (PID $pid_after) was not restarted, the host answered, and the run ended at its ${CASE_JOB_TIMEOUT}s manifest timeout rather than by OOM."
 else
 	echo "unit-caps: PASS [$CASE_NAME]: the runaway job was OOM-killed (oom_kill=$(awk '/^oom_kill /{print $2}' "$CG/memory.events")), no runaway process survived, otterd (PID $pid_after) survived, and the host answered."
 fi
@@ -561,12 +646,14 @@ if [ -n "${MEMORY_MAX:-}${MEMORY_HIGH:-}${MEMORY_SWAP_MAX:-}" ]; then
 	run_case custom "${MEMORY_MAX:-192M}" "${MEMORY_HIGH:-off}" "${MEMORY_SWAP_MAX:-0}" \
 		"${KILL_WINDOW:-180}" "${EXPECT:-kill}" "${JOB_TIMEOUT:-600}"
 else
-	# The deployed defaults as they now ship: a percentage MemoryMax, no soft
-	# cap (MemoryHigh off), and no swap for the cgroup. The percentage is scaled
-	# down from the deployed 75% because this container shares a 3.9 GiB VM with
-	# the rest of the machine; the shape is what is under test. The runaway must
-	# be OOM-killed, with no survivor.
-	run_case deployed-style 25% off 0 60 kill 600
+	# The deployed defaults as they now ship, rendered with the flag omitted
+	# ("default") so the generator falls back to deploy.DefaultMemoryHigh and
+	# this case tests the unit a plain `otter deploy` writes -- not a
+	# hand-picked value. The percentage is scaled down from the deployed 75%
+	# because this container shares a 3.9 GiB VM with the rest of the machine;
+	# the shape is what is under test. The runaway must be OOM-killed, with no
+	# survivor, and memory.high must be max.
+	run_case deployed-style 25% default 0 60 kill 600
 	# The same shape with an absolute hard cap, which also exercises the
 	# byte-for-byte comparison of memory.max against an IEC size.
 	run_case hard-cap 192M off 0 60 kill 600
