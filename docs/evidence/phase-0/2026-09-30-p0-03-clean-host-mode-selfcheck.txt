@@ -29,18 +29,32 @@
 # two provisioned instances. The clean-host mode's two-host composition has
 # never executed. What runs here: the shipped probe against REAL directories and
 # a REAL otterd, the shipped gate and halves, and a transport double whose
-# command-line parsing is a real shell's and which no longer overwrites the
-# fields the probe measures.
+# command-line parsing is a real shell's and which does not overwrite any field
+# the probe measures. Section 5's drill-level run is NOT the whole drill: it
+# stops at the gate's target-unit shape check, because this machine has no
+# systemd, so the drill-level source-live, token, version, backup, transfer and
+# restore steps are not reached there -- they are exercised a level down, by the
+# probe cases in section 2 and the gate cases in section 3. The drill's one real
+# `getent passwd/group` call is reached by no test here and runs first at HW-7.
+#
+# How the selfcheck reaches CI: NOT through `make drill` (scripts/drill.sh globs
+# scripts/drill/*.sh and this lives in the selfcheck/ subdirectory, deliberately,
+# so a plain `make drill` cannot run the clean-host mode without its
+# parameters), but through `go test ./...`, via internal/drill/selfcheck_test.go.
 #
 # When:   2026-09-30 18:40-19:15 EDT
 # Where:  macOS 15.7.3 (Darwin 24.6.0) arm64, developer checkout. The probe's
-#         Linux-only branches (GNU stat, /etc/machine-id, getent) run for real
-#         under CI's Linux; here they are covered by assertions on the outcome
-#         of whichever branch the platform takes.
-# Build:  branch p0-03-clean-host-mode @ 7cc6cdc (v0.2.0-51-g7cc6cdc), clean tree
+#         Linux branches (GNU stat, /etc/machine-id) are reached and executed for
+#         real on a normal Linux runner, which is what CI uses; here the portable
+#         fallbacks (BSD stat, hostname) run, and the selfcheck asserts the
+#         branch this machine is supposed to take from its own state.
+# Build:  branch p0-03-clean-host-mode @ 6434274 (v0.2.0-53-g6434274), clean tree
 #         when the sections below ran. This record covers the R1-R8 fixes
-#         (cd5ce94), the D1-D3 fixes (ea39a14) and the D4/D5 fixes (d974238,
-#         7cc6cdc) that three verification rounds found.
+#         (cd5ce94), the D1-D3 fixes (ea39a14), the D4/D5 fixes (d974238,
+#         7cc6cdc) that the verification rounds found, and 6434274, which
+#         corrected this selfcheck's own claims (a stale substitution list, an
+#         overstated getent claim, an unasserted machine-id branch, and a header
+#         that implied the drill-level run covers the whole drill).
 # Commands: the six sections below, in order.
 # Falsifiability:
 #   * section 4 prints the gate's refusal for each of its eleven mutation cases;
@@ -49,9 +63,9 @@
 #     daemon=stopped regardless of what it measured).
 # Verdict: implementation and falsification evidence for the *hostless* half of
 #   the clean-host mode, including every defect a real systemd and a live daemon
-#   exposed. Three verification rounds have each found a defect the fixtures
-#   hid from the logic; the composition itself still has only one real
-#   execution ahead of it, and it is HW-7.
+#   exposed. Each verification round found a defect the fixtures hid from the
+#   logic; the composition itself still has only one real execution ahead of it,
+#   and it is HW-7.
 
 ===== 1. the same-host drill still passes, clean =====
 $ make drill DRILL=backup-restore
@@ -219,7 +233,7 @@ exit=2
 
 ===== 4. the hostless selfcheck of the clean-host mode =====
 $ sh scripts/drill/selfcheck/clean-host-mode.sh
-selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.wr6EOK/otter)
+selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.YsjXRD/otter)
 selfcheck:   ok  opt-in without parameters names all seven missing values and does not fall back
 selfcheck:   ok  parameters without the opt-in refuse instead of silently running the local drill
 selfcheck:   ok  an optional clean-host parameter without the opt-in refuses too
@@ -284,7 +298,7 @@ selfcheck:   ok  the no-token invocation passes all nine probe parameters, the t
 selfcheck:   ok  remote_args preserves hot-backup.sh's empty sabotage: five parameters, the fourth empty
 selfcheck:   ok  remote_args round-trips a space and a single quote through a real shell parse
 selfcheck:   ok  an empty target passes the gate; the run then stops on the next precondition (the target has no systemd unit named otter-selfcheck (service_state=no)
-selfcheck:   ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: sudo -n env sh -s -- 'source' '/var/lib/otter' '/srv/otter/jobs' '/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.wr6EOK/otter' 'http://127.0.0.1:7999' 'otter-selfcheck' '' '' '/etc/otter')
+selfcheck:   ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: sudo -n env sh -s -- 'source' '/var/lib/otter' '/srv/otter/jobs' '/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.YsjXRD/otter' 'http://127.0.0.1:7999' 'otter-selfcheck' '' '' '/etc/otter')
 selfcheck: ok: the clean-host mode validates, refuses, gates, backs up and restores without a host
 exit=0
 
