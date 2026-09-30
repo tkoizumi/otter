@@ -94,14 +94,18 @@ Add resource limits so one runaway job cannot take the host down:
 
 ```ini
 MemoryMax=2G
+MemorySwapMax=0
 CPUQuota=200%
 TasksMax=256
 ```
 
 Because jobs inherit the service's cgroup, these limits apply to the
-child Python processes too. Note that a memory cap makes OOM kills more likely,
-which shows up as runs failing with `otter daemon restarted during execution`
-after the daemon is restarted — size the limit for the sum of your workers.
+child Python processes too. `MemorySwapMax=0` is what keeps `MemoryMax` honest
+on a host with a swapfile: with the cgroup's swap unbounded a runaway pages out
+instead of reaching the hard cap, and the kernel never OOM-kills it. Note that a
+memory cap makes OOM kills more likely, which shows up as runs failing with
+`otter daemon restarted during execution` after the daemon is restarted — size
+the limit for the sum of your workers.
 
 ## When you need real isolation
 

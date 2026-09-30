@@ -288,6 +288,8 @@ are part of the generated file, so they cannot drift from what the deploy does;
 Every cap applies to the **whole unit's cgroup**, not to one job: `otterd` and
 every Python child it starts share it, so `MemoryMax` bounds the sum of the
 concurrent runs plus the daemon. Size it for `--workers` runs, not one.
+`MemorySwapMax` bounds that same cgroup's swap and defaults to `0`, so the
+hard cap binds even when the host has a swapfile — see the sizing table.
 
 ```ini
 [Service]
@@ -296,6 +298,7 @@ OOMPolicy=continue
 
 MemoryMax=75%
 MemoryHigh=60%
+MemorySwapMax=0
 CPUQuota=200%
 TasksMax=512
 
@@ -310,22 +313,26 @@ ReadWritePaths=/opt/otter/workspaces/<workspace> /opt/otter/workspaces/<workspac
 | --- | --- | --- | --- |
 | `MemoryMax` | `--memory-max` | `75%` | Hard memory ceiling. Above it the kernel OOM-kills a process in the unit's cgroup. Size it to the **sum of the concurrent runs** (peak RSS of the largest run × how many can overlap) plus roughly 256 MiB for `otterd`, then add headroom. A percentage is resolved by systemd against the host's physical RAM, so the same deploy is safe on a 2 GiB VPS and a 16 GiB machine. Too low: a working job is OOM-killed. Too high: the host itself runs out of memory instead. |
 | `MemoryHigh` | `--memory-high` | `60%` | Soft ceiling. Between `MemoryHigh` and `MemoryMax` the kernel throttles and reclaims, so a run that briefly overruns is slowed rather than killed. Keep it meaningfully below `MemoryMax`. |
+| `MemorySwapMax` | `--memory-swap-max` | `0` | Swap bound for the whole cgroup. `0` means the unit may not swap at all, and it is the default because `MemoryMax` is only the binding limit if a runaway cannot grow through swap: `memory.current` counts RAM, not swap, so with unbounded swap the job is throttled at `MemoryHigh` and paged out, the swapfile fills, and `otterd` — which shares the cgroup — starves before the OOM killer ever runs. On a host with a swapfile, leave it at `0`. A size (`512M`) or `infinity` allows bounded swap; `off` restores systemd's unbounded default. |
 | `CPUQuota` | `--cpu-quota` | `200%` | CPU time as a percentage of **one** core. `200%` is two cores' worth, whatever the host has, so a runaway job cannot monopolise a large machine. Too low: long jobs run slower and may hit their manifest `timeout`. |
 | `TasksMax` | `--tasks-max` | `512` | Processes **and threads** in the cgroup — the fork-bomb guard. Python threads and subprocesses all count, so keep it well above the largest realistic job. Too low: the job cannot create a thread or a subprocess and fails. |
 | `OOMPolicy` | — | `continue` | systemd's own default is `stop`, which stops the whole unit when the OOM killer kills any process in it — taking `otterd` and every other in-flight run with it. `continue` lets the runaway child die and leaves `otterd` to record the failed run. |
 
-`--memory-max off` (and the same for the other three) emits no directive at all,
+`--memory-max off` (and the same for the other caps) emits no directive at all,
 leaving systemd's own default; the value is emitted verbatim, so `4G`, `512M`,
 `75%` and `infinity` all work. A size must be positive: `0`, `0M` and `0G` are
-refused before the push, because systemd discards an out-of-range zero and would
-leave the unit uncapped while it looked capped.
+refused for `MemoryMax` and `MemoryHigh` before the push, because systemd
+discards an out-of-range zero and would leave the unit uncapped while it looked
+capped. `MemorySwapMax` is the exception: `memory.swap.max=0` is a valid kernel
+limit meaning "this cgroup may not swap", so a zero is accepted there and is the
+default.
 
-The four caps can be committed in `otter.deploy.yaml` (`memory_max`,
-`memory_high`, `cpu_quota`, `tasks_max`), and an explicit flag wins over the
-file. `read_write_paths` is the exception: the committed list and every
-`--rw-path` are **merged**, so a one-off extra path on the command line does not
-drop the committed ones. The same applies to the repeatable flag itself — each
-`--rw-path` adds a path rather than replacing the previous one.
+The five caps can be committed in `otter.deploy.yaml` (`memory_max`,
+`memory_high`, `memory_swap_max`, `cpu_quota`, `tasks_max`), and an explicit flag
+wins over the file. `read_write_paths` is the exception: the committed list and
+every `--rw-path` are **merged**, so a one-off extra path on the command line
+does not drop the committed ones. The same applies to the repeatable flag itself
+— each `--rw-path` adds a path rather than replacing the previous one.
 
 ### The sandbox
 
@@ -587,6 +594,7 @@ rather than overridden. See
 | `--timeout` | overall bound | `10m` |
 | `--keep` | inactive releases retained per job (`0` keeps every release) | `3` |
 | `--memory-max`, `--memory-high` | systemd memory caps for the unit (`off` emits none) | `75%`, `60%` |
+| `--memory-swap-max` | systemd swap bound for the unit (`0` forbids swap; `off` is unbounded) | `0` |
 | `--cpu-quota` | systemd CPU cap, percent of one core (`off` emits none) | `200%` |
 | `--tasks-max` | systemd process/thread cap (`off` emits none) | `512` |
 | `--rw-path` | extra path jobs may write under `ProtectSystem=strict` (repeatable) | — |

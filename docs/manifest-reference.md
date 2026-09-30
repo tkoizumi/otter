@@ -246,7 +246,8 @@ runs at most two jobs at a time.
 long a job may run and how many run at once. They do **not** bound CPU, memory
 or the number of processes. A job that allocates without limit or forks without
 limit is stopped by the *host's* cgroup caps in the generated systemd unit
-(`MemoryMax`, `MemoryHigh`, `CPUQuota`, `TasksMax`), which a deploy sets and
+(`MemoryMax`, `MemoryHigh`, `MemorySwapMax`, `CPUQuota`, `TasksMax`), which a
+deploy sets and
 [deploy.md](deploy.md#resource-caps-and-the-sandbox) explains how to size.
 
 The two fail differently, and the difference matters for sizing:
@@ -258,7 +259,9 @@ The two fail differently, and the difference matters for sizing:
   decide how much memory can be in use at once; size `MemoryMax` above the sum
   of what can run concurrently, not above one run. Too low a cap turns a working
   job into a killed one — raise `--memory-max` rather than lowering the job's
-  work.
+  work. The kill only happens because the unit also sets `MemorySwapMax=0`: with
+  the cgroup's swap unbounded, the job pages out instead of reaching
+  `MemoryMax`, so leave the swap bound at its default on a host with a swapfile.
 
 ## Environment variables
 
