@@ -53,3 +53,4 @@ is not.
 | 2026-09-30 | P0-07 HW-1 blocked | [2026-09-30-p0-07-hw1-deploy-blocked.txt](2026-09-30-p0-07-hw1-deploy-blocked.txt) | operator checkout; the documented first-run deploy command deploys nothing |
 | 2026-09-30 | P0-07 HW-1 deploy | [2026-09-30-p0-07-hw1-deploy.txt](2026-09-30-p0-07-hw1-deploy.txt) | the Castor VM: v0.3.0-rc1 deployed, caps live, CPython 3.13.1 prepared on arm64 |
 | 2026-09-30 | P0-04 host re-run (failed) | [2026-09-30-p0-04-unit-caps-host-failure.txt](2026-09-30-p0-04-unit-caps-host-failure.txt) | the Castor VM: a runaway job is throttled and swapped, not OOM-killed; otterd starved |
+| 2026-09-30 | P0-12 (local half) | [2026-09-30-p0-12-secret-scoping.txt](2026-09-30-p0-12-secret-scoping.txt) | macOS 15 arm64, developer checkout; no remote host. The real Castor credentials and the real host run are still owed — see window HW-5 |

@@ -293,16 +293,36 @@ Secrets are read from the **daemon's** environment, not from the manifest and no
 from a `.env` file in the job directory. The names listed are copied into
 the child process's environment just before execution.
 
+- **The list holds names, never values.** Every entry must be a valid environment
+  variable name, and the malformed forms fail at one of two different stages
+  before a deploy or a run. A `secrets:` mapping of name to value is rejected by
+  the YAML decoder as the manifest is read — a **parse** error, not a validation
+  one. `SHOPIFY_TOKEN=shpat_...`, and entries containing hyphens, dots or spaces,
+  parse fine and are then refused by **validation**, which requires each name to
+  match `[A-Za-z_][A-Za-z0-9_]*`. What validation
+  cannot do is tell a name from a credential that happens to be spelled like one:
+  an entry of letters, digits and underscores — `shpat_0123456789abcdef`, say —
+  is a legal name and is accepted. Keeping values out of YAML is therefore a rule
+  you follow, not one the runtime can enforce. It does still fail loudly at run
+  time, because a value pasted there is looked up as a variable name and is
+  almost certainly absent from the daemon environment.
 - Keep values out of YAML: put `SHOPIFY_TOKEN=...` in the systemd
   `EnvironmentFile` (mode `0600`, owned by the service user) or a secret manager
-  that populates the daemon environment.
+  that populates the daemon environment. `otter deploy` writes that file itself,
+  root owned and chmod `0600`, from `otter.env` at the project root (or
+  `--env-file`).
 - If a listed name is missing from the daemon environment, the run **fails
   before Python starts** with an error naming the missing secret, and it is not
   retried. A variable that is set but empty counts as missing — a blank token is
   a misconfiguration, not a secret.
+- Resolution happens afresh on every run. A configuration failure is never
+  retried, so the same clean failure recurs on every subsequent run of the job
+  until the variable is set — including a run submitted after the daemon has
+  restarted. The runtime does not remember the failure and it does not degrade
+  into a different error.
 - The daemon never logs secret values. Names may appear in error messages.
-- Today there is no built-in secret backend; the `SecretProvider` interface in
-  the codebase is the extension point for AWS Secrets Manager, Vault, 1Password
+- Today there is no built-in secret backend; the `Provider` interface in
+  `internal/secrets/` is the extension point for AWS Secrets Manager, Vault, 1Password
   or Castor Cloud later. See [security.md](security.md).
 
 ## HTTP capture
