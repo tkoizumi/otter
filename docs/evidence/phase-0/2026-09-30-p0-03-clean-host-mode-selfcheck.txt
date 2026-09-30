@@ -37,10 +37,9 @@
 #         systemctl; the selfcheck prints which fields each substitutes, and the
 #         commands, the parsers, the assertions and the backup/restore halves
 #         are the real shipped code.
-# Build:  branch p0-03-clean-host-mode. The R1-R8 fixes are cd5ce94
-#         (v0.2.0-42-gcd5ce94); the selfcheck transcript in section 4 was
-#         produced after a7b2cfb, which only made each gate mutation print the
-#         refusal it produced.
+# Build:  branch p0-03-clean-host-mode @ 5acb77d (v0.2.0-44-g5acb77d). This
+#         record covers the R1-R8 fixes an independent verifier asked for
+#         after reading the never-executed composition.
 # Commands: the five sections below, in order.
 # Falsifiability:
 #   * the gate mutation cases in section 4 each print the refusal they produced:
@@ -223,7 +222,7 @@ exit=2
 
 ===== 4. the hostless selfcheck of the clean-host mode =====
 $ sh scripts/drill/selfcheck/clean-host-mode.sh
-selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.3rslnF/otter)
+selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.kkfcI9/otter)
 selfcheck:   ok  opt-in without parameters names all seven missing values and does not fall back
 selfcheck:   ok  parameters without the opt-in refuse instead of silently running the local drill
 selfcheck:   ok  an optional clean-host parameter without the opt-in refuses too
@@ -275,7 +274,7 @@ selfcheck: 5/6 the drill refuses a dirty target before writing anything
 selfcheck:   ok  a dirty target goes red at the cleanliness assertion after exactly the two probes
 selfcheck:       red reason: the target data directory /var/lib/otter is not clean (not empty (1 entries: otter.db )): a restore onto a host that alr
 selfcheck:   ok  an empty target passes the gate; the run then stops on the next precondition (the target has no systemd unit named otter-selfcheck (service_state=no)
-selfcheck:   ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: sudo -n env sh -s -- source /var/lib/otter /srv/otter/jobs /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.3rslnF/otter http://127.0.0.1:7999 otter-selfcheck   /etc/otter)
+selfcheck:   ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: sudo -n env sh -s -- source /var/lib/otter /srv/otter/jobs /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.kkfcI9/otter http://127.0.0.1:7999 otter-selfcheck   /etc/otter)
 selfcheck: ok: the clean-host mode validates, refuses, gates, backs up and restores without a host
 exit=0
 
@@ -283,7 +282,7 @@ exit=0
 $ scripts/go test ./internal/drill/ -count=1 -v
 === RUN   TestSelfchecks
 === RUN   TestSelfchecks/clean-host-mode.sh
-    selfcheck_test.go:42: selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.AZJu18/otter)
+    selfcheck_test.go:42: selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.TmLwr4/otter)
         selfcheck:   ok  opt-in without parameters names all seven missing values and does not fall back
         selfcheck:   ok  parameters without the opt-in refuse instead of silently running the local drill
         selfcheck:   ok  an optional clean-host parameter without the opt-in refuses too
@@ -335,10 +334,10 @@ $ scripts/go test ./internal/drill/ -count=1 -v
         selfcheck:   ok  a dirty target goes red at the cleanliness assertion after exactly the two probes
         selfcheck:       red reason: the target data directory /var/lib/otter is not clean (not empty (1 entries: otter.db )): a restore onto a host that alr
         selfcheck:   ok  an empty target passes the gate; the run then stops on the next precondition (the target has no systemd unit named otter-selfcheck (service_state=no)
-        selfcheck:   ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: sudo -n env sh -s -- source /var/lib/otter /srv/otter/jobs /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.AZJu18/otter http://127.0.0.1:7999 otter-selfcheck   /etc/otter)
+        selfcheck:   ok  DRILL_REMOTE_SUDO=1 prefixes remote commands with 'sudo -n env' (the first call: sudo -n env sh -s -- source /var/lib/otter /srv/otter/jobs /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.TmLwr4/otter http://127.0.0.1:7999 otter-selfcheck   /etc/otter)
         selfcheck: ok: the clean-host mode validates, refuses, gates, backs up and restores without a host
---- PASS: TestSelfchecks (11.83s)
-    --- PASS: TestSelfchecks/clean-host-mode.sh (11.82s)
+--- PASS: TestSelfchecks (8.18s)
+    --- PASS: TestSelfchecks/clean-host-mode.sh (8.18s)
 PASS
-ok  	github.com/tkoizumi/otter/internal/drill	12.091s
+ok  	github.com/tkoizumi/otter/internal/drill	8.343s
 exit=0
