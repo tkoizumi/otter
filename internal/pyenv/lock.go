@@ -326,10 +326,14 @@ func (m Manager) packageIndexURLs(dir string) []string {
 		}
 		out = append(out, candidate)
 	}
-	add(m.configuredIndex())
+	// The operator's spelling is canonicalised before it is probed: uv parses a
+	// backslash as a slash, decodes a percent-encoded host and normalises a
+	// port, while an HTTP client handed the raw string can refuse it outright.
+	// Probing the canonical form is probing what will actually be fetched.
+	add(canonicalIndexURL(m.configuredIndex()))
 	for _, value := range additiveSourceValues() {
 		if strings.Contains(value, "://") {
-			add(value)
+			add(canonicalIndexURL(value))
 		}
 	}
 	if len(out) > 0 {
