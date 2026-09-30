@@ -43,7 +43,7 @@
 #   * anything about binary rollback. Both deploys carry the same compiled
 #     binaries, so the only thing that changes is the job release. A deploy
 #     that swaps the unit or the binaries and then fails is not covered.
-#   * real Python packaging. The host gets scripts/drill/deploy-failure-uv.sh
+#   * real Python packaging. The host gets scripts/drill/deploy-failure-uv
 #     as uv and the deploy vendors it, so no interpreter is downloaded and no
 #     dependency is resolved. The injected failure is a preparation failure of
 #     the shape a real one has (the environment the staged release needs cannot
@@ -371,7 +371,7 @@ write_job 1
 # and the vendored copy is what the release and the daemon both resolve, so
 # they agree on the environment identity without a download. See the header.
 mkdir -p "$uv_cache"
-cp "$here/deploy-failure-uv.sh" "$uv_cache/uv-$UV_VERSION-linux-$goarch"
+cp "$here/deploy-failure-uv" "$uv_cache/uv-$UV_VERSION-linux-$goarch"
 chmod 755 "$uv_cache/uv-$UV_VERSION-linux-$goarch"
 
 # --- 2. the known-good deploy, and a run that proves it serves ---------------
