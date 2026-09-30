@@ -308,14 +308,21 @@ dependency or toolchain change still resolves the environment its parent
 selected rather than moving to the new one.
 
 The **fetch route** — `--index` and `--python-mirror` — is deliberately not part
-of the identity. It chooses how the same pinned artifacts are reached, not what
-they are: the lock pins every dependency by hash, and uv verifies the
-interpreter download against the hash in the catalogue it carries. Folding the
-route in would also break the two places that re-resolve an identity without
-ever being told it — the daemon binds a run at submission, and
-`otter release --activate` re-resolves on a rollback — so a release prepared
-through a mirror would come back as "not prepared" the moment either of them
-looked at it.
+of the identity, and for packages it does not need to be: the route is already
+there through the lock. `uv.lock` records the registry every package came from,
+the lock's contents are part of the declared inputs, and a configured `--index`
+that disagrees with those records is refused before anything is built. Two
+environments can only differ by package index if their locks differ, which the
+inputs digest already separates. What is more, the artifacts themselves are
+pinned: the lock carries a hash per package, and uv verifies the interpreter
+download against the hash in the catalogue it carries, so a mirror is a way to
+reach the same bytes rather than a different environment.
+
+Putting the URL into the policy string instead would break the two places that
+re-resolve an identity without ever being told it — the daemon binds a run at
+submission, and `otter release --activate` re-resolves on a rollback — so a
+release prepared through a mirror would come back as "not prepared" the moment
+either of them looked at it.
 
 Environments are content-addressed and may be shared by several jobs, so
 `otter delete` never removes them: it purges only what the identity exclusively
@@ -361,9 +368,10 @@ Preparation:
 3. Reuses an existing ready environment when the identity matches — this is
    the common case and costs nothing. A reused environment is never checked
    against the network: it is already built.
-4. Otherwise checks that the endpoints it needs are reachable (below), then
-   installs the pinned interpreter into `python/`, creates the environment, and
-   installs the locked production dependencies.
+4. Otherwise confirms that the lock agrees with the package index it was
+   configured with, checks that the endpoints it needs are reachable (below),
+   then installs the pinned interpreter into `python/`, creates the environment,
+   and installs the locked production dependencies.
 5. Verifies the interpreter reports the pinned version, then publishes the
    readiness marker.
 
@@ -403,7 +411,7 @@ before anything is fetched:
 
 ```
 $ otter prepare --jobs ./jobs --data /var/lib/otter
-otter: egress preflight ok for environment 4b1f0c9e2a7d: package index https://pypi.org/simple/, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+otter: egress preflight ok for environment 4b1f0c9e2a7d: package index https://pypi.org/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
 my-job: Python 3.13.1, environment 4b1f0c9e2a7d
 ```
 
@@ -414,6 +422,12 @@ DNS failure, a refused connection, or a timeout does not. Proxy and TLS settings
 (`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`) are honoured, because uv honours
 them.
 
+Which package index it checks is the one preparation will really fetch from:
+`--index` (or `UV_DEFAULT_INDEX`/`UV_INDEX_URL`) when one is configured,
+otherwise the registries `uv.lock` records, which is where uv installs from when
+nothing is configured. A job whose lock was cut against an internal mirror is
+therefore checked against that mirror, not against PyPI.
+
 A failure names the endpoint, the pin, and the platform, and says what to do
 about each:
 
@@ -421,11 +435,12 @@ about each:
 otter: prepare my-job: egress preflight failed for CPython 3.13.1 on linux/arm64:
 managed Python downloads is unreachable (https://github.com/.../releases/download):
 dial tcp: lookup github.com: no such host
-hint: preparation fetches the managed interpreter and the locked dependencies, and has
-no offline bundle. Check the host's route and proxy (HTTPS_PROXY and NO_PROXY are
-honoured), point preparation at an internal mirror with --index and --python-mirror,
-provision python/ and cache/uv/ out of band, or run with --skip-egress-check when the
-host is deliberately air-gapped and already primed.
+hint: preparation downloads the managed interpreter and the locked dependencies, and
+has no offline bundle. Check the host's route and proxy (HTTPS_PROXY and NO_PROXY are
+honoured). An interpreter mirror is --python-mirror; packages come from the index
+uv.lock records, and --index must name that same index (re-lock with
+`uv lock --default-index <url>` to change it). A primed host can provision tools/uv/uv,
+python/ and cache/uv/ out of band and run with --skip-egress-check.
 ```
 
 That separation is the point of the check. When the preflight passes and the
@@ -451,11 +466,49 @@ otter prepare --index https://mirror.internal/simple \
               --python-mirror https://mirror.internal/python-build-standalone
 ```
 
-- `--index` replaces the default package index (uv's `--default-index`) rather
-  than adding to it, so a host with no route to PyPI is never asked to reach it.
-- `--python-mirror` is the **root** the interpreter archives live under: uv
-  appends the release tag and the file name to it exactly as it does to its own
-  default, so the value is a mirror of
+The lock decides where packages come from, so `--index` is not a redirect you
+can add to a job that was locked somewhere else.
+
+- **`--index` replaces the default package index** (uv's `--default-index`)
+  rather than adding to it, and it must name the index the lock was created
+  against. `uv.lock` records the registry every package came from
+  (`source = { registry = "..." }`), and `uv sync --locked` re-resolves against
+  the configured index and refuses when the result would change the lock: even
+  when both indexes serve byte-identical artifacts, and even when the only
+  difference is a trailing slash, uv exits 2 with `The lockfile at uv.lock needs
+  to be updated, but --locked was provided`. Preparation refuses that pairing
+  itself, before it fetches anything, so the failure names all three:
+
+  ```
+  otter: prepare my-job: uv.lock and the configured package index disagree:
+  /srv/otter/jobs/my-job/uv.lock was locked against https://pypi.org/simple, but
+  preparation is configured with https://mirror.internal/simple
+  hint: --index cannot redirect an existing lock. `uv sync --locked` re-resolves against the
+  configured index and refuses when the result would change the lock, even when the two
+  indexes serve identical artifacts. Regenerate the lock against the index you are
+  deploying with (`uv lock --default-index https://mirror.internal/simple`) and commit it,
+  or prepare against the index the lock records (`--index https://pypi.org/simple`, or no
+  --index at all, which makes uv fetch from the URLs the lock itself records).
+  ```
+
+  On a host that can only reach an internal mirror, a project locked against
+  PyPI has to be re-locked there and the lock committed:
+
+  ```sh
+  uv lock --default-index https://mirror.internal/simple
+  ```
+
+  That is a dependency change like any other: the lock is part of the declared
+  inputs, so the new lock produces a new environment identity and preparation
+  builds the environment from the mirror.
+- **With no `--index`, uv installs from the registries the lock records.** A
+  lock already cut against a reachable mirror therefore needs no flag at all,
+  and the preflight checks that mirror rather than PyPI. What cannot be done is
+  redirecting a PyPI-locked project at a mirror without re-locking.
+- `--python-mirror` has no such coupling: interpreters are not in the lock, so
+  it is a genuine redirect. It is the **root** the interpreter archives live
+  under — uv appends the release tag and the file name to it exactly as it does
+  to its own default, so the value is a mirror of
   `https://github.com/indygreg/python-build-standalone/releases/download`.
 - `--egress-endpoint <url>`, repeatable, adds an endpoint the job itself needs —
   its API, say — to the check. Otter cannot discover those, so they are
@@ -468,13 +521,13 @@ They are per-invocation flags and not uv configuration files. Package-index
 *credentials* still come from the environment, as they always have.
 
 The check itself follows what uv will use, not only what was passed on the
-command line: with neither flag set, `UV_DEFAULT_INDEX` (or its deprecated
-`UV_INDEX_URL`) and `UV_PYTHON_INSTALL_MIRROR` are honoured, because uv reads
-them too. An endpoint set only in the environment is therefore checked, and is
-not mistaken for "no route to PyPI". The additional-source variables
+command line: `--index` or `UV_DEFAULT_INDEX` (or its deprecated `UV_INDEX_URL`)
+for packages, and `--python-mirror` or `UV_PYTHON_INSTALL_MIRROR` for the
+interpreter. An endpoint set only in the environment is therefore checked, and
+is not mistaken for "no route to PyPI". The additional-source variables
 (`UV_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_FIND_LINKS`) are not followed: they add
-sources to the default index rather than replacing it, so the default index is
-still what answers whether the host can reach an index at all.
+sources to the default index rather than replacing it, so the index that
+answers whether the host can reach an index at all is still the default one.
 
 `--skip-egress-check` turns the check off, for the one case that needs it: a
 host that is deliberately air-gapped but already primed — the interpreter is
@@ -493,9 +546,9 @@ lookup order is:
 2. `<data dir>/tools/uv/uv` — a vendored copy.
 3. `uv` on `PATH`.
 
-`otter deploy` runs `otter prepare` on the host automatically, before the
-daemon restarts, as the service account. A failed preparation stops the deploy
-and leaves the previous deployment serving.
+`otter deploy` runs `otter release` on the host automatically -- which stages,
+prepares and activates -- before the daemon restarts, as the service account. A
+failed preparation stops the deploy and leaves the previous deployment serving.
 
 ## What a managed run gets
 
@@ -597,8 +650,11 @@ Additionally, for a managed job:
 - **No offline bundle yet.** Preparation fetches the interpreter and wheels. On
   a host with no egress, provision `tools/uv/uv`, `python/` and a populated
   `cache/uv/` out of band, or point preparation at an internal mirror with
-  `--index` and `--python-mirror`. A complete offline bundle is planned
-  separately.
+  `--index` and `--python-mirror`. `--index` only works when the lock was
+  created against that same index — uv refuses to redirect an existing lock, and
+  preparation refuses it earlier with the index the lock records
+  ([Reaching the endpoints](#reaching-the-endpoints-mirrors-and-the-egress-preflight)).
+  A complete offline bundle is planned separately.
 
 ## What this does not promise
 

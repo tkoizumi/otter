@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"path/filepath"
 
 	"github.com/tkoizumi/otter/internal/config"
@@ -32,20 +31,21 @@ type prepareOptions struct {
 	SkipEgressCheck bool
 }
 
-// manager assembles the environment manager these options describe. Progress,
-// including the preflight's, goes to w.
-func (o prepareOptions) manager(dataDir string, w io.Writer) pyenv.Manager {
+// prepareManager assembles the environment manager these options describe.
+// Progress, including the preflight's, goes to the app's stderr.
+func (a *App) prepareManager(dataDir string, o prepareOptions) pyenv.Manager {
 	return pyenv.Manager{
 		DataDir:         dataDir,
 		Index:           o.Index,
 		PythonMirror:    o.PythonMirror,
 		ExtraEndpoints:  o.ExtraEndpoints,
 		SkipEgressCheck: o.SkipEgressCheck,
+		Probe:           a.egressProbe,
 		// The preflight is the reason a host with no egress fails as a network
 		// problem instead of as a mysterious download error, so say when it
 		// ran and what it checked. It is one line per environment that
 		// actually had to be built.
-		Logf: func(format string, args ...any) { fmt.Fprintf(w, "otter: "+format, args...) },
+		Logf: func(format string, args ...any) { fmt.Fprintf(a.Stderr, "otter: "+format, args...) },
 	}
 }
 
@@ -121,7 +121,7 @@ func (a *App) cmdPrepare(ctx context.Context, args []string) int {
 		return code
 	}
 
-	manager := opts.manager(dataDir, a.Stderr)
+	manager := a.prepareManager(dataDir, opts)
 	count := 0
 	for _, target := range targets {
 		label := target.Label()

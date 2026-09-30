@@ -319,7 +319,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 		return 1
 	}
 
-	envManager := opts.manager(manager.DataDir, a.Stderr)
+	envManager := a.prepareManager(manager.DataDir, opts)
 
 	// Bound one release: a release that hangs on a package download must not
 	// hold a deploy open indefinitely. With --all the bound is per job,

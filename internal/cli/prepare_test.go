@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -147,9 +148,10 @@ func TestPreparePassesTheConfiguredRouteToTheFetchPath(t *testing.T) {
 }
 
 // The same command with nothing configured must pass no route flag to uv, which
-// is what keeps the default path byte-for-byte what it was. The preflight is
-// skipped here rather than stubbed: with the real probe enabled this case would
-// necessarily contact PyPI, and no test may reach the real network.
+// is what keeps the default path byte-for-byte what it was. The probe is
+// injected rather than left to the real network, and it is asked for the
+// default endpoints, so this test says the same thing on a connected machine
+// and on one behind a black-hole proxy.
 func TestPrepareUnconfiguredPassesNoRouteFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
@@ -161,13 +163,17 @@ func TestPrepareUnconfiguredPassesNoRouteFlags(t *testing.T) {
 	workingDirForTest = func() (string, error) { return filepath.Dir(filepath.Dir(jobDir)), nil }
 	defer func() { workingDirForTest = original }()
 
+	var probed []string
 	var out, errOut bytes.Buffer
 	app := New("test", &out, &errOut)
+	app.egressProbe = func(_ context.Context, url string) error {
+		probed = append(probed, url)
+		return nil
+	}
 	code := app.cmdPrepare(context.Background(), []string{
 		"--jobs", filepath.Join(filepath.Dir(filepath.Dir(jobDir)), "jobs"),
 		"--data", dataDir,
 		"--uv", uvPath,
-		"--skip-egress-check",
 		jobDir,
 	})
 	if code != 0 {
@@ -186,4 +192,68 @@ func TestPrepareUnconfiguredPassesNoRouteFlags(t *testing.T) {
 			t.Errorf("an unconfigured prepare passed a route flag to uv: %s", line)
 		}
 	}
+	// The preflight ran, and it asked about uv's defaults: this is what the
+	// operator sees on a host that configures nothing.
+	want := []string{"https://pypi.org/simple", "https://github.com/indygreg/python-build-standalone/releases/download"}
+	if len(probed) != len(want) || probed[0] != want[0] || probed[1] != want[1] {
+		t.Errorf("an unconfigured prepare probed %v, want %v", probed, want)
+	}
+	if !strings.Contains(errOut.String(), "egress preflight ok") {
+		t.Errorf("the preflight was not reported:\n%s", errOut.String())
+	}
+}
+
+// --skip-egress-check is the documented escape hatch, so it has to reach the
+// manager. The probe is injected and *fails*: without the flag the very same
+// command must refuse preparation with that failure, and with it the command
+// must proceed. A test that left the real probe in place would go green on any
+// machine that can reach PyPI whichever way the flag were wired.
+func TestSkipEgressCheckReachesTheManager(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	injected := errors.New("injected egress failure")
+
+	run := func(t *testing.T, args ...string) (int, string, string) {
+		t.Helper()
+		jobDir, uvPath, _, _ := fakeManagedJob(t)
+		dataDir := filepath.Join(filepath.Dir(filepath.Dir(jobDir)), "data")
+		original := workingDirForTest
+		workingDirForTest = func() (string, error) { return filepath.Dir(filepath.Dir(jobDir)), nil }
+		defer func() { workingDirForTest = original }()
+
+		var out, errOut bytes.Buffer
+		app := New("test", &out, &errOut)
+		app.egressProbe = func(context.Context, string) error { return injected }
+		full := append([]string{
+			"--jobs", filepath.Join(filepath.Dir(filepath.Dir(jobDir)), "jobs"),
+			"--data", dataDir,
+			"--uv", uvPath,
+		}, args...)
+		full = append(full, jobDir)
+		return app.cmdPrepare(context.Background(), full), out.String(), errOut.String()
+	}
+
+	t.Run("without the flag the failing probe stops preparation", func(t *testing.T) {
+		code, _, errOut := run(t)
+		if code == 0 {
+			t.Fatalf("preparation ignored a failing probe:\n%s", errOut)
+		}
+		if !strings.Contains(errOut, injected.Error()) {
+			t.Errorf("the failure is not the injected probe's, so the flag is not what was tested:\n%s", errOut)
+		}
+	})
+
+	t.Run("with the flag preparation proceeds", func(t *testing.T) {
+		code, out, errOut := run(t, "--skip-egress-check")
+		if code != 0 {
+			t.Fatalf("prepare exited %d with --skip-egress-check\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if strings.Contains(errOut, injected.Error()) {
+			t.Errorf("the probe ran despite --skip-egress-check:\n%s", errOut)
+		}
+		if strings.Contains(errOut, "egress preflight ok") {
+			t.Errorf("a skipped preflight was reported as having run:\n%s", errOut)
+		}
+	})
 }

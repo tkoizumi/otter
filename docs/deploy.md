@@ -256,6 +256,15 @@ In order:
      --python-mirror https://mirror.internal/python-build-standalone
    ```
 
+   `--index` must name the index the job's `uv.lock` was created against: uv
+   refuses to redirect an existing lock (`--locked` re-resolves and rejects a
+   changed registry, even for byte-identical artifacts), and preparation refuses
+   it earlier, naming the lock, the index it records, and the index configured.
+   A project locked against PyPI therefore has to be re-locked on the mirror
+   (`uv lock --default-index https://mirror.internal/simple`) and the lock
+   committed before such a host can be deployed to. `--python-mirror` is a
+   genuine redirect: interpreters are not in the lock.
+
    `--egress-endpoint <url>`, repeatable, adds an endpoint the jobs themselves
    need (an API, say) to the same check, and `--skip-egress-check` turns the
    check off for a host that is deliberately air-gapped but already primed.
@@ -607,7 +616,7 @@ rather than overridden. See
 | `--verbose` | stream every remote command | off |
 | `--timeout` | overall bound | `10m` |
 | `--keep` | inactive releases retained per job (`0` keeps every release) | `3` |
-| `--index` | package index managed dependencies are synced from on the host; replaces PyPI rather than adding to it | PyPI |
+| `--index` | package index managed dependencies are synced from on the host; must be the index the lock records | the lock's registries |
 | `--python-mirror` | root managed interpreter downloads come from on the host | python-build-standalone |
 | `--egress-endpoint` | extra endpoint the host's preparation-time egress preflight must reach (repeatable) | — |
 | `--skip-egress-check` | skip the host's egress preflight (air-gapped host, already primed) | off |

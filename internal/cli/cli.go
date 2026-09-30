@@ -24,6 +24,7 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/inspection"
+	"github.com/tkoizumi/otter/internal/pyenv"
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
@@ -39,6 +40,12 @@ type App struct {
 	traceWidthOverride int
 	// traceNoColor forces the human trace form to be plain even on a terminal.
 	traceNoColor bool
+
+	// egressProbe replaces the HTTP probe managed-Python preparation uses to
+	// check that it can reach the endpoints it downloads from. Nil uses
+	// pyenv.HTTPProbe. It exists so a test can decide the network answer
+	// instead of the network deciding it.
+	egressProbe pyenv.Prober
 }
 
 // New creates a CLI app writing to the given streams.

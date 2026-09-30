@@ -154,7 +154,7 @@ func TestPreflightChecksTheConfiguredEndpoints(t *testing.T) {
 		clearRouteEnv(t)
 		probe := &probeRecorder{fail: map[string]error{}}
 		m := Manager{DataDir: t.TempDir(), Probe: probe.probe}
-		if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+		if err := m.checkEgress(context.Background(), "", Spec{Python: "3.13.1"}); err != nil {
 			t.Fatal(err)
 		}
 		want := []string{DefaultPackageIndex, DefaultPythonMirror}
@@ -172,7 +172,7 @@ func TestPreflightChecksTheConfiguredEndpoints(t *testing.T) {
 			ExtraEndpoints: []string{jobAPI, "  "},
 			Probe:          probe.probe,
 		}
-		if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+		if err := m.checkEgress(context.Background(), "", Spec{Python: "3.13.1"}); err != nil {
 			t.Fatal(err)
 		}
 		want := []string{index, mirror, jobAPI}
@@ -198,7 +198,7 @@ func TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured(t *testing.T) {
 
 	probe := &probeRecorder{fail: map[string]error{}}
 	m := Manager{DataDir: t.TempDir(), Probe: probe.probe}
-	if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+	if err := m.checkEgress(context.Background(), "", Spec{Python: "3.13.1"}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{envIndex, envMirror}
@@ -209,7 +209,7 @@ func TestPreflightFollowsTheUVEnvironmentWhenNothingIsConfigured(t *testing.T) {
 	// A configured flag still wins: it is what the fetch will actually use.
 	probe.seen = nil
 	configured := Manager{DataDir: t.TempDir(), Index: flagIndex, Probe: probe.probe}
-	if err := configured.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+	if err := configured.checkEgress(context.Background(), "", Spec{Python: "3.13.1"}); err != nil {
 		t.Fatal(err)
 	}
 	want = []string{flagIndex, envMirror}
@@ -226,7 +226,7 @@ func TestPreflightFollowsTheDeprecatedIndexVariable(t *testing.T) {
 
 	probe := &probeRecorder{fail: map[string]error{}}
 	m := Manager{DataDir: t.TempDir(), Probe: probe.probe}
-	if err := m.checkEgress(context.Background(), Spec{Python: "3.13.1"}); err != nil {
+	if err := m.checkEgress(context.Background(), "", Spec{Python: "3.13.1"}); err != nil {
 		t.Fatal(err)
 	}
 	if probe.seen[0] != "https://deprecated-mirror.internal/simple" {

@@ -29,8 +29,10 @@ import (
 // configuration.
 
 // DefaultPackageIndex is the index uv resolves and syncs from when no index is
-// configured.
-const DefaultPackageIndex = "https://pypi.org/simple/"
+// configured. The spelling matters twice over: it is uv's own default, and it
+// is the string uv records in `uv.lock` for a package that came from PyPI. A
+// trailing slash would make the lock check refuse every ordinary lock.
+const DefaultPackageIndex = "https://pypi.org/simple"
 
 // DefaultPythonMirror is where uv downloads managed interpreters from when no
 // mirror is configured. It is a *root*, not a file: uv 0.5.9 (the release
@@ -102,25 +104,27 @@ func HTTPProbe(ctx context.Context, url string) error {
 var ErrEgressUnreachable = errors.New("egress preflight failed")
 
 // endpoints is what a fresh preparation has to reach, in the order it needs
-// it: the dependencies, then the interpreter, then any endpoint the operator
+// it: the package index, then the interpreter, then any endpoint the operator
 // declared for the job itself.
 //
-// A configured field wins. When one is empty the environment uv itself reads is
-// consulted, because preparation passes its environment through to uv: an
-// operator who pointed uv at a mirror with UV_DEFAULT_INDEX or
-// UV_PYTHON_INSTALL_MIRROR -- the documented route for index credentials -- is
-// fetching from there, and checking PyPI instead would refuse a preparation
-// that would have worked. The additional-index variables (UV_INDEX,
-// UV_EXTRA_INDEX_URL, UV_FIND_LINKS) are deliberately not followed: they add
-// sources to the default one rather than replacing it, so the default index is
-// still what answers "can this host reach an index at all".
-func (m Manager) endpoints() []EgressEndpoint {
-	index := firstSet(m.Index, os.Getenv("UV_DEFAULT_INDEX"), os.Getenv("UV_INDEX_URL"), DefaultPackageIndex)
+// The package index is not simply "the flag or PyPI". When nothing is
+// configured, uv installs from the URLs the lock records, so those are the
+// endpoints that answer the question -- checking PyPI would refuse a
+// preparation that would have worked from a lock cut against a mirror. When
+// something *is* configured, checkLockIndex has already established that it
+// matches the lock (or preparation stopped), so the configured index is the one
+// to check. The interpreter source follows the same rule: the flag, then the
+// variable uv reads, then the default. The additional-index variables
+// (UV_INDEX, UV_EXTRA_INDEX_URL, UV_FIND_LINKS) are deliberately not followed:
+// they add sources to the default one rather than replacing it.
+func (m Manager) endpoints(dir string) []EgressEndpoint {
+	indexes := m.packageIndexURLs(dir)
 	mirror := firstSet(m.PythonMirror, os.Getenv("UV_PYTHON_INSTALL_MIRROR"), DefaultPythonMirror)
-	out := []EgressEndpoint{
-		{Name: "package index", URL: index},
-		{Name: "managed Python downloads", URL: mirror},
+	out := make([]EgressEndpoint, 0, len(indexes)+1+len(m.ExtraEndpoints))
+	for _, index := range indexes {
+		out = append(out, EgressEndpoint{Name: "package index", URL: index})
 	}
+	out = append(out, EgressEndpoint{Name: "managed Python downloads", URL: mirror})
 	for _, raw := range m.ExtraEndpoints {
 		if url := strings.TrimSpace(raw); url != "" {
 			out = append(out, EgressEndpoint{Name: "job endpoint", URL: url})
@@ -140,11 +144,6 @@ func firstSet(values ...string) string {
 	return ""
 }
 
-// EgressTargets reports the endpoints preparation would check on this host,
-// which is what a caller prints when it wants the check to be visible rather
-// than only audible when it fails.
-func (m Manager) EgressTargets() []EgressEndpoint { return m.endpoints() }
-
 // describeEgress names the endpoints for a progress line, so a transcript
 // records what was checked rather than only that something was.
 func describeEgress(endpoints []EgressEndpoint) string {
@@ -159,12 +158,12 @@ func describeEgress(endpoints []EgressEndpoint) string {
 // first one that cannot be reached. It runs before the interpreter is
 // installed and before dependencies are synced, so a host with no route fails
 // with the route as the reason instead of with the first fetch error.
-func (m Manager) checkEgress(ctx context.Context, spec Spec) error {
+func (m Manager) checkEgress(ctx context.Context, dir string, spec Spec) error {
 	probe := m.Probe
 	if probe == nil {
 		probe = HTTPProbe
 	}
-	for _, endpoint := range m.endpoints() {
+	for _, endpoint := range m.endpoints(dir) {
 		if err := probe(ctx, endpoint.URL); err != nil {
 			return fmt.Errorf(
 				"%w for CPython %s on %s: %s is unreachable (%s): %v\n%s",
@@ -180,11 +179,12 @@ func (m Manager) checkEgress(ctx context.Context, spec Spec) error {
 // host's firewall, whether the operator has a mirror, and whether the host is
 // deliberately air-gapped with its toolchain provisioned out of band.
 func (m Manager) egressHint() string {
-	return "hint: preparation fetches the managed interpreter and the locked dependencies, and has\n" +
-		"no offline bundle. Check the host's route and proxy (HTTPS_PROXY and NO_PROXY are\n" +
-		"honoured), point preparation at an internal mirror with --index and --python-mirror,\n" +
-		"provision python/ and cache/uv/ out of band, or run with --skip-egress-check when the\n" +
-		"host is deliberately air-gapped and already primed."
+	return "hint: preparation downloads the managed interpreter and the locked dependencies, and\n" +
+		"has no offline bundle. Check the host's route and proxy (HTTPS_PROXY and NO_PROXY are\n" +
+		"honoured). An interpreter mirror is --python-mirror; packages come from the index\n" +
+		"uv.lock records, and --index must name that same index (re-lock with\n" +
+		"`uv lock --default-index <url>` to change it). A primed host can provision tools/uv/uv,\n" +
+		"python/ and cache/uv/ out of band and run with --skip-egress-check."
 }
 
 // installError explains a failed interpreter install. A preflight that passed

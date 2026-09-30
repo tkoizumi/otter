@@ -23,6 +23,16 @@ var exactVersion = regexp.MustCompile(`^3\.[0-9]+\.[0-9]+$`)
 // preparation commands, their flags, or the environment layout change: a bump
 // must produce a different identity so existing environments are rebuilt
 // rather than silently reused.
+//
+// The egress preflight and the index/mirror passthrough deliberately did not
+// bump it, because neither changes what an environment is. With nothing
+// configured the commands are byte-for-byte what they were, so every existing
+// environment keeps its identity and is reused rather than re-downloading an
+// interpreter and its wheels. With something configured, the flags are pinned
+// by the lock: `uv.lock` records the registry each package came from, the lock
+// is part of the declared inputs, and a configured index that disagrees with it
+// is refused before anything is built (see lock.go). A different package route
+// is therefore always a different lock, and so a different digest.
 const RecipeVersion = "1"
 
 // Spec identifies the declared inputs of a prepared environment.
@@ -456,17 +466,24 @@ func (m Manager) Prepare(ctx context.Context, dir, job, uvPath string) (Ready, e
 	if err != nil {
 		return Ready{}, fmt.Errorf("read uv version: %w", err)
 	}
+	// The lock decides where packages come from, so settle its disagreement
+	// with a configured index here, locally and before the network check: uv
+	// would otherwise refuse this at `sync` with a bare exit 2 that names
+	// neither the lock nor the index.
+	if err := m.checkLockIndex(dir); err != nil {
+		return Ready{}, err
+	}
 	// Ask the network question before the fetch, so a host with no route fails
 	// as a route problem rather than as whatever uv was doing when it noticed.
 	// A skipped check is recorded: it is what stops a later interpreter failure
 	// from being misreported as a platform/patch-version problem.
 	egressChecked := false
 	if !m.SkipEgressCheck {
-		if err := m.checkEgress(ctx, spec); err != nil {
+		if err := m.checkEgress(ctx, dir, spec); err != nil {
 			return Ready{}, err
 		}
 		egressChecked = true
-		m.logf("egress preflight ok for environment %s: %s\n", spec.Digest[:12], describeEgress(m.endpoints()))
+		m.logf("egress preflight ok for environment %s: %s\n", spec.Digest[:12], describeEgress(m.endpoints(dir)))
 	}
 	baseEnv := append(os.Environ(), "UV_PYTHON_INSTALL_DIR="+filepath.Join(root, "python"), "UV_CACHE_DIR="+filepath.Join(root, "cache", "uv"), "UV_PROJECT_ENVIRONMENT="+envDir, "UV_PYTHON_PREFERENCE=only-managed", "UV_NO_CONFIG=1")
 	installArgs := []string{"python", "install", "--install-dir", filepath.Join(root, "python")}
