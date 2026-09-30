@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
+	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/retry"
 	"github.com/tkoizumi/otter/internal/runs"
 )
@@ -81,6 +83,45 @@ func (d *Daemon) recoverRuns(ctx context.Context) error {
 	return errors.Join(failed...)
 }
 
+// recoveryRetryPolicy returns the manifest that decides whether an interrupted
+// run gets a successor, and how long it waits.
+//
+// The policy belongs to the code the run was admitted to execute, not to
+// whatever is live now. Recovering from the live registry manifest would let a
+// release that changed between attempts retroactively decide an older run's
+// retries -- granting an attempt its bound release forbade, or denying one that
+// release promised -- while the successor still executes the bound snapshot.
+// That is the same rule execution already follows by re-reading the manifest
+// from run.ReleaseSourceDir rather than the live tree, so recovery loads the
+// bound snapshot's manifest for this decision too.
+//
+// The live registry manifest is the fallback in exactly one case: a run with no
+// release binding at all (a legacy run, or one submitted before releases
+// existed). Such a run executes from the live tree, so the live policy is the
+// only policy it has.
+//
+// A bound run whose snapshot cannot be read gets no successor. The fallback is
+// deliberately NOT extended to that case: executeRun refuses the same run for
+// the same reason, so a successor could only fail, and if one were planned from
+// the live manifest it would be a retry of one release governed by another --
+// precisely the defect this function exists to remove.
+func (d *Daemon) recoveryRetryPolicy(run *runs.Run) *config.Manifest {
+	if run.ReleaseSourceDir != "" {
+		bound, err := config.LoadAndValidate(filepath.Join(run.ReleaseSourceDir, config.ManifestFileName))
+		if err != nil {
+			d.log.Warn("recovery_bound_manifest_unreadable",
+				"job", run.JobID, "run_id", run.ID,
+				"release", shortDigest(run.ReleaseDigest), "error", err.Error())
+			return nil
+		}
+		return bound
+	}
+	if entry, ok := d.reg.get(run.JobID); ok {
+		return entry.Manifest
+	}
+	return nil
+}
+
 // recoverInterrupted terminalises one run left `running` by a previous daemon
 // instance and, when the policy allows, creates its successor in the same
 // transaction as the terminal write. A returned error means the run was not
@@ -93,8 +134,8 @@ func (d *Daemon) recoverInterrupted(ctx context.Context, run *runs.Run) error {
 	}
 
 	var next *retryPlan
-	if ok && entry.Manifest != nil && retry.ShouldRetry(entry.Manifest.MaxAttempts(), run.Attempt) {
-		next = d.planRetry(run, entry.Manifest)
+	if policy := d.recoveryRetryPolicy(run); policy != nil && retry.ShouldRetry(policy.MaxAttempts(), run.Attempt) {
+		next = d.planRetry(run, policy)
 	}
 
 	f := runs.Finish{
@@ -140,9 +181,8 @@ func (d *Daemon) applyFinishRecord(ctx context.Context, run *runs.Run, rec finis
 
 	var next *retryPlan
 	if rec.Retry {
-		if entry, ok := d.reg.get(run.JobID); ok && entry.Manifest != nil &&
-			retry.ShouldRetry(entry.Manifest.MaxAttempts(), run.Attempt) {
-			next = d.planRetry(run, entry.Manifest)
+		if policy := d.recoveryRetryPolicy(run); policy != nil && retry.ShouldRetry(policy.MaxAttempts(), run.Attempt) {
+			next = d.planRetry(run, policy)
 		}
 	}
 

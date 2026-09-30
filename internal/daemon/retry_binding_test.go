@@ -638,102 +638,158 @@ func p0PinnedReleases(t *testing.T, dataDir, jobID string) map[string]bool {
 	return out
 }
 
-// ---------------------------------------------------------- 4. recovery probe
+// ---------------------------------------------- 4. recovery retry policy
 
-// The probe the task list does not mention. Crash recovery plans a successor
-// from the LIVE registry manifest (recovery.go) while it copies the release
-// binding from the run it is repairing. This test records what that means: a
-// retry policy that changed between attempts is applied to the older bound run.
+// Crash recovery plans a successor for an interrupted run from the manifest of
+// the release that run was bound to -- the same snapshot executeRun re-reads --
+// not from the live registry entry. Each case stages a bound release and a live
+// release whose retry policies disagree, then kills a first attempt and lets
+// startup recovery decide.
 //
-// Release A allows one attempt; release B allows two. The interrupted run is
-// bound to A and B is the live release, so a retry exists only if the live
-// policy was applied. The retry it creates still runs release A's snapshot.
-func TestRecoveryAppliesTheLiveRetryPolicyToABoundRun(t *testing.T) {
+// The two directions are the two failure modes of getting this wrong: a live
+// policy that is looser must not grant a retry the bound release forbids, and a
+// live policy that is stricter must not deny the retry the bound release
+// promises. Both cases assert the retry, when it exists, still runs the bound
+// snapshot.
+func TestRecoveryPlansRetriesFromTheBoundRelease(t *testing.T) {
 	requirePython(t)
 
-	root := t.TempDir()
-	dataDir := t.TempDir()
-
-	// Release A: one attempt, so its own policy would never plan a successor.
-	p0StagedJob(t, root, "p0-retry", p0ExternalEntrypoint, "  attempts: 1\n")
-	releaseAll(t, root, dataDir)
-	inst := identityIDFor(t, root, dataDir, "p0-retry")
-	bound, ok, err := release.Manager{DataDir: dataDir}.Active(inst)
-	if err != nil || !ok {
-		t.Fatalf("release A is not active: ok=%v err=%v", ok, err)
-	}
-	boundDir, err := release.Manager{DataDir: dataDir}.SourceDir(bound)
-	if err != nil {
-		t.Fatalf("resolve release A's snapshot: %v", err)
-	}
-
-	// Release B is activated: two attempts. Only the live policy can retry.
-	p0StagedJob(t, root, "p0-retry", `print("release-b")`, "  attempts: 2\n  backoff: none\n")
-	releaseAll(t, root, dataDir)
-	live, ok, err := release.Manager{DataDir: dataDir}.Active(inst)
-	if err != nil || !ok {
-		t.Fatalf("release B is not active: ok=%v err=%v", ok, err)
-	}
-	if live.Digest == bound.Digest {
-		t.Fatal("fixture is wrong: release B did not replace release A")
-	}
-
-	// A daemon died while executing release A's first attempt. The killed child
-	// had already written its attempt-1 marker into the snapshot, which is the
-	// state the retry must observe: attempt 2 sees the marker and succeeds.
-	if err := os.WriteFile(filepath.Join(boundDir, "a-marker.txt"),
-		[]byte("attempt 1 ran in "+boundDir+"\n"), 0o644); err != nil {
-		t.Fatalf("plant the killed attempt's marker: %v", err)
-	}
-	p0SeedRunningRun(t, dataDir, inst, "run-crashed", bound.Digest, boundDir, 1)
-
-	d, err := New(context.Background(), Options{
-		Config:  startupConfig(t, root, dataDir),
-		Logger:  testLogger(),
-		Version: "test",
-	})
-	if err != nil {
-		t.Fatalf("daemon.New (recovery must not fail): %v", err)
-	}
-	startDaemon(t, d)
-
-	// Attempt 2 exists, which release A's policy would never have planned.
-	attempts := p0WaitForChainLength(t, dataDir, "run-crashed", 2, 30*time.Second)
-	retry := attempts[1]
-	if retry.Status == runs.StatusRetrying || retry.Status == runs.StatusQueued {
-		t.Logf("retry is still pending at read time: %s", retry.Status)
-	}
-	if retry.ReleaseDigest != bound.Digest {
-		t.Errorf("recovery-bound retry digest = %s, want release A's %s", retry.ReleaseDigest, bound.Digest)
-	}
-	if retry.ReleaseSourceDir != boundDir {
-		t.Errorf("recovery-bound retry source dir = %s, want release A's %s", retry.ReleaseSourceDir, boundDir)
-	}
-	if got := attempts[0].ReleaseDigest; got != bound.Digest {
-		t.Errorf("interrupted attempt digest = %s, want %s", got, bound.Digest)
-	}
-	if live.Digest == retry.ReleaseDigest {
-		t.Errorf("the retry was re-bound to the live release %s", live.Digest[:12])
+	cases := []struct {
+		name string
+		// boundPolicy is release A's retry block: the policy the interrupted run
+		// was admitted to.
+		boundPolicy string
+		// livePolicy is release B's retry block: the policy of the release that
+		// is live when recovery runs.
+		livePolicy string
+		// wantRetry is whether recovery must create a successor.
+		wantRetry bool
+	}{
+		{
+			// A live release must not loosen an older run's retry budget.
+			name:        "live policy is looser than the bound release",
+			boundPolicy: "  attempts: 1\n",
+			livePolicy:  "  attempts: 2\n  backoff: none\n",
+			wantRetry:   false,
+		},
+		{
+			// A live release must not tighten it either: the retry the bound
+			// release promises still happens.
+			name:        "live policy is stricter than the bound release",
+			boundPolicy: "  attempts: 2\n  backoff: none\n",
+			livePolicy:  "  attempts: 1\n",
+			wantRetry:   true,
+		},
 	}
 
-	// And it executes release A's snapshot, not the live release's code. The
-	// retry is claimed by the worker pool as soon as the daemon is running, so
-	// poll the database rather than assuming a fixed sleep is enough.
-	stderr, otter := p0AwaitAttemptOutput(t, d, "run-crashed", 2, 30*time.Second)
-	_, settled := readRunFromDisk(t, dataDir, "run-crashed")
-	if len(settled) != 2 {
-		t.Fatalf("database has %d attempts, want 2", len(settled))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dataDir := t.TempDir()
+
+			// Release A: the release the interrupted run was admitted to.
+			p0StagedJob(t, root, "p0-retry", p0ExternalEntrypoint, tc.boundPolicy)
+			releaseAll(t, root, dataDir)
+			inst := identityIDFor(t, root, dataDir, "p0-retry")
+			bound, ok, err := release.Manager{DataDir: dataDir}.Active(inst)
+			if err != nil || !ok {
+				t.Fatalf("release A is not active: ok=%v err=%v", ok, err)
+			}
+			boundDir, err := release.Manager{DataDir: dataDir}.SourceDir(bound)
+			if err != nil {
+				t.Fatalf("resolve release A's snapshot: %v", err)
+			}
+
+			// Release B: the release that is live when recovery runs.
+			p0StagedJob(t, root, "p0-retry", `print("release-b")`, tc.livePolicy)
+			releaseAll(t, root, dataDir)
+			live, ok, err := release.Manager{DataDir: dataDir}.Active(inst)
+			if err != nil || !ok {
+				t.Fatalf("release B is not active: ok=%v err=%v", ok, err)
+			}
+			if live.Digest == bound.Digest {
+				t.Fatal("fixture is wrong: release B did not replace release A")
+			}
+
+			// A daemon died while executing release A's first attempt. The
+			// killed child had already written its attempt-1 marker into the
+			// snapshot, which is the state a successor must observe: attempt 2
+			// sees the marker and succeeds.
+			if err := os.WriteFile(filepath.Join(boundDir, "a-marker.txt"),
+				[]byte("attempt 1 ran in "+boundDir+"\n"), 0o644); err != nil {
+				t.Fatalf("plant the killed attempt's marker: %v", err)
+			}
+			p0SeedRunningRun(t, dataDir, inst, "run-crashed", bound.Digest, boundDir, 1)
+
+			d, err := New(context.Background(), Options{
+				Config:  startupConfig(t, root, dataDir),
+				Logger:  testLogger(),
+				Version: "test",
+			})
+			if err != nil {
+				t.Fatalf("daemon.New (recovery must not fail): %v", err)
+			}
+			startDaemon(t, d)
+
+			// The interrupted attempt is terminalised whether or not it retries.
+			_, attempts := readRunFromDisk(t, dataDir, "run-crashed")
+			if len(attempts) < 1 || attempts[0].Status != runs.StatusFailed {
+				t.Fatalf("interrupted attempt = %+v, want a failed attempt", attempts)
+			}
+			if got := attempts[0].ReleaseDigest; got != bound.Digest {
+				t.Errorf("interrupted attempt digest = %s, want the bound release %s", got, bound.Digest)
+			}
+
+			if !tc.wantRetry {
+				// No successor may appear: the bound policy forbids it. Poll for
+				// a moment so a wrongly-created retry would be observed rather
+				// than missed by a fast read.
+				deadline := time.Now().Add(2 * time.Second)
+				for time.Now().Before(deadline) {
+					_, current := readRunFromDisk(t, dataDir, "run-crashed")
+					if len(current) != 1 {
+						t.Fatalf("recovery created %d attempts; the bound release allows 1, so the live release's policy was applied",
+							len(current))
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+				return
+			}
+
+			// The bound release promises a second attempt, even though the live
+			// release does not.
+			// The successor is queued immediately (backoff: none), so a few
+			// seconds is ample; a wrongly-absent retry fails fast.
+			attempts = p0WaitForChainLength(t, dataDir, "run-crashed", 2, 5*time.Second)
+			retry := attempts[1]
+			if retry.ReleaseDigest != bound.Digest {
+				t.Errorf("recovery-bound retry digest = %s, want the bound release %s", retry.ReleaseDigest, bound.Digest)
+			}
+			if retry.ReleaseSourceDir != boundDir {
+				t.Errorf("recovery-bound retry source dir = %s, want the bound release %s", retry.ReleaseSourceDir, boundDir)
+			}
+			if live.Digest == retry.ReleaseDigest {
+				t.Errorf("the retry was re-bound to the live release %s", live.Digest[:12])
+			}
+
+			// It executes the bound snapshot, not the live release's code.
+			stderr, otter := p0AwaitAttemptOutput(t, d, "run-crashed", 2, 30*time.Second)
+			_, settled := readRunFromDisk(t, dataDir, "run-crashed")
+			if len(settled) != 2 {
+				t.Fatalf("database has %d attempts, want 2", len(settled))
+			}
+			if settled[1].Status != runs.StatusSucceeded {
+				t.Fatalf("recovery retry status = %s (%s), want succeeded on the bound snapshot",
+					settled[1].Status, settled[1].ErrorString())
+			}
+			stdout := strings.Join(logMessages(t, d, settled[1].ID, runs.StreamStdout), "\n")
+			if !strings.Contains(stdout, "release-a attempt 2") {
+				t.Errorf("the recovery retry did not execute the bound snapshot:\nstdout=%q\nstderr=%q\notter=%q",
+					stdout, stderr, otter)
+			}
+			p0AssertSnapshotRan(t, boundDir)
+		})
 	}
-	if settled[1].Status != runs.StatusSucceeded {
-		t.Fatalf("recovery retry status = %s (%s), want succeeded on release A's snapshot",
-			settled[1].Status, settled[1].ErrorString())
-	}
-	stdout := strings.Join(logMessages(t, d, settled[1].ID, runs.StreamStdout), "\n")
-	if !strings.Contains(stdout, "release-a attempt 2") {
-		t.Errorf("the recovery retry did not execute release A's snapshot:\nstdout=%q\nstderr=%q\notter=%q",
-			stdout, stderr, otter)
-	}
-	p0AssertSnapshotRan(t, boundDir)
 }
 
 // p0AwaitAttemptOutput waits until attempt n of a run has reached a terminal
