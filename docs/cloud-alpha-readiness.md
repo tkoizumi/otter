@@ -349,7 +349,10 @@ than the checklist being prose.
 Protect the daemon and host from runaway Python jobs: memory, CPU, process/task
 count. The manifest has `timeout` and `concurrency` only
 ([manifest-reference.md](manifest-reference.md) lines 84, 237) — no memory or CPU
-bound — so this is host-level (`MemoryMax`, `CPUQuota`, `TasksMax`).
+bound — so this is host-level (`MemoryMax`, `MemoryHigh`, `MemorySwapMax`,
+`CPUQuota`, `TasksMax`). `MemorySwapMax=0` is part of the bound, not a detail:
+with the cgroup's swap unbounded the hard cap never binds and the runaway is
+paged out instead of killed.
 
 **Done when:** a deliberately runaway Python process is killed without killing
 `otterd` or making the host unavailable.

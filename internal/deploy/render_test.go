@@ -29,10 +29,11 @@ func testTarget() Target {
 // is the one production emits.
 func testUnitOptions() UnitOptions {
 	return UnitOptions{
-		MemoryMax:  DefaultMemoryMax,
-		MemoryHigh: DefaultMemoryHigh,
-		CPUQuota:   DefaultCPUQuota,
-		TasksMax:   DefaultTasksMax,
+		MemoryMax:     DefaultMemoryMax,
+		MemoryHigh:    DefaultMemoryHigh,
+		MemorySwapMax: DefaultMemorySwapMax,
+		CPUQuota:      DefaultCPUQuota,
+		TasksMax:      DefaultTasksMax,
 	}
 }
 
@@ -85,16 +86,18 @@ func TestUnitFileNeverTouchesTheDataDirectory(t *testing.T) {
 // systemd, not this package, interprets the size.
 func TestUnitFileEmitsResourceCaps(t *testing.T) {
 	opts := UnitOptions{
-		MemoryMax:  "4G",
-		MemoryHigh: "3G",
-		CPUQuota:   "150%",
-		TasksMax:   "256",
+		MemoryMax:     "4G",
+		MemoryHigh:    "3G",
+		MemorySwapMax: "512M",
+		CPUQuota:      "150%",
+		TasksMax:      "256",
 	}
 	unit := UnitFile(testTarget(), opts)
 
 	for _, want := range []string{
 		"MemoryMax=4G",
 		"MemoryHigh=3G",
+		"MemorySwapMax=512M",
 		"CPUQuota=150%",
 		"TasksMax=256",
 	} {
@@ -105,12 +108,15 @@ func TestUnitFileEmitsResourceCaps(t *testing.T) {
 }
 
 // The defaults are what a plain `otter deploy` writes, so they must be present
-// without any flag being passed.
+// without any flag being passed. MemoryHigh is the exception: its default is the
+// "off" opt-out, because a soft cap delays the OOM kill instead of replacing it
+// (with MemorySwapMax=0 there is nowhere to reclaim the pages to, so a runaway
+// parks above memory.high). Under the default, memory.max is what kills.
 func TestUnitFileEmitsTheDefaultCaps(t *testing.T) {
 	unit := UnitFile(testTarget(), testUnitOptions())
 	for _, want := range []string{
 		"\nMemoryMax=" + DefaultMemoryMax + "\n",
-		"\nMemoryHigh=" + DefaultMemoryHigh + "\n",
+		"\nMemorySwapMax=" + DefaultMemorySwapMax + "\n",
 		"\nCPUQuota=" + DefaultCPUQuota + "\n",
 		"\nTasksMax=" + DefaultTasksMax + "\n",
 	} {
@@ -118,19 +124,42 @@ func TestUnitFileEmitsTheDefaultCaps(t *testing.T) {
 			t.Errorf("unit file is missing the default cap %q\n---\n%s", want, unit)
 		}
 	}
+	if DefaultMemoryHigh != CapOff {
+		t.Errorf("DefaultMemoryHigh = %q, want the %q opt-out: a soft cap turns the kill into a pin", DefaultMemoryHigh, CapOff)
+	}
+	if strings.Contains(unit, "MemoryHigh=") {
+		t.Errorf("the default deploy emits a soft cap; it would pin a runaway below MemoryMax instead of letting the OOM killer run:\n%s", unit)
+	}
+}
+
+// MemorySwapMax=0 is the exception to the "a zero size is refused" rule, and it
+// is the default. It must be emitted as a directive: an absent MemorySwapMax
+// leaves the cgroup's swap unbounded, which is what let a runaway job on the
+// Castor host outgrow MemoryMax through swap. This is the regression that a
+// "tidy up the zero" change would reintroduce, so it is asserted directly.
+func TestUnitFileEmitsMemorySwapMaxZero(t *testing.T) {
+	unit := UnitFile(testTarget(), testUnitOptions())
+	if !strings.Contains(unit, "\nMemorySwapMax=0\n") {
+		t.Errorf("unit file does not emit MemorySwapMax=0, so the cgroup could swap without bound:\n%s", unit)
+	}
+	if CapEnabled(DefaultMemorySwapMax) != true || CapEnabled("0") != true {
+		t.Error(`CapEnabled("0") must be true: zero is a swap bound, not an absent cap`)
+	}
 }
 
 // The unset case: an empty value or the explicit "off" emits no directive at
 // all, so systemd's own default applies. It must not emit "MemoryMax=0", which
-// systemd reads as a real limit of zero.
+// systemd reads as a real limit of zero -- and, for swap, "off" is the opt-out
+// that restores unbounded swapping, so it must not emit "MemorySwapMax=0"
+// either.
 func TestUnitFileOmitsCapsThatAreOff(t *testing.T) {
 	for _, opts := range []UnitOptions{
 		{},
-		{MemoryMax: CapOff, MemoryHigh: CapOff, CPUQuota: CapOff, TasksMax: CapOff},
-		{MemoryMax: "OFF", MemoryHigh: " off ", CPUQuota: "", TasksMax: CapOff},
+		{MemoryMax: CapOff, MemoryHigh: CapOff, MemorySwapMax: CapOff, CPUQuota: CapOff, TasksMax: CapOff},
+		{MemoryMax: "OFF", MemoryHigh: " off ", MemorySwapMax: CapOff, CPUQuota: "", TasksMax: CapOff},
 	} {
 		unit := UnitFile(testTarget(), opts)
-		for _, forbidden := range []string{"MemoryMax=", "MemoryHigh=", "CPUQuota=", "TasksMax="} {
+		for _, forbidden := range []string{"MemoryMax=", "MemoryHigh=", "MemorySwapMax=", "CPUQuota=", "TasksMax="} {
 			if strings.Contains(unit, forbidden) {
 				t.Errorf("cap %q was emitted for %+v:\n%s", forbidden, opts, unit)
 			}
@@ -215,7 +244,7 @@ func TestValidateUnitPathsRejectsProtectedHome(t *testing.T) {
 // CapEnabled is the single decision the renderer and the operators share.
 func TestCapEnabled(t *testing.T) {
 	for value, want := range map[string]bool{
-		"4G": true, "75%": true, "off": false, "OFF": false,
+		"4G": true, "75%": true, "0": true, "0M": true, "off": false, "OFF": false,
 		" off ": false, "": false, "   ": false,
 	} {
 		if got := CapEnabled(value); got != want {

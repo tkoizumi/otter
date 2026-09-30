@@ -65,15 +65,17 @@ type Config struct {
 	// DefaultKeep.
 	Keep int
 
-	// MemoryMax, MemoryHigh, CPUQuota and TasksMax are the systemd resource
-	// caps written into the generated unit. They bound the whole workspace:
-	// otterd and every job it runs share one cgroup, so the value covers the
-	// sum of the concurrent runs plus the daemon, not one run. A value of
-	// CapOff (or empty) emits no directive and leaves systemd's own default.
-	MemoryMax  string
-	MemoryHigh string
-	CPUQuota   string
-	TasksMax   string
+	// MemoryMax, MemoryHigh, MemorySwapMax, CPUQuota and TasksMax are the
+	// systemd resource caps written into the generated unit. They bound the
+	// whole workspace: otterd and every job it runs share one cgroup, so the
+	// value covers the sum of the concurrent runs plus the daemon, not one run.
+	// A value of CapOff (or empty) emits no directive and leaves systemd's own
+	// default.
+	MemoryMax     string
+	MemoryHigh    string
+	MemorySwapMax string
+	CPUQuota      string
+	TasksMax      string
 
 	// ReadWritePaths are extra absolute paths the service may write, on top of
 	// the workspace and data directories the unit always lists. They are how a
@@ -148,12 +150,14 @@ type Flags struct {
 	// deploy converges, so its own default is DefaultKeep.
 	Keep int
 
-	// MemoryMax, MemoryHigh, CPUQuota and TasksMax size the unit's cgroup.
-	// Empty means "use the built-in default"; CapOff means "emit no cap".
-	MemoryMax  string
-	MemoryHigh string
-	CPUQuota   string
-	TasksMax   string
+	// MemoryMax, MemoryHigh, MemorySwapMax, CPUQuota and TasksMax size the
+	// unit's cgroup. Empty means "use the built-in default"; CapOff means "emit
+	// no cap".
+	MemoryMax     string
+	MemoryHigh    string
+	MemorySwapMax string
+	CPUQuota      string
+	TasksMax      string
 	// ReadWritePaths are extra paths outside the workspace that jobs may
 	// write, collected from every --rw-path. They extend the unit's
 	// ReadWritePaths= under ProtectSystem=strict.
@@ -198,16 +202,46 @@ const DefaultKeep = 3
 // host and a runaway job cannot monopolise a large machine. TasksMax bounds
 // processes plus threads, which is the fork-bomb guard; it is deliberately
 // generous because every Python thread counts against it.
+//
+// MemorySwapMax is the one absolute value, and it is "0" on purpose. MemoryMax
+// is only binding when the cgroup cannot grow through swap: with the cgroup's
+// swap unbounded, memory.high throttles and reclaims a runaway into the
+// swapfile, memory.current (which does not include swap) never reaches
+// memory.max, and the OOM killer never runs -- so the swapfile fills, available
+// memory collapses, and the daemon sharing the cgroup starves. Zero forbids
+// swap for the unit, which makes the hard cap the only place a runaway can go.
+// It is overridable like every other cap: a size, a percentage of RAM, or
+// infinity bounds swap without forbidding it, and "off" restores systemd's
+// unbounded default.
+//
+// MemoryHigh defaults to "off" for the same reason, and the two defaults are
+// only safe together. A soft cap does not kill: it throttles and reclaims. With
+// MemorySwapMax=0 there is nowhere to reclaim anonymous pages to, so a
+// hold-everything allocator parks just above memory.high and creeps toward
+// memory.max instead of being OOM-killed. Measured on 2026-09-30 with
+// MemoryHigh=20%/MemoryMax=25% (the deployed 60%/75% ratio): memory.current
+// settled at 803 -> 831 MiB against a 787 MiB soft cap and a 983 MiB hard cap
+// with oom_kill 0, and only the job's own 600s manifest timeout ended it. That
+// turns a one-second OOM kill into a multi-minute pin, and on a --workers=1
+// host it occupies the only worker for the whole timeout. The guarantee P0-04
+// documents is that a runaway is *killed*, so the default is no soft cap --
+// which is also systemd's own default. The flag is unchanged: an operator who
+// wants throttling can still set --memory-high below --memory-max, and now
+// knows it delays the kill rather than replacing it.
 const (
-	DefaultMemoryMax  = "75%"
-	DefaultMemoryHigh = "60%"
-	DefaultCPUQuota   = "200%"
-	DefaultTasksMax   = "512"
+	DefaultMemoryMax     = "75%"
+	DefaultMemoryHigh    = CapOff
+	DefaultMemorySwapMax = "0"
+	DefaultCPUQuota      = "200%"
+	DefaultTasksMax      = "512"
 
 	// CapOff is the explicit "emit no directive" value for any cap. It is
-	// deliberately not "0": systemd logs a zero size as out of range, ignores
-	// it, and leaves the cgroup uncapped, so a zero would look like a cap
-	// while enforcing nothing. validateMemoryCap rejects it for that reason.
+	// deliberately not "0" for the other caps: systemd logs a zero size as out
+	// of range, ignores it, and leaves the cgroup uncapped, so a zero would
+	// look like a cap while enforcing nothing. validateMemoryCap rejects it for
+	// that reason. MemorySwapMax is the exception, because memory.swap.max=0 is
+	// a valid kernel limit meaning "this cgroup may not swap";
+	// validateMemorySwapMax accepts zero and the default is "0".
 	CapOff = "off"
 )
 
@@ -285,6 +319,7 @@ type deployFile struct {
 	// default"; CapOff means "emit no directive".
 	MemoryMax      string   `yaml:"memory_max"`
 	MemoryHigh     string   `yaml:"memory_high"`
+	MemorySwapMax  string   `yaml:"memory_swap_max"`
 	CPUQuota       string   `yaml:"cpu_quota"`
 	TasksMax       string   `yaml:"tasks_max"`
 	ReadWritePaths []string `yaml:"read_write_paths"`
@@ -305,6 +340,7 @@ type fileConfig struct {
 type unitSettings struct {
 	MemoryMax      string
 	MemoryHigh     string
+	MemorySwapMax  string
 	CPUQuota       string
 	TasksMax       string
 	ReadWritePaths []string
@@ -340,7 +376,8 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.DurationVar(&f.Timeout, "timeout", 10*time.Minute, "overall timeout for the deploy")
 	fs.IntVar(&f.Keep, "keep", DefaultKeep, "inactive releases to retain per job (0 keeps every release)")
 	fs.StringVar(&f.MemoryMax, "memory-max", "", "systemd MemoryMax for the workspace: a size (4G) or a percent of host RAM (default "+DefaultMemoryMax+"; \""+CapOff+"\" emits no cap)")
-	fs.StringVar(&f.MemoryHigh, "memory-high", "", "systemd MemoryHigh, the soft memory ceiling (default "+DefaultMemoryHigh+"; \""+CapOff+"\" emits no cap)")
+	fs.StringVar(&f.MemoryHigh, "memory-high", "", "systemd MemoryHigh, the soft memory ceiling (default "+DefaultMemoryHigh+", so memory.max kills; a percent or size throttles and reclaims until memory.max instead)")
+	fs.StringVar(&f.MemorySwapMax, "memory-swap-max", "", "systemd MemorySwapMax, the cgroup's swap bound (default "+DefaultMemorySwapMax+", which forbids swap so MemoryMax binds; \""+CapOff+"\" leaves swap unbounded)")
 	fs.StringVar(&f.CPUQuota, "cpu-quota", "", "systemd CPUQuota, percent of one CPU (default "+DefaultCPUQuota+"; \""+CapOff+"\" emits no cap)")
 	fs.StringVar(&f.TasksMax, "tasks-max", "", "systemd TasksMax, processes and threads (default "+DefaultTasksMax+"; \""+CapOff+"\" emits no cap)")
 	fs.Var(&f.ReadWritePaths, "rw-path", "extra path the service may write under ProtectSystem=strict (repeatable)")
@@ -487,6 +524,7 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 	}
 	cfg.MemoryMax = firstNonEmpty(f.MemoryMax, fileUnit.MemoryMax, DefaultMemoryMax)
 	cfg.MemoryHigh = firstNonEmpty(f.MemoryHigh, fileUnit.MemoryHigh, DefaultMemoryHigh)
+	cfg.MemorySwapMax = firstNonEmpty(f.MemorySwapMax, fileUnit.MemorySwapMax, DefaultMemorySwapMax)
 	cfg.CPUQuota = firstNonEmpty(f.CPUQuota, fileUnit.CPUQuota, DefaultCPUQuota)
 	cfg.TasksMax = firstNonEmpty(f.TasksMax, fileUnit.TasksMax, DefaultTasksMax)
 	cfg.ReadWritePaths = append(append([]string{}, fileUnit.ReadWritePaths...), f.ReadWritePaths...)
@@ -564,6 +602,7 @@ func loadConfigFile(path string) (*fileConfig, error) {
 		Unit: unitSettings{
 			MemoryMax:      df.MemoryMax,
 			MemoryHigh:     df.MemoryHigh,
+			MemorySwapMax:  df.MemorySwapMax,
 			CPUQuota:       df.CPUQuota,
 			TasksMax:       df.TasksMax,
 			ReadWritePaths: df.ReadWritePaths,
@@ -847,6 +886,11 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	// MemorySwapMax is validated separately because zero is valid there and
+	// validateMemoryCap refuses it. See validateMemorySwapMax.
+	if err := validateMemorySwapMax("--memory-swap-max", c.MemorySwapMax); err != nil {
+		return err
+	}
 	if err := validateCPUQuota(c.CPUQuota); err != nil {
 		return err
 	}
@@ -871,6 +915,7 @@ func (c Config) UnitOptions() UnitOptions {
 	return UnitOptions{
 		MemoryMax:      c.MemoryMax,
 		MemoryHigh:     c.MemoryHigh,
+		MemorySwapMax:  c.MemorySwapMax,
 		CPUQuota:       c.CPUQuota,
 		TasksMax:       c.TasksMax,
 		ReadWritePaths: c.ReadWritePaths,
@@ -908,6 +953,49 @@ func validateMemoryCap(name, value string) error {
 	}
 	size, err := strconv.ParseFloat(s[:digits], 64)
 	if err != nil || size <= 0 {
+		return bad
+	}
+	switch strings.ToUpper(s[digits:]) {
+	case "", "K", "M", "G", "T", "KB", "MB", "GB", "TB", "KIB", "MIB", "GIB", "TIB":
+		return nil
+	}
+	return fmt.Errorf("%s has an unknown size suffix, got %q", name, value)
+}
+
+// validateMemorySwapMax accepts what systemd's MemorySwapMax= accepts: the
+// CapOff opt-out, "infinity", a non-negative size with an optional binary or
+// decimal suffix, or a non-negative percentage of the host's physical RAM.
+//
+// Zero is accepted, and that is the difference from validateMemoryCap. For
+// MemoryMax a zero is discarded as out of range, so accepting it would write a
+// unit that looks capped and enforces nothing; for MemorySwapMax the kernel
+// treats memory.swap.max=0 as a real limit -- "this cgroup may not swap" -- and
+// systemd writes it through. That value is the deploy default, because it is
+// what makes MemoryMax binding on a host with a swapfile.
+func validateMemorySwapMax(name, value string) error {
+	s := strings.TrimSpace(value)
+	if s == "" || strings.EqualFold(s, CapOff) || strings.EqualFold(s, "infinity") {
+		return nil
+	}
+	bad := fmt.Errorf("%s must be a non-negative size (0, 64M, 1G), a percentage of RAM (50%%), or %q, got %q",
+		name, CapOff, value)
+	if strings.HasSuffix(s, "%") {
+		number := strings.TrimSuffix(s, "%")
+		percent, err := strconv.ParseFloat(number, 64)
+		if err != nil || percent < 0 || percent != percent {
+			return bad
+		}
+		return nil
+	}
+	digits := 0
+	for digits < len(s) && s[digits] >= '0' && s[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return bad
+	}
+	size, err := strconv.ParseFloat(s[:digits], 64)
+	if err != nil || size < 0 {
 		return bad
 	}
 	switch strings.ToUpper(s[digits:]) {
