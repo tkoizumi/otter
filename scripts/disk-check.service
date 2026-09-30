@@ -1,0 +1,52 @@
+# Otter disk-pressure check — systemd service.
+#
+# Install beside disk-check.timer:
+#
+#   sudo install -m 0755 scripts/disk-check.sh /usr/local/lib/otter/disk-check.sh
+#   sudo install -m 0644 scripts/disk-check.service /etc/systemd/system/
+#   sudo install -m 0644 scripts/disk-check.timer   /etc/systemd/system/
+#   sudo install -d -m 0750 /etc/otter
+#   printf 'OTTER_DISK_URL=https://hc-ping.com/<uuid>\nOTTER_DATA_DIR=/opt/otter/workspaces/<workspace>/.otter/data\n' |
+#       sudo tee /etc/otter/disk-check.env >/dev/null
+#   sudo chmod 0640 /etc/otter/disk-check.env
+#   sudo systemctl daemon-reload && sudo systemctl enable --now disk-check.timer
+#
+# The URL lives in an EnvironmentFile rather than in this unit for the same
+# reasons as the heartbeat's, plus one of its own. It is a bearer credential:
+# anyone who learns it can ping it and keep the switch quiet while the disk
+# fills, so it must not sit in a world-readable unit. An EnvironmentFile at
+# 0640 root:otter is not readable by every account on the host, and a deploy or
+# an operator can rotate the URL without editing a file systemd owns. The data
+# directory path belongs there too, because it is host-specific -- the default
+# in the script names one workspace, and every other host must override it.
+#
+# User=otter/Group=otter: the check only reads the data directory and makes one
+# outbound request, and the daemon owns those stores as otter, so the service
+# account is enough. Running a timer as root would widen the blast radius of a
+# shell script for no gain -- and under root the check would keep "passing" on
+# stores the runtime can no longer write.
+#
+# There is deliberately no OnFailure= that raises its own alert: this host
+# cannot be trusted to report its own death, and a full disk is a case where it
+# may be unable to send anything at all. A missing ping is the alarm, and it is
+# raised by the external service.
+[Unit]
+Description=Otter disk-pressure dead-man's-switch check
+Documentation=https://github.com/tkoizumi/otter
+# The four stores are created by the runtime, so ordering after it keeps the
+# first boot from measuring a tree that is still being laid down. On a deployed
+# host the runtime's unit is named per workspace (otterd-<workspace>.service),
+# so this ordering only applies where a unit of that name exists; it is a
+# convenience, not a dependency, and nothing here is skipped because the daemon
+# is down -- that is the heartbeat's job.
+After=otterd.service
+
+[Service]
+Type=oneshot
+User=otter
+Group=otter
+EnvironmentFile=/etc/otter/disk-check.env
+ExecStart=/usr/local/lib/otter/disk-check.sh
+# A failed run stays in the journal and in `systemctl --failed`, and the script
+# names the measure that failed, so an operator looking at a silent host can
+# tell a full disk from a check that could not measure one.

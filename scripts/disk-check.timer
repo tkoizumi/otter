@@ -1,0 +1,35 @@
+# Otter disk-pressure check — systemd timer.
+#
+# Minute-level, because the alarm is the gap: the check pings only while every
+# store is inside its threshold, so the detection window is the timer period
+# plus the external service's grace period. A minute of period turns a crossed
+# threshold into an alert within minutes, which is the right urgency for "the
+# daemon cannot write" -- and it is the reason the pressure drill does not need
+# a twenty-minute window: it can watch a threshold cross and the pings stop
+# inside a single test run instead of waiting out a slow interval the way a
+# 5-minute or 15-minute period would force.
+#
+# OnBootSec is 2min rather than the heartbeat's 1min because boot is the
+# busiest moment for this filesystem -- the daemon starts, environments are
+# prepared, releases may be staged -- and a measure taken while a first deploy
+# is still writing is a measure of a tree in motion.
+#
+# Unit= names the installed unit file; keep it in step with the install
+# commands in disk-check.service's header.
+#
+# Install with disk-check.service; see the header there.
+[Unit]
+Description=Run the Otter disk-pressure check every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+# Without this, a busy host can drift the interval by a minute or more and a
+# healthy host looks like a missed ping.
+AccuracySec=5s
+# Run once after a suspend/resume rather than catching up on every missed tick.
+Persistent=false
+Unit=disk-check.service
+
+[Install]
+WantedBy=timers.target

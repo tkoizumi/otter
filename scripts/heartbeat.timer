@@ -16,7 +16,10 @@ OnUnitActiveSec=1min
 AccuracySec=5s
 # Run once after a suspend/resume rather than catching up on every missed tick.
 Persistent=false
-Unit=otter-heartbeat.service
+# The unit file this timer starts is installed beside it as heartbeat.service;
+# the name here must match that file, or systemd finds nothing to run and a
+# healthy host goes silent -- the one failure this switch exists to catch.
+Unit=heartbeat.service
 
 [Install]
 WantedBy=timers.target

@@ -9,7 +9,7 @@
 #   printf 'OTTER_HEARTBEAT_URL=https://hc-ping.com/<uuid>\n' |
 #       sudo tee /etc/otter/heartbeat.env >/dev/null
 #   sudo chmod 0640 /etc/otter/heartbeat.env
-#   sudo systemctl daemon-reload && sudo systemctl enable --now otter-heartbeat.timer
+#   sudo systemctl daemon-reload && sudo systemctl enable --now heartbeat.timer
 #
 # The URL lives in an EnvironmentFile rather than in this unit so it is not
 # world-readable, and so a deploy can change it without editing a file systemd
