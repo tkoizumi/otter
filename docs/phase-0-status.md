@@ -63,7 +63,7 @@ A window with no transcript is an open window.
 | HW-4a notification / HW-4b liveness | P0-09, P0-10 | channel exists (Slack webhook in `otter.daemon.env`); not yet run | — |
 | HW-5 credentials | P0-12 | blocked on Castor's values | — |
 | HW-6 retention + disk pressure | P0-11 | blocked on WS1/WS4 | — |
-| HW-7 backup → restore onto a clean host | P0-03 | waiting on W-E and a second host | — |
+| HW-7 backup → restore onto a clean host | P0-03 | **second host exists**: `CastorDrillTarget` (i-0454a0f5372fe572c / 13.216.223.122), deployed from the same `hostProps` definition as the runtime host, so the two cannot drift in AMI, architecture or absolute paths. It provisioned cleanly from the fixed stack — `cloud-init: done`, `errors: []`, swap and the provisioning report present — and its `machine-id` differs from the runtime host, which the drill requires. Its own key pair is `otter-castor-drill.pem`; termination protection is off because it is disposable. Still waiting on P0-03's D4/D5 fix being verified before the drill can run | — |
 | HW-8 final posture re-scan | P0-07 | not started | — |
 
 **Deployed workspace (stand-in, not Castor):** `otter-examples-b379f933` on
