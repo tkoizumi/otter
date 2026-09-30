@@ -37,9 +37,10 @@
 #         systemctl; the selfcheck prints which fields each substitutes, and the
 #         commands, the parsers, the assertions and the backup/restore halves
 #         are the real shipped code.
-# Build:  branch p0-03-clean-host-mode @ cd5ce94 (v0.2.0-42-gcd5ce94). This
-#         record also covers the R1-R8 fixes an independent verifier asked for
-#         after reading the never-executed composition.
+# Build:  branch p0-03-clean-host-mode. The R1-R8 fixes are cd5ce94
+#         (v0.2.0-42-gcd5ce94); the selfcheck transcript in section 4 was
+#         produced after a7b2cfb, which only made each gate mutation print the
+#         refusal it produced.
 # Commands: the five sections below, in order.
 # Falsifiability:
 #   * the gate mutation cases in section 4 each print the refusal they produced:
