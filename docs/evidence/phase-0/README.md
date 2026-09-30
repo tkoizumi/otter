@@ -45,3 +45,4 @@ is not.
 | 2026-09-29 | P0-03 | [2026-09-29-p0-03-backup-restore-drill.txt](2026-09-29-p0-03-backup-restore-drill.txt) | macOS 15 arm64 and a Linux container with `sqlite3` |
 | 2026-09-29 | P0-04 | [2026-09-29-p0-04-unit-caps-drill.txt](2026-09-29-p0-04-unit-caps-drill.txt) | macOS 15 arm64; systemd 255 in an Ubuntu 24.04 container |
 | 2026-09-29 | P0-04 falsification | [2026-09-29-p0-04-unit-caps-mutation.txt](2026-09-29-p0-04-unit-caps-mutation.txt) | same |
+| 2026-09-29 | P0-06 | [2026-09-29-p0-06-deploy-failure-drill.txt](2026-09-29-p0-06-deploy-failure-drill.txt) | macOS 15 arm64; Ubuntu 24.04 with systemd and sshd as the deploy target |
