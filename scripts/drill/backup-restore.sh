@@ -37,8 +37,11 @@
 # What it explicitly does NOT prove:
 #   * a restore onto a different HOST. The job's source directory stays at the
 #     same absolute path here; the release metadata and the `.otter-id` marker
-#     are path-bound, and cross-host restore is Phase 0's real bar (see
-#     docs/phase-0-tasks.md P0-03). Same host, different data directory only.
+#     are path-bound. That half is the **clean-host mode** of this same entry
+#     point, `DRILL_CLEAN_HOST=1`, which drives two hosts over ssh and restores
+#     onto a second, initially empty machine
+#     (scripts/drill/modes/backup-restore-clean-host.sh). Same host, different data
+#     directory is all this mode claims.
 #   * that a real `uv`-prepared environment was restored. Building a real
 #     managed interpreter needs network and is out of scope for a fast,
 #     offline drill, so the environment is a stub: `otter-ready.json` plus
@@ -63,15 +66,24 @@
 #                                     resolves a DIFFERENT environment digest
 #                                     for the same job, cannot find it, and
 #                                     refuses the run.
+#   DRILL_SABOTAGE=drop-marker        copy the job source directory without
+#                                     `.otter-id`; the restore is missing the
+#                                     identity the database already knows, so
+#                                     the restored source is a *different
+#                                     instance*. This is the sabotage that makes
+#                                     the identity assertion load-bearing, and it
+#                                     goes red earlier than the others -- at the
+#                                     restore, not at the run.
 #
 # Run them and compare, for example:
 #
 #   make drill DRILL=backup-restore
 #   DRILL_SABOTAGE=drop-releases make drill DRILL=backup-restore
 #   DRILL_SABOTAGE=drop-environments make drill DRILL=backup-restore
+#   DRILL_SABOTAGE=drop-marker make drill DRILL=backup-restore
 #
 # A sabotage run is expected to exit non-zero. It is red for the right reason
-# only when the last lines are the restored daemon refusing the new run.
+# only when the last lines name the member that was omitted.
 #
 # Two on-disk facts this drill makes explicit, both recorded as ABSOLUTE paths
 # under the data directory and both invisible until the data directory path
@@ -91,10 +103,60 @@
 # path neither is needed, which is why the gap has stayed invisible.
 set -eu
 
+# --- which drill -------------------------------------------------------------
+# Two modes share this entry point:
+#
+#   * the default local, same-host drill -- the one whose transcript is
+#     recorded. It takes no parameters and builds its own world;
+#   * DRILL_CLEAN_HOST=1: the two-host **clean-host** drill
+#     (scripts/drill/modes/backup-restore-clean-host.sh), which takes its hosts and
+#     paths from parameters and proves the restore onto a *second, empty* host.
+#     See that script's header for the parameters and for what it does not
+#     prove.
+#
+# Both halves of a half-configured clean-host run are refused rather than
+# resolved. A parameter set without the opt-in would otherwise run the local
+# mode and record a transcript for a claim nobody made; the opt-in without its
+# parameters would fail later with a message about ssh rather than about the
+# missing value. A silent fallback either way is evidence for the wrong claim,
+# which is the one thing a drill must never produce. Every variable the
+# clean-host mode reads is in the list, optional ones included: setting
+# DRILL_REMOTE_SUDO and nothing else is still an attempt to run that drill.
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+clean_host_seen=""
+for name in DRILL_SOURCE_HOST DRILL_TARGET_HOST DRILL_SSH_KEY DRILL_JOB \
+	DRILL_REMOTE_DIR DRILL_REMOTE_JOBS_DIR DRILL_REMOTE_SERVICE DRILL_REMOTE_BIN \
+	DRILL_REMOTE_API_URL DRILL_REMOTE_API_TOKEN DRILL_REMOTE_ENV_FILE \
+	DRILL_REMOTE_ETC_DIR DRILL_REMOTE_BACKUP_DIR DRILL_REMOTE_SUDO \
+	DRILL_KEEP_TARGET DRILL_RUN_LIMIT DRILL_TRANSPORT; do
+	eval "clean_host_value=\${$name:-}"
+	[ -n "$clean_host_value" ] && clean_host_seen="$clean_host_seen $name"
+done
+case "${DRILL_CLEAN_HOST:-}" in
+1)
+	exec sh "$root/scripts/drill/modes/backup-restore-clean-host.sh"
+	;;
+"" | 0)
+	if [ -n "$clean_host_seen" ]; then
+		echo "drill: clean-host parameters are set:$clean_host_seen" >&2
+		echo "drill: but DRILL_CLEAN_HOST is not 1, so this would run the local same-host drill" >&2
+		echo "drill: refusing to run it: that transcript would be evidence for the wrong claim" >&2
+		echo "drill: either pass DRILL_CLEAN_HOST=1 or unset the clean-host parameters" >&2
+		exit 2
+	fi
+	;;
+*)
+	echo "drill: DRILL_CLEAN_HOST must be 1 or unset, got $DRILL_CLEAN_HOST" >&2
+	exit 2
+	;;
+esac
+
+# Say which drill this is, so a transcript cannot be read as the other one.
+echo "drill: local same-host mode: one machine, a different data directory"
+
 # --- the binary -------------------------------------------------------------
 # `make drill` supplies OTTER_BIN. Run directly, fall back to the checkout's
 # build, so a second operator has one documented command rather than a guess.
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 if [ -z "${OTTER_BIN:-}" ]; then
 	if [ -x "$root/bin/otter" ]; then
 		OTTER_BIN="$root/bin/otter"
@@ -138,10 +200,10 @@ unset OTTER_PROJECT_ROOT OTTER_SERVE_DIR 2>/dev/null || true
 
 SABOTAGE=${DRILL_SABOTAGE:-}
 case "$SABOTAGE" in
-"" | drop-releases | drop-environments | drop-tools) ;;
+"" | drop-releases | drop-environments | drop-tools | drop-marker) ;;
 *)
 	echo "drill: unknown DRILL_SABOTAGE=$SABOTAGE" >&2
-	echo "drill: valid modes: drop-releases, drop-environments, drop-tools" >&2
+	echo "drill: valid modes: drop-releases, drop-environments, drop-tools, drop-marker" >&2
 	exit 2
 	;;
 esac
@@ -426,7 +488,16 @@ copy_member tools "$DATA_ORIG/tools"
 copy_member python "$DATA_ORIG/python"
 copy_member cache "$DATA_ORIG/cache"
 cp -a "$WS/$JOB" "$BACKUP/source" || fail "could not copy the job source directory"
-[ -f "$BACKUP/source/.otter-id" ] || fail "the backed-up source directory has no .otter-id marker"
+if [ "$SABOTAGE" = "drop-marker" ]; then
+	# Identity is the marker inside the source directory. Backing the directory
+	# up without it is exactly the mistake the identity assertion exists to
+	# catch: the database still knows the old id, and the restored path would be
+	# registered as a NEW instance with empty state.
+	say "sabotage: omitting .otter-id from the backed-up source directory"
+	rm -f "$BACKUP/source/.otter-id"
+else
+	[ -f "$BACKUP/source/.otter-id" ] || fail "the backed-up source directory has no .otter-id marker"
+fi
 
 # Ground truth for the assertions below comes from the backup itself, not from
 # the live runtime, because the live runtime keeps moving after the snapshot.
