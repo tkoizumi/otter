@@ -32,6 +32,8 @@
 #     preflight is what licenses the platform/patch-version attribution;
 #   * proves the environment identity does not change with the route, and that a
 #     ready environment is never re-checked against the network;
+#   * proves the two drills that stub uv still pass and still fail at the stub
+#     rather than at the new preflight (section DRILLS);
 #   * does NOT prove the Castor arm64 host. CA-17/CA-18's "otter prepare succeeds
 #     on the host for the pinned interpreter before any schedule is enabled" is
 #     window HW-2, which the custodian runs; nothing here contacted a remote host.
@@ -365,6 +367,77 @@ touch) failed twice inside a parallel full run -- ratio 11.2x and 23.2x against 
 in isolation each time. The run above is the last one, with the machine quieter,
 and is green across every package.
 
+## DRILLS
+
+Two drills stub uv and promise never to reach the network; this branch passes
+`--skip-egress-check` in both, so the release cannot start probing PyPI and
+python-build-standalone before it reaches the stub. Both still pass, and both
+fail at the stub -- not at the egress preflight -- which is what the flag was for.
+
+$ make drill DRILL=backup-restore
+===== drill: backup-restore =====
+date:     2026-09-30 16:47:56 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-42-g0f8b1d9
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.5v0HeZ/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         9f998f85-dfbb-4dc0-9804-407086d67466
+drill: release     c346524adab63a1c3e254eb8c276e61af126085837c1280515a34761ff02c2c0
+drill: environment 0c00a94447b2b52ff85117a70fdeeff1db66b0b76672e069005194bab6776a89
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.5v0HeZ/ws/.otter/data/environments/0c00a94447b2b52ff85117a70fdeeff1db66b0b76672e069005194bab6776a89
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.5v0HeZ/ws/.otter/data
+drill: run 1       f420e264-5a8a-49c8-a219-38b15b7ecb15 succeeded (state count=1)
+drill: run 2       cd9e0f68-99db-42e6-be91-f22fe1cf3b74 is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.5v0HeZ/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.5v0HeZ/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (9f998f85-dfbb-4dc0-9804-407086d67466)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run 79090b7f-e808-45e1-960e-11c4fc1f62eb succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.5v0HeZ/restore-data/.releases/9f998f85-dfbb-4dc0-9804-407086d67466/c346524adab63a1c3e254eb8c276e61af126085837c1280515a34761ff02c2c0/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 20s
+
+$ make drill DRILL=deploy-failure
+deploy-failure: building the deploy-target image
+deploy-failure: building the host CLI and the linux target binaries
+deploy-failure: starting the target container
+deploy-failure: target      systemd running, ssh on 127.0.0.1:57380
+deploy-failure: python pin  3.12.3 (the target's python3)
+deploy-failure: deploy 1    known-good release
+deploy-failure:   release:  releasing 1 job(s)
+deploy-failure:   install:  writing /etc/systemd/system/otterd-ws-f1fcfd9c.service and restarting otterd-ws-f1fcfd9c.service
+deploy-failure:   verify:   waiting for the health endpoint
+deploy-failure:   verify:   healthy: {"status":"ok","version":"dev","uptime_seconds":0.02803525,"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":0}
+deploy-failure:   done:     v0.2.0-42-g0f8b1d9 deployed to root@127.0.0.1:57380 in 2s
+deploy-failure:   install:       /opt/otter
+deploy-failure: workspace   ws-f1fcfd9c at 127.0.0.1:7337
+deploy-failure: release 1   108cc5447d147e12f9f08d8c5cc854b8816314629d3d76424c48582b0fd56ada
+deploy-failure: env 1       e2d78101bf1a1a1e0b0bb64740dc4ff78a8d704a1555e25b7268ca45ea21cb5c
+deploy-failure: run 1       6bc3e81c-818a-4895-bb9e-84903fee9b49 succeeded from release 1 (revision 1 executed)
+deploy-failure: unit        MainPID 260 before the candidate deploy
+deploy-failure: deploy 2    candidate release (expected to fail after staging)
+deploy-failure: inject      making preparation fail on the host
+deploy-failure: deploy 2    failed as injected
+deploy-failure:   counter: release 4941eda0bfb2
+deploy-failure:   otter: release counter: not activating: install Python 3.12.3: exit status 1: minimal-uv: preparation is injected to fail (/etc/otter/drill-preparation-fail)
+deploy-failure:   otter: release jobs on root@127.0.0.1:57380: ssh root@127.0.0.1: exit status 1
+deploy-failure: staged      candidate 4941eda0bfb292759997db8ec8f4702e456f6785538096e8967b5298df4fcd91 is on disk but not active
+deploy-failure: injected    candidate environment a53b2d75fddb64900c03ab629892b7ce8f8122a0a68c5576ceb4d97ededf4b13 was never published
+deploy-failure: unit        same process as before the failed deploy (MainPID 260)
+deploy-failure: run 2       6bbc049f-5ba5-47be-a4e8-1b14408e54a8 succeeded from release 1 (revision 1 executed; revision 2 was never served)
+deploy-failure: unit        still active after the failed deploy; /health answered
+deploy-failure: ok: a mid-deploy failure left the previous release active and serving
+deploy-failure: elapsed 21s
+
 ## MUTATIONS
 
 Each of the seventeen mutations was applied to the committed tree, the named
@@ -541,4 +614,6 @@ FAIL	github.com/tkoizumi/otter/internal/cli	0.679s
   registries the lock records when nothing is configured.
 * Every assertion above has a mutation that makes it go red; the route reaches
   uv's real argv in the tests and uv's real behavior in the UV section.
+* The two drills that stub uv (`backup-restore`, `deploy-failure`) still pass,
+  and the injected failure is the stub refusing, not the preflight.
 * Not proven here: the Castor arm64 host. That is HW-2, run by the custodian.
