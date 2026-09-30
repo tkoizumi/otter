@@ -92,6 +92,12 @@ real project is deployed.
   test machine with a real `ss` on `PATH` gives a false red. Worth knowing before believing a green run.
 - **`FIX_OWNER`, `FIX_GROUP`, `FIX_NAME` and `FIX_WORKSPACE_DIR` are dead knobs** that change nothing.
 
+- **Nothing schedules a backup, and nothing copies it off the host.** The procedure in
+  `operations.md` is correct and its restore is drilled on two real hosts, but as written the
+  archive lands in `/var/backups/otter` on the machine it protects: that covers corruption and a
+  mistaken delete, not the loss of the host. A schedule, off-host transport and a retention policy
+  are unbuilt. This is the largest operational gap left in the "integrity" half of Phase 0.
+
 ## Follow-ups recorded, not blocking
 
 - **P0-03's contract test has a spelling hole.** Its raw-read guard matches only the literal

@@ -1,0 +1,93 @@
+===== HW-6a — P0-11 retention on the real host =====
+date:     2026-09-30T23:03:22Z
+host:     44.213.227.52 (ip-10-42-0-180)
+checkout: 1e68177 (local otter)
+unit:     otterd-otter-examples-e0309b8c.service
+
+--- precondition: the runtime is up, its retention is not yet configured ---
+  health:   {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":492.971218689}
+  retention keys in the live env file: 0 (log and run default to 0 = forever)
+  capture retention: 168h by default, no environment variable (config/daemon.go:30)
+  live store counts (runs|logs|http|capture|expired): 3|22|0|3|0
+  (http_exchanges is 0: the stand-in has no credentials, so no run has ever made a captured HTTP call)
+  capture rows eligible to expire: 3
+  disk: 14G free of 19G
+
+--- snapshot: a consistent copy of the live data directory ---
+  snapshot counts (runs|logs|http|capture|expired): 3|22|0|3|0
+  snapshot equals the live store on runs and logs; the live directory is untouched from here
+
+--- pass control-long: --run-retention 2160h --log-retention 2160h --capture-retention 2160h ---
+          1 "event":"api_listening"
+          1 "event":"capture_configured"
+          1 "event":"daemon_started"
+          1 "event":"jobs_discovered"
+          1 "event":"listen_url_recorded"
+          1 "event":"retention_configured"
+          1 "event":"sdk_ready"
+          1 "event":"shutdown_complete"
+          1 "event":"shutdown_requested"
+          1 "event":"shutdown_started"
+  counts: 3|22|0|3|0
+
+--- pass run-window: --run-retention 1s --log-retention 0 --capture-retention 0 ---
+          1 "event":"api_listening"
+          1 "event":"capture_configured"
+          1 "event":"capture_retention_disabled"
+          1 "event":"daemon_started"
+          1 "event":"jobs_discovered"
+          1 "event":"listen_url_recorded"
+          1 "event":"retention_configured"
+          1 "event":"runs_retained"
+          1 "event":"sdk_ready"
+          1 "event":"shutdown_complete"
+          1 "event":"shutdown_requested"
+          1 "event":"shutdown_started"
+  counts: 0|0|0|0|0
+
+--- pass log-window: --run-retention 0 --log-retention 1s --capture-retention 0 ---
+          1 "event":"api_listening"
+          1 "event":"capture_configured"
+          1 "event":"capture_retention_disabled"
+          1 "event":"daemon_started"
+          1 "event":"jobs_discovered"
+          1 "event":"listen_url_recorded"
+          1 "event":"logs_retained"
+          1 "event":"retention_configured"
+          1 "event":"sdk_ready"
+          1 "event":"shutdown_complete"
+          1 "event":"shutdown_requested"
+          1 "event":"shutdown_started"
+  counts: 3|0|0|3|0
+
+--- pass capture-window: --run-retention 0 --log-retention 0 --capture-retention 1s ---
+          1 "event":"api_listening"
+          1 "event":"capture_configured"
+          1 "event":"capture_expired"
+          1 "event":"daemon_started"
+          1 "event":"jobs_discovered"
+          1 "event":"listen_url_recorded"
+          1 "event":"retention_configured"
+          1 "event":"sdk_ready"
+          1 "event":"shutdown_complete"
+          1 "event":"shutdown_requested"
+          1 "event":"shutdown_started"
+  counts: 3|22|0|3|3
+
+--- configure the live runtime: log 720h, run 2160h ---
+  lines added:
+    OTTER_LOG_RETENTION=720h
+    OTTER_RUN_RETENTION=2160h
+  restarted, /health 200
+  Sep 30 23:04:23 ip-10-42-0-180 otterd[44461]: {"event":"retention_configured","level":"info","log_retention":"720h0m0s","run_retention":"2160h0m0s","timestamp":"2026-09-30T23:04:23.669333Z"}
+  live store counts after enabling retention: 3|22|0|3|0
+  (unchanged: nothing in the live store is older than 30 days, which is the point of a 2160h run window)
+
+--- cleanup and end state ---
+  scratch data and logs removed
+  nothing listening on 17337
+  otterd-otter-examples-e0309b8c.service active, /health 200
+  live store counts: 3|22|0|3|0 (was 3|22|0|3|0)
+  env file retained: OTTER_LOG_RETENTION=720h OTTER_RUN_RETENTION=2160h (the deliverable)
+
+hw6a: ok: every window pruned its own store on a real runtime, the control pruned nothing, and the live runtime is configured

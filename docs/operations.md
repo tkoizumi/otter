@@ -660,13 +660,28 @@ its releases** — a database whose releases were rotated away is exactly the
 failure this section exists to prevent.
 
 **Status of this procedure.** The inventory above is corrected against the real
-on-disk layout, and `scripts/drill/backup-restore.sh` exercises it: it takes a
-hot backup while a run is in flight, restores onto a *different, empty* data
-directory served by a fresh daemon, and asserts the job is runnable there. Its
-recorded transcript is in [evidence/phase-0/](evidence/phase-0/). What the drill
-does **not** prove is a restore onto a *different host* — it stays on one
-machine, and the job source path is unchanged — so P0-03's clean-host drill
-remains open. See [phase-0-tasks.md](phase-0-tasks.md) P0-03.
+on-disk layout, and it is exercised at two levels.
+`scripts/drill/backup-restore.sh` takes a hot backup while a run is in flight,
+restores onto a *different, empty* data directory served by a fresh daemon, and
+asserts the job is runnable there. Its clean-host mode goes further: it backs up
+a **live** runtime, transfers the archive to a genuinely clean **second host**,
+restores it, starts the daemon, and runs a job from the restored release and
+environment — then checks from outside Otter that the source runtime does not
+know that run's id, which is what proves the run happened on the second machine.
+That drill passed twice on two real hosts:
+
+> [2026-09-30-p0-03-hw7-clean-host.txt](evidence/phase-0/2026-09-30-p0-03-hw7-clean-host.txt)
+
+**What this procedure does not provide.** It is manual, and it is not off-host.
+Nothing schedules it, and as written the archive lands in `/var/backups/otter`
+on the machine it is protecting — which covers corruption and mistaken deletion,
+but not the loss of the host. A schedule, off-host transport and a retention
+policy are all still yours to add, and the secrets file must be stored encrypted
+somewhere else again. The drill states two further limits: the credentials are
+excluded from the archive by design, so a restore supplies no secrets, and the
+prepared interpreter travelled **in** the archive rather than being rebuilt, so
+`otter prepare` reconstructing `python/` or `cache/uv/` from scratch is not
+proven.
 
 ## Reading a run's logs
 

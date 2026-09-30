@@ -1,0 +1,57 @@
+===== HW-4a — P0-09 failure notification on the real host =====
+date:     2026-09-30T22:54:59Z
+host:     44.213.227.52 (ip-10-42-0-180)
+checkout: bc7d934 (local otter)
+unit:     otterd-otter-examples-e0309b8c.service
+
+--- precondition: the runtime is up, and notification is OFF ---
+  health:   {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":33.745478002}
+  notify:   off (0 OTTER_NOTIFY_URL keys)
+  secrets:  none of the four integration secrets deployed
+
+--- context: schedules (a paused schedule cannot post a second alert) ---
+  JOB                  CRON             NEXT RUN              IN         LAST RUN
+  --------------------------------------------------------------------------------------------
+  shopify_customer_to_salesforce_contact */5 * * * *      paused                -          no runs yet
+  shopify-product-to-salesforce-product */5 * * * *      paused                -          failed at 22:54:26 (job shopify-product-to-salesforce-product requires secrets that are not available: SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET)
+
+--- before-state ---
+  MainPID:      37593
+  env sha256:   46d68c61b81959baa5c568575d58cb274c6de387e1693747ddaf927d6b2e1a84
+
+--- mutate: notify on, debug logging, restart ---
+  restarted, /health 200
+  Sep 30 22:55:05 ip-10-42-0-180 otterd[38691]: {"endpoint":"https://hooks.slack.com/...","event":"failure_notification_enabled","level":"info","on":"failed","timestamp":"2026-09-30T22:55:05.072687177Z"}
+
+--- trigger: otter run shopify-product-to-salesforce-product --no-wait (missing secret, fails before Python starts) ---
+  042c3e06-109d-422d-917d-19cd03e1f172
+  run id:  042c3e06-109d-422d-917d-19cd03e1f172
+
+--- assert: the run reached a terminal failed state ---
+  Sep 30 22:55:08 ip-10-42-0-180 otterd[38691]: {"attempt":1,"detail":"not started: job shopify-product-to-salesforce-product requires secrets that are not available: SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET","duration_ms":1,"error":"job shopify-product-to-salesforce-product requires secrets that are not available: SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET","event":"run_finished","job":"fb96d6c8-83ef-4bda-b77e-ab3c6a47fbdb","level":"warn","run_id":"042c3e06-109d-422d-917d-19cd03e1f172","status":"failed","timestamp":"2026-09-30T22:55:08.43196038Z"}
+  run id:        042c3e06-109d-422d-917d-19cd03e1f172
+  job:           shopify-product-to-salesforce-product
+  trigger:       manual
+  status:        failed
+  attempt:       1
+  python mode:   managed
+  python:        3.13.1
+  environment:   dfc191050f3804c1e6b079f7f5a6b69d254d563a5c2796be02cad68f4b5f9ee6
+  release:       601eaca61d6f87f8459d7f62229c410bad62427871740b8ef6f046b022175719
+  sdk:           0.1.0
+  created:       2026-09-30T22:55:08Z
+  started:       2026-09-30T22:55:08Z
+  finished:      2026-09-30T22:55:08Z
+  duration:      1ms
+  error:         job shopify-product-to-salesforce-product requires secrets that are not available: SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET
+
+--- assert: the daemon reported the failure to the endpoint ---
+  Sep 30 22:55:08 ip-10-42-0-180 otterd[38691]: {"attempt":1,"event":"notification_sent","job":"fb96d6c8-83ef-4bda-b77e-ab3c6a47fbdb","level":"debug","run_id":"042c3e06-109d-422d-917d-19cd03e1f172","status":"failed","timestamp":"2026-09-30T22:55:08.489721246Z"}
+  deliveries for this run: 1 (a missing secret is not retried)
+
+--- restore ---
+  env sha256:   46d68c61b81959baa5c568575d58cb274c6de387e1693747ddaf927d6b2e1a84
+  MainPID:      39236 (was 37593)
+  notify:       off
+
+hw4a: ok: a deliberate failure reached the configured endpoint, and the host was restored
