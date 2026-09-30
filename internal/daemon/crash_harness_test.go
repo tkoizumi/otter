@@ -40,6 +40,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net"
 	"os"
@@ -87,6 +88,13 @@ const (
 	crashWorkersEnv = "OTTER_TEST_CRASH_WORKERS"
 	crashLogEnv     = "OTTER_TEST_CRASH_LOG"
 	crashReadyEnv   = "OTTER_TEST_CRASH_READY"
+
+	// crashWedgeEnv names a file the helper writes when the first finish
+	// transaction reaches its commit. It is how the FM-02 scenario lands a real
+	// SIGKILL deterministically in the window between a child finishing and its
+	// terminal state becoming durable, using the existing finishCommit seam
+	// (workers.go:415) and without changing production code.
+	crashWedgeEnv = "OTTER_TEST_CRASH_WEDGE_FINISH"
 )
 
 // TestMain adds the re-exec dispatch the crash harness needs. The repository's
@@ -131,6 +139,8 @@ func crashHelperMain() {
 	// the graceful path reachable, which is not what is under test.
 	cfg.ShutdownGrace = 0
 
+	crashInstallFinishWedge()
+
 	readyPath := os.Getenv(crashReadyEnv)
 	d, err := New(context.Background(), Options{
 		Config:  cfg,
@@ -154,6 +164,37 @@ func crashHelperMain() {
 		os.Exit(4)
 	}
 	os.Exit(5)
+}
+
+// crashInstallFinishWedge replaces the finish transaction's commit step with
+// one that announces itself and then blocks, so the harness can SIGKILL the
+// daemon with the terminal write open and uncommitted. It only takes effect in
+// a helper process whose environment names an announcement file, so the
+// production path is unchanged everywhere else.
+//
+// This reuses an existing seam (workers.go:415) rather than adding one. It is
+// what makes FM-02 deterministic: without it, landing a kill in the window
+// between a child finishing and its retry being durable is a race no test can
+// hit reliably.
+func crashInstallFinishWedge() {
+	path := os.Getenv(crashWedgeEnv)
+	if path == "" {
+		return
+	}
+	commit := finishCommit
+	var once sync.Once
+	finishCommit = func(tx *sql.Tx) error {
+		once.Do(func() {
+			_ = os.WriteFile(path, []byte("finish commit reached\n"), 0o644)
+			// Block on a timer rather than select{} so the Go deadlock
+			// detector cannot decide the process is stuck and exit it, as
+			// internal/executor/proc_linux_test.go does for the same reason.
+			for {
+				time.Sleep(time.Hour)
+			}
+		})
+		return commit(tx)
+	}
 }
 
 // crashHarness owns the temporary directories and paths one harness run uses.
@@ -315,7 +356,7 @@ with open(EFFECT, "a", encoding="utf-8") as handle:
 // start launches the helper as a separate process and waits until its API
 // listener is bound. Readiness is the daemon's own OnReady callback, so it
 // proves daemon.New -- including recovery -- returned and the server started.
-func (h *crashHarness) start(t *testing.T, n int) *crashDaemon {
+func (h *crashHarness) start(t *testing.T, n int, extraEnv ...string) *crashDaemon {
 	t.Helper()
 
 	logPath, readyPath := h.log1, h.ready1
@@ -334,6 +375,7 @@ func (h *crashHarness) start(t *testing.T, n int) *crashDaemon {
 		crashLogEnv+"="+logPath,
 		crashReadyEnv+"="+readyPath,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	// The helper's stderr carries New/Run failures; keep it visible in the
 	// test's own output rather than discarding it.
 	cmd.Stdout = os.Stderr
@@ -565,6 +607,125 @@ func TestCrashHarnessSIGKILLAndRecovery(t *testing.T) {
 	})
 }
 
+// TestCrashHarnessSIGKILLBetweenFinishAndRetry is the deterministic half of
+// runtime-contract.md Appendix A FM-02.
+//
+// FM-02's guarantee is *atomicity*, not single execution: "An attempt's
+// terminal state and its successor are one durable decision ... a terminal
+// failure never appears without the successor it implies" (runtime-contract.md
+// §1). The window is real -- a child can exit 0 and have its outcome written,
+// yet be killed before the transaction commits -- but hitting it by timing is
+// a race. The helper's finishCommit seam (workers.go:415) is used to land the
+// kill exactly there: the child has finished and written its side effect, the
+// finish transaction is open, and nothing is durable.
+//
+// The harness then restarts the daemon and asserts the atomic outcome: the
+// attempt is terminal and it has the successor the policy implies. It also
+// records how many times the work actually ran, because §2 explicitly does not
+// promise an attempt runs only once; that observation is logged, not asserted,
+// so a runtime that later closes the window with a pre-commit journal still
+// passes.
+func TestCrashHarnessSIGKILLBetweenFinishAndRetry(t *testing.T) {
+	requirePython(t)
+
+	h := newCrashHarness(t)
+	// The child must finish immediately: this scenario is about what happens
+	// after it exits, not about interrupting it.
+	crashWriteFile(t, h.holdFile, "0")
+
+	store, closeStore := crashOpenStore(t, h.dataDir)
+	defer closeStore()
+
+	wedge := filepath.Join(h.stateDir, "finish-commit-reached")
+	first := h.start(t, 1, crashWedgeEnv+"="+wedge)
+	client := api.NewClient("http://"+h.addr, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	runID, err := client.SubmitRun(ctx, "crashjob", nil)
+	cancel()
+	if err != nil {
+		t.Fatalf("submit run: %v", err)
+	}
+
+	// Wait until the finish transaction has reached its commit and wedged. The
+	// file is written from inside finishCommit, so its existence proves the kill
+	// will land in the exact window: after the child exited, before the terminal
+	// state is durable.
+	crashWaitForFile(t, wedge, 60*time.Second)
+
+	// The child already finished and recorded its external effect, which is why
+	// this window is the interesting one.
+	if got := crashCountLines(t, h.effectFile)[runID]; got != 1 {
+		t.Fatalf("run %s recorded %d completions before the finish commit, want 1", runID, got)
+	}
+
+	// (4) kill -9 the daemon with the finish transaction open.
+	first.kill()
+	t.Logf("SIGKILLed daemon pid %d with the finish transaction open and uncommitted", first.cmd.Process.Pid)
+
+	// The uncommitted transaction must have rolled back: the attempt is still
+	// `running`, not a terminal state with a missing successor.
+	before := crashRunsInStatus(t, store, h.jobID, runs.StatusRunning)
+	if len(before) != 1 || before[0].ID != runID {
+		t.Fatalf("after the kill the attempt should be left running (uncommitted transaction), got %d running rows: %+v",
+			len(before), before)
+	}
+
+	// (5) Restart. Recovery must decide the attempt's terminal state and its
+	// successor together.
+	second := h.start(t, 2)
+	crashWaitForDrain(t, store, h.jobID, second, 3*time.Minute)
+	second.kill()
+
+	root, attempts, err := store.Chain(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("chain for %s: %v", runID, err)
+	}
+	if root.ID != runID {
+		t.Fatalf("chain starts at %s, want the accepted run %s", root.ID, runID)
+	}
+	if root.Status != runs.StatusFailed {
+		t.Errorf("attempt interrupted before its commit is %s, want failed", root.Status)
+	}
+	if !strings.Contains(root.ErrorString(), crashMessage) {
+		t.Errorf("recovered attempt error = %q, want it to name the restart", root.ErrorString())
+	}
+	if len(attempts) < 2 {
+		t.Fatalf("FM-02 violated: recovered terminal failure %s has no successor (%d attempts)", runID, len(attempts))
+	}
+	last := attempts[len(attempts)-1]
+	if last.Status != runs.StatusSucceeded {
+		t.Errorf("successor ended %s (%s), want succeeded", last.Status, last.ErrorString())
+	}
+
+	// The same invariant stated over every row: a retryable terminal state below
+	// the attempt limit is never a dead end.
+	const maxAttempts = 3 // crashManifest's retry.attempts
+	for _, run := range crashListRuns(t, store, h.jobID) {
+		if run.Status != runs.StatusFailed && run.Status != runs.StatusTimedOut {
+			continue
+		}
+		if run.Attempt >= maxAttempts {
+			continue
+		}
+		children, err := store.List(context.Background(), runs.Filter{ParentRunID: run.ID, Limit: 10})
+		if err != nil {
+			t.Fatalf("list successors of %s: %v", run.ID, err)
+		}
+		if len(children) == 0 {
+			t.Errorf("FM-02 violated: terminal attempt %s (attempt %d) has no successor", run.ID, run.Attempt)
+		}
+	}
+
+	completions := 0
+	for _, attempt := range attempts {
+		completions += crashCountLines(t, h.effectFile)[attempt.ID]
+	}
+	t.Logf("finish-window kill: chain %s has %d attempts and %d completion side effects; the child exited 0 before the uncommitted transaction was killed, so its retry re-executed the work. "+
+		"runtime-contract.md §2 does not promise an attempt runs only once, so this is recorded, not asserted.",
+		runID, len(attempts), completions)
+}
+
 // crashPlatformEvidence is what the platform-gated checks need after the main
 // assertions have run.
 type crashPlatformEvidence struct {
@@ -663,6 +824,20 @@ func crashWaitForDrain(t *testing.T, store *runs.Store, jobID string, daemon *cr
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("runs were still queued/running/retrying after %s", timeout)
+}
+
+// crashWaitForFile polls until path exists. It is how the harness waits for a
+// signal a process writes from inside a specific code path.
+func crashWaitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s did not appear within %s", path, timeout)
 }
 
 // crashReadPIDs parses the start file into run id -> pid.
