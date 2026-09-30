@@ -311,12 +311,15 @@ from spending days on busywork:
 **P0-07.** `otter deploy` already converges a host: service account with a
 `nologin` shell (`render.go:137`), `0700` data and env directories (`:144–145`),
 wildcard-bind refusal (`target.go:415–423`, tested), host-tool preflight
-(`remote.go:174`), post-deploy `/health` poll (`deployer.go:678–713`). Two gaps:
-there is no provisioning script (only manual prose at `operations.md:29–171`), and
-the generated unit has **no hardening directives** — no `NoNewPrivileges`,
-`ProtectSystem`, `ProtectHome`, `PrivateTmp` or `ReadWritePaths`, which exist only
-as documentation (`security.md:76–99`). Adding them to `UnitFile` plus render
-tests is about half a day and makes the optional CA-07 item nearly free.
+(`remote.go:174`), post-deploy `/health` poll (`deployer.go:678–713`).
+
+**Corrected 2026-09-30.** The gap this paragraph used to name is gone. The
+generated unit **does** carry the hardening directives — `NoNewPrivileges`,
+`ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths`,
+`OOMPolicy=continue` and the resource caps (`commit 629449c`, `UnitFile`); and
+`scripts/provision.sh` plus `scripts/assert-host-permissions.sh` now cover the
+provisioning path and assert those directives read back from the *loaded* unit.
+What remains for P0-07 is its host evidence, not its artifacts.
 
 **P0-08.** `otter prepare` exists (`internal/cli/prepare.go:23–95`) and deploy runs
 prepare automatically. Two real constraints: there is no offline bundle
