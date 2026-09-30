@@ -286,6 +286,67 @@ func TestRunDetectsPlatformAndDeploys(t *testing.T) {
 	}
 }
 
+// P0-12's deliverable is Castor's credentials in the `0600` environment file,
+// with the manifest declaring names only. The test above asserts the values
+// travel over stdin rather than argv; this one asserts the file those bytes land
+// in is created owner-only. A `0644` env file would expose every credential to
+// every user on the host, and the unit hands it to the daemon as its
+// environment.
+func TestDeployWritesEnvFilesOwnerOnly(t *testing.T) {
+	runner := &fakeRunner{healthy: true}
+	deployer, _, _ := newTestDeployer(t, runner, newFakeBuilder(t))
+
+	// Exercise both files a real deploy writes: the workspace's shared
+	// credentials and the daemon-wide settings, each of which may carry a
+	// token (a notification webhook URL carries one in its path).
+	daemonEnv := filepath.Join(t.TempDir(), DaemonEnvFileName)
+	if err := os.WriteFile(daemonEnv,
+		[]byte("OTTER_NOTIFY_URL=http://example.test/hook/not-a-real-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deployer.Config.DaemonEnv = daemonEnv
+
+	if _, err := deployer.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := map[string]bool{
+		deployer.Config.Target.SharedEnvFilePath(): false,
+		deployer.Config.Target.DaemonEnvFilePath(): false,
+	}
+
+	wroteAny := false
+	for _, script := range runner.scripts() {
+		if !strings.Contains(script, "OTTER_ENV_EOF") {
+			continue
+		}
+		wroteAny = true
+
+		// umask first, because the redirect creates the file before chmod can
+		// narrow it: without the umask the content is briefly world readable.
+		if !strings.Contains(script, "umask 077") {
+			t.Errorf("an env-file script has no `umask 077`, so the file is briefly world readable:\n%s", script)
+		}
+		if !strings.Contains(script, "install -d -m 0700 "+ShellQuote(deployer.Config.Target.EnvDir())) {
+			t.Errorf("an env-file script does not create the env directory owner-only:\n%s", script)
+		}
+		for path := range want {
+			if strings.Contains(script, "chmod 0600 "+ShellQuote(path)) {
+				want[path] = true
+			}
+		}
+	}
+
+	if !wroteAny {
+		t.Fatal("no deploy step wrote an environment file; the assertion proved nothing")
+	}
+	for path, narrowed := range want {
+		if !narrowed {
+			t.Errorf("no deploy step chmod 0600 %s", path)
+		}
+	}
+}
+
 func TestRunIsIdempotentAndReusesTheToken(t *testing.T) {
 	runner := &fakeRunner{healthy: true}
 	deployer, _, _ := newTestDeployer(t, runner, newFakeBuilder(t))
