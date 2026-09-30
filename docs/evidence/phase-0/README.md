@@ -41,3 +41,5 @@ is not.
 | --- | --- | --- | --- |
 | 2026-09-29 | baseline, P0-05 | [2026-09-29-baseline.txt](2026-09-29-baseline.txt) | macOS 15 arm64, developer checkout |
 | 2026-09-29 | tooling for P0-01/P0-04 | [2026-09-29-linux-docker-probe.txt](2026-09-29-linux-docker-probe.txt) | Linux container (`golang:1.24`) on macOS |
+| 2026-09-29 | P0-01 | [2026-09-29-p0-01-crash-harness.txt](2026-09-29-p0-01-crash-harness.txt) | macOS 15 arm64 and a `golang:1.24` Linux container |
+| 2026-09-29 | P0-03 | [2026-09-29-p0-03-backup-restore-drill.txt](2026-09-29-p0-03-backup-restore-drill.txt) | macOS 15 arm64 and a Linux container with `sqlite3` |

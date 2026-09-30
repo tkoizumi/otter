@@ -1,0 +1,360 @@
+# P0-03 — hot backup and restore drill — captured runs
+#
+# Claim: a hot backup taken while the daemon is writing restores onto a
+# different, empty data directory served by a fresh daemon, and the job is
+# RUNNABLE there — history, durable ctx.state, identity, releases and the
+# prepared environment all survive.
+#
+# When:   2026-09-29 22:07-22:24 EDT
+# Where:  macOS 15.7.3 arm64. A Linux container was also run; see the end.
+# Build:  branch p0-03-backup-restore-drill @ 91b8cd3
+# Command: make drill DRILL=backup-restore
+# Falsifiability: DRILL_SABOTAGE=drop-releases|drop-environments|drop-tools must
+#   each make the drill exit non-zero AT THE RUN ASSERTION, which is what the
+#   sabotage transcripts below show.
+# Verdict: implementation evidence; independent verification is recorded
+#   separately.
+
+===== clean run 1 =====
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-13-g004532c)
+
+===== drill: backup-restore =====
+date:     2026-09-29 22:07:07 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-13-g004532c
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.Bfhdn7/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         723a7218-6225-4025-a280-ec2a8f816d69
+drill: release     e64a71f88821905f92415ad64cdb3583cd6e57fa38d176b358022729af852465
+drill: environment 369e8b6b7abe2e89c989e22aaa66d6749a1f4ccfb978ae4070e3e8b0783d153d
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.Bfhdn7/ws/.otter/data/environments/369e8b6b7abe2e89c989e22aaa66d6749a1f4ccfb978ae4070e3e8b0783d153d
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.Bfhdn7/ws/.otter/data
+drill: run 1       f2a55876-5f79-40ca-9f17-3a1b63522f63 succeeded (state count=1)
+drill: run 2       a43dd843-db85-4b17-84fc-69524590ecd2 is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.Bfhdn7/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.Bfhdn7/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (723a7218-6225-4025-a280-ec2a8f816d69)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run fb6fa6b5-15d7-45a8-844f-7f39e1089845 succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.Bfhdn7/restore-data/.releases/723a7218-6225-4025-a280-ec2a8f816d69/e64a71f88821905f92415ad64cdb3583cd6e57fa38d176b358022729af852465/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 21s
+
+===== clean run, post-commit =====
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-14-g91b8cd3" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-14-g91b8cd3" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-14-g91b8cd3)
+
+===== drill: backup-restore =====
+date:     2026-09-29 22:24:11 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-14-g91b8cd3
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.mRN3zP/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         cdc5a499-a604-4996-a61a-287d0464ef70
+drill: release     4a90fe334f874cd8ce62d040357aaf6acac74ef39aab29cf826ede5fedf593f1
+drill: environment 5e395b08807e7beca5710d1392581a7f7e974b3129b9e06bd3ffc902076eedaa
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.mRN3zP/ws/.otter/data/environments/5e395b08807e7beca5710d1392581a7f7e974b3129b9e06bd3ffc902076eedaa
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.mRN3zP/ws/.otter/data
+drill: run 1       d8202810-0d35-4d28-8f31-a48d753e6d77 succeeded (state count=1)
+drill: run 2       a5f3585b-884d-4066-8b1f-43b05431c888 is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.mRN3zP/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.mRN3zP/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (cdc5a499-a604-4996-a61a-287d0464ef70)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run dcb5a7f0-1506-4c07-bd93-1da148283320 succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.mRN3zP/restore-data/.releases/cdc5a499-a604-4996-a61a-287d0464ef70/4a90fe334f874cd8ce62d040357aaf6acac74ef39aab29cf826ede5fedf593f1/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 20s
+
+real	0m21.993s
+user	0m2.655s
+sys	0m2.559s
+
+===== sabotage: drop-releases (expect non-zero) =====
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-13-g004532c)
+
+===== drill: backup-restore =====
+date:     2026-09-29 22:07:49 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-13-g004532c
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5
+drill: release     d36cf011fc651c84784514493ea0252b75a48feed400502a1333a6a348203cd6
+drill: environment 25e153797aed2cb02cbbc1fba8d632de000b0063a1bb968171cb341fff526c22
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/data/environments/25e153797aed2cb02cbbc1fba8d632de000b0063a1bb968171cb341fff526c22
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/data
+drill: run 1       0b5871cf-fb31-45d1-852c-fd98068f69d1 succeeded (state count=1)
+drill: run 2       6b58b8b5-22ab-494a-8d3b-f86e6db63020 is running; taking the hot backup (daemon still writing)
+drill: sabotage: omitting releases from the backup
+drill: backup      ok (database + drop-releases); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: the restored runtime refused to submit a run:
+drill:   otter: job drill-job has no active release; run otter release drill-job before submitting runs: conflict (conflict, HTTP 409)
+drill: FAILED: the restored job cannot run
+drill: failed; last daemon log lines:
+{"event":"identity_bootstrap_complete","level":"info","mode":"fresh","timestamp":"2026-09-30T02:07:50.34383Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/data/sdk/python","timestamp":"2026-09-30T02:07:50.346478Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T02:07:50.346494Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T02:07:50.346502Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws","timestamp":"2026-09-30T02:07:50.348066Z","total":1,"valid":1}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T02:07:50.348379Z","version":"v0.2.0-13-g004532c","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T02:07:50.348476Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T02:07:50.348678Z","url":"http://127.0.0.1:7403"}
+{"event":"run_queued","id":"c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5","job":"drill-job","level":"info","run_id":"0b5871cf-fb31-45d1-852c-fd98068f69d1","timestamp":"2026-09-30T02:07:50.415613Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"0b5871cf-fb31-45d1-852c-fd98068f69d1","timestamp":"2026-09-30T02:07:50.416427Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":1,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6152,"event":"run_succeeded","exit_code":0,"job":"c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5","level":"info","run_id":"0b5871cf-fb31-45d1-852c-fd98068f69d1","status":"succeeded","timestamp":"2026-09-30T02:07:56.568722Z"}
+{"event":"run_queued","id":"c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5","job":"drill-job","level":"info","run_id":"6b58b8b5-22ab-494a-8d3b-f86e6db63020","timestamp":"2026-09-30T02:07:56.676877Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"6b58b8b5-22ab-494a-8d3b-f86e6db63020","timestamp":"2026-09-30T02:07:56.677557Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":2,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6180,"event":"run_succeeded","exit_code":0,"job":"c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5","level":"info","run_id":"6b58b8b5-22ab-494a-8d3b-f86e6db63020","status":"succeeded","timestamp":"2026-09-30T02:08:02.858921Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T02:08:03.09316Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T02:08:03.093274Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T02:08:03.096401Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/restore-data/sdk/python","timestamp":"2026-09-30T02:08:03.390901Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T02:08:03.390948Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T02:08:03.390962Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws","timestamp":"2026-09-30T02:08:03.392628Z","total":1,"valid":1}
+{"count":1,"event":"recovering_interrupted_runs","level":"warn","timestamp":"2026-09-30T02:08:03.392778Z"}
+{"attempt":1,"event":"run_recovered","job":"c1cfddbe-b43e-40d9-b22a-90b3bbb73ba5","level":"warn","run_id":"6b58b8b5-22ab-494a-8d3b-f86e6db63020","timestamp":"2026-09-30T02:08:03.393039Z"}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/restore-data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/restore-data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T02:08:03.393558Z","version":"v0.2.0-13-g004532c","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T02:08:03.393673Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T02:08:03.394334Z","url":"http://127.0.0.1:7403"}
+{"event":"capture_stale_marked","level":"info","runs":1,"timestamp":"2026-09-30T02:08:03.397071Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T02:08:03.88706Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T02:08:03.887205Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T02:08:03.887962Z"}
+drill: workspace was /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo
+drill: elapsed 15s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.qlAHRo
+make: *** [drill] Error 1
+--- summary: sabotage-drop-releases exit=2 wall=15s
+
+===== sabotage: drop-environments (expect non-zero) =====
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-13-g004532c)
+
+===== drill: backup-restore =====
+date:     2026-09-29 22:08:05 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-13-g004532c
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         7d5571ec-98fa-429a-8b03-e909af8eb6ee
+drill: release     da7e16a5129099737edb1a869b6a20f71097b2e9f11c06d84677915edc05040d
+drill: environment 757157ad87e52e4db2a548d9727efdfc86c4a13e6713fca2021f82ecb0334bed
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/data/environments/757157ad87e52e4db2a548d9727efdfc86c4a13e6713fca2021f82ecb0334bed
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/data
+drill: run 1       e49f6efc-5ad6-4d39-8eb1-b0ba0a7d10ae succeeded (state count=1)
+drill: run 2       a99ec1f7-adc4-4fbf-a189-28688a3da48b is running; taking the hot backup (daemon still writing)
+drill: sabotage: omitting environments from the backup
+drill: backup      ok (database + drop-environments); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (7d5571ec-98fa-429a-8b03-e909af8eb6ee)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: the restored runtime refused to submit a run:
+drill:   otter: managed Python environment 757157ad87e5 is not prepared; run otter prepare: open /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/restore-data/environments/757157ad87e52e4db2a548d9727efdfc86c4a13e6713fca2021f82ecb0334bed/otter-ready.json: no such file or directory (internal_error, HTTP 500)
+drill: FAILED: the restored job cannot run
+drill: failed; last daemon log lines:
+{"event":"identity_bootstrap_complete","level":"info","mode":"fresh","timestamp":"2026-09-30T02:08:07.801968Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/data/sdk/python","timestamp":"2026-09-30T02:08:07.806294Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T02:08:07.806321Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T02:08:07.806329Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws","timestamp":"2026-09-30T02:08:07.807293Z","total":1,"valid":1}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T02:08:07.807665Z","version":"v0.2.0-13-g004532c","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T02:08:07.80788Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T02:08:07.80849Z","url":"http://127.0.0.1:7403"}
+{"event":"run_queued","id":"7d5571ec-98fa-429a-8b03-e909af8eb6ee","job":"drill-job","level":"info","run_id":"e49f6efc-5ad6-4d39-8eb1-b0ba0a7d10ae","timestamp":"2026-09-30T02:08:07.889315Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"e49f6efc-5ad6-4d39-8eb1-b0ba0a7d10ae","timestamp":"2026-09-30T02:08:07.890155Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":1,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6211,"event":"run_succeeded","exit_code":0,"job":"7d5571ec-98fa-429a-8b03-e909af8eb6ee","level":"info","run_id":"e49f6efc-5ad6-4d39-8eb1-b0ba0a7d10ae","status":"succeeded","timestamp":"2026-09-30T02:08:14.101712Z"}
+{"event":"run_queued","id":"7d5571ec-98fa-429a-8b03-e909af8eb6ee","job":"drill-job","level":"info","run_id":"a99ec1f7-adc4-4fbf-a189-28688a3da48b","timestamp":"2026-09-30T02:08:14.12348Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"a99ec1f7-adc4-4fbf-a189-28688a3da48b","timestamp":"2026-09-30T02:08:14.124211Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":2,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6187,"event":"run_succeeded","exit_code":0,"job":"7d5571ec-98fa-429a-8b03-e909af8eb6ee","level":"info","run_id":"a99ec1f7-adc4-4fbf-a189-28688a3da48b","status":"succeeded","timestamp":"2026-09-30T02:08:20.311777Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T02:08:20.342196Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T02:08:20.342294Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T02:08:20.345039Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/restore-data/sdk/python","timestamp":"2026-09-30T02:08:20.529836Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T02:08:20.52987Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T02:08:20.529878Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws","timestamp":"2026-09-30T02:08:20.531074Z","total":1,"valid":1}
+{"count":1,"event":"recovering_interrupted_runs","level":"warn","timestamp":"2026-09-30T02:08:20.531292Z"}
+{"attempt":1,"event":"run_recovered","job":"7d5571ec-98fa-429a-8b03-e909af8eb6ee","level":"warn","run_id":"a99ec1f7-adc4-4fbf-a189-28688a3da48b","timestamp":"2026-09-30T02:08:20.53174Z"}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/restore-data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/restore-data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T02:08:20.532021Z","version":"v0.2.0-13-g004532c","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T02:08:20.532129Z"}
+{"event":"capture_stale_marked","level":"info","runs":1,"timestamp":"2026-09-30T02:08:20.532364Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T02:08:20.53239Z","url":"http://127.0.0.1:7403"}
+{"error":"managed Python environment 757157ad87e5 is not prepared; run otter prepare: open /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP/restore-data/environments/757157ad87e52e4db2a548d9727efdfc86c4a13e6713fca2021f82ecb0334bed/otter-ready.json: no such file or directory","event":"api_request_failed","level":"error","method":"POST","path":"/v1/jobs/drill-job/runs","timestamp":"2026-09-30T02:08:20.81341Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T02:08:20.829948Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T02:08:20.830004Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T02:08:20.831101Z"}
+drill: workspace was /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP
+drill: elapsed 15s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.ZoIhKP
+make: *** [drill] Error 1
+--- summary: sabotage-drop-environments exit=2 wall=16s
+
+===== sabotage: drop-tools (expect non-zero) =====
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-13-g004532c" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-13-g004532c)
+
+===== drill: backup-restore =====
+date:     2026-09-29 22:08:21 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-13-g004532c
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         d8a1a3c4-8115-4036-83f4-55989e561780
+drill: release     bb77950efad65977a738bed8389ec23334cb2a78f912b7823c1e77cdee2dfd63
+drill: environment fe032dd82a129a49b17009c005a6e453cd89d81eef8fac3c55f22bc450f19f33
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/data/environments/fe032dd82a129a49b17009c005a6e453cd89d81eef8fac3c55f22bc450f19f33
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/data
+drill: run 1       3ec8530f-e5f0-43a2-baf3-892033f4fb5c succeeded (state count=1)
+drill: run 2       9381a072-8b79-448e-ae96-0ba28c0290da is running; taking the hot backup (daemon still writing)
+drill: sabotage: omitting tools from the backup
+drill: backup      ok (database + drop-tools); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (d8a1a3c4-8115-4036-83f4-55989e561780)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: the restored runtime refused to submit a run:
+drill:   otter: managed Python environment a62ee68eab65 is not prepared; run otter prepare: open /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/restore-data/environments/a62ee68eab65c59b89da4e1e0cbdb2e9fdddb31de04baf45c858f6d5e01ea2a6/otter-ready.json: no such file or directory (internal_error, HTTP 500)
+drill: FAILED: the restored job cannot run
+drill: failed; last daemon log lines:
+{"event":"identity_bootstrap_complete","level":"info","mode":"fresh","timestamp":"2026-09-30T02:08:22.207248Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/data/sdk/python","timestamp":"2026-09-30T02:08:22.210462Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T02:08:22.210477Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T02:08:22.210485Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws","timestamp":"2026-09-30T02:08:22.211209Z","total":1,"valid":1}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T02:08:22.211535Z","version":"v0.2.0-13-g004532c","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T02:08:22.21174Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T02:08:22.212018Z","url":"http://127.0.0.1:7403"}
+{"event":"run_queued","id":"d8a1a3c4-8115-4036-83f4-55989e561780","job":"drill-job","level":"info","run_id":"3ec8530f-e5f0-43a2-baf3-892033f4fb5c","timestamp":"2026-09-30T02:08:22.28164Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"3ec8530f-e5f0-43a2-baf3-892033f4fb5c","timestamp":"2026-09-30T02:08:22.282632Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":1,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6197,"event":"run_succeeded","exit_code":0,"job":"d8a1a3c4-8115-4036-83f4-55989e561780","level":"info","run_id":"3ec8530f-e5f0-43a2-baf3-892033f4fb5c","status":"succeeded","timestamp":"2026-09-30T02:08:28.480397Z"}
+{"event":"run_queued","id":"d8a1a3c4-8115-4036-83f4-55989e561780","job":"drill-job","level":"info","run_id":"9381a072-8b79-448e-ae96-0ba28c0290da","timestamp":"2026-09-30T02:08:28.582738Z","trigger":"manual"}
+{"attempt":1,"event":"run_started","job":"drill-job","level":"info","run_id":"9381a072-8b79-448e-ae96-0ba28c0290da","timestamp":"2026-09-30T02:08:28.583686Z","trigger":"manual"}
+{"attempt":1,"detail":"ran {\"count\":2,\"level\":\"info\",\"logger\":\"otter\"}","duration_ms":6216,"event":"run_succeeded","exit_code":0,"job":"d8a1a3c4-8115-4036-83f4-55989e561780","level":"info","run_id":"9381a072-8b79-448e-ae96-0ba28c0290da","status":"succeeded","timestamp":"2026-09-30T02:08:34.799849Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T02:08:34.847483Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T02:08:34.847536Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T02:08:34.84959Z"}
+{"event":"sdk_ready","level":"info","path":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/restore-data/sdk/python","timestamp":"2026-09-30T02:08:35.020615Z"}
+{"default_policy":"full","event":"capture_configured","level":"info","retention":"168h0m0s","timestamp":"2026-09-30T02:08:35.020638Z"}
+{"event":"retention_configured","level":"info","log_retention":"0s","run_retention":"0s","timestamp":"2026-09-30T02:08:35.020645Z"}
+{"event":"jobs_discovered","invalid":0,"level":"info","root":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws","timestamp":"2026-09-30T02:08:35.021502Z","total":1,"valid":1}
+{"count":1,"event":"recovering_interrupted_runs","level":"warn","timestamp":"2026-09-30T02:08:35.021616Z"}
+{"attempt":1,"event":"run_recovered","job":"d8a1a3c4-8115-4036-83f4-55989e561780","level":"warn","run_id":"9381a072-8b79-448e-ae96-0ba28c0290da","timestamp":"2026-09-30T02:08:35.021772Z"}
+{"cron_triggers":0,"data":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/restore-data","database":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/restore-data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-09-30T02:08:35.021987Z","version":"v0.2.0-13-g004532c","workers":8}
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7403","timestamp":"2026-09-30T02:08:35.022115Z"}
+{"event":"listen_url_recorded","file":"/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/ws/.otter/serve/listen.url","level":"info","timestamp":"2026-09-30T02:08:35.022265Z","url":"http://127.0.0.1:7403"}
+{"event":"capture_stale_marked","level":"info","runs":1,"timestamp":"2026-09-30T02:08:35.022418Z"}
+{"error":"managed Python environment a62ee68eab65 is not prepared; run otter prepare: open /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8/restore-data/environments/a62ee68eab65c59b89da4e1e0cbdb2e9fdddb31de04baf45c858f6d5e01ea2a6/otter-ready.json: no such file or directory","event":"api_request_failed","level":"error","method":"POST","path":"/v1/jobs/drill-job/runs","timestamp":"2026-09-30T02:08:35.149377Z"}
+{"event":"shutdown_requested","level":"info","reason":"context canceled","timestamp":"2026-09-30T02:08:35.163735Z"}
+{"event":"shutdown_started","grace":"15s","level":"info","queued":0,"running":0,"timestamp":"2026-09-30T02:08:35.16379Z"}
+{"event":"shutdown_complete","level":"info","timestamp":"2026-09-30T02:08:35.164476Z"}
+drill: workspace was /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8
+drill: elapsed 14s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.EMWfb8
+make: *** [drill] Error 1
+--- summary: sabotage-drop-tools exit=2 wall=15s
+
+===== Linux container: plain golang:1.24 (no sqlite3 — fails loudly) =====
+go build  -trimpath -ldflags "-s -w -X main.version=dev" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=dev" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (dev)
+
+===== drill: backup-restore =====
+date:     2026-09-30 02:05:29 UTC
+host:     Linux 5.10.76-linuxkit (aarch64)
+checkout: unknown
+drill: sqlite3 is required for the hot backup and was not found on PATH
+make: *** [Makefile:95: drill] Error 2
+
+===== Linux container with sqlite3 added (passes) =====
+go build  -trimpath -ldflags "-s -w -X main.version=dev" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=dev" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (dev)
+
+===== drill: backup-restore =====
+date:     2026-09-30 02:05:50 UTC
+host:     Linux 5.10.76-linuxkit (aarch64)
+checkout: unknown
+drill: workspace   /tmp/otter-drill-backup-restore.s9K6Vy/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         a41073ee-4b2b-4ebd-b852-c619ccbb436b
+drill: release     6b740e4faf1e4d25621a7fee100570f7ff10a2b636c11f610f3d0295252891c3
+drill: environment 2a99b9402e75eb1797212e4f5c597ec8c1dd5c94db4d4eb5a2d2030e8d116eee
+drill: stub environment written under /tmp/otter-drill-backup-restore.s9K6Vy/ws/.otter/data/environments/2a99b9402e75eb1797212e4f5c597ec8c1dd5c94db4d4eb5a2d2030e8d116eee
+drill: releasing with the stub environment
+drill: initial runtime ready; data /tmp/otter-drill-backup-restore.s9K6Vy/ws/.otter/data
+drill: run 1       0e722f8d-bb10-4ca5-86c3-fa457cb38f15 succeeded (state count=1)
+drill: run 2       9b1b5761-aff2-4e32-be0c-39e25c3ca563 is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /tmp/otter-drill-backup-restore.s9K6Vy/restore-data; original moved to /tmp/otter-drill-backup-restore.s9K6Vy/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (a41073ee-4b2b-4ebd-b852-c619ccbb436b)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run d5cdece9-d626-4584-9657-8155a7ef1844 succeeded from /tmp/otter-drill-backup-restore.s9K6Vy/restore-data/.releases/a41073ee-4b2b-4ebd-b852-c619ccbb436b/6b740e4faf1e4d25621a7fee100570f7ff10a2b636c11f610f3d0295252891c3/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 19s
+
+real	0m27.615s
+user	0m0.163s
+sys	0m0.079s

@@ -1,0 +1,139 @@
+# P0-01 — real crash/kill harness — captured runs
+#
+# Claim (CA-20, R-01): accepted work survives a real SIGKILL of the daemon —
+# every accepted run ends terminal, every interrupted run is re-enqueued, and
+# (Linux) no attempt executes twice.
+#
+# When:   2026-09-29 22:00-22:26 EDT
+# Where:  macOS 15.7.3 arm64 for the Darwin runs; a golang:1.24 container
+#         (linux/arm64, kernel 5.10.76-linuxkit) for the Linux runs, which is
+#         where the load-bearing child-death and exactly-once assertions live.
+# Build:  branch p0-01-crash-harness @ 42ca217 (v0.2.0+)
+# Verdict: implementation evidence; independent verification is recorded
+#          separately. On macOS the no-duplicate half is the documented
+#          architecture.md non-guarantee (no parent-death signal), not a pass.
+
+===== Linux: full daemon package, committed tree =====
+ok  	github.com/tkoizumi/otter/internal/daemon	33.170s
+EXIT=0
+
+===== Linux: harness 3x in a row (determinism) =====
+=== RUN   TestCrashHarnessSIGKILLAndRecovery
+    crash_harness_test.go:432: accepted 80 runs against the real daemon (pid 82)
+    crash_harness_test.go:448: 59 children genuinely running; 64 rows in status running
+    crash_harness_test.go:452: SIGKILLed daemon pid 82; log:
+        {"event":"run_queued","id":"02c6c5f4-16df-4a52-9f8f-2d6c41e84c33","job":"crashjob","level":"info","run_id":"142e437b-c169-4d6c-83f4-364d71d9494c","timestamp":"2026-09-30T02:26:36.80938992Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:36.80944367Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"aa77d43e-da33-4060-8987-15e9eaf1ba6a","timestamp":"2026-09-30T02:26:36.809768711Z"}
+        {"event":"run_queued","id":"02c6c5f4-16df-4a52-9f8f-2d6c41e84c33","job":"crashjob","level":"info","run_id":"aa77d43e-da33-4060-8987-15e9eaf1ba6a","timestamp":"2026-09-30T02:26:36.80977467Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:36.809829878Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"a02ed4f9-beb3-4d84-8195-2ce35a3bdce8","timestamp":"2026-09-30T02:26:36.810123128Z"}
+        {"event":"run_queued","id":"02c6c5f4-16df-4a52-9f8f-2d6c41e84c33","job":"crashjob","level":"info","run_id":"a02ed4f9-beb3-4d84-8195-2ce35a3bdce8","timestamp":"2026-09-30T02:26:36.810128503Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:36.810178836Z"}
+    crash_harness_test.go:486: restarted daemon (pid 279) reported recovering 64 interrupted runs
+    crash_harness_test.go:591: all 80 accepted runs terminal across 144 rows; 64 interrupted runs re-enqueued; 80 distinct completions recorded
+    crash_harness_test.go:601: all 59 recorded interrupted children died with the daemon (Pdeathsig)
+    crash_harness_test.go:601: every one of 80 accepted run chains completed exactly once
+--- PASS: TestCrashHarnessSIGKILLAndRecovery (2.93s)
+=== RUN   TestCrashHarnessSIGKILLBetweenFinishAndRetry
+    crash_harness_test.go:664: SIGKILLed daemon pid 503 with the finish transaction open and uncommitted
+    crash_harness_test.go:724: finish-window kill: chain 2b50a0d6-0e4b-4558-836d-0712c68ff926 has 2 attempts and 2 completion side effects; the child exited 0 before the uncommitted transaction was killed, so its retry re-executed the work. runtime-contract.md §2 does not promise an attempt runs only once, so this is recorded, not asserted.
+--- PASS: TestCrashHarnessSIGKILLBetweenFinishAndRetry (0.20s)
+=== RUN   TestCrashHarnessSIGKILLAndRecovery
+    crash_harness_test.go:432: accepted 80 runs against the real daemon (pid 524)
+    crash_harness_test.go:448: 53 children genuinely running; 64 rows in status running
+    crash_harness_test.go:452: SIGKILLed daemon pid 524; log:
+        {"event":"run_queued","id":"c826cc93-ff90-429d-892d-4979160e3b03","job":"crashjob","level":"info","run_id":"33d3bc90-02e8-441d-b0bb-c5f9937810e5","timestamp":"2026-09-30T02:26:39.810133588Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:39.810212713Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"8aafa041-3542-40c4-8de7-f017fd67cb54","timestamp":"2026-09-30T02:26:39.810812338Z"}
+        {"event":"run_queued","id":"c826cc93-ff90-429d-892d-4979160e3b03","job":"crashjob","level":"info","run_id":"8aafa041-3542-40c4-8de7-f017fd67cb54","timestamp":"2026-09-30T02:26:39.810821379Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:39.810884921Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"2f91a891-898e-4be4-9675-92af982dcc05","timestamp":"2026-09-30T02:26:39.811344671Z"}
+        {"event":"run_queued","id":"c826cc93-ff90-429d-892d-4979160e3b03","job":"crashjob","level":"info","run_id":"2f91a891-898e-4be4-9675-92af982dcc05","timestamp":"2026-09-30T02:26:39.811375796Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:39.811431504Z"}
+    crash_harness_test.go:486: restarted daemon (pid 717) reported recovering 64 interrupted runs
+    crash_harness_test.go:591: all 80 accepted runs terminal across 144 rows; 64 interrupted runs re-enqueued; 80 distinct completions recorded
+    crash_harness_test.go:601: all 53 recorded interrupted children died with the daemon (Pdeathsig)
+    crash_harness_test.go:601: every one of 80 accepted run chains completed exactly once
+--- PASS: TestCrashHarnessSIGKILLAndRecovery (3.01s)
+=== RUN   TestCrashHarnessSIGKILLBetweenFinishAndRetry
+    crash_harness_test.go:664: SIGKILLed daemon pid 939 with the finish transaction open and uncommitted
+    crash_harness_test.go:724: finish-window kill: chain 628716de-ab35-4eb5-bfd4-aca507158302 has 2 attempts and 2 completion side effects; the child exited 0 before the uncommitted transaction was killed, so its retry re-executed the work. runtime-contract.md §2 does not promise an attempt runs only once, so this is recorded, not asserted.
+--- PASS: TestCrashHarnessSIGKILLBetweenFinishAndRetry (0.28s)
+=== RUN   TestCrashHarnessSIGKILLAndRecovery
+    crash_harness_test.go:432: accepted 80 runs against the real daemon (pid 960)
+    crash_harness_test.go:448: 52 children genuinely running; 64 rows in status running
+    crash_harness_test.go:452: SIGKILLed daemon pid 960; log:
+        {"event":"run_queued","id":"c04bd32f-2f9d-41d2-98fc-713da1978862","job":"crashjob","level":"info","run_id":"8c629c33-404c-4825-bc52-02d3226d2df3","timestamp":"2026-09-30T02:26:43.103334173Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:43.103469006Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"c1c98ece-4e05-457c-a32b-c22252c73689","timestamp":"2026-09-30T02:26:43.103755798Z"}
+        {"event":"run_queued","id":"c04bd32f-2f9d-41d2-98fc-713da1978862","job":"crashjob","level":"info","run_id":"c1c98ece-4e05-457c-a32b-c22252c73689","timestamp":"2026-09-30T02:26:43.103760839Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:43.103805381Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"b508f7f3-b2cc-4626-91ea-84f8b3208bcd","timestamp":"2026-09-30T02:26:43.104065881Z"}
+        {"event":"run_queued","id":"c04bd32f-2f9d-41d2-98fc-713da1978862","job":"crashjob","level":"info","run_id":"b508f7f3-b2cc-4626-91ea-84f8b3208bcd","timestamp":"2026-09-30T02:26:43.104070756Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:26:43.104113839Z"}
+    crash_harness_test.go:486: restarted daemon (pid 1149) reported recovering 64 interrupted runs
+    crash_harness_test.go:591: all 80 accepted runs terminal across 144 rows; 64 interrupted runs re-enqueued; 80 distinct completions recorded
+    crash_harness_test.go:601: all 52 recorded interrupted children died with the daemon (Pdeathsig)
+    crash_harness_test.go:601: every one of 80 accepted run chains completed exactly once
+--- PASS: TestCrashHarnessSIGKILLAndRecovery (2.72s)
+=== RUN   TestCrashHarnessSIGKILLBetweenFinishAndRetry
+    crash_harness_test.go:664: SIGKILLed daemon pid 1369 with the finish transaction open and uncommitted
+    crash_harness_test.go:724: finish-window kill: chain 927728dc-a5f4-4067-ae6b-9cd5998e7014 has 2 attempts and 2 completion side effects; the child exited 0 before the uncommitted transaction was killed, so its retry re-executed the work. runtime-contract.md §2 does not promise an attempt runs only once, so this is recorded, not asserted.
+--- PASS: TestCrashHarnessSIGKILLBetweenFinishAndRetry (0.26s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/daemon	9.417s
+EXIT=0
+
+===== macOS: harness 3x in a row =====
+=== RUN   TestCrashHarnessSIGKILLAndRecovery
+    crash_harness_test.go:390: accepted 80 runs against the real daemon (pid 43122)
+    crash_harness_test.go:406: 53 children genuinely running; 64 rows in status running
+    crash_harness_test.go:410: SIGKILLed daemon pid 43122; log:
+        {"event":"run_queued","id":"c3e00c16-b4bf-49a7-9f83-3c5adb68c657","job":"crashjob","level":"info","run_id":"3c289bfa-376b-4e4c-810f-967fccff1dd8","timestamp":"2026-09-30T02:00:15.822759Z","trigger":"manual"}
+        {"duration_ms":7,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:15.822942Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"55ec2853-83f0-43a3-839b-3cbfa5a59214","timestamp":"2026-09-30T02:00:15.823853Z"}
+        {"event":"run_queued","id":"c3e00c16-b4bf-49a7-9f83-3c5adb68c657","job":"crashjob","level":"info","run_id":"55ec2853-83f0-43a3-839b-3cbfa5a59214","timestamp":"2026-09-30T02:00:15.830756Z","trigger":"manual"}
+        {"duration_ms":9,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:15.83222Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"9aa7bb52-f168-4925-b55a-638f889dbbd8","timestamp":"2026-09-30T02:00:15.841261Z"}
+        {"event":"run_queued","id":"c3e00c16-b4bf-49a7-9f83-3c5adb68c657","job":"crashjob","level":"info","run_id":"9aa7bb52-f168-4925-b55a-638f889dbbd8","timestamp":"2026-09-30T02:00:15.841282Z","trigger":"manual"}
+        {"duration_ms":9,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:15.849465Z"}
+    crash_harness_test.go:444: restarted daemon (pid 43221) reported recovering 64 interrupted runs
+    crash_harness_test.go:541: all 80 accepted runs terminal; 64 interrupted runs re-enqueued; 88 distinct completions recorded
+    crash_harness_test.go:551: platform assertions excluded on this OS (darwin): no parent-death signal, so an in-flight child is reparented and survives the daemon's SIGKILL. Ran everywhere: 80 accepted runs terminal, 64 interrupted runs re-enqueued, 88 distinct completions. Excluded here: child-death and one-completion-per-chain (Linux-only, crash_harness_linux_test.go).
+--- PASS: TestCrashHarnessSIGKILLAndRecovery (4.17s)
+=== RUN   TestCrashHarnessSIGKILLAndRecovery
+    crash_harness_test.go:390: accepted 80 runs against the real daemon (pid 43394)
+    crash_harness_test.go:406: 57 children genuinely running; 64 rows in status running
+    crash_harness_test.go:410: SIGKILLed daemon pid 43394; log:
+        {"event":"run_queued","id":"67a59a30-8646-4187-a045-5adf68bfb21d","job":"crashjob","level":"info","run_id":"f612e192-ed76-499f-a4bf-09b1011d6a23","timestamp":"2026-09-30T02:00:19.448312Z","trigger":"manual"}
+        {"duration_ms":1,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:19.448523Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"7f6b2428-b4ca-44e5-b159-4c990c541c3b","timestamp":"2026-09-30T02:00:19.459158Z"}
+        {"event":"run_queued","id":"67a59a30-8646-4187-a045-5adf68bfb21d","job":"crashjob","level":"info","run_id":"7f6b2428-b4ca-44e5-b159-4c990c541c3b","timestamp":"2026-09-30T02:00:19.459172Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:19.459241Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"39ed91e9-26fe-4629-9e10-555cfb757fe3","timestamp":"2026-09-30T02:00:19.461225Z"}
+        {"event":"run_queued","id":"67a59a30-8646-4187-a045-5adf68bfb21d","job":"crashjob","level":"info","run_id":"39ed91e9-26fe-4629-9e10-555cfb757fe3","timestamp":"2026-09-30T02:00:19.461266Z","trigger":"manual"}
+        {"duration_ms":1,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:19.461423Z"}
+    crash_harness_test.go:444: restarted daemon (pid 43495) reported recovering 64 interrupted runs
+    crash_harness_test.go:541: all 80 accepted runs terminal; 64 interrupted runs re-enqueued; 85 distinct completions recorded
+    crash_harness_test.go:551: platform assertions excluded on this OS (darwin): no parent-death signal, so an in-flight child is reparented and survives the daemon's SIGKILL. Ran everywhere: 80 accepted runs terminal, 64 interrupted runs re-enqueued, 85 distinct completions. Excluded here: child-death and one-completion-per-chain (Linux-only, crash_harness_linux_test.go).
+--- PASS: TestCrashHarnessSIGKILLAndRecovery (3.84s)
+=== RUN   TestCrashHarnessSIGKILLAndRecovery
+    crash_harness_test.go:390: accepted 80 runs against the real daemon (pid 43640)
+    crash_harness_test.go:406: 57 children genuinely running; 64 rows in status running
+    crash_harness_test.go:410: SIGKILLed daemon pid 43640; log:
+        {"event":"run_queued","id":"db3c12c3-2fb7-451e-affb-967486b0d5e4","job":"crashjob","level":"info","run_id":"978edaa1-f642-414d-8c8d-709c9954b6fe","timestamp":"2026-09-30T02:00:23.264533Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:23.264603Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"5f93242c-5de0-49ca-bae5-2aef125187e6","timestamp":"2026-09-30T02:00:23.271778Z"}
+        {"event":"run_queued","id":"db3c12c3-2fb7-451e-affb-967486b0d5e4","job":"crashjob","level":"info","run_id":"5f93242c-5de0-49ca-bae5-2aef125187e6","timestamp":"2026-09-30T02:00:23.271819Z","trigger":"manual"}
+        {"duration_ms":1,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:23.271989Z"}
+        {"event":"capture_started","level":"debug","policy":"full","run_id":"1cc177d1-6707-4bcf-8348-e761a876ad5d","timestamp":"2026-09-30T02:00:23.276709Z"}
+        {"event":"run_queued","id":"db3c12c3-2fb7-451e-affb-967486b0d5e4","job":"crashjob","level":"info","run_id":"1cc177d1-6707-4bcf-8348-e761a876ad5d","timestamp":"2026-09-30T02:00:23.276726Z","trigger":"manual"}
+        {"duration_ms":0,"event":"api_request","level":"debug","method":"POST","path":"/v1/jobs/crashjob/runs","status":202,"timestamp":"2026-09-30T02:00:23.276802Z"}
+    crash_harness_test.go:444: restarted daemon (pid 43725) reported recovering 64 interrupted runs
+    crash_harness_test.go:541: all 80 accepted runs terminal; 64 interrupted runs re-enqueued; 87 distinct completions recorded
+    crash_harness_test.go:551: platform assertions excluded on this OS (darwin): no parent-death signal, so an in-flight child is reparented and survives the daemon's SIGKILL. Ran everywhere: 80 accepted runs terminal, 64 interrupted runs re-enqueued, 87 distinct completions. Excluded here: child-death and one-completion-per-chain (Linux-only, crash_harness_linux_test.go).
+--- PASS: TestCrashHarnessSIGKILLAndRecovery (3.34s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/daemon	11.566s
+EXIT=0
