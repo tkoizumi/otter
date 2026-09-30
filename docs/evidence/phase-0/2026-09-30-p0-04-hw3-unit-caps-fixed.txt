@@ -1,0 +1,104 @@
+=== Phase 0 evidence: HW-3, the caps claim on the real host, FIXED ===
+task:      P0-04. "A deliberately runaway Python job is killed; otterd survives and the
+           host stays responsive."
+result:    PASSED, exit 0. Killed in 1.417 seconds; the cgroup never swapped.
+date:      2026-09-30 18:32:59 EDT
+where:     the Castor runtime host i-01ed07dce59ba3f5b / 44.213.227.52, workspace otter-examples-e0309b8c
+build:     otter v0.3.0-rc1 from main @ 7319363 (P0-04 merged); unit: MemoryMax=75%,
+           MemorySwapMax=0, CPUQuota=200%, TasksMax=512, and NO MemoryHigh line
+
+--- the same window, before and after ---
+The first run of this window, on the same host against the then-current unit, FALSIFIED the
+claim (2026-09-30-p0-04-unit-caps-host-failure.txt):
+
+  BEFORE  memory.events   high 27821  max 0  oom 0  oom_kill 0
+          memory.peak     628346880, below memory.max 711147520 -> the hard cap never bound
+          swap            2047 MiB used of 2047 (the 2 GiB swapfile, exhausted)
+          otterd          alive but starved: /health timed out, the API stopped answering
+          the runaway     SURVIVED, holding 615 MiB, until its own 600s manifest timeout
+
+  AFTER   memory.events   high 0  max 84  oom 1  oom_kill 1
+          memory.peak     711143424 == memory.max, i.e. the hard cap bound exactly
+          swap            swap.max 0, swap.current 0 -- the cgroup never swapped at all
+          otterd          MainPID 34171 unchanged, NRestarts 0, /health 200, host running
+          the runaway     killed: run failed after 1.417 seconds, no process survived
+
+The two changes that produced that: MemorySwapMax=0, so memory.current can reach memory.max;
+and MemoryHigh=off, so the kernel cannot throttle-and-reclaim instead of killing. Either one
+alone was measured to be insufficient -- the first attempt had unbounded swap, and the
+intermediate state had swap bounded but a 60% soft cap, which parked the runaway just above
+memory.high for ten minutes while holding the only worker.
+
+--- the run ---
+===== HW-3 re-run: the caps against the fixed unit =====
+kernel:  Linux 7.0.0-1013-aws
+unit:    otterd-otter-examples-e0309b8c.service
+--- the guard: the unit must carry the fixed caps ---
+  MemoryMax=75%
+  MemorySwapMax=0
+  CPUQuota=200%
+  TasksMax=512
+  (no MemoryHigh line, as the fixed default requires)
+--- in force ---
+  memory.max      711143424
+  memory.high     max
+  memory.swap.max 0
+  otterd MainPID  34171
+  swap before       (oom_kill before: 0)
+--- staging the runaway job ---
+  released and reloaded
+--- triggering the runaway ---
+c0139484-450d-46f3-b50f-9d918e187739
+--- watching the cgroup (bounded at 120s) ---
+  oom_kill: 1 (was 0) after ~1s
+--- cgroup memory.events ---
+low 0
+high 0
+max 84
+oom 1
+oom_kill 1
+oom_group_kill 0
+sock_throttled 0
+--- memory ---
+  memory.max     711143424
+  memory.high    max
+  memory.current 14237696
+  swap.max       0
+  swap.current   0
+  peak           711143424
+--- after the kill ---
+  is-active  active
+  MainPID    34171 -> 34171
+  NRestarts  0
+  survivors:
+    (none: only otterd)
+  swap after  
+  run history:
+RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
+c0139484-450d-46f3-b50f-9d918e187739  runaway  manual   failed  1        2026-09-30T22:32:44Z  1.417s
+  /health     {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":22.905250536}
+  host        running
+--- assertions ---
+PASS otterd MainPID unchanged (34171)
+PASS unit active
+PASS NRestarts 0
+PASS no runaway survived
+PASS /health answered
+PASS swap.current 0 (the cgroup never swapped)
+--- cleanup ---
+  removed the runaway job and restarted the unit
+  cgroup.procs now: 34648 
+  jobs: drill-job shopify-product-to-salesforce-product shopify_customer_to_salesforce_contact 
+hw3: the cap killed the runaway, otterd survived, and the host answered
+
+exit 0
+
+--- verdict ---
+P0-04 is met on the real host. All four clauses hold: the job was killed, otterd survived,
+the host stayed responsive, and -- the part the fix added -- the workspace cgroup never
+swapped, so the failure stayed contained inside the unit instead of becoming a host-wide
+thrash. The kill took 1.4s against a 600s manifest timeout.
+
+Residual, recorded rather than smoothed: the drill renders the default for MemoryHigh but
+still passes -memory-swap-max explicitly, so DefaultMemorySwapMax is pinned by the Go tests
+and not by the drill. A regression would be caught in CI, but not by this window.
