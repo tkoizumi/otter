@@ -11,14 +11,14 @@
 #   `otter deploy` vendors) against a loopback PEP 503 index built for this
 #   capture; every URL in these transcripts is 127.0.0.1 and no remote host was
 #   contacted.
-# Build: starts at v0.2.0-41-g7a0f229 and ends at v0.2.0-44-gf718d63 for the
-#   ROUND 3 sections.
+# Build: starts at v0.2.0-41-g7a0f229 and ends at v0.2.0-46-g9f96397 (the capture
+#   commit after the ROUND 4 fix).
 # Code under test: 7a0f229 for the UV/OTTER/TESTS/SUITE/DRILLS sections, f718d63
 #   for ROUND 3, and 669f6b7 for ROUND 4. Each round's section names the
 #   commit it was measured against; the commits between them are that round's
 #   fix and its tests.
 #
-# Falsifiability: thirty-two mutations (one re-run cleanly, so it appears twice),
+# Falsifiability: thirty-two mutations (three re-run cleanly, so they appear twice),
 #   one per assertion, applied to the
 #   committed tree with the failing test recorded in the MUTATIONS and ROUND 3
 #   sections. The decisive one is the verifier's first finding: with a lock cut
