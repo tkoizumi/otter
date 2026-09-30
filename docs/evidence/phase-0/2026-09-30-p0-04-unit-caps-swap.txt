@@ -1,4 +1,10 @@
 === Phase 0 evidence: P0-04 unit caps — MemorySwapMax and the deployed-style drill ===
+PARTLY SUPERSEDED, same day: this record measures the configuration that was deployed at
+the time (MemoryHigh on). DefaultMemoryHigh is now "off", so the deployed-style case no
+longer runs with a soft cap and passes; see
+2026-09-30-p0-04-memory-high-default.txt. The measurement below is why the default
+changed and still stands; the "the deployed claim is still false" verdict applies to the
+pre-change default only.
 task:      P0-04 (ledger: "Re-run on the Castor VM once P0-07 exists")
 claim:     a deliberately runaway Python job is killed; otterd survives and the host stays responsive
 result:    PARTIAL. The swap bound is in force and stops the host-wide thrash; the "killed"

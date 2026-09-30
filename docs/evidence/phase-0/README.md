@@ -51,3 +51,4 @@ is not.
 | 2026-09-30 | P0-07 host identity | [2026-09-30-p0-07-host-identity.txt](2026-09-30-p0-07-host-identity.txt) | operator checkout; read-only AWS/CloudFormation calls against the otter account (no host access) |
 | 2026-09-30 | P0-04 swap bound | [2026-09-30-p0-04-unit-caps-swap.txt](2026-09-30-p0-04-unit-caps-swap.txt) | macOS 15 arm64; Ubuntu 24.04 systemd container with a real swap device. Deployed-style case is **red** — see the record's verdict |
 | 2026-09-30 | P0-04 swap-bound falsification | [2026-09-30-p0-04-unit-caps-swap-mutations.txt](2026-09-30-p0-04-unit-caps-swap-mutations.txt) | same |
+| 2026-09-30 | P0-04 MemoryHigh default | [2026-09-30-p0-04-memory-high-default.txt](2026-09-30-p0-04-memory-high-default.txt) | macOS 15 arm64; Ubuntu 24.04 systemd container with a real swap device. All four cases pass; the soft-cap case measures why the default is now `off` |
