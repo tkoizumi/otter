@@ -582,6 +582,9 @@ mutation() {
 	fi
 	out=$(sh "$LIB/assert-clean-host.sh" "$WORK/mut-source.report" "$WORK/mut-target.report" 0 2>&1) && status=0 || status=$?
 	[ "$status" -ne 0 ] || fail "the gate passed a mutated pair: $mut_name"
+	# Print the refusal, so the recorded transcript shows what each mutation
+	# produced rather than only that something did.
+	say "      $mut_name -> $(printf '%s\n' "$out" | sed -n 's/^drill: FAILED: //p' | head -n 1 | cut -c1-120)"
 }
 
 mutation "unit data dir" 's|^unit_data_dir=.*|unit_data_dir=/var/lib/somewhere-else|' ""
