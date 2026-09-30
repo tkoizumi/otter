@@ -4,7 +4,8 @@ Status: living document. Created: 2026-09-29.
 
 The state of every task in [phase-0-tasks.md](phase-0-tasks.md), and the record
 of what closed it. The execution plan is
-[phase-0-execution-plan.md](phase-0-execution-plan.md).
+[phase-0-execution-plan.md](phase-0-execution-plan.md); the W2 host run plan is
+[phase-0-host-run-plan.md](phase-0-host-run-plan.md).
 
 ## How this document is maintained
 
@@ -28,22 +29,42 @@ Status values: `not started`, `in progress`, `blocked`, `host-gated`,
 | --- | --- | --- | --- | --- | --- |
 | P0-01 | Real crash/kill harness | **done** | merged `4e8fe7e`; `internal/daemon/crash_harness*_test.go` | [record](evidence/phase-0/2026-09-29-p0-01-crash-harness.txt) — Linux `ok 33.2s`, harness deterministic over 3 runs, 3 mutations red→green. Verifier removed `Pdeathsig`: 53 child survivals and 10 duplicated chains, so "none executed twice" is load-bearing. Appendix A: FM-01 **Real (Linux)**, FM-02 **Real (atomicity)** | VERIFIED @ `42ca217` |
 | P0-02 | Retry release/environment binding | **done** | merged `7b990bc`; `retry_binding_test.go` + `recoveryRetryPolicy` in `recovery.go` | four tests (six cases) prove the retry half, the managed environment and the prune, and the verifier's three mutations — live policy, live release, live environment — each break them. `runtime-contract.md` §5.1 promoted from non-guarantee to guarantee; `OT-011` retired. Findings: the recovery live-vs-bound policy defect was fixed; a transiently unreadable snapshot strands a retry → `OT-012` | VERIFIED @ `05e3187`, corrections applied |
-| P0-03 | Full-fidelity backup and restore | in progress — **host-gated** | merged `fa233e8`; `scripts/drill/backup-restore.sh`; [operations.md](operations.md#backups) | [record](evidence/phase-0/2026-09-29-p0-03-backup-restore-drill.txt) — drill clean ×3, three sabotage modes red at the run assertion. Verifier wrote 9 additional independent sabotages and confirmed the repointing is a legitimate restore step, not a masked defect. **The task's evidence bar is a real host, so this is not closed**: the drill proves same-host, different-data-directory | VERIFIED @ `91b8cd3` (drill and doc) |
+| P0-03 | Full-fidelity backup and restore | in progress — **host-gated** | merged `fa233e8`; `scripts/drill/backup-restore.sh`; [operations.md](operations.md#backups). Clean-host mode in flight: **W-E**, `.worktrees/p0-03` (`p0-03-clean-host-mode`) | [record](evidence/phase-0/2026-09-29-p0-03-backup-restore-drill.txt) — drill clean ×3, three sabotage modes red at the run assertion. Verifier wrote 9 additional independent sabotages and confirmed the repointing is a legitimate restore step, not a masked defect. **The task's evidence bar is a real host, so this is not closed**: the drill proves same-host, different-data-directory | VERIFIED @ `91b8cd3` (drill and doc) |
 | P0-04 | Resource caps in the generated unit | **done** | merged `f5dc220`; `UnitOptions` + `scripts/drill/unit-caps.sh` | [drill](evidence/phase-0/2026-09-29-p0-04-unit-caps-drill.txt), [mutation](evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt) — runaway OOM-killed at the cap, `MainPID` survived, `NRestarts 0`, host answered. Verifier removed `OOMPolicy`: drill fails with `MainPID after: 0`, so it detects daemon death. Zero-cap validation defect found and fixed. Re-run on the Castor VM once P0-07 exists | VERIFIED @ `def32b8` |
 | P0-05 | Pin the version; no auto-upgrade | **done** | `main` (W0) | [pin recorded](#pinned-runtime-version) + [operations.md](operations.md#upgrades); no code path updates the runtime — 2026-09-29 baseline | 2026-09-29 baseline run |
 | P0-06 | Deployment-failure recovery | **done** | merged `30f4fd9`; `scripts/drill/deploy-failure.sh` + a containerised SSH/systemd deploy target | [record](evidence/phase-0/2026-09-29-p0-06-deploy-failure-drill.txt) — the real `otter deploy` converges a systemd container over ssh; clean ×2 (21s/24s). The candidate is staged, then its preparation is refused, so it never activates: `MainPID` unchanged, `/health` answered, and a new run succeeds bound to the previous release **and** environment digests. Verifier: both sabotages red on their matching assertion, the injection confirmed after staging and before activation, and the checkout verified clean after every run. Scope: container not the Castor VM, no binary/unit swap, stub `uv` | VERIFIED @ `bb6f6a9`; `30f4fd9` delta (stub rename, re-recorded transcript) reviewed |
-| P0-07 | Provision the Castor host | host-gated | artifact not written | pending | pending |
-| P0-08 | Egress and managed Python | host-gated | artifact not written | pending | pending |
+| P0-07 | Provision the Castor host | in progress — **host-gated** | Infra deployed (`otter-platform` stack `CastorRuntime`). Provisioning script + permission assertions in flight: **W-A**, `.worktrees/p0-07` (`p0-07-provisioning-script`) | pending — windows HW-0, HW-8 | pending |
+| P0-08 | Egress and managed Python | in progress — **host-gated** | Mirror/index passthrough + prepare-time egress preflight in flight: **W-B**, `.worktrees/p0-08` (`p0-08-egress-managed-python`) | pending — window HW-2 (critical path to P0-13) | pending |
 | P0-09 | Failure notification | blocked on human | code already complete | pending — needs a real channel | pending |
 | P0-10 | Independent liveness detection | in progress — artifact done, **evidence host-gated** | `main`; `scripts/heartbeat.sh`, `heartbeat.service`, `heartbeat.timer`, `scripts/drill/liveness.sh` | [record](evidence/phase-0/2026-09-29-p0-10-liveness-drill.txt) — no runtime → no ping and a non-zero exit; real `otterd` → the ping is logged; runtime killed → pings stop. `DRILL_SABOTAGE=ping-always` goes red on the first assertion, so the drill tests the dead-man property rather than a script's exit code. The task's own evidence — kill the daemon and watch an alert arrive — still needs the external service and the host | pending |
 | P0-11 | Disk retention and thresholds | not started | — | pending | pending |
-| P0-12 | Scope Castor's credentials | blocked on human | code already complete | pending — needs names, scopes, values | pending |
+| P0-12 | Scope Castor's credentials | blocked on human (values) | Code already complete; assertion tests in flight: **W-D**, `.worktrees/p0-12` (`p0-12-credentials`) | pending — needs names, scopes, values; window HW-5 | pending |
 | P0-13 | Select and harden the job | blocked on customer | — | pending | pending |
 | P0-14 | Shadow run beside the Lambda | not started | after P0-13 | pending | pending |
 | P0-15 | Cutover | not started | after all blockers | pending | pending |
 | P0-16 | Operate for 30+ days | not started | elapsed | pending | pending |
 | P0-17 | Write the runbook | not started | written while operating | pending | pending |
 | P0-18 | Produce the ranked gap list | not started | after P0-16 | pending | pending |
+
+## Host windows (lane B, concurrency 1)
+
+The Castor host exists as infrastructure, so the host-gated tasks run as a queue of
+short windows rather than as parallel drills. The queue, its ordering and its rules
+are in [phase-0-host-run-plan.md](phase-0-host-run-plan.md) §5–6. **One window at a
+time**; nothing else touches the host during a window, including read-only commands.
+A window with no transcript is an open window.
+
+| Window | Task | Status | Transcript |
+| --- | --- | --- | --- |
+| HW-0 host identity + clean baseline | P0-07 | not started | — |
+| HW-1 deploy the pin | P0-05, P0-07 | blocked on the pin decision | — |
+| HW-2 egress + managed Python | P0-08 | waiting on W-B | — |
+| HW-3 unit caps on the real host | P0-04 | not started | — |
+| HW-4a notification / HW-4b liveness | P0-09, P0-10 | blocked on the notify channel | — |
+| HW-5 credentials | P0-12 | blocked on Castor's values | — |
+| HW-6 retention + disk pressure | P0-11 | blocked on WS1/WS4 | — |
+| HW-7 backup → restore onto a clean host | P0-03 | waiting on W-E and a second host | — |
+| HW-8 final posture re-scan | P0-07 | not started | — |
 
 ## Shared prerequisites
 
@@ -55,7 +76,7 @@ on. Each was verified rather than assumed.
 | Evidence convention — one dated record per run, raw output, named host | done 2026-09-29 | [evidence/phase-0/README.md](evidence/phase-0/README.md) |
 | Drill harness — `scripts/drill.sh`, `make drill`, `scripts/drill/<name>.sh` | done 2026-09-29; dispatcher verified for the empty, failing, aggregate and unknown-name cases | [scripts/drill.sh](../scripts/drill.sh) |
 | Linux container route for Linux-only evidence | done 2026-09-29; the `Pdeathsig` test builds and passes in a container | [2026-09-29-linux-docker-probe.txt](evidence/phase-0/2026-09-29-linux-docker-probe.txt) |
-| Worktree isolation for workers (`.worktrees/`, one branch per task) | done 2026-09-29; verified from inside a subagent | gitignored, see [phase-0-execution-plan.md](phase-0-execution-plan.md) §2 |
+| Worktree isolation for workers (`.worktrees/`, one branch per task) | done 2026-09-29; verified from inside a subagent; in use since 2026-09-30 — four live worktrees (`p0-03`, `p0-07`, `p0-08`, `p0-12`) | gitignored, see [phase-0-execution-plan.md](phase-0-execution-plan.md) §2 |
 
 ## Pinned runtime version
 

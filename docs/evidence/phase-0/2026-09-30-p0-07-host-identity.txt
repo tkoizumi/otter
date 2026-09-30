@@ -1,0 +1,52 @@
+=== Phase 0 evidence: Castor host identity capture ===
+task:      P0-07 (host input to every W2 window; not the P0-07 verdict)
+claim:     the Castor host exists, and its identity can be named by evidence
+date:      2026-09-30 15:59:17 EDT
+where:     operator macOS 15 arm64 developer checkout; AWS account 426714791664, us-east-1
+build:     otter @ 21be6e9 (v0.2.0-37-g21be6e9-dirty)
+note:      credential profile otter; read-only calls. The private key was NOT retrieved.
+
+$ aws sts get-caller-identity --profile otter
+{
+    "UserId": "AIDAWGWRO73YFQB24U7FB",
+    "Account": "426714791664",
+    "Arn": "arn:aws:iam::426714791664:user/taka"
+}
+
+$ aws cloudformation describe-stacks --profile otter --stack-name CastorRuntime \
+    --query "Stacks[0].Outputs[].[OutputKey,OutputValue]" --output text
+PublicIpAddress	44.198.213.184
+PortScanCommand	nmap -Pn -p- 44.198.213.184
+InstanceId	i-00dcd4c34a0dcb0ef
+SshCommand	ssh -i <path-to-key> ubuntu@44.198.213.184
+ApiTunnelCommand	ssh -N -L 7337:127.0.0.1:7337 -i <path-to-key> ubuntu@44.198.213.184
+OtterDeployCommand	otter deploy --host ubuntu@44.198.213.184
+PublicDnsName	ec2-44-198-213-184.compute-1.amazonaws.com
+RetrievePrivateKeyCommand	aws ssm get-parameter --name /ec2/keypair/key-054646bbaf93476c2 --with-decryption --query Parameter.Value --output text > otter-castor.pem && chmod 600 otter-castor.pem
+
+$ aws ec2 describe-instances --profile otter \
+    --filters "Name=tag:aws:cloudformation:stack-name,Values=CastorRuntime" \
+    --query "Reservations[].Instances[].{Id:InstanceId,Type:InstanceType,AZ:Placement.AvailabilityZone,State:State.Name,Arch:Architecture,AMI:ImageId,LaunchTime:LaunchTime}" --output table
+---------------------------------------------
+|             DescribeInstances             |
++-------------+-----------------------------+
+|  AMI        |  ami-0bec8cef5313300ad      |
+|  AZ         |  us-east-1a                 |
+|  Arch       |  arm64                      |
+|  Id         |  i-00dcd4c34a0dcb0ef        |
+|  LaunchTime |  2026-09-30T19:37:30+00:00  |
+|  State      |  running                    |
+|  Type       |  t4g.micro                  |
++-------------+-----------------------------+
+
+exit status: 0 (all calls)
+
+--- verdict ---
+Proves: the stack CastorRuntime is CREATE_COMPLETE in the pinned account, and the
+host is a running arm64 t4g.micro with a stable Elastic IP, matching the sizing the
+otter-platform stack documents.
+
+Does NOT prove: anything about the host itself. The port scan, the on-host reads
+(provision report, sshd config, file modes, IMDSv2), and the absence of an otterd
+unit are HW-0 host-touching steps and were NOT run. P0-07 remains open: its evidence
+bar is an external port scan plus a passing permission assertion test.
