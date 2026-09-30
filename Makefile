@@ -91,11 +91,11 @@ smoke: build
 	@OTTER_BIN=$(OTTER) sh $(ROOT)/scripts/smoke.sh
 
 ## drill: run the operating drills (DRILL=<name> runs one; see scripts/drill.sh)
-drill:
+drill: build
 	@if [ -n "$(DRILL)" ]; then \
-		sh $(ROOT)/scripts/drill.sh "$(DRILL)"; \
+		OTTER_BIN=$(OTTER) sh $(ROOT)/scripts/drill.sh "$(DRILL)"; \
 	else \
-		sh $(ROOT)/scripts/drill.sh; \
+		OTTER_BIN=$(OTTER) sh $(ROOT)/scripts/drill.sh; \
 	fi
 
 ## lint: gofmt check, go vet, and golangci-lint when it is installed
