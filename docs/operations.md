@@ -28,6 +28,84 @@ directory, and (for cron triggers) a clock that is roughly correct.
 
 ## First run on a Linux VM or EC2 instance
 
+The supported path from an empty Ubuntu 24.04 host to a running daemon is two
+scripts and one command:
+
+```bash
+# On your workstation, from this checkout:
+make build
+sh scripts/provision.sh --host ubuntu@203.0.113.10 --identity ~/.ssh/castor
+```
+
+`scripts/provision.sh` does the work *before* a runtime exists on the host, then
+hands off and checks the result:
+
+1. it asserts the host is reachable, the login has passwordless `sudo`, and the
+   architecture is amd64 or arm64 (it detects which, never assumes one);
+2. it asserts the host is Ubuntu 24.04, has the tools `otter deploy` requires,
+   and meets the RAM, free-disk and swap floors;
+3. it asserts `sshd` refuses passwords and root logins, that the host is not
+   already provisioned, and that the provisioning report exists;
+4. it runs `otter deploy`, which converges the service account, the `0700` data
+   and `0600` environment files, the systemd unit and the release;
+5. it runs `scripts/assert-host-permissions.sh` **on the host** and fails if the
+   permissions, the unit's sandbox, the loopback bind or the listening ports are
+   not what the deploy claims.
+
+Nothing in step 4 is reimplemented by the provisioning script: `otter deploy`
+remains the only thing that creates the account, the directory modes and the
+unit, and re-running it is how a host converges.
+
+`--dry-run` prints every command instead of running it, which is how to review
+what a host will get before it gets it.
+
+### Sizing a 1 GiB host
+
+Two settings decide whether a small host survives:
+
+- **`OTTER_WORKERS=1` in `otter.daemon.env`.** The daemon defaults to one worker
+  per CPU core, and `otter deploy` caps the whole unit cgroup at
+  `MemoryMax=75%`. On the 1 GiB / 2 vCPU Castor instance that default means two
+  Python processes plus `otterd` inside roughly 680 MiB, which is how the host
+  OOMs. `provision.sh` writes `OTTER_WORKERS=1` when the project has no
+  `otter.daemon.env` and injects it before the deploy.
+  [`otter.daemon.env.example`](../otter.daemon.env.example) is the annotated
+  template for the rest of the daemon settings.
+- **The swap floor.** `provision.sh` fails if active swap is below 256 MiB, and
+  `assert-host-permissions.sh` fails again after the deploy. This is not
+  defensive padding: on the Castor host a provisioning script aborted partway
+  and the host came up with **zero** swap while only `cloud-init status` — which
+  nothing reads — reported the error.
+
+### Scripts and what each is for
+
+| Script | Runs on | What it is for |
+| --- | --- | --- |
+| `scripts/provision.sh` | your workstation | Empty Ubuntu 24.04 host → `otter deploy` → asserted host. Drills the plan with `--dry-run`. |
+| `scripts/assert-host-permissions.sh` | the host | Asserts CA-09/CA-10 on a deployed host: account, modes, ownership, unit state and sandbox, loopback-only API, approved ports, swap, provisioning report. |
+| `scripts/test-provision.sh` | your workstation | Falsifiability for `provision.sh`: a ready fixture must pass, and a missing swap, missing report, bad `sshd` or failed deploy must each fail. |
+| `scripts/test-assert-host-permissions.sh` | your workstation | Falsifiability for the assertion script: 30 fixture cases, each mutation tied to the check that must notice it. |
+
+The assertion script can also be run by hand against a deployed host:
+
+```bash
+sudo sh scripts/assert-host-permissions.sh \
+  --workspace-dir /opt/otter/workspaces/castor-24856da9
+```
+
+It reads the unit name and data directory out of the workspace's own
+`workspace.json`, so it checks the paths the deploy wrote rather than paths an
+operator remembered. `--approved-ports` sets the port list an external scan is
+allowed to find (default `22`); `--provision-report ''` skips the report check
+for a host that was provisioned by other means.
+
+### Doing it by hand
+
+The manual path is below. It is the fallback and the explanation of what the
+scripts above do, not the supported first run: `otter deploy` performs the
+account, directory, unit and release steps itself, and doing them by hand first
+only gives it less to converge and you more to get wrong.
+
 Cross-compile locally and copy the binaries, or build on the host:
 
 ```bash
@@ -41,6 +119,24 @@ sudo install -m 0755 /tmp/otterd /usr/local/bin/otterd
 sudo install -m 0755 /tmp/otter  /usr/local/bin/otter
 otterd --version
 ```
+
+Make sure the host has swap before it runs anything. A 1 GiB instance without
+swap fails under two concurrent Python processes, and the failure looks like an
+unexplained `otter daemon restarted during execution`:
+
+```bash
+# On the host, as root: a 2 GiB swapfile, persistent across reboots.
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+free -m   # Swap total must be non-zero
+```
+
+If this host was provisioned by a cloud-init image that leaves
+`/var/log/otter-provision-report.txt`, check it before deploying. Its absence
+means the image's own provisioning stopped partway — which is how the zero-swap
+host above happened — and `scripts/provision.sh` refuses to deploy until the
+cause is understood. A host provisioned some other way can still be deployed by
+hand and asserted with `--provision-report ''` to record that decision.
 
 Create the service account and directories:
 

@@ -64,6 +64,18 @@ rather than implying otherwise.
 
 Never run `otterd` as root, and never as an interactive login account.
 
+The supported path is automated, not manual: `scripts/provision.sh` takes a
+fresh host to a running daemon and then asserts the result on the host with
+`scripts/assert-host-permissions.sh`. Both are described in
+[operations.md](operations.md#first-run-on-a-linux-vm-or-ec2-instance), and the
+commands below are the shape `otter deploy` itself installs — the manual
+equivalent, not the recommended first run. Note that the deployed layout is per
+workspace, so the data directory is
+`/opt/otter/workspaces/<workspace>/.otter/data` and the environment files are
+`/etc/otter/workspaces/<workspace>.env` and
+`/etc/otter/workspaces/<workspace>.daemon.env`; a hand-written
+`/etc/otter/otter.env` belongs to the older single-runtime layout only.
+
 ```bash
 sudo useradd --system --create-home --home-dir /var/lib/otter \
   --shell /usr/sbin/nologin otter
@@ -77,6 +89,12 @@ Then run the daemon under systemd as `User=otter` with the hardening directives
 from [operations.md](operations.md#systemd-unit): `NoNewPrivileges=true`,
 `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, and an explicit
 `ReadWritePaths=/var/lib/otter`.
+
+`otter deploy` emits those directives into the generated unit without any flag
+being passed, and `scripts/assert-host-permissions.sh` reads them back out of
+the loaded unit on the host — `systemctl show -p ProtectSystem` — because
+systemd silently ignores an unknown directive, so a typo'd one would look
+installed and enforce nothing.
 
 ```ini
 [Service]
@@ -103,6 +121,14 @@ child Python processes too. Note that a memory cap makes OOM kills more likely,
 which shows up as runs failing with `otter daemon restarted during execution`
 after the daemon is restarted — size the limit for the sum of your workers.
 
+A deploy already sizes them (`MemoryMax=75%`, `MemoryHigh=60%`, `CPUQuota=200%`,
+`TasksMax=512` by default), and that is why the worker count matters on a small
+host: the cap bounds the *sum* of `otterd` and every child, so the daemon's
+default of one worker per CPU core can put two Python processes under a ceiling
+sized for one. Set `OTTER_WORKERS=1` in the workspace's
+`<workspace>.daemon.env` on a 1 GiB host; see
+[operations.md](operations.md#sizing-a-1-gib-host).
+
 ## When you need real isolation
 
 Choose the boundary based on who wrote the code:
@@ -122,6 +148,15 @@ file, one Python child per run.
 
 The default `--listen 127.0.0.1:7337` is the safe configuration: only processes
 on the host can reach the API, so no token is required.
+
+`otter deploy` refuses to use any other address unless a token is configured, and
+it refuses a wildcard bind (`0.0.0.0`, `::`, `:port`) outright — an API reachable
+from the internet with a static bearer token is the deployment the tool exists to
+prevent. The host-side half of that claim is asserted after every deploy:
+`scripts/assert-host-permissions.sh` reads `--listen` out of the loaded unit,
+requires it to be loopback, and fails on any wildcard listener whose port is not
+in `--approved-ports`. On the Castor host the only approved inbound port is 22,
+so the control plane is reached through an SSH tunnel and nothing else.
 
 | Binding | Token required | Meaning |
 | --- | --- | --- |
@@ -438,17 +473,33 @@ to match how long the data may be retained.
 
 ## Hardening checklist
 
-- [ ] `otterd` runs as a dedicated, unprivileged system user (`otter`), never
-      root, with a nologin shell.
-- [ ] systemd hardening enabled: `NoNewPrivileges`, `ProtectSystem=strict`,
-      `ProtectHome`, `PrivateTmp`, explicit `ReadWritePaths`.
+`scripts/assert-host-permissions.sh` checks the items marked **[asserted]** on
+the host and exits non-zero when one does not hold, so this list is executable
+evidence rather than a reading exercise. `scripts/provision.sh` runs it as the
+last step of a provisioning, and it can be run by hand at any time.
+
+- [ ] **[asserted]** `otterd` runs as a dedicated, unprivileged system user
+      (`otter`), never root, with a nologin shell.
+- [ ] **[asserted]** systemd hardening enabled: `NoNewPrivileges`,
+      `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, explicit
+      `ReadWritePaths` — read back from the loaded unit, not the file text.
 - [ ] Resource limits set (`MemoryMax`, `CPUQuota`, `TasksMax`) so one
-      job cannot exhaust the host.
-- [ ] `--listen` is `127.0.0.1:7337` unless remote access is genuinely required.
+      job cannot exhaust the host. (`otter deploy` emits these by default; the
+      OOM drill lives in `scripts/drill/unit-caps.sh`.)
+- [ ] **[asserted]** `--listen` is `127.0.0.1:7337` unless remote access is
+      genuinely required. The deploy refuses a wildcard bind before it touches
+      the host.
 - [ ] `OTTER_API_TOKEN` is a long random value (`openssl rand -hex 32`), supplied
       through a mode-`0600` `EnvironmentFile`, never on the command line.
-- [ ] `/var/lib/otter` is `0700`, owned by the service user.
-- [ ] `/etc/otter/otter.env` is `0600`, owned by the service user.
+- [ ] **[asserted]** `/var/lib/otter` (per workspace:
+      `/opt/otter/workspaces/<workspace>/.otter/data`) is `0700`, owned by the
+      service user.
+- [ ] **[asserted]** The workspace's environment files are `0600`, owned by the
+      service user.
+- [ ] **[asserted]** Only the approved ports are listening, and no unapproved
+      wildcard bind exists (`--approved-ports`, default `22`).
+- [ ] **[asserted]** The host has swap (a 1 GiB host without it OOMs) and its
+      provisioning report exists.
 - [ ] The jobs root is writable only by administrators, and its contents
       are reviewed like any other code that runs in production.
 - [ ] Secrets live in the daemon environment sourced from a secret manager;
