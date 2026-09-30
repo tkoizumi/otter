@@ -312,7 +312,7 @@ the child process's environment just before execution.
   time, because a value pasted there is looked up as a variable name and is
   almost certainly absent from the daemon environment.
 - Keep values out of YAML: put `SHOPIFY_TOKEN=...` in the systemd
-  `EnvironmentFile` (mode `0600`, owned by the service user) or a secret manager
+  `EnvironmentFile` (mode `0600`, owned by `root`) or a secret manager
   that populates the daemon environment. `otter deploy` writes that file itself,
   root owned and chmod `0600`, from `otter.env` at the project root (or
   `--env-file`).

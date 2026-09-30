@@ -603,7 +603,8 @@ needs.
 2. Stop the daemon if it is running.
 3. Restore the data directory: `otter.db`, `.releases/`, `environments/`,
    `tools/uv`, and `python/` + `cache/uv/` if you copied them. Owned by the
-   service account, data directory mode `0700`, environment file mode `0600`.
+   service account, data directory mode `0700`; the environment file is mode `0600` and owned by
+   `root`, like everything in `/etc/otter/workspaces`.
 4. Restore the job source directories **at the same absolute paths**. Identity,
    and the `source` recorded in each release, are path-bound: a restore into a
    different path is a different instance with different state.
