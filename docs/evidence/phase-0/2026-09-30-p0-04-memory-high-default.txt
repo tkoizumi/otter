@@ -4,41 +4,45 @@ claim:     a deliberately runaway Python job is killed; otterd survives and the 
 result:    PASSES for the configuration `otter deploy` now writes (MemoryMax=75%,
            MemoryHigh off, MemorySwapMax=0). The soft cap is still available and now
            documents its own cost; see the soft-cap case below.
-date:      2026-09-30 (drill ~21:01 EDT; mutations ~21:06 EDT)
+date:      2026-09-30 (drill 22:05 EDT; mutations 22:00-22:05 EDT)
 where:     macOS 15 arm64 / Docker Desktop; the systemd host is an Ubuntu 24.04 container
            (systemd 255, kernel 5.10.76-linuxkit, cgroup v2), --privileged --cgroupns=host,
            with a real 512 MiB loop swap device.
-build:     branch p0-04-memory-swap-max; this record is the working tree on top of f22c9bb
-           that becomes the "MemoryHigh defaults to off" commit.
-command:   make drill DRILL=unit-caps
-exit:      0 — all four cases PASS
+build:     branch p0-04-memory-swap-max. The code under test is c862fbf (DefaultMemoryHigh
+           = off) plus f39bc8c (the drill renders the default unit; soft-cap survivor and
+           elapsed-time fixes), on the MemorySwapMax work (3d28ef6, c4a552b, 252743c,
+           f22c9bb); docs at 081568b. This record is committed after f39bc8c.
+command:   make drill DRILL=unit-caps   (then: make drill)
+exit:      0 both — all four cases PASS, and the whole suite passes.
 
 --- the change this record covers ---
-DefaultMemoryHigh is now CapOff ("off"), so a plain `otter deploy` emits no MemoryHigh=
+DefaultMemoryHigh is CapOff ("off"), so a plain `otter deploy` emits no MemoryHigh=
 directive and memory.max is the constraint that kills a runaway. The --memory-high flag,
 its validation and its docs are unchanged; only the default moved. Rationale, measured
 below and in 2026-09-30-p0-04-unit-caps-swap.txt: a soft cap throttles and reclaims
 instead of killing, and with MemorySwapMax=0 there is nowhere to reclaim anonymous pages
 to, so a hold-everything job parks just above memory.high and creeps toward memory.max.
 That turns a one-second OOM kill into a multi-minute pin (measured: 803 -> 831 MiB below
-a 983 MiB hard cap with oom_kill 0 for 600s, ended only by the job's own manifest
-timeout), which on a --workers=1 host occupies the only worker for the whole timeout.
-systemd's own default is no soft limit, so "off" is also the least surprising value.
+a 983 MiB hard cap with oom_kill 0 for 600s), which on a --workers=1 host occupies the
+only worker for the whole timeout. systemd's own default is no soft limit, so "off" is
+also the least surprising value.
 
-The drill was reworked to match: the deployed-style case is now memory-high=off /
-memory-swap-max=0 and must kill (it does), and a new soft-cap case exercises the real
-feature and asserts its honest consequence rather than failing.
+The deployed-style case exists to protect exactly that constant: it passes no -memory-high
+at all (the drill's "default" sentinel), so the generator falls back to
+deploy.DefaultMemoryHigh and the rendered unit is what a plain deploy writes. It asserts
+the unit carries no MemoryHigh directive and that memory.high reads max. Setting
+DefaultMemoryHigh back to 60% turns it red before anything runs (mutation 1 below).
 
---- raw output: the four-case drill ---
+--- raw output: make drill DRILL=unit-caps ---
 
-go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-42-gf22c9bb-dirty" -o bin/otterd ./cmd/otterd
-go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-42-gf22c9bb-dirty" -o bin/otter ./cmd/otter
-built bin/otterd and bin/otter (v0.2.0-42-gf22c9bb-dirty)
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-47-gf39bc8c" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-47-gf39bc8c" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-47-gf39bc8c)
 
 ===== drill: unit-caps =====
-date:     2026-09-30 17:04:35 EDT
+date:     2026-09-30 18:06:09 EDT
 host:     Darwin 24.6.0 (arm64)
-checkout: v0.2.0-42-gf22c9bb-dirty
+checkout: v0.2.0-47-gf39bc8c
 unit-caps: image      otter-systemd-caps
 unit-caps: target     linux/arm64
 unit-caps: swap       512M loop device inside the container
@@ -48,7 +52,7 @@ unit-caps: building the systemd image
 unit-caps: building the linux binaries
 
 ================ unit-caps: case deployed-style ================
-unit-caps: caps       memory-max=25% memory-high=off memory-swap-max=0
+unit-caps: caps       memory-max=25% memory-high=default memory-swap-max=0
 unit-caps: expect     kill; job manifest timeout 600s
 unit-caps: observe    the OOM kill for up to 60s
 unit-caps: rendering the unit the deployer would write
@@ -101,33 +105,34 @@ systemd: systemd 255 (255.4-1ubuntu8.17)
 python:  Python 3.12.3
 
 --- swap device, the host's swapfile reproduced ---
-mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
-swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+mkswap: /dev/loop1: insecure permissions 0666, fix with: chmod 0660 /dev/loop1
+swapon: /dev/loop1: insecure permissions 0666, 0660 suggested.
 Filename				Type		Size		Used		Priority
-/swap                                   file		1048572		21776		-2
-/dev/loop0                              partition	524284		0		-3
+/swap                                   file		1048572		272536		-2
+/loop0                                  partition	524284		20624		-3
+/dev/loop1                              partition	524284		0		-4
                total        used        free      shared  buff/cache   available
-Mem:            3933        1266         561         298        2589        2666
-Swap:           1535          21        1514
+Mem:            3933         969        1506         141        1775        2964
+Swap:           2047         286        1761
 runaway: release 15ec3e346c71
 runaway: activated 15ec3e346c71
 Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
 
 unit-caps: waiting for the health endpoint
-health: {"status":"ok","version":"dev","uptime_seconds":0.206382875}
-cgroup: /docker/55ac63dc7a64013bba963004d8ef9d8f9afe7dd251498867523b75e9856097f1/system.slice/otterd-drill.service
+health: {"status":"ok","version":"dev","uptime_seconds":0.206575209}
+cgroup: /docker/0611fc39e4f32916ff523eade86efea6e24bb6946e34ae96d3ca02cdbeee5e51/system.slice/otterd-drill.service
 memory.max:  1031090176 (from MemoryMax=25%)
-memory.high: max
+memory.high: max (the unit sets no MemoryHigh)
 memory.swap.max: 0 (set from MemorySwapMax=0)
-otterd MainPID before: 144
+otterd MainPID before: 141
 
 unit-caps: triggering the runaway job
-run id: ed2a9cdb-49e0-43b0-bf97-9f1de1da886d
+run id: 4d43951b-12ea-4fd3-aa5a-52643111f7c6
 
 --- cgroup memory.events ---
 low 0
 high 0
-max 30
+max 47
 oom 1
 oom_kill 1
 --- cgroup memory.peak (bytes) ---
@@ -139,26 +144,26 @@ oom_kill 1
 --- cgroup memory.swap.current (bytes) ---
 0
 --- cgroup memory.current (bytes) ---
-387756032
+293392384
 
 --- unit state after the observation ---
 is-active: active
-otterd MainPID after:  144
+otterd MainPID after:  141
 NRestarts:             0
 OOMPolicy:             continue
 --- processes left in the unit cgroup (want only otterd) ---
-cgroup.procs: 144 
-  (none: only otterd pid 144)
+cgroup.procs: 141 
+  (none: only otterd pid 141)
 --- run history ---
 RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
-ed2a9cdb-49e0-43b0-bf97-9f1de1da886d  runaway  manual   failed  1        2026-09-30T21:04:45Z  2.66s
+4d43951b-12ea-4fd3-aa5a-52643111f7c6  runaway  manual   failed  1        2026-09-30T22:06:16Z  2.591s
 --- host responsiveness ---
 is-system-running: running
-{"status":"ok","version":"dev","uptime_seconds":3.89904546}
+{"status":"ok","version":"dev","uptime_seconds":3.859447738}
 
 --- daemon journal, OOM lines ---
-Sep 30 21:04:47 55ac63dc7a64 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
-unit-caps: PASS [deployed-style]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 144) survived, and the host answered.
+Sep 30 22:06:19 0611fc39e4f3 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS [deployed-style]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 141) survived, and the host answered.
 
 ================ unit-caps: case hard-cap ================
 unit-caps: caps       memory-max=192M memory-high=off memory-swap-max=0
@@ -214,33 +219,34 @@ systemd: systemd 255 (255.4-1ubuntu8.17)
 python:  Python 3.12.3
 
 --- swap device, the host's swapfile reproduced ---
-mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
-swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+mkswap: /dev/loop1: insecure permissions 0666, fix with: chmod 0660 /dev/loop1
+swapon: /dev/loop1: insecure permissions 0666, 0660 suggested.
 Filename				Type		Size		Used		Priority
-/swap                                   file		1048572		21788		-2
-/dev/loop0                              partition	524284		0		-3
+/swap                                   file		1048572		272528		-2
+/loop0                                  partition	524284		20576		-3
+/dev/loop1                              partition	524284		0		-4
                total        used        free      shared  buff/cache   available
-Mem:            3933        1286         833         298        2291        2647
-Swap:           1535          21        1514
+Mem:            3933         978        1486         141        1786        2954
+Swap:           2047         286        1761
 runaway: release 15ec3e346c71
 runaway: activated 15ec3e346c71
 Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
 
 unit-caps: waiting for the health endpoint
-health: {"status":"ok","version":"dev","uptime_seconds":0.200542667}
-cgroup: /docker/19ed3ce3703f70755ada0a1595b0a83d31f4c4ae9139d7e54a4182592d26e7ab/system.slice/otterd-drill.service
+health: {"status":"ok","version":"dev","uptime_seconds":0.203899333}
+cgroup: /docker/a177ac26465c99a2f6200d51df9cd934590d7fcd05b11b3992600292446e9877/system.slice/otterd-drill.service
 memory.max:  201326592 (set from MemoryMax=192M)
-memory.high: max
+memory.high: max (the unit sets no MemoryHigh)
 memory.swap.max: 0 (set from MemorySwapMax=0)
-otterd MainPID before: 150
+otterd MainPID before: 144
 
 unit-caps: triggering the runaway job
-run id: 45e121fd-92bf-4ff9-a879-d4a543d8ebdd
+run id: b23fba60-63b0-45ff-b7bf-203c436c8128
 
 --- cgroup memory.events ---
 low 0
 high 0
-max 31
+max 51
 oom 1
 oom_kill 1
 --- cgroup memory.peak (bytes) ---
@@ -252,26 +258,26 @@ oom_kill 1
 --- cgroup memory.swap.current (bytes) ---
 0
 --- cgroup memory.current (bytes) ---
-4407296
+4571136
 
 --- unit state after the observation ---
 is-active: active
-otterd MainPID after:  150
+otterd MainPID after:  144
 NRestarts:             0
 OOMPolicy:             continue
 --- processes left in the unit cgroup (want only otterd) ---
-cgroup.procs: 150 
-  (none: only otterd pid 150)
+cgroup.procs: 144 
+  (none: only otterd pid 144)
 --- run history ---
 RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
-45e121fd-92bf-4ff9-a879-d4a543d8ebdd  runaway  manual   failed  1        2026-09-30T21:04:56Z  475ms
+b23fba60-63b0-45ff-b7bf-203c436c8128  runaway  manual   failed  1        2026-09-30T22:06:25Z  496ms
 --- host responsiveness ---
 is-system-running: running
-{"status":"ok","version":"dev","uptime_seconds":1.9930971259999999}
+{"status":"ok","version":"dev","uptime_seconds":1.936010209}
 
 --- daemon journal, OOM lines ---
-Sep 30 21:04:56 19ed3ce3703f systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
-unit-caps: PASS [hard-cap]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 150) survived, and the host answered.
+Sep 30 22:06:25 a177ac26465c systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS [hard-cap]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 144) survived, and the host answered.
 
 ================ unit-caps: case swap-size ================
 unit-caps: caps       memory-max=192M memory-high=off memory-swap-max=64M
@@ -327,33 +333,34 @@ systemd: systemd 255 (255.4-1ubuntu8.17)
 python:  Python 3.12.3
 
 --- swap device, the host's swapfile reproduced ---
-mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
-swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+mkswap: /dev/loop1: insecure permissions 0666, fix with: chmod 0660 /dev/loop1
+swapon: /dev/loop1: insecure permissions 0666, 0660 suggested.
 Filename				Type		Size		Used		Priority
-/swap                                   file		1048572		21784		-2
-/dev/loop0                              partition	524284		0		-3
+/swap                                   file		1048572		272524		-2
+/loop0                                  partition	524284		20544		-3
+/dev/loop1                              partition	524284		0		-4
                total        used        free      shared  buff/cache   available
-Mem:            3933        1242         920         298        2247        2690
-Swap:           1535          21        1514
+Mem:            3933        1042        1329         141        1878        2890
+Swap:           2047         286        1761
 runaway: release 15ec3e346c71
 runaway: activated 15ec3e346c71
 Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
 
 unit-caps: waiting for the health endpoint
-health: {"status":"ok","version":"dev","uptime_seconds":0.20530225}
-cgroup: /docker/9416b1eae48a1ca5ef84887e2c67d9540de91a365d96a2bc856d4830e3eda6ef/system.slice/otterd-drill.service
+health: {"status":"ok","version":"dev","uptime_seconds":0.206581625}
+cgroup: /docker/78052d4be5e4fd6679959c7f02291e85b6e9c60e5762271db5456f8c9bc59398/system.slice/otterd-drill.service
 memory.max:  201326592 (set from MemoryMax=192M)
-memory.high: max
+memory.high: max (the unit sets no MemoryHigh)
 memory.swap.max: 67108864 (set from MemorySwapMax=64M)
-otterd MainPID before: 144
+otterd MainPID before: 143
 
 unit-caps: triggering the runaway job
-run id: 0f542f9a-1c16-47d4-8e51-981ba7c2b2b8
+run id: 8ad39ee0-4b19-4028-9f2c-d0a23ad33caa
 
 --- cgroup memory.events ---
 low 0
 high 0
-max 365
+max 373
 oom 1
 oom_kill 1
 --- cgroup memory.peak (bytes) ---
@@ -363,28 +370,28 @@ oom_kill 1
 --- cgroup memory.swap.max (bytes) ---
 67108864
 --- cgroup memory.swap.current (bytes) ---
-3735552
+3764224
 --- cgroup memory.current (bytes) ---
-2908160
+2850816
 
 --- unit state after the observation ---
 is-active: active
-otterd MainPID after:  144
+otterd MainPID after:  143
 NRestarts:             0
 OOMPolicy:             continue
 --- processes left in the unit cgroup (want only otterd) ---
-cgroup.procs: 144 
-  (none: only otterd pid 144)
+cgroup.procs: 143 
+  (none: only otterd pid 143)
 --- run history ---
 RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
-0f542f9a-1c16-47d4-8e51-981ba7c2b2b8  runaway  manual   failed  1        2026-09-30T21:05:03Z  949ms
+8ad39ee0-4b19-4028-9f2c-d0a23ad33caa  runaway  manual   failed  1        2026-09-30T22:06:31Z  771ms
 --- host responsiveness ---
 is-system-running: running
-{"status":"ok","version":"dev","uptime_seconds":2.3715779599999998}
+{"status":"ok","version":"dev","uptime_seconds":2.150888501}
 
 --- daemon journal, OOM lines ---
-Sep 30 21:05:04 9416b1eae48a systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
-unit-caps: PASS [swap-size]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 144) survived, and the host answered.
+Sep 30 22:06:32 78052d4be5e4 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS [swap-size]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 143) survived, and the host answered.
 
 ================ unit-caps: case soft-cap ================
 unit-caps: caps       memory-max=192M memory-high=128M memory-swap-max=0
@@ -441,40 +448,44 @@ systemd: systemd 255 (255.4-1ubuntu8.17)
 python:  Python 3.12.3
 
 --- swap device, the host's swapfile reproduced ---
-mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
-swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+mkswap: /dev/loop1: insecure permissions 0666, fix with: chmod 0660 /dev/loop1
+swapon: /dev/loop1: insecure permissions 0666, 0660 suggested.
 Filename				Type		Size		Used		Priority
-/swap                                   file		1048572		22644		-2
-/dev/loop0                              partition	524284		0		-3
+/swap                                   file		1048572		273224		-2
+/loop0                                  partition	524284		20520		-3
+/dev/loop1                              partition	524284		0		-4
                total        used        free      shared  buff/cache   available
-Mem:            3933        1240         915         298        2254        2692
-Swap:           1535          22        1513
+Mem:            3933         993        1373         141        1884        2939
+Swap:           2047         286        1761
 runaway: release 655bd43cc262
 runaway: activated 655bd43cc262
 Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
 
 unit-caps: waiting for the health endpoint
-health: {"status":"ok","version":"dev","uptime_seconds":0.202129417}
-cgroup: /docker/103ddf106dbd709eea46207483065d804c66080112b06ff10ee4dab1a5f25df6/system.slice/otterd-drill.service
+health: {"status":"ok","version":"dev","uptime_seconds":0.204401}
+cgroup: /docker/7f32ec089b166257d50241af64fea90512cc5090cd40aadc4346e94d796a19de/system.slice/otterd-drill.service
 memory.max:  201326592 (set from MemoryMax=192M)
-memory.high: 134217728
+memory.high: 134217728 (set from MemoryHigh=128M)
 memory.swap.max: 0 (set from MemorySwapMax=0)
-otterd MainPID before: 149
+otterd MainPID before: 142
 
 unit-caps: triggering the runaway job
-run id: 1bb78e2a-e82c-4cea-a1a0-715d6a422c81
+run id: 1fcb49f7-f0f9-4ed6-b9af-a6ce31816509
 
 --- soft-cap sample after 10s (bytes) ---
-memory.current      138260480
+memory.current      138301440
 memory.high         134217728
 memory.max          201326592
 memory.swap.current 0
 oom_kill            0
-run ended after 6s with status 'timed_out' (manifest timeout 30s)
+run ended after 36s of wall clock with status 'timed_out' (manifest timeout 30s)
+--- soft-cap processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 142 
+  (none: only otterd)
 
 --- cgroup memory.events ---
 low 0
-high 17138
+high 18201
 max 0
 oom 0
 oom_kill 0
@@ -487,61 +498,74 @@ oom_kill 0
 --- cgroup memory.swap.current (bytes) ---
 0
 --- cgroup memory.current (bytes) ---
-6348800
+6365184
 
 --- unit state after the observation ---
 is-active: active
-otterd MainPID after:  149
+otterd MainPID after:  142
 NRestarts:             0
 OOMPolicy:             continue
---- processes left in the unit cgroup (want only otterd) ---
-cgroup.procs: 149 
-  (none: only otterd pid 149)
 --- run history ---
 RUN ID                                JOB      TRIGGER  STATUS     ATTEMPT  STARTED               DURATION
-1bb78e2a-e82c-4cea-a1a0-715d6a422c81  runaway  manual   timed_out  1        2026-09-30T21:05:13Z  35.492s
+1fcb49f7-f0f9-4ed6-b9af-a6ce31816509  runaway  manual   timed_out  1        2026-09-30T22:06:38Z  35.383s
 --- host responsiveness ---
 is-system-running: running
-{"status":"ok","version":"dev","uptime_seconds":37.785375046}
+{"status":"ok","version":"dev","uptime_seconds":37.178915212}
 
 --- daemon journal, OOM lines ---
-unit-caps: PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), otterd (PID 149) was not restarted, the host answered, and the run ended at its 30s manifest timeout rather than by OOM.
+unit-caps: PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), no runaway process survived the timeout, otterd (PID 142) was not restarted, the host answered, and the run ended at its 30s manifest timeout rather than by OOM.
 
 unit-caps: all cases PASS
 
---- the soft-cap case, quoted (it is buried in the raw log above) ---
-unit-caps: caps       memory-max=192M memory-high=128M memory-swap-max=0
-memory.high: 134217728
+--- deployed-style, quoted (case 1 of the run above) ---
+unit-caps: caps       memory-max=25% memory-high=default memory-swap-max=0
+memory.max:  1031090176 (from MemoryMax=25%)
+memory.high: max (the unit sets no MemoryHigh)
 memory.swap.max: 0 (set from MemorySwapMax=0)
+--- cgroup memory.events ---  low 0  high 0  max 47  oom 1  oom_kill 1
+memory.swap.current 0
+cgroup.procs: 141 ; (none: only otterd pid 141)
+MainPID 141 unchanged, NRestarts 0, is-active active, /health {"status":"ok",...}
+run 4d43951b-... runaway manual failed 2.591s
+PASS [deployed-style]: the runaway job was OOM-killed (oom_kill=1), no runaway process
+survived, otterd (PID 141) survived, and the host answered.
+
+--- soft-cap, quoted (case 4) ---
+memory.high 134217728   memory.max 201326592
 --- soft-cap sample after 10s (bytes) ---
-memory.current      138260480      <- above memory.high (134217728), far below memory.max
+memory.current      138301440     <- above memory.high, far below memory.max
 memory.high         134217728
 memory.max          201326592
 memory.swap.current 0
 oom_kill            0
-...
-cgroup.procs: 149
-  (none: only otterd pid 149)
-RUN ID                                JOB      TRIGGER  STATUS     ATTEMPT  STARTED               DURATION
-1bb78e2a-e82c-4cea-a1a0-715d6a422c81  runaway  manual   timed_out  1        2026-09-30T21:05:13Z  35.492s
-unit-caps: PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0,
-memory.swap.current=0), otterd (PID 149) was not restarted, the host answered, and the run
-ended at its 30s manifest timeout rather than by OOM.
+run ended after 36s of wall clock with status 'timed_out' (manifest timeout 30s)
+--- soft-cap processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 142
+  (none: only otterd)
+memory.events: high 18201  max 0  oom 0  oom_kill 0
+run 1fcb49f7-... runaway manual timed_out 35.383s
+MainPID 142 unchanged, NRestarts 0, /health ok
+PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0,
+memory.swap.current=0), no runaway process survived the timeout, otterd was not
+restarted, the host answered, and the run ended at its 30s manifest timeout rather than
+by OOM.
 
 The job did not die at the hard cap and was not killed by the kernel; it was stopped by
-its own 30s manifest timeout (35.5s with the 5s terminate grace) with oom_kill still 0.
-That is the behavior the default now avoids.
+its own 30s manifest timeout (35.4s with the 5s terminate grace) with oom_kill still 0.
+That is the behavior the default now avoids. The label is wall-clock from the trigger
+(36s) and matches the run's DURATION (35.383s); the earlier counter started after the 10s
+sample sleep and understated it.
 
 --- make test-go ---
 command: make test-go
 exit:    0 (22 packages ok, no failures)
 raw tail:
-ok  	github.com/tkoizumi/otter/internal/cli	6.178s
+ok  	github.com/tkoizumi/otter/internal/cli	(cached)
 ok  	github.com/tkoizumi/otter/internal/config	(cached)
 ok  	github.com/tkoizumi/otter/internal/daemon	(cached)
 ok  	github.com/tkoizumi/otter/internal/database	(cached)
 ok  	github.com/tkoizumi/otter/internal/datalock	(cached)
-ok  	github.com/tkoizumi/otter/internal/deploy	3.756s
+ok  	github.com/tkoizumi/otter/internal/deploy	(cached)
 ok  	github.com/tkoizumi/otter/internal/executor	(cached)
 ok  	github.com/tkoizumi/otter/internal/identity	(cached)
 ok  	github.com/tkoizumi/otter/internal/inspection	(cached)
@@ -568,95 +592,49 @@ raw output:
 go vet ./...
 golangci-lint not found on PATH — skipping (install it for the full lint pass)
 
-=== verdict ===
-What this proves:
-  * The unit `otter deploy` now writes -- MemoryMax=75%, no MemoryHigh, MemorySwapMax=0 --
-    kills a deliberately runaway Python job: deployed-style PASS with oom_kill=1,
-    memory.swap.max 0, memory.swap.current 0, no survivor in the cgroup, MainPID
-    unchanged, NRestarts 0, and /health answering (raw log above, case 1).
-  * The regression is still covered: an absolute hard cap and a nonzero swap bound both
-    kill (cases 2 and 3), and the swap assertion is checked against both the unit and the
-    requested value.
-  * The soft cap is documented by measurement, not by assertion: with MemoryHigh=128M
-    against MemoryMax=192M and swap bounded to 0, the runaway parks above memory.high,
-    never swaps, never gets OOM-killed, and dies only at its manifest timeout.
-  * make drill DRILL=unit-caps exits 0, as does make drill (see the aggregate section).
+=== mutations (each reverted; the tree was clean after each) ===
+Mutation 1 (the one this round adds): put a soft cap back into the default.
+  Change: internal/deploy/config.go, DefaultMemoryHigh = CapOff -> "60%".
+  Command: MEMORY_MAX=25% MEMORY_HIGH=default MEMORY_SWAP_MAX=0 KILL_WINDOW=60 sh scripts/drill.sh unit-caps
+  Exit:    1
+  Raw (the rendered unit and the refusal):
+# runs share this cgroup, so these bound the sum, not one run.
+MemoryMax=25%
+MemoryHigh=60%
+MemorySwapMax=0
+unit-caps: FAIL: the default unit emits MemoryHigh=60%; a soft cap parks a runaway below memory.max instead of letting the OOM killer run.
+unit-caps: FAILED (exit 1); work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-unit-caps.CRj6sZ
 
-What this does NOT prove:
-  * The host. The Castor runtime still runs the pre-change unit (MemoryHigh=568918016,
-    60%), so it must be redeployed before window HW-3 can re-run against it. The container
-    kernel here is 5.10.76-linuxkit; the host kernel may differ.
-  * Nothing about a MemoryHigh that an operator sets explicitly: the soft-cap case shows
-    what that configuration does, and it is still allowed.
+Mutation 2: drop `writeCap(&caps, "MemorySwapMax", opts.MemorySwapMax)` from
+internal/deploy/render.go -> the swap assertion must go red.
+  Command: MEMORY_MAX=192M MEMORY_HIGH=off MEMORY_SWAP_MAX=0 KILL_WINDOW=60 sh scripts/drill.sh unit-caps
+  Exit:    1
+  Raw:
+memory.max:  201326592 (set from MemoryMax=192M)
+memory.high: max (the unit sets no MemoryHigh)
+unit-caps: FAIL: the drill requested MemorySwapMax=0 but the unit has ''
+unit-caps: FAILED (exit 1); work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-unit-caps.EBHRlR
 
---- mutations (same branch, each reverted; the tree was clean after each) ---
-Mutation A: drop `writeCap(&caps, "MemorySwapMax", opts.MemorySwapMax)` from
-internal/deploy/render.go -> the new swap assertion must go red.
-  command: MEMORY_MAX=192M MEMORY_HIGH=off MEMORY_SWAP_MAX=0 KILL_WINDOW=60 make drill DRILL=unit-caps
-  exit:    non-zero (the drill exits 1)
-  raw:
-85:memory.max:  201326592 (set from MemoryMax=192M)
-86:memory.high: max
-87:unit-caps: FAIL: the drill requested MemorySwapMax=0 but the unit has ''
-88:unit-caps: FAILED (exit 1); work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-unit-caps.yguF6L
-
-Mutation B: revert the survivor check to the old pattern and force one to survive (a
-temporary drill copy whose runaway forks a child that holds 32 MiB; the parent is the OOM
-victim). The kill clause passes, so this isolates the survivor assertion.
-  command: MEMORY_MAX=192M MEMORY_HIGH=off MEMORY_SWAP_MAX=0 KILL_WINDOW=60 sh scripts/drill.sh unit-caps-survivor
-  exit:    1
-  raw:
-unit-caps: triggering the runaway job
-run id: b68aaa08-a4a1-4a82-a484-4eb945132733
-
---- cgroup memory.events ---
-low 0
-high 0
-max 33
-oom 1
-oom_kill 1
---- cgroup memory.peak (bytes) ---
-(no memory.peak on this kernel)
---- cgroup memory.max (bytes) ---
-201326592
---- cgroup memory.swap.max (bytes) ---
-0
---- cgroup memory.swap.current (bytes) ---
-0
---- cgroup memory.current (bytes) ---
-51187712
-
---- unit state after the observation ---
-is-active: active
-otterd MainPID after:  141
-NRestarts:             0
+Mutation 3: revert the survivor check to the old pgrep pattern and force one to survive
+(a temporary drill copy whose runaway forks a child holding 32 MiB; the parent is the OOM
+victim, so the kill clause passes and this isolates the survivor clause).
+  Command: MEMORY_MAX=192M MEMORY_HIGH=off MEMORY_SWAP_MAX=0 KILL_WINDOW=60 sh scripts/drill.sh unit-caps-survivor
+  Exit:    1
+  Raw:
 OOMPolicy:             continue
 --- processes left in the unit cgroup (want only otterd) ---
-cgroup.procs: 141 184 
+cgroup.procs: 145 192 
 OLD PATTERN (pgrep -af 'runaway/main.py'): (matched nothing)
-  survivor: pid 184 comm=python3 rss=48660 kB cmdline=python3 -m otter._launcher main.py 
-unit-caps: FAIL: a runaway process survived in the unit cgroup: 184
+  survivor: pid 192 comm=python3 rss=48452 kB cmdline=python3 -m otter._launcher main.py 
 --- run history ---
+unit-caps: FAIL: a runaway process survived in the unit cgroup: 192
 RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
-b68aaa08-a4a1-4a82-a484-4eb945132733  runaway  manual   failed  1        2026-09-30T21:07:11Z  627ms
---- host responsiveness ---
-is-system-running: running
-{"status":"ok","version":"dev","uptime_seconds":2.016248626}
-
---- daemon journal, OOM lines ---
-Sep 30 21:07:12 ed3c62853547 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
-unit-caps: FAIL [custom]: unmet claim clauses: a runaway process survived in the unit cgroup: 184
-unit-caps: the caps in force were: memory.max=201326592 memory.high=max memory.swap.max=0
-unit-caps: FAILED (exit 1); work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-unit-caps.D5wgPl
-
-  The old pattern matched nothing while pid 184, a python3 holding 48,660 kB, was still
-  alive in the unit cgroup; the cgroup process list found it and the case failed.
 
 --- make drill: the whole suite, the merge gate ---
-command: make drill         (build + every drill in scripts/drill/, run on the committed
-                             tree with a clean `git status`, which deploy-failure asserts)
+command: make drill      (build + every drill, on the committed tree with a clean git status,
+                          which deploy-failure asserts)
 exit:    0
-raw excerpt (the unit-caps body is the full run above; every drill header and result):
+raw excerpt (the unit-caps body above is identical in shape; every header and result):
 
 ===== drill: backup-restore =====
 drill: ok: hot backup restored onto a fresh data directory; the job runs again
@@ -665,8 +643,33 @@ deploy-failure: ok: a mid-deploy failure left the previous release active and se
 ===== drill: liveness =====
 liveness: ok: pings track the runtime and stop when it dies
 ===== drill: unit-caps =====
-unit-caps: PASS [deployed-style]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 144) survived, and the host answered.
-unit-caps: PASS [hard-cap]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 142) survived, and the host answered.
-unit-caps: PASS [swap-size]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 141) survived, and the host answered.
-unit-caps: PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), otterd (PID 143) was not restarted, the host answered, and the run ended at its 30s manifest timeout rather than by OOM.
+unit-caps: PASS [deployed-style]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 141) survived, and the host answered.
+unit-caps: PASS [hard-cap]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 146) survived, and the host answered.
+unit-caps: PASS [swap-size]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 139) survived, and the host answered.
+unit-caps: PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), no runaway process survived the timeout, otterd (PID 143) was not restarted, the host answered, and the run ended at its 30s manifest timeout rather than by OOM.
 drill: all drills passed
+
+=== verdict ===
+What this proves:
+  * The unit `otter deploy` now writes -- MemoryMax=75%, no MemoryHigh, MemorySwapMax=0 --
+    kills a deliberately runaway Python job: deployed-style PASS with oom_kill=1,
+    memory.swap.max 0, memory.swap.current 0, no survivor in the cgroup, MainPID
+    unchanged, NRestarts 0, and /health answering.
+  * That case renders the *default* unit (no -memory-high), so the constant itself is now
+    under test by the drill: restoring DefaultMemoryHigh="60%" renders MemoryHigh=60% and
+    the case fails at the rendered unit (mutation 1). Before this round the drill passed
+    -memory-high explicitly and the same mutation left it green.
+  * A nonzero swap bound and an absolute hard cap both still kill (cases 2 and 3), and the
+    swap assertion is checked against both the unit and the requested value
+    (mutation 2 red).
+  * The survivor clause is now checked in the soft-cap case too, against its terminal
+    state, and the kill-case survivor scan still catches a real orphan while the old pgrep
+    pattern matches nothing (mutation 3).
+  * make drill DRILL=unit-caps and make drill both exit 0.
+
+What this does NOT prove:
+  * The host. The Castor runtime still runs the pre-change unit (MemoryHigh=568918016,
+    60%), so it must be redeployed before window HW-3 can re-run against it. The container
+    kernel here is 5.10.76-linuxkit; the host kernel may differ.
+  * Nothing about a MemoryHigh that an operator sets explicitly: the soft-cap case shows
+    what that configuration does, and it is still allowed.
