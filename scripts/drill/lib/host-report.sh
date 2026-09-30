@@ -298,9 +298,10 @@ if have systemctl; then
 		if [ -z "$SERVICE_BIN" ]; then
 			SERVICE_BIN=$(printf '%s' "$exec_line" | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -n 1)
 		fi
-		arg_data=$(printf '%s' "$exec_line" | sed -n 's/.*--data \([^ ;]*\).*/\1/p' | head -n 1)
-		arg_jobs=$(printf '%s' "$exec_line" | sed -n 's/.*--jobs \([^ ;]*\).*/\1/p' | head -n 1)
-		arg_listen=$(printf '%s' "$exec_line" | sed -n 's/.*--listen \([^ ;]*\).*/\1/p' | head -n 1)
+		# `--data X` and `--data=X` are both legal spellings of the same flag.
+		arg_data=$(printf '%s' "$exec_line" | sed -n 's/.*--data[= ]\([^ ;]*\).*/\1/p' | head -n 1)
+		arg_jobs=$(printf '%s' "$exec_line" | sed -n 's/.*--jobs[= ]\([^ ;]*\).*/\1/p' | head -n 1)
+		arg_listen=$(printf '%s' "$exec_line" | sed -n 's/.*--listen[= ]\([^ ;]*\).*/\1/p' | head -n 1)
 		[ -n "$arg_data" ] && UNIT_DATA_DIR=$arg_data
 		[ -n "$arg_jobs" ] && UNIT_JOBS_DIR=$arg_jobs
 		[ -n "$arg_listen" ] && UNIT_LISTEN=$arg_listen
