@@ -1,0 +1,42 @@
+# Phase 0 evidence
+
+One file per recorded run. This directory is the answer to `R-19`: a Phase 0
+blocker is closed by executable or recorded evidence, never by prose.
+
+## What belongs here
+
+A record of a run that actually happened, containing:
+
+- **what** — the task ID and the claim the run supports;
+- **when** — the date, with the time and zone;
+- **where** — the host and platform. "macOS 15 arm64, developer checkout" and
+  "Ubuntu 24.04, the Castor VM" are different evidence for the same script, and
+  the difference matters;
+- **which build** — `git rev-parse --short HEAD` plus `git describe --tags`;
+- **the exact command** that was run, copy-pasteable;
+- **the raw output**, including failures. Paste it, do not summarise it;
+- **the exit status**;
+- **the verdict** — what this does and does not prove.
+
+## Naming
+
+    YYYY-MM-DD-<task>-<slug>.txt
+
+For example `2026-10-04-p0-01-crash-harness-ci.txt`. A raw capture may sit beside
+a short `.md` that interprets it; the capture is the evidence, the interpretation
+is not.
+
+## What does not belong here
+
+- A restatement of what the code does, with no command behind it.
+- A passing unit test with no indication that it would fail if the behavior were
+  removed. Every task's evidence names the verifier's mutation check for exactly
+  this reason (see [phase-0-execution-plan.md](../phase-0-execution-plan.md) §2).
+- Credentials, tokens, or captured payloads from a real destination. Redact the
+  command, keep the output.
+
+## Index
+
+| Date | Task | Record | Host |
+| --- | --- | --- | --- |
+| 2026-09-29 | baseline, P0-05 | [2026-09-29-baseline.txt](2026-09-29-baseline.txt) | macOS 15 arm64, developer checkout |

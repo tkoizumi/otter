@@ -740,7 +740,9 @@ Otter is a single binary, so an upgrade is "replace the file and restart". Schem
 migrations are applied automatically on startup, in order, inside a transaction.
 
 ```bash
-# 1. Back up first. Always.
+# 1. Back up first. Always — and make it the complete backup, not just the
+#    database: release snapshots and job source identity live on disk too.
+#    See [Backups](#backups) for what a restore actually needs.
 sudo sqlite3 /var/lib/otter/otter.db ".backup '/var/backups/otter/pre-upgrade.db'"
 
 # 2. Stop the daemon. This waits for running jobs up to --shutdown-grace.
@@ -796,6 +798,40 @@ Behavior worth expecting:
 - **Startup can refuse to run.** If crash recovery or queue reconciliation
   cannot complete, the daemon exits instead of serving with stranded work. See
   [Daemon refuses to start after a crash](#daemon-refuses-to-start-after-a-crash).
+
+### Upgrade discipline
+
+One runtime at a time, and never without a way back.
+
+1. **Announce a window.** Schema migrations run on startup; a job mid-flight is
+   interrupted, and crash recovery will mark it failed and retry it when the
+   policy allows.
+2. **Take the complete backup** ([Backups](#backups)) and verify it restores
+   before you need it.
+3. **Upgrade one runtime.** Fleets and paired hosts are upgraded in sequence, so
+   a failure stops at one host instead of all of them.
+4. **Choose the quiet window deliberately.** Nothing schedules work for you —
+   pause jobs or wait for a gap ([Pausing jobs](#pausing-jobs)).
+5. **Smoke after the restart**, in this order: `otter status` (the daemon is
+   serving and the schema moved), `otter jobs` (manifests still validate),
+   `otter runs --all --limit 10` (history is readable), then one real run.
+6. **Record what happened**, including a rollback. A rollback is a restore, not a
+   downgrade — see below.
+
+### There is no unattended upgrade path
+
+A runtime never replaces itself, and nothing in Otter decides to move a host to a
+newer version:
+
+- a deploy names its version explicitly. Fetching an archive requires a version
+  matching `^\d+\.\d+\.\d+$`, and a development build is refused with a hint to
+  build from source instead (`internal/deploy/fetch.go`);
+- the runtime has no self-update code, and does not resolve "latest";
+- the generated systemd unit restarts the same binary (`Restart=always`) and
+  carries no timer, no download and no upgrade step.
+
+An upgrade is therefore always a decision someone made, which is what makes a
+pinned version meaningful.
 
 ## Capacity and concurrency tuning
 

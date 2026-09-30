@@ -29,6 +29,12 @@ venv/
 .cache/
 .gocache/
 
+# Task worktrees. Phase 0 runs one isolated worker per task, each in its own
+# worktree and branch under this directory; the branches are what get merged, so
+# the working copies themselves are never committed. The leading dot also keeps
+# them out of `go`'s ./... traversal. See docs/phase-0-execution-plan.md.
+.worktrees/
+
 # Environment files. A contributor testing a runtime here may create one; the
 # values are credentials, so nothing named like an env file is committed, and a
 # template is excluded too because git cannot tell a filled-in one from a
