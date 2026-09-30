@@ -51,12 +51,14 @@ will sit idle for a long time.
 Six follow-ups are listed in [phase-0-status.md](phase-0-status.md) under "Follow-ups
 recorded, not blocking". None blocks anything.
 
-## Not merged
+## Merged, all of it
 
-- `p0-07-provisioning-script` @ `aa12a6e` — both halves of its evidence bar are met on
-  the real host (HW-8 passed). Its fixture-falsifiability fix had a verification still
-  in flight when this was written. **Merge if VERIFIED**; if not, its already-evidenced
-  host half still stands and the branch can be merged with the residual recorded.
+Five branches: **P0-12**, **P0-04**, **P0-03**, **P0-08**, **P0-07**. `main` is pushed.
+
+The P0-07 merge broke the Go build without a merge conflict — its test called
+`ReleaseScript` with the old signature that P0-08 had changed, in a different
+file. The gate caught it and it is fixed. Worth remembering: the dangerous
+conflicts are the ones git cannot see.
 
 ## Blocked on people, not work
 
