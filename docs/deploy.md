@@ -288,8 +288,10 @@ are part of the generated file, so they cannot drift from what the deploy does;
 Every cap applies to the **whole unit's cgroup**, not to one job: `otterd` and
 every Python child it starts share it, so `MemoryMax` bounds the sum of the
 concurrent runs plus the daemon. Size it for `--workers` runs, not one.
-`MemorySwapMax` bounds that same cgroup's swap and defaults to `0`, so the
-hard cap binds even when the host has a swapfile — see the sizing table.
+`MemorySwapMax` bounds that same cgroup's swap and defaults to `0`, so the hard
+cap binds even when the host has a swapfile, and `MemoryHigh` is off by default:
+a soft cap throttles a job *instead of* killing it, which is the wrong trade for
+a documented "a runaway job is killed" guarantee — see the sizing table.
 
 ```ini
 [Service]
@@ -297,7 +299,6 @@ hard cap binds even when the host has a swapfile — see the sizing table.
 OOMPolicy=continue
 
 MemoryMax=75%
-MemoryHigh=60%
 MemorySwapMax=0
 CPUQuota=200%
 TasksMax=512
@@ -312,8 +313,8 @@ ReadWritePaths=/opt/otter/workspaces/<workspace> /opt/otter/workspaces/<workspac
 | Directive | Flag | Default | What it does, and how to size it |
 | --- | --- | --- | --- |
 | `MemoryMax` | `--memory-max` | `75%` | Hard memory ceiling. Above it the kernel OOM-kills a process in the unit's cgroup. Size it to the **sum of the concurrent runs** (peak RSS of the largest run × how many can overlap) plus roughly 256 MiB for `otterd`, then add headroom. A percentage is resolved by systemd against the host's physical RAM, so the same deploy is safe on a 2 GiB VPS and a 16 GiB machine. Too low: a working job is OOM-killed. Too high: the host itself runs out of memory instead. |
-| `MemoryHigh` | `--memory-high` | `60%` | Soft ceiling. Between `MemoryHigh` and `MemoryMax` the kernel throttles and reclaims, so a run that briefly overruns is slowed rather than killed. Keep it meaningfully below `MemoryMax`. |
-| `MemorySwapMax` | `--memory-swap-max` | `0` | Swap bound for the whole cgroup. `0` means the unit may not swap at all, and it is the default because `MemoryMax` is only the binding limit if a runaway cannot grow through swap: `memory.current` counts RAM, not swap, so with unbounded swap the job is throttled at `MemoryHigh` and paged out, the swapfile fills, and `otterd` — which shares the cgroup — starves before the OOM killer ever runs. On a host with a swapfile, leave it at `0`. A size (`512M`) or `infinity` allows bounded swap; `off` restores systemd's unbounded default. |
+| `MemoryHigh` | `--memory-high` | `off` | Soft ceiling, **off by default**. Between `MemoryHigh` and `MemoryMax` the kernel throttles and reclaims, so a run that overruns is slowed rather than killed — but it is not killed, and with `MemorySwapMax=0` there is nowhere to reclaim anonymous pages to, so a hold-everything job parks just above the soft cap and creeps toward `MemoryMax` instead of reaching it. Measured 2026-09-30 at the 60%/75% ratio: a runaway sat at 803–831 MiB against a 787 MiB soft cap and a 983 MiB hard cap with `oom_kill 0` for 600s, until its own manifest timeout ended it. Set it only if you want that: a throttled job, killed late or not at all within its timeout. The flag is unchanged. |
+| `MemorySwapMax` | `--memory-swap-max` | `0` | Swap bound for the whole cgroup. `0` means the unit may not swap at all, and it is the default because `MemoryMax` is only the binding limit if a runaway cannot grow through swap: `memory.current` counts RAM, not swap, so with unbounded swap the kernel reclaims the job's pages into the swapfile instead of OOM-killing it, `memory.current` stays below `memory.max` while the swapfile fills, and `otterd` — which shares the cgroup — starves. On a host with a swapfile, leave it at `0`. A size (`512M`) or `infinity` allows bounded swap; `off` restores systemd's unbounded default. |
 | `CPUQuota` | `--cpu-quota` | `200%` | CPU time as a percentage of **one** core. `200%` is two cores' worth, whatever the host has, so a runaway job cannot monopolise a large machine. Too low: long jobs run slower and may hit their manifest `timeout`. |
 | `TasksMax` | `--tasks-max` | `512` | Processes **and threads** in the cgroup — the fork-bomb guard. Python threads and subprocesses all count, so keep it well above the largest realistic job. Too low: the job cannot create a thread or a subprocess and fails. |
 | `OOMPolicy` | — | `continue` | systemd's own default is `stop`, which stops the whole unit when the OOM killer kills any process in it — taking `otterd` and every other in-flight run with it. `continue` lets the runaway child die and leaves `otterd` to record the failed run. |
@@ -558,7 +559,10 @@ remote_dir: /opt/otter
 service_user: otter
 listen: 127.0.0.1:7337
 memory_max: 4G             # optional: override the host-relative default (75%)
-memory_high: 3G
+memory_swap_max: 0         # optional: the default; the cgroup may not swap
+# memory_high: 3G          # optional soft cap; off by default, because it
+#                          # throttles a runaway below memory_max instead of
+#                          # letting the OOM killer run
 cpu_quota: 200%
 tasks_max: 512
 read_write_paths:          # optional: scratch a job writes outside its workspace
@@ -593,7 +597,7 @@ rather than overridden. See
 | `--verbose` | stream every remote command | off |
 | `--timeout` | overall bound | `10m` |
 | `--keep` | inactive releases retained per job (`0` keeps every release) | `3` |
-| `--memory-max`, `--memory-high` | systemd memory caps for the unit (`off` emits none) | `75%`, `60%` |
+| `--memory-max`, `--memory-high` | systemd memory caps for the unit (`off` emits none) | `75%`, `off` |
 | `--memory-swap-max` | systemd swap bound for the unit (`0` forbids swap; `off` is unbounded) | `0` |
 | `--cpu-quota` | systemd CPU cap, percent of one core (`off` emits none) | `200%` |
 | `--tasks-max` | systemd process/thread cap (`off` emits none) | `512` |
