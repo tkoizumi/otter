@@ -217,13 +217,17 @@ func buildPolicy(job, python, platform, libc, uvVersion string) string {
 		"python=managed-only",
 		"config=none",
 		// The index is deliberately recorded as "default" whatever the caller
-		// configured. It is a route to content that the lock and uv's own
-		// artifact hashes already pin, not a description of the environment,
-		// and the callers that re-resolve this identity -- the daemon at
+		// configured, and it does not need recording: uv treats the index as
+		// part of the lock -- every registry package carries the URL it came
+		// from -- the lock's contents are in the declared inputs above, and a
+		// configured index that disagrees with a recorded one is refused
+		// before anything is built (lock.go). A different package route is
+		// therefore always a different lock, and so a different digest, while
+		// the two callers that re-resolve this identity -- the daemon at
 		// submission, `otter release --activate` on a rollback -- are never
-		// told which mirror prepared it. Folding the mirror into the digest
-		// would make both of them look for an environment preparation never
-		// built.
+		// told which mirror prepared it. Folding the URL into the policy
+		// instead would make both of them look for an environment preparation
+		// never built.
 		"index=default",
 		"job=" + job,
 	}, ";")
