@@ -25,23 +25,41 @@
 #      assertion exists to catch.
 #   5. the two-host drill itself goes red at the cleanliness assertion, before
 #      anything is written to the target, when the target is not clean; and the
-#      same drill passes that gate when the target is empty. That run uses a
-#      test double for the ssh transport only: the reports it consumes are the
-#      real probe's measurement of real directories. The substituted fields are
-#      listed in section 5, and the run says in its own output that it is not
-#      host evidence.
+#      same drill passes those checks when the target is empty. That run is NOT
+#      the whole drill: it stops at the target-unit shape check, because this
+#      machine has no systemd for the probe to report. The drill-level
+#      source-live, token, version, backup, transfer and restore steps are not
+#      reached here -- they are exercised a level down, by the probe cases in
+#      section 2 and the gate cases in section 3. The run uses a test double for
+#      the ssh transport only, the fields it substitutes are listed in
+#      section 5, and it says in its own output that it is not host evidence.
 #
 # What it CANNOT prove, and does not claim: that a restore onto a second host
 # works. That needs two hosts, and it is what the drill examines.
 #
-# Platform branches. The probe has Linux-only paths (GNU `stat -c`,
-# `/etc/machine-id`, `getent`) and portable fallbacks (BSD `stat -f`, `hostname`);
-# the selfcheck runs on the developer's machine, which may be macOS, so the
-# Linux paths are only exercised for real when the suite runs on Linux -- which
-# is what CI does (`ubuntu-latest`). Rather than add a Docker dependency to the
-# unit-test path, the live-daemon case asserts the *observable outcome* of
-# whichever branch the platform takes (a machine id and its source, an owner and
-# a mode), so a branch that stops working on either platform fails here.
+# How it runs. `make drill` does NOT run this file: scripts/drill.sh globs
+# scripts/drill/*.sh, and this lives in the selfcheck/ subdirectory on purpose,
+# so that a plain `make drill` cannot pick up the clean-host mode without its
+# parameters and fail the suite. The selfcheck reaches CI through
+# `go test ./...`, by way of internal/drill/selfcheck_test.go, which also reads
+# every script this file runs so a green result cannot be a stale cache.
+#
+# Platform branches. The probe has Linux paths (GNU `stat -c`,
+# `/etc/machine-id`) with portable fallbacks (BSD `stat -f`, `hostname`); the
+# selfcheck runs wherever the developer is, so on macOS the fallbacks run and on
+# Linux -- which is what CI uses -- the Linux branches are reached and executed
+# for real. Rather than add a Docker dependency to the unit-test path, the
+# live-daemon case asserts the branch each platform is *supposed* to take from
+# the state of the machine: on a Linux host with a non-empty machine-id file the
+# probe must name that file as its source, on a host without one it must name
+# the hostname fallback, and the owner and mode must be measured either way. A
+# regression in either branch fails here.
+#
+# Two things are deliberately NOT claimed. `getent`: the probe only runs
+# `command -v getent`, nothing here invokes it, the gate's `getent=yes` comes
+# from a hand-written fixture, and the drill's one real `getent passwd/group`
+# call is reached by no test -- it runs for the first time at HW-7. And the
+# two-host composition: see item 5 above.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
@@ -629,10 +647,30 @@ say "  ok  a real probe against a live otterd reports daemon=running, version $L
 # this exercises /etc/machine-id and GNU stat; on macOS the hostname fallback
 # and BSD stat. The assertion is the same either way, so a branch that stops
 # working on either platform is caught here.
-case "$(report_get "$LIVE_REPORT" machine_id_source)" in
-/etc/machine-id | /var/lib/dbus/machine-id | hostname) ;;
+# Assert the branch this machine is supposed to take, not merely that some
+# branch was taken: a Linux-only regression in the /etc/machine-id path would
+# otherwise pass unnoticed, because the hostname fallback also produces a
+# non-empty id.
+LIVE_MI_SOURCE=$(report_get "$LIVE_REPORT" machine_id_source)
+case "$(uname -s)" in
+Linux)
+	if [ -s /etc/machine-id ] || [ -s /var/lib/dbus/machine-id ]; then
+		case "$LIVE_MI_SOURCE" in
+		/etc/machine-id | /var/lib/dbus/machine-id) ;;
+		*)
+			fail "this Linux host has a non-empty machine-id file, but the probe reported machine_id_source=$LIVE_MI_SOURCE"
+			;;
+		esac
+	else
+		[ "$LIVE_MI_SOURCE" = hostname ] ||
+			fail "this Linux host has no non-empty machine-id file, so the probe must fall back to the hostname; it reported $LIVE_MI_SOURCE"
+	fi
+	;;
 *)
-	fail "the probe reported an unknown machine-id source: $(report_get "$LIVE_REPORT" machine_id_source)"
+	# Anywhere else (macOS, the developer's machine) there is no machine-id
+	# file, so the fallback is the correct branch and is asserted as such.
+	[ "$LIVE_MI_SOURCE" = hostname ] ||
+		fail "this host has no /etc/machine-id, so the probe must fall back to the hostname; it reported $LIVE_MI_SOURCE"
 	;;
 esac
 [ -n "$(report_get "$LIVE_REPORT" machine_id)" ] || fail "the probe reported no machine id"
@@ -997,16 +1035,18 @@ say "  ok  a restore into a non-empty target refuses"
 # --- 5. the drill goes red on a dirty target, without a host ------------------
 
 # The transport is a test double; the reports it returns are the real probe's
-# measurement of real directories, with these fields substituted because a
-# selfcheck cannot be two machines and cannot be Linux+systemd+root:
+# measurement of real directories, with exactly these fields substituted,
+# because a selfcheck cannot be two machines and cannot be Linux+systemd+root:
 #
 #   machine_id, ssh_host_key, hostname    -> the two "hosts"
-#   daemon                                -> the source answers, the target does not
 #   data_dir/data_real/jobs_dir/jobs_real -> rewritten from the per-host sandbox
 #                                            back to the logical path
 #
-# Everything else -- data_clean, jobs_clean, the reasons, kernel, versions,
-# tooling, ownership -- is measured by lib/host-report.sh against a real tree.
+# Everything else is measured by lib/host-report.sh against a real tree --
+# including `daemon` and `daemon_version`, which the double used to overwrite
+# and no longer does. That is why the source in these runs reports `stopped`:
+# there is no daemon in the sandbox, and the honest measurement is what makes
+# the run stop at the gate's checks instead of sailing through them.
 say "5/6 the drill refuses a dirty target before writing anything"
 
 FAKE="$WORK/fake-ssh"
