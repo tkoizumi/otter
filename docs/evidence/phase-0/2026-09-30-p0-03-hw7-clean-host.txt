@@ -126,3 +126,25 @@ This is also the run that found the archive-layout defect: the first execution f
 modes/backup-restore-clean-host.sh:620, which read the job marker one directory above where
 hot-backup.sh puts it. See 2026-09-30-p0-03-hw7-first-run.txt. Three independent verification
 rounds had not reached that line, because the hostless suite stops at the gate.
+
+
+--- second consecutive run: the pass is reproducible ---
+The target was re-cleaned to the same precondition (unit stopped and disabled, data and jobs
+absent) and the drill run again from the same commit. Both runs pass, which matters because
+every earlier failure on this branch was a wiring assumption rather than a flaky step:
+
+  run 2  exit 0, elapsed 30s, run id d38b162f-…
+  run 3  exit 0, elapsed 32s, run id b9a6e2e3-…
+
+The identity marker hash is identical across both (d1d5e7c0f21f1238…), which is the point:
+the same job identity survives, and each run is a distinct new execution on the second host
+with the source still not knowing its id.
+
+$ grep -E "^drill: (ok|FAILED|failed)|identity|executed|cross-host|elapsed" hw7-run3.log
+drill: ok: the target is a clean, empty host of the same shape; a restore onto it is a clean-host restore
+restore-host: members= .releases environments python cache, identity markers=3, db=188416 bytes
+drill: identity    survived (81f22f5f-4122-4566-9889-d7ed5316c42d, marker sha256 d1d5e7c0f21f1238fb45d9a8d2e189cca6c606907c1a1ee93042d02685ffabae)
+drill: executed    run b9a6e2e3-46ee-462a-95f1-4fafa5067ece succeeded from /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/.releases/81f22f5f-4122-4566-9889-d7ed5316c42d/a8b0c3d2a7a8b7252ef627a6c149914a7097a0cfdf7d9f70e530a358229193d2/drill-job
+drill: cross-host  the source runtime does not know run b9a6e2e3-46ee-462a-95f1-4fafa5067ece; it ran on ubuntu@13.216.223.122
+drill: ok: a live runtime was backed up, restored onto a clean second host, and the job runs there
+drill: elapsed 32s
