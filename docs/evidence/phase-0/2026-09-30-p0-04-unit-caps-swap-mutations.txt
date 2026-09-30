@@ -1,0 +1,105 @@
+=== Phase 0 evidence: P0-04 unit caps — the new assertions go red under mutation ===
+task:      P0-04
+when:      2026-09-30 16:59 EDT
+where:     macOS 15 arm64 / Docker Desktop (systemd 255, kernel 5.10.76-linuxkit, cgroup v2)
+build:     branch p0-04-memory-swap-max at 252743c with only the mutation named below applied
+what:      each mutation removes one half of the new drill and must make exactly its own
+           assertion fail. Both were reverted; the tree was clean after each.
+
+--- mutation A: drop MemorySwapMax from the rendered unit ---
+Change: internal/deploy/render.go, the line
+           writeCap(&caps, "MemorySwapMax", opts.MemorySwapMax)
+        is deleted (replaced by a comment), as if the fix had never landed.
+Command: MEMORY_MAX=192M MEMORY_HIGH=off MEMORY_SWAP_MAX=0 KILL_WINDOW=60 sh scripts/drill.sh unit-caps
+Exit:    1
+
+Raw output (drill preamble and unit omitted; the unit no longer contains MemorySwapMax=):
+
+
+===== drill: unit-caps =====
+date:     2026-09-30 16:59:02 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-41-g252743c-dirty
+unit-caps: image      otter-systemd-caps
+unit-caps: target     linux/arm64
+unit-caps: swap       512M loop device inside the container
+unit-caps: common caps cpu-quota=200% tasks-max=512
+
+unit-caps: building the systemd image
+unit-caps: building the linux binaries
+
+================ unit-caps: case custom ================
+unit-caps: caps       memory-max=192M memory-high=off memory-swap-max=0
+unit-caps: observe    the OOM kill for up to 60s
+unit-caps: rendering the unit the deployer would write
+...
+unit-caps: waiting for the health endpoint
+health: {"status":"ok","version":"dev","uptime_seconds":0.204082083}
+cgroup: /docker/e6b43f7c5a4ea5b85afe53cdb658db8f617e06ff59ee62edcd1f339b298a4f61/system.slice/otterd-drill.service
+memory.max:  201326592 (set from MemoryMax=192M)
+memory.high: max
+unit-caps: FAIL: the drill requested MemorySwapMax=0 but the unit has ''
+unit-caps: FAILED (exit 1); work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-unit-caps.hH08Qk
+
+  The red line is the new swap assertion: the drill asked for a bound of 0 and the unit
+  carries no directive, so the cgroup is free to swap without bound. Before the fix the
+  drill could not see that at all.
+
+--- mutation B: revert the survivor check to the old pgrep pattern and make one survive ---
+Change: a temporary copy of the drill, scripts/drill/unit-caps-survivor.sh, with two deltas:
+  1. the runaway's main.py forks a child that holds 32 MiB and sleeps before the parent
+     starts allocating. The parent is the OOM victim; the child is left in the cgroup.
+  2. the survivor block also prints the OLD pattern's result, for comparison.
+Command: MEMORY_MAX=192M MEMORY_HIGH=off MEMORY_SWAP_MAX=0 KILL_WINDOW=60 sh scripts/drill.sh unit-caps-survivor
+Exit:    1
+
+Raw output:
+
+unit-caps: triggering the runaway job
+7dcaf383-ff84-46d6-89a2-c5af56208985
+
+--- cgroup memory.events ---
+low 0
+high 0
+max 48
+oom 1
+oom_kill 1
+--- cgroup memory.peak (bytes) ---
+(no memory.peak on this kernel)
+--- cgroup memory.max (bytes) ---
+201326592
+--- cgroup memory.swap.max (bytes) ---
+0
+--- cgroup memory.swap.current (bytes) ---
+0
+--- cgroup memory.current (bytes) ---
+51228672
+
+--- unit state after the 60s observation ---
+is-active: active
+otterd MainPID after:  151
+NRestarts:             0
+OOMPolicy:             continue
+--- processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 151 198 
+OLD PATTERN (pgrep -af 'runaway/main.py'): (matched nothing)
+  survivor: pid 198 comm=python3 rss=48424 kB cmdline=python3 -m otter._launcher main.py 
+unit-caps: FAIL: a runaway process survived in the unit cgroup: 198
+--- run history ---
+RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
+7dcaf383-ff84-46d6-89a2-c5af56208985  runaway  manual   failed  1        2026-09-30T20:59:36Z  1.286s
+--- host responsiveness ---
+is-system-running: running
+{"status":"ok","version":"dev","uptime_seconds":3.289074571}
+
+--- daemon journal, OOM lines ---
+Sep 30 20:59:37 b57e2645d988 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: FAIL [custom]: unmet claim clauses: a runaway process survived in the unit cgroup: 198
+unit-caps: the caps in force were: memory.max=201326592 memory.high=max memory.swap.max=0
+unit-caps: FAILED (exit 1); work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-unit-caps.gHL5F4
+
+  The kill clause passes here (oom_kill=1 -- the OOM killer took the parent), so this run
+  isolates the survivor assertion. The old pattern -- pgrep -af 'runaway/main.py' -- matched
+  nothing while pid 198, a python3 holding 48,424 kB, was still alive in the unit cgroup:
+  that is exactly the vacuity that reported clean on Castor. The cgroup process list found
+  it and the case failed, as it must.
