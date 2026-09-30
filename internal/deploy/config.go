@@ -142,9 +142,25 @@ type Flags struct {
 	UV        string
 	NoUV      bool
 	UVVersion string
-	DryRun    bool
-	Verbose   bool
-	Timeout   time.Duration
+	// Index and PythonMirror are the host's preparation-time fetch route: the
+	// package index managed dependencies are synced from, and the root managed
+	// interpreter downloads come from. Empty keeps uv's own defaults, so a host
+	// with ordinary egress configures neither.
+	//
+	// They are per-invocation flags rather than otter.deploy.yaml keys, like
+	// --uv and --uv-version, because they describe the host's network and
+	// toolchain rather than the project being deployed.
+	Index        string
+	PythonMirror string
+	// SkipEgressCheck skips the egress preflight the host runs before it
+	// prepares a managed environment.
+	SkipEgressCheck bool
+	// EgressEndpoints are extra endpoints that preflight must reach, typically
+	// the APIs the jobs themselves call, collected from --egress-endpoint.
+	EgressEndpoints stringList
+	DryRun          bool
+	Verbose         bool
+	Timeout         time.Duration
 	// Keep is how many inactive releases to retain per job on the host. Zero
 	// keeps every release, which is the default of `otter release` itself; a
 	// deploy converges, so its own default is DefaultKeep.
@@ -368,6 +384,10 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.UV, "uv", "", "uv executable on the host for Python preparation (default the vendored copy)")
 	fs.BoolVar(&f.NoUV, "no-uv", false, "do not vendor uv; use one already present on the host")
 	fs.StringVar(&f.UVVersion, "uv-version", "", "uv release to vendor (default "+PinnedUVVersion+")")
+	fs.StringVar(&f.Index, "index", "", "package index for managed dependencies on the host (must be the index the lock records)")
+	fs.StringVar(&f.PythonMirror, "python-mirror", "", "source for managed interpreter downloads on the host (default uv's python-build-standalone releases)")
+	fs.BoolVar(&f.SkipEgressCheck, "skip-egress-check", false, "skip the host's preparation-time egress preflight")
+	fs.Var(&f.EgressEndpoints, "egress-endpoint", "extra endpoint the host's egress preflight must reach, such as an API a job calls (repeatable)")
 	fs.BoolVar(&f.Build, "build", false, "compile the runtime from Go source instead of using released binaries")
 	fs.StringVar(&f.Source, "source", "", "Otter Go checkout to compile from (implies --build)")
 	fs.StringVar(&f.Binaries, "binaries", "", "directory holding otterd and otter for the target platform (offline deploy)")

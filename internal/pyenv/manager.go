@@ -23,6 +23,16 @@ var exactVersion = regexp.MustCompile(`^3\.[0-9]+\.[0-9]+$`)
 // preparation commands, their flags, or the environment layout change: a bump
 // must produce a different identity so existing environments are rebuilt
 // rather than silently reused.
+//
+// The egress preflight and the index/mirror passthrough deliberately did not
+// bump it, because neither changes what an environment is. With nothing
+// configured the commands are byte-for-byte what they were, so every existing
+// environment keeps its identity and is reused rather than re-downloading an
+// interpreter and its wheels. With something configured, the flags are pinned
+// by the lock: `uv.lock` records the registry each package came from, the lock
+// is part of the declared inputs, and a configured index that disagrees with it
+// is refused before anything is built (see lock.go). A different package route
+// is therefore always a different lock, and so a different digest.
 const RecipeVersion = "1"
 
 // Spec identifies the declared inputs of a prepared environment.
@@ -64,7 +74,70 @@ func (r *Ready) UnmarshalJSON(data []byte) error {
 }
 
 // Manager owns the derived environments under a data directory.
-type Manager struct{ DataDir string }
+//
+// The zero value of every field but DataDir is the documented default: no
+// configured index or mirror, the default endpoints, and the egress preflight
+// enabled. Preparation settings describe the *route* to the same hash-pinned
+// content rather than the content itself, so they are deliberately absent from
+// the environment identity: an environment prepared through a mirror must stay
+// valid when the mirror is later unreachable, and `otter release --activate`
+// and the daemon both re-resolve that identity without ever being told which
+// mirror prepared it.
+type Manager struct {
+	DataDir string
+
+	// Index is the package index dependencies are resolved and synced from.
+	// Empty keeps whatever the lock records, which uv installs from when no
+	// index is configured. It is passed to uv explicitly, as `--default-index`,
+	// because preparation runs uv with configuration discovery disabled
+	// (UV_NO_CONFIG=1): the flag needs no config file, and no inherited
+	// user-level uv configuration can redirect the fetch.
+	//
+	// It replaces the default index rather than being an additional one, and it
+	// has to be the index `uv.lock` records: `uv sync --locked` re-resolves
+	// against the configured index and refuses when the result would change the
+	// lock, so preparation refuses the disagreement itself, before fetching
+	// (see lock.go).
+	Index string
+
+	// PythonMirror is the root managed interpreter downloads come from. Empty
+	// keeps uv's default (DefaultPythonMirror). It is passed as `--mirror`,
+	// which uv composes as <mirror>/<release-tag>/<file>, so the value is the
+	// directory the release assets live under.
+	PythonMirror string
+
+	// ExtraEndpoints are further endpoints the preflight must reach, typically
+	// the APIs the jobs themselves call. The runtime cannot discover those, so
+	// they are configured; they are checked but never fetched from by
+	// preparation.
+	ExtraEndpoints []string
+
+	// SkipEgressCheck turns the preflight off. It exists for a host that is
+	// deliberately air-gapped and already primed -- its interpreter, its wheel
+	// cache and its environment are provisioned out of band -- where a probe
+	// would refuse preparation that would otherwise have succeeded from what
+	// is already on disk.
+	SkipEgressCheck bool
+
+	// Probe performs one preflight request. Nil means HTTPProbe, which is the
+	// only part of preparation that touches the network before a fetch; a test
+	// injects a stub here.
+	Probe Prober
+
+	// Logf receives preparation progress, one line per step worth narrating.
+	// Nil is legal and means silent, and a caller that wants the preflight to
+	// be visible rather than only audible on failure supplies one.
+	Logf func(format string, args ...any)
+}
+
+// logf reports preparation progress when a sink was supplied. A nil sink is
+// legal: preparation is not narration, and a test should not need one.
+func (m Manager) logf(format string, args ...any) {
+	if m.Logf == nil {
+		return
+	}
+	m.Logf(format, args...)
+}
 
 func (m Manager) root() (string, error) {
 	if m.DataDir == "" {
@@ -143,6 +216,18 @@ func buildPolicy(job, python, platform, libc, uvVersion string) string {
 		"project=no-install",
 		"python=managed-only",
 		"config=none",
+		// The index is deliberately recorded as "default" whatever the caller
+		// configured, and it does not need recording: uv treats the index as
+		// part of the lock -- every registry package carries the URL it came
+		// from -- the lock's contents are in the declared inputs above, and a
+		// configured index that disagrees with a recorded one is refused
+		// before anything is built (lock.go). A different package route is
+		// therefore always a different lock, and so a different digest, while
+		// the two callers that re-resolve this identity -- the daemon at
+		// submission, `otter release --activate` on a rollback -- are never
+		// told which mirror prepared it. Folding the URL into the policy
+		// instead would make both of them look for an environment preparation
+		// never built.
 		"index=default",
 		"job=" + job,
 	}, ";")
@@ -389,13 +474,43 @@ func (m Manager) Prepare(ctx context.Context, dir, job, uvPath string) (Ready, e
 	if err != nil {
 		return Ready{}, fmt.Errorf("read uv version: %w", err)
 	}
+	// The lock decides where packages come from, so settle its disagreement
+	// with a configured index here, locally and before the network check: uv
+	// would otherwise refuse this at `sync` with a bare exit 2 that names
+	// neither the lock nor the index.
+	if err := m.checkLockIndex(dir); err != nil {
+		return Ready{}, err
+	}
+	// Ask the network question before the fetch, so a host with no route fails
+	// as a route problem rather than as whatever uv was doing when it noticed.
+	// A skipped check is recorded: it is what stops a later interpreter failure
+	// from being misreported as a platform/patch-version problem.
+	egressChecked := false
+	if !m.SkipEgressCheck {
+		if err := m.checkEgress(ctx, dir, spec); err != nil {
+			return Ready{}, err
+		}
+		egressChecked = true
+		m.logf("egress preflight ok for environment %s: %s\n", spec.Digest[:12], describeEgress(m.endpoints(dir)))
+	}
 	baseEnv := append(os.Environ(), "UV_PYTHON_INSTALL_DIR="+filepath.Join(root, "python"), "UV_CACHE_DIR="+filepath.Join(root, "cache", "uv"), "UV_PROJECT_ENVIRONMENT="+envDir, "UV_PYTHON_PREFERENCE=only-managed", "UV_NO_CONFIG=1")
-	install := exec.CommandContext(ctx, uv, "python", "install", "--install-dir", filepath.Join(root, "python"), spec.Python)
+	installArgs := []string{"python", "install", "--install-dir", filepath.Join(root, "python")}
+	if mirror := strings.TrimSpace(m.PythonMirror); mirror != "" {
+		installArgs = append(installArgs, "--mirror", mirror)
+	}
+	install := exec.CommandContext(ctx, uv, append(installArgs, spec.Python)...)
 	install.Env = baseEnv
 	if out, err := install.CombinedOutput(); err != nil {
-		return Ready{}, fmt.Errorf("install Python %s: %w: %s", spec.Python, err, strings.TrimSpace(string(out)))
+		return Ready{}, installError(spec, err, strings.TrimSpace(string(out)), egressChecked)
 	}
-	sync := exec.CommandContext(ctx, uv, "sync", "--locked", "--no-install-project", "--no-build", "--no-config", "--no-python-downloads", "--python", spec.Python, "--python-preference", "only-managed")
+	syncArgs := []string{"sync", "--locked", "--no-install-project", "--no-build", "--no-config", "--no-python-downloads", "--python", spec.Python, "--python-preference", "only-managed"}
+	if index := strings.TrimSpace(m.Index); index != "" {
+		// --default-index, not --index: the configured index replaces PyPI
+		// instead of joining it, so a host with no route to PyPI is not asked
+		// to reach it.
+		syncArgs = append(syncArgs, "--default-index", index)
+	}
+	sync := exec.CommandContext(ctx, uv, syncArgs...)
 	sync.Dir, sync.Env = dir, baseEnv
 	if out, err := sync.CombinedOutput(); err != nil {
 		return Ready{}, fmt.Errorf("sync %s: %w: %s", job, err, strings.TrimSpace(string(out)))

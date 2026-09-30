@@ -72,6 +72,21 @@ type Deployer struct {
 	NoUV bool
 	// UVVersion overrides the pinned uv release to vendor.
 	UVVersionOverride string
+	// Index overrides the package index the host syncs managed dependencies
+	// from, passed through to the release it runs as `otter release --index`.
+	// Empty keeps uv's default (PyPI).
+	Index string
+	// PythonMirror overrides where the host downloads managed interpreters
+	// from, passed through as `otter release --python-mirror`. Empty keeps uv's
+	// default.
+	PythonMirror string
+	// SkipEgressCheck passes --skip-egress-check to the release on the host, for
+	// a host that is deliberately air-gapped and already primed.
+	SkipEgressCheck bool
+	// EgressEndpoints are extra endpoints the host's preparation-time preflight
+	// must reach, typically the APIs the jobs call. They are checked, never
+	// fetched from.
+	EgressEndpoints []string
 }
 
 // Run performs the converge.
@@ -253,7 +268,15 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	}
 	if len(cfg.Jobs) > 0 {
 		d.step("release", "releasing %d job(s)", len(cfg.Jobs))
-		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.JobNames(), uvPath, cfg.Keep)); err != nil {
+		release := ReleaseOptions{
+			UVPath:          uvPath,
+			Keep:            cfg.Keep,
+			Index:           d.Index,
+			PythonMirror:    d.PythonMirror,
+			SkipEgressCheck: d.SkipEgressCheck,
+			EgressEndpoints: d.EgressEndpoints,
+		}
+		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.JobNames(), release)); err != nil {
 			return nil, fmt.Errorf("release jobs on %s: %w", cfg.Target, err)
 		}
 	} else {

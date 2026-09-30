@@ -78,7 +78,7 @@ func TestPreparePublishesOnlyAfterValidation(t *testing.T) {
 	if err := os.WriteFile(uv, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m := Manager{DataDir: data}
+	m := Manager{DataDir: data, Probe: func(context.Context, string) error { return nil }}
 	ready, err := m.Prepare(context.Background(), dir, "one", uv)
 	if err != nil {
 		t.Fatal(err)

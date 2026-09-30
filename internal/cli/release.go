@@ -45,7 +45,11 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	shared := fs.String("shared", "", "extra shared code directories to snapshot (comma-separated)")
 	all := fs.Bool("all", false, "release every job in the workspace")
 	activate := fs.String("activate", "", "activate an already staged release by digest, without staging")
-	uv := fs.String("uv", "", "uv executable used only during preparation")
+	// Preparation settings, passed through to the environment it builds. They
+	// default to empty, which leaves uv's own defaults in place; a deploy names
+	// them when the host reaches its dependencies through an internal mirror.
+	var opts prepareOptions
+	opts.registerPrepareFlags(fs)
 	keep := fs.Int("keep", 0, "retain this many inactive releases (0 keeps every release)")
 	list := fs.Bool("list", false, "list staged releases instead of creating one")
 	prune := fs.Bool("prune", false, "with --list --all: remove release directories that have no registered identity")
@@ -146,11 +150,11 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 			fmt.Fprintln(a.Stderr, "otter: --activate works on one job at a time")
 			return 2
 		}
-		return a.activateRelease(ctx, manager, targets[0].ID, targets[0].Label(), *activate, *uv)
+		return a.activateRelease(ctx, manager, targets[0].ID, targets[0].Label(), *activate, opts.UV)
 	}
 
 	for _, target := range targets {
-		if code := a.releaseOne(ctx, manager, jobsRoot, target, *shared, *uv, *keep); code != 0 {
+		if code := a.releaseOne(ctx, manager, jobsRoot, target, *shared, opts, *keep); code != 0 {
 			return code
 		}
 	}
@@ -275,7 +279,7 @@ func absoluteDir(path string) (string, error) {
 }
 
 // releaseOne stages, validates, prepares and activates one job.
-func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared, uv string, keep int) int {
+func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared string, opts prepareOptions, keep int) int {
 	label := target.Label()
 	manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
 	if err != nil {
@@ -315,7 +319,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 		return 1
 	}
 
-	envManager := pyenv.Manager{DataDir: manager.DataDir}
+	envManager := a.prepareManager(manager.DataDir, opts)
 
 	// Bound one release: a release that hangs on a package download must not
 	// hold a deploy open indefinitely. With --all the bound is per job,
@@ -330,7 +334,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	//    source.
 	environmentDigest := ""
 	if manifest.Python.Mode == "managed" {
-		spec, err := envManager.ResolveCurrentAt(ctx, target.Dir, target.ID, uv)
+		spec, err := envManager.ResolveCurrentAt(ctx, target.Dir, target.ID, opts.UV)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", label, err)
 			return 1
@@ -366,7 +370,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 		return 1
 	}
 	if bound.Python.Mode == "managed" {
-		ready, err := envManager.Prepare(ctx, releaseSource, target.ID, uv)
+		ready, err := envManager.Prepare(ctx, releaseSource, target.ID, opts.UV)
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", label, err)
 			return 1
@@ -390,7 +394,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 		fmt.Fprintf(a.Stderr, "otter: %s: source binding at %s changed while staging; re-run the release\n", label, target.Dir)
 		return 1
 	}
-	if code := a.activateStaged(ctx, manager, target.ID, label, meta.Digest, uv); code != 0 {
+	if code := a.activateStaged(ctx, manager, target.ID, label, meta.Digest, opts.UV); code != 0 {
 		return code
 	}
 
