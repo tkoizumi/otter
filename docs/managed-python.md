@@ -508,17 +508,29 @@ can add to a job that was locked somewhere else.
   inputs, so the new lock produces a new environment identity and preparation
   builds the environment from the mirror.
 
-  Index URLs are compared the way uv parses them. Folded: host case, a
-  redundant default port, the root slash a bare host gets (`http://mirror` and
-  `http://mirror/` are one index), literal and percent-encoded dot segments
-  (`http://mirror/a/../b` is `http://mirror/b`), and the short IPv4 spellings
-  (`http://127.1:8080/x` is `http://127.0.0.1:8080/x`). Not folded, because uv
-  refuses those pairs: a differently-cased *scheme* (`HTTP://…` is not an index
-  uv can use), a non-empty trailing slash, an empty query, and a percent escape
-  — `…/simple`, `…/simple/`, `…/simple?` and `…/sim%70le` are four different
-  indexes, and `%2f` and `%2F` are two more. The hint leads with the remedy that
-  needs none of this: omit `--index`, and uv installs from the URLs the lock
-  records.
+  Index URLs are compared the way uv parses them — the measured set, not a
+  guess. Folded: host case; a redundant default port and a port's leading zeros
+  (`:08080` is `:8080`); credentials (`http://u:p@mirror/simple` is
+  `http://mirror/simple`); a backslash where a special scheme wants a slash; the
+  root slash a bare host gets (`http://mirror` and `http://mirror/` are one
+  index); literal and percent-encoded dot segments, including a lone `%2e`
+  (`http://mirror/a/../b` is `http://mirror/b`); and the IPv4 spellings — short
+  forms, hex and octal parts, a percent-encoded host (`http://127.1:8080/x` and
+  `http://0x7f.0.0.1:8080/x` are `http://127.0.0.1:8080/x`).
+
+  Not folded, because uv refuses those pairs: a differently-cased *scheme*
+  (`HTTP://…` is not an index uv can use at all), a non-empty trailing slash, an
+  empty query, an empty fragment, and a percent escape — `…/simple`,
+  `…/simple/`, `…/simple?`, `…/simple#` and `…/sim%70le` are five different
+  indexes, and `%2f` and `%2F` are two more. `...` is a literal path segment,
+  not a dot segment. The hint leads with the remedy that needs none of this:
+  omit `--index`, and uv installs from the URLs the lock records.
+
+  Two divergences are deliberate and go the *safe* way — otter refuses a pair uv
+  accepts, never the reverse — and are listed in `TestDeliberateConservativeDivergences`
+  in the source: a Unicode IDNA host against its punycode form (folding it would
+  mean implementing IDNA), and an added source the lock does not record but that
+  changes nothing (below).
 - **With no `--index`, uv installs from the registries the lock records.** A
   lock already cut against a reachable mirror therefore needs no flag at all,
   and the preflight checks that mirror rather than PyPI. What cannot be done is
@@ -551,18 +563,33 @@ extent the lock already records what they name. A lock cut with
 `--default-index A` alone then cannot resolve it (`uv` reports "not found in the
 package registry", exit 1) while the same command with `UV_EXTRA_INDEX_URL=B`
 succeeds. Preparation accepts that, because the variable supplies a source the
-lock records; it refuses a variable naming a source the lock does **not** record:
+lock records. uv's named-index spelling is understood too:
+`UV_INDEX=extra=https://mirror.internal/b/simple` names the same source as the
+bare URL.
+
+A variable naming a source the lock does **not** record is refused, and that
+refusal is deliberately conservative: uv refuses such a source only when it
+changes the resolution (measured both ways — an unrecorded empty index exits 0,
+an unrecorded index carrying a package the lock needs exits 2), and preparation
+cannot resolve, so it cannot tell the two apart from the lock. It refuses both
+rather than let uv fail with a bare lockfile error, and says so:
 
 ```
 otter: prepare my-job: uv.lock and the configured package index disagree: UV_EXTRA_INDEX_URL names
 http://mirror.internal/b/simple, which the lock does not record;
 /srv/otter/jobs/my-job/uv.lock records http://mirror.internal/a/simple
-hint: `uv sync --locked` re-resolves with that added source and refuses when the result would
-change the lock. Omit UV_EXTRA_INDEX_URL and --index, and uv installs from the URLs the lock
-records (http://mirror.internal/a/simple), which always satisfies --locked; or re-lock with that
-source configured (UV_EXTRA_INDEX_URL=http://mirror.internal/b/simple uv lock ...) and keep it
-set: a lock that records it is accepted.
+hint: otter cannot tell from the lock whether this source would change the resolution, so it
+refuses rather than let `uv sync --locked` fail with a bare lockfile error. Omit UV_EXTRA_INDEX_URL and
+--index, and uv installs from the URLs the lock records (http://mirror.internal/a/simple), which always
+satisfies --locked. If the added source really does supply a package the lock needs, re-lock with
+it configured (UV_EXTRA_INDEX_URL=http://mirror.internal/b/simple uv lock ...) so the lock records that source, and
+preparation accepts a source the lock records.
 ```
+
+Every remedy there terminates: omitting the variable always satisfies
+`--locked`, and re-locking only changes anything when the source really supplies
+a package — which is exactly when uv records it and the variable becomes
+acceptable.
 
 A lock that records several sources needs all of them supplied, and the refusal
 says which one is missing and how to supply it (`UV_EXTRA_INDEX_URL=<url>`, which

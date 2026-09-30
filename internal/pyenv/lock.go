@@ -106,17 +106,40 @@ var additiveRouteVars = []string{"UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINK
 // additiveSourceValues returns every source the additive variables name, in
 // declaration order. uv takes comma-separated values for these variables, so
 // that is the split here; a value containing a comma would be split too, which
-// can only make preparation refuse a spelling it cannot check.
+// can only make preparation refuse a spelling it cannot check. Together with
+// checkLockIndex this is why nothing is checked when no route is configured.
+//
+// uv also accepts a named index, `name=url`, and that spelling is unwrapped
+// here: the part after `=` must be an absolute URL and the part before it a
+// valid index name, so a find-links directory containing `=` is not misread.
 func additiveSourceValues() []string {
 	var out []string
 	for _, name := range additiveRouteVars {
 		for _, value := range strings.Split(os.Getenv(name), ",") {
 			if value = strings.TrimSpace(value); value != "" {
-				out = append(out, value)
+				out = append(out, unwrapNamedIndex(value))
 			}
 		}
 	}
 	return out
+}
+
+// indexNamePattern is what uv accepts as an index name in the `name=url`
+// spelling.
+var indexNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// unwrapNamedIndex turns uv's `name=url` index spelling into its URL, and leaves
+// anything else -- including a plain URL or a path -- alone.
+func unwrapNamedIndex(value string) string {
+	name, rest, ok := strings.Cut(value, "=")
+	if !ok || name == "" || !indexNamePattern.MatchString(name) {
+		return value
+	}
+	parsed, err := url.Parse(rest)
+	if err != nil || parsed.Scheme == "" || (parsed.Host == "" && parsed.Scheme != "file") {
+		return value
+	}
+	return rest
 }
 
 // checkLockIndex refuses a route the lock cannot satisfy, before anything is
@@ -130,9 +153,14 @@ func additiveSourceValues() []string {
 //
 // Otherwise two things must hold, and both are measured against uv 0.5.9:
 //
-//   - no added source may be one the lock does not record. `uv sync --locked`
-//     re-resolves with it and refuses when the result would change the lock,
-//     which uv reports as a bare exit 2. A source the lock *does* record is
+//   - no added source may be one the lock does not record. This is deliberately
+//     conservative: uv refuses an unrecorded source only when it changes the
+//     resolution (measured both ways: an unrecorded index carrying a package
+//     the lock needs exits 2, an unrecorded empty one exits 0), and preparation
+//     cannot resolve, so it cannot tell the two apart from the lock. It refuses
+//     both rather than let uv fail with a bare "lockfile needs to be updated",
+//     and says so; the divergences it accepts are listed in
+//     TestDeliberateConservativeDivergences. A source the lock *does* record is
 //     accepted: a lock cut with a default and an extra index records both, and
 //     the variable then supplies what `--index` alone cannot.
 //   - every registry the lock records must be reachable from the configured
@@ -256,15 +284,19 @@ func mismatchHint(configured string, recorded []string) string {
 		"the index you are deploying with (uv lock --default-index " + configured + ") and commit it."
 }
 
-// additiveHint is the actionable half of an additive-source refusal. Omitting
-// the variable always satisfies --locked; re-locking with the source configured
-// makes the variable acceptable, because the lock then records it.
+// additiveHint is the actionable half of an additive-source refusal. Every
+// remedy here terminates: omitting the variable always satisfies --locked, and
+// re-locking only helps when the added source really supplies a package (uv
+// records a registry only for packages that came from it), which the hint says.
+// The earlier wording promised that re-locking alone would be accepted, which
+// looped for a source that supplies nothing.
 func additiveHint(names string, unrecorded, recorded []string) string {
-	return "hint: `uv sync --locked` re-resolves with that added source and refuses when the result\n" +
-		"would change the lock. Omit " + names + " and --index, and uv installs from the URLs the lock\n" +
-		"records (" + strings.Join(recorded, ", ") + "), which always satisfies --locked; or re-lock with that\n" +
-		"source configured (" + names + "=" + unrecorded[0] + " uv lock ...) and keep it set: a lock that\n" +
-		"records " + unrecorded[0] + " is accepted."
+	return "hint: otter cannot tell from the lock whether this source would change the resolution, so it\n" +
+		"refuses rather than let `uv sync --locked` fail with a bare lockfile error. Omit " + names + " and\n" +
+		"--index, and uv installs from the URLs the lock records (" + strings.Join(recorded, ", ") + "), which always\n" +
+		"satisfies --locked. If the added source really does supply a package the lock needs, re-lock with\n" +
+		"it configured (" + names + "=" + unrecorded[0] + " uv lock ...) so the lock records that source, and\n" +
+		"preparation accepts a source the lock records."
 }
 
 // extraSourceHint is the actionable half of "the lock records a source this
@@ -313,47 +345,60 @@ func (m Manager) packageIndexURLs(dir string) []string {
 
 // equalIndexURL reports whether two index URLs are the same index as uv sees
 // it. What is folded is what uv 0.5.9 was measured to fold (docs/evidence/
-// phase-0/2026-09-30-p0-08-egress-managed-python.txt, ROUND 3 and ROUND 4):
+// phase-0/2026-09-30-p0-08-egress-managed-python.txt, ROUND 3 to ROUND 5):
 //
-//   - scheme and host case, but only the host: uv rejects a differently-cased
-//     scheme outright rather than folding it;
-//   - a redundant default port;
-//   - the root slash uv gives an empty path, and the dot segments its parser
-//     removes, in both literal and percent-encoded spelling;
-//   - the WHATWG short forms of an IPv4 address (127.1, 127.0.1, 2130706433).
+//   - host case, and nothing else about the case of the URL: uv cannot use an
+//     upper-case scheme, and `%2f` and `%2F` are different indexes;
+//   - a redundant default port, a port's leading zeros, and a backslash where a
+//     special scheme (http, https, file) requires a slash;
+//   - credentials: a lock recording `http://u:p@host/simple` matches a
+//     configured `http://host/simple`, and mismatched credentials too;
+//   - the root slash uv gives an empty path, dot segments in literal and
+//     percent-encoded spelling, and the WHATWG IPv4 spellings (short forms,
+//     hex and octal parts, a percent-encoded host);
+//   - the case of a percent escape is preserved (see above), and so are a
+//     non-empty trailing slash, an empty query (`…/simple?`), an empty fragment
+//     (`…/simple#`) and a doubled slash.
 //
-// What is not folded matters just as much, because folding it would accept a
-// sync uv refuses: the case of a percent escape (`%2f` and `%2F` are different
-// indexes), a non-empty trailing slash, an empty query (`…/simple?` is not
-// `…/simple`), and a doubled slash.
-//
-// Known unmodeled corners, all exotic and all in the refusing direction: hex or
-// octal IPv4 parts, an IDNA host written in Unicode, and an empty fragment. The
-// hints below therefore lead with the remedy that needs none of this -- omit
-// --index, and uv installs from the URLs the lock records.
+// Known deliberate divergences, where otter refuses a pair uv accepts, live in
+// TestDeliberateConservativeDivergences rather than here: a Unicode IDNA host.
 func equalIndexURL(a, b string) bool { return canonicalIndexURL(a) == canonicalIndexURL(b) }
 
-// canonicalIndexURL is equalIndexURL's normal form. A value it cannot parse is
-// compared as written.
+// canonicalIndexURL is equalIndexURL's normal form: the URL as uv itself would
+// have it after parsing. A value it cannot parse is compared as written.
 func canonicalIndexURL(raw string) string {
 	raw = strings.TrimSpace(raw)
-	// url.Parse lowercases the scheme, and uv does not fold it -- an upper-case
-	// scheme is an index uv cannot use at all -- so the scheme is taken from the
-	// string as written.
 	scheme := ""
 	if colon := strings.Index(raw, ":"); colon > 0 {
 		scheme = raw[:colon]
 	}
+	// WHATWG treats a backslash as a slash in a special URL, and uv does too
+	// (measured), so normalise before parsing: Go's parser would otherwise read
+	// the backslashes as part of the authority.
+	if specialScheme(scheme) {
+		raw = strings.ReplaceAll(raw, "\\", "/")
+	}
+	// Go's parser rejects a percent escape in a host outright, while WHATWG
+	// decodes the host before parsing it, so the host is repaired first.
+	raw = decodeRawHost(raw)
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || scheme == "" {
 		return raw
 	}
 	host, port := strings.ToLower(parsed.Hostname()), parsed.Port()
 	lowerScheme := strings.ToLower(scheme)
+	if port != "" {
+		// WHATWG parses a port numerically, so `08080` and `8080` are the same
+		// port.
+		port = strings.TrimLeft(port, "0")
+		if port == "" {
+			port = "0"
+		}
+	}
 	if (lowerScheme == "https" && port == "443") || (lowerScheme == "http" && port == "80") {
 		port = ""
 	}
-	host = canonicalIPv4(host)
+	host = canonicalIPv4(decodeHost(host))
 	switch {
 	case port != "":
 		host = net.JoinHostPort(host, port)
@@ -366,25 +411,117 @@ func canonicalIndexURL(raw string) string {
 	}
 	var out strings.Builder
 	out.WriteString(scheme + "://")
-	if parsed.User != nil {
-		out.WriteString(parsed.User.String() + "@")
-	}
+	// Credentials are deliberately not part of the comparison: uv folds them
+	// away, measured in both the "same credentials" and "different credentials"
+	// directions.
 	out.WriteString(host)
 	out.WriteString(path)
 	if parsed.RawQuery != "" || parsed.ForceQuery {
 		out.WriteString("?" + parsed.RawQuery)
 	}
-	if parsed.Fragment != "" {
-		out.WriteString("#" + parsed.Fragment)
+	// Go has no ForceFragment, so an empty fragment is detected from the string
+	// as written. uv records `…#` and treats it as a different index from `…`
+	// (measured), and dropping it accepted a pair uv refuses.
+	if strings.Contains(raw, "#") {
+		out.WriteString("#" + parsed.EscapedFragment())
 	}
 	return out.String()
+}
+
+// specialScheme reports whether a scheme is one the WHATWG URL standard treats
+// as "special", where a backslash is a slash. Index URLs are http, https or
+// file in practice, and uv applies the rule to all three.
+func specialScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "https", "file", "ftp", "ws", "wss":
+		return true
+	}
+	return false
+}
+
+// decodeRawHost percent-decodes the host component of a raw URL before Go parses
+// it, leaving the userinfo, the port and everything after the authority alone.
+// A host it cannot decode safely is returned unchanged, which leaves the URL
+// unparsable and therefore refused.
+func decodeRawHost(raw string) string {
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return raw
+	}
+	rest := raw[schemeEnd+3:]
+	end := strings.IndexAny(rest, "/?#")
+	authority, tail := rest, ""
+	if end >= 0 {
+		authority, tail = rest[:end], rest[end:]
+	}
+	if !strings.Contains(authority, "%") {
+		return raw
+	}
+	userinfo := ""
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		userinfo, authority = authority[:at+1], authority[at+1:]
+	}
+	host, port := authority, ""
+	if !strings.HasPrefix(host, "[") {
+		if colon := strings.LastIndex(host, ":"); colon >= 0 {
+			host, port = host[:colon], host[colon:]
+		}
+	}
+	return raw[:schemeEnd+3] + userinfo + decodeHost(host) + port + tail
+}
+
+// decodeHost percent-decodes a host the way WHATWG does before it is parsed as
+// an address or an IPv4 literal. A host whose decoded form contains anything
+// outside the host character set is returned unchanged, and IDNA (a Unicode
+// host) is deliberately not implemented: both can only refuse a spelling uv
+// accepts, never accept one it refuses.
+func decodeHost(host string) string {
+	if !strings.Contains(host, "%") {
+		return host
+	}
+	var out strings.Builder
+	for i := 0; i < len(host); i++ {
+		if host[i] == '%' && i+2 < len(host) {
+			hi, ok1 := hexValue(host[i+1])
+			lo, ok2 := hexValue(host[i+2])
+			if ok1 && ok2 {
+				out.WriteByte(hi<<4 | lo)
+				i += 2
+				continue
+			}
+		}
+		out.WriteByte(host[i])
+	}
+	decoded := out.String()
+	for i := 0; i < len(decoded); i++ {
+		c := decoded[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '-' || c == '_' || c == '~':
+		default:
+			return host
+		}
+	}
+	return decoded
+}
+
+func hexValue(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // removeDotSegments applies the path normalization RFC 3986 section 5.2.4 and
 // the WHATWG URL standard share, which is what Rust's parser (and therefore uv)
 // implements: literal `.` and `..` segments are removed, and so are their
-// percent-encoded spellings. Everything else is kept verbatim, including a
-// doubled slash and a trailing slash.
+// percent-encoded spellings. `...` is a literal segment, as uv measured. The
+// rest is kept verbatim, including a doubled slash and a trailing slash.
 func removeDotSegments(path string) string {
 	if path == "" {
 		return ""
@@ -423,7 +560,7 @@ func removeDotSegments(path string) string {
 }
 
 // isDotSegment and isDoubleDotSegment are the WHATWG definitions, which are
-// ASCII case-insensitive about the percent-encoded spelling.
+// ASCII case-insensitive about the percent-encoded spelling. `...` is neither.
 func isDotSegment(segment string) bool {
 	return segment == "." || strings.EqualFold(segment, "%2e")
 }
@@ -437,9 +574,10 @@ func isDoubleDotSegment(segment string) bool {
 }
 
 // canonicalIPv4 folds the WHATWG IPv4 spellings uv's parser folds -- one to
-// four plain decimal parts, the last filling the remaining bytes, with an
-// optional trailing dot -- into dotted-quad form. Anything else (a hex or octal
-// part, an empty part, a fifth part, a value out of range) is returned
+// four numeric parts, each decimal, hexadecimal (`0x…`) or octal (a leading
+// zero), the last part filling the remaining bytes, with an optional trailing
+// dot -- into dotted-quad form. Anything WHATWG would reject (an invalid digit
+// for its radix, an empty part, a fifth part, a value out of range) is returned
 // unchanged, which can only refuse a spelling uv accepts, never accept one it
 // refuses.
 func canonicalIPv4(host string) string {
@@ -452,18 +590,8 @@ func canonicalIPv4(host string) string {
 	}
 	values := make([]uint64, 0, len(parts))
 	for _, part := range parts {
-		// WHATWG reads a leading zero as octal. Otter does not guess at those
-		// spellings; they are refused rather than folded.
-		if part == "" || (len(part) > 1 && part[0] == '0') {
-			return host
-		}
-		for i := 0; i < len(part); i++ {
-			if part[i] < '0' || part[i] > '9' {
-				return host
-			}
-		}
-		value, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
+		value, ok := ipv4Part(part)
+		if !ok {
 			return host
 		}
 		values = append(values, value)
@@ -485,4 +613,23 @@ func canonicalIPv4(host string) string {
 		quad[3-i] = byte(last >> (8 * i))
 	}
 	return fmt.Sprintf("%d.%d.%d.%d", quad[0], quad[1], quad[2], quad[3])
+}
+
+// ipv4Part parses one WHATWG IPv4 part: hexadecimal with a `0x` prefix, octal
+// with a leading zero, decimal otherwise.
+func ipv4Part(part string) (uint64, bool) {
+	if part == "" {
+		return 0, false
+	}
+	switch {
+	case len(part) > 2 && (part[0:2] == "0x" || part[0:2] == "0X"):
+		value, err := strconv.ParseUint(part[2:], 16, 64)
+		return value, err == nil
+	case len(part) > 1 && part[0] == '0':
+		value, err := strconv.ParseUint(part[1:], 8, 64)
+		return value, err == nil
+	default:
+		value, err := strconv.ParseUint(part, 10, 64)
+		return value, err == nil
+	}
 }

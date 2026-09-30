@@ -106,7 +106,10 @@ func TestLockIndexCheckAcceptsTheIndexTheLockRecords(t *testing.T) {
 // accepting what uv accepts and refusing what uv refuses. Every row here is a
 // pair the pinned uv 0.5.9 was measured on with a generated lock and a loopback
 // index; the raw transcript is in docs/evidence/phase-0/
-// 2026-09-30-p0-08-egress-managed-python.txt (ROUND 3 and ROUND 4).
+// 2026-09-30-p0-08-egress-managed-python.txt (ROUND 3 to ROUND 5). Pairs otter
+// deliberately refuses although uv accepts are NOT here; they live in
+// TestDeliberateConservativeDivergences so a future fix updates a labelled
+// table instead of turning a "uv behaves like this" assertion red.
 func TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse(t *testing.T) {
 	same := [][2]string{
 		{"https://pypi.org/simple", "https://pypi.org/simple"},
@@ -134,6 +137,20 @@ func TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse(t *testing.T) {
 		{"http://127.0.1:8080/a/simple", "http://127.0.0.1:8080/a/simple"},
 		{"http://2130706433:8080/a/simple", "http://127.0.0.1:8080/a/simple"},
 		{"http://127.0.0.1.:8080/a/simple", "http://127.0.0.1:8080/a/simple"},
+		// Hex and octal parts, measured: uv folds 0x7f.0.0.1 and 0177.0.0.1.
+		{"http://0x7f.0.0.1:8080/a/simple", "http://127.0.0.1:8080/a/simple"},
+		{"http://0177.0.0.1:8080/a/simple", "http://127.0.0.1:8080/a/simple"},
+		// A lone %2e is a single-dot segment, measured.
+		{"http://mirror.internal/a/%2e/simple", "http://mirror.internal/a/simple"},
+		// WHATWG folds a port's leading zeros and a backslash in a special
+		// scheme, both measured.
+		{"http://127.0.0.1:08080/a/simple", "http://127.0.0.1:8080/a/simple"},
+		{"http://mirror.internal\\a\\simple", "http://mirror.internal/a/simple"},
+		// WHATWG percent-decodes the host before parsing it, measured.
+		{"http://%31%32%37.0.0.1:8080/a/simple", "http://127.0.0.1:8080/a/simple"},
+		// Credentials are folded away, measured in both directions.
+		{"http://user:secret@mirror.internal/simple", "http://mirror.internal/simple"},
+		{"http://user:secret@mirror.internal/simple", "http://other:creds@mirror.internal/simple"},
 	}
 	for _, pair := range same {
 		if !equalIndexURL(pair[0], pair[1]) {
@@ -156,9 +173,12 @@ func TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse(t *testing.T) {
 		{"https://mirror.internal/simple", "https://other.internal/simple"},
 		// An empty segment is a segment: a doubled slash is a different path.
 		{"http://mirror.internal/a/simple", "http://mirror.internal/a//simple"},
-		// Unmodeled WHATWG corners are refused rather than guessed at.
-		{"http://0x7f.0.0.1:8080/simple", "http://127.0.0.1:8080/simple"},
-		{"http://0177.0.0.1:8080/simple", "http://127.0.0.1:8080/simple"},
+		// An empty fragment is a fragment, measured both directions: uv records
+		// `…#` and refuses it against a lock without it.
+		{"http://mirror.internal/a/simple", "http://mirror.internal/a/simple#"},
+		{"http://mirror.internal/a/simple", "http://mirror.internal/a/simple#frag"},
+		// `...` is a literal segment, not a dot segment, measured.
+		{"http://mirror.internal/a/simple", "http://mirror.internal/a/.../simple"},
 	}
 	for _, pair := range different {
 		if equalIndexURL(pair[0], pair[1]) {
@@ -167,6 +187,96 @@ func TestCanonicalIndexURLFoldsWhatUVFoldsAndNothingElse(t *testing.T) {
 	}
 	if equalIndexURL("http://mirror.internal/a/simple", "http://mirror.internal/a/simple#frag") {
 		t.Error("a fragment was folded away")
+	}
+}
+
+// These are the pairs otter refuses although uv accepts them. They are
+// deliberate and conservative, every one is in the refusing direction (otter
+// never accepts a pair uv refuses), and they are listed here so that a future
+// fix is a deliberate edit to this table rather than a red "uv behaves like
+// this" assertion.
+//
+// Measured with uv 0.5.9 (docs/evidence/phase-0/2026-09-30-p0-08-egress-managed-python.txt,
+// ROUND 5):
+//
+//   - an added source the lock does not record, when it changes nothing: uv
+//     exits 0, and preparation refuses because it cannot resolve and so cannot
+//     tell "changes nothing" from "changes the lock" (the same variable naming
+//     a source that does carry a needed package exits 2). The remedy is to omit
+//     the variable, which always satisfies --locked.
+//   - a Unicode IDNA host against its punycode form: not measured, because a
+//     Unicode host cannot be served on loopback, and folding it would mean
+//     implementing IDNA. Refused, with the same remedy.
+func TestDeliberateConservativeDivergences(t *testing.T) {
+	clearRouteEnv(t)
+	const (
+		a = "http://127.0.0.1:8080/a/simple"
+		c = "http://127.0.0.1:8080/c/simple"
+	)
+
+	for _, name := range []string{"UV_EXTRA_INDEX_URL", "UV_INDEX"} {
+		t.Run("unrecorded but harmless "+name, func(t *testing.T) {
+			clearRouteEnv(t)
+			t.Setenv(name, c)
+			dir := t.TempDir()
+			writeInputs(t, dir, "3.13.5")
+			writeLock(t, dir, lockAgainst(a))
+			err := Manager{DataDir: t.TempDir(), Index: a}.checkLockIndex(dir)
+			if !errors.Is(err, ErrLockIndexMismatch) {
+				t.Fatalf("uv exits 0 for this pair; preparation refusing it is deliberate, got %v", err)
+			}
+			for _, want := range []string{"cannot tell from the lock", "Omit " + name, "satisfies --locked", "records that source"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not mention %q:\n%v", want, err)
+				}
+			}
+		})
+	}
+
+	t.Run("unrecorded but harmless UV_FIND_LINKS", func(t *testing.T) {
+		clearRouteEnv(t)
+		t.Setenv("UV_FIND_LINKS", t.TempDir())
+		dir := t.TempDir()
+		writeInputs(t, dir, "3.13.5")
+		writeLock(t, dir, lockAgainst(a))
+		if err := (Manager{DataDir: t.TempDir(), Index: a}).checkLockIndex(dir); !errors.Is(err, ErrLockIndexMismatch) {
+			t.Fatalf("an unrecorded find-links directory is refused deliberately; got %v", err)
+		}
+	})
+
+	t.Run("IDNA host against punycode", func(t *testing.T) {
+		if equalIndexURL("http://xn--mnchen-3ya.example/simple", "http://münchen.example/simple") {
+			t.Error("the IDNA divergence is gone: fold it and delete this row")
+		}
+	})
+}
+
+// The unrecorded-source refusal has to survive Prepare, not only checkLockIndex:
+// this is the guard against deleting it, which the round-4 verification found
+// the suite could not see.
+func TestPrepareRefusesAnUnrecordedAddedSource(t *testing.T) {
+	clearRouteEnv(t)
+	const (
+		a = "http://127.0.0.1:8080/a/simple"
+		c = "http://127.0.0.1:8080/c/simple"
+	)
+	t.Setenv("UV_EXTRA_INDEX_URL", c)
+	python, pin := localPython(t)
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, pin)
+	writeLock(t, dir, lockAgainst(a))
+	uv, logPath := fakeUV(t, data, python, "")
+	probe := &probeRecorder{fail: map[string]error{}}
+
+	_, err := Manager{DataDir: data, Index: a, Probe: probe.probe}.Prepare(context.Background(), dir, "one", uv)
+	if !errors.Is(err, ErrLockIndexMismatch) {
+		t.Fatalf("an unrecorded added source was not refused: %v", err)
+	}
+	if log := readLog(t, logPath); strings.Contains(log, "install") || strings.Contains(log, "sync") {
+		t.Errorf("a fetch ran despite the refusal:\n%s", log)
+	}
+	if len(probe.seen) != 0 {
+		t.Errorf("the network was consulted before the route was settled: %v", probe.seen)
 	}
 }
 
@@ -190,8 +300,18 @@ func TestLockIndexDecisionMatchesUV(t *testing.T) {
 		{"percent-encoded dot segments", host + "/simple", host + "/a/%2E%2E/simple", true},
 		{"IPv4 short form", "http://127.0.0.1:8080/simple", "http://127.1:8080/simple", true},
 		{"IPv4 integer form", "http://127.0.0.1:8080/simple", "http://2130706433:8080/simple", true},
+		{"hex IPv4 part", "http://127.0.0.1:8080/simple", "http://0x7f.0.0.1:8080/simple", true},
+		{"octal IPv4 part", "http://127.0.0.1:8080/simple", "http://0177.0.0.1:8080/simple", true},
+		{"percent-encoded host", "http://127.0.0.1:8080/simple", "http://%31%32%37.0.0.1:8080/simple", true},
+		{"lone %2e segment", host + "/simple", host + "/%2e/simple", true},
+		{"backslash separators", host + "/simple", host + "\\simple", true},
+		{"leading-zero port", host + "/simple", "http://mirror.internal:08080/simple", true},
+		{"credentials folded", host + "/simple", "http://u:p@mirror.internal:8080/simple", true},
 		{"trailing slash on a non-empty path", host + "/simple", host + "/simple/", false},
 		{"empty query", host + "/simple", host + "/simple?", false},
+		{"empty fragment", host + "/simple", host + "/simple#", false},
+		{"fragment text", host + "/simple", host + "/simple#x", false},
+		{"three dots are not a dot segment", host + "/simple", host + "/a/.../simple", false},
 		{"percent-decoded unreserved", host + "/simple", host + "/sim%70le", false},
 		{"percent-escape hex case", host + "/simple%2f", host + "/simple%2F", false},
 		{"scheme case", host + "/simple", "HTTP://mirror.internal:8080/simple", false},
@@ -288,10 +408,19 @@ func TestAdditiveSourceIsAcceptedWhenTheLockRecordsIt(t *testing.T) {
 		b = "http://127.0.0.1:8080/b/simple"
 	)
 
-	for _, name := range []string{"UV_INDEX", "UV_EXTRA_INDEX_URL"} {
-		t.Run(name, func(t *testing.T) {
+	for _, spelling := range []struct {
+		name  string
+		value string
+	}{
+		{"UV_INDEX", b},
+		{"UV_EXTRA_INDEX_URL", b},
+		// uv's named-index spelling, `name=url`, names the same source, and is
+		// the one route otter cannot see through a config file (`--no-config`).
+		{"UV_INDEX", "extra=" + b},
+	} {
+		t.Run(spelling.name+"="+spelling.value, func(t *testing.T) {
 			clearRouteEnv(t)
-			t.Setenv(name, b)
+			t.Setenv(spelling.name, spelling.value)
 			python, pin := localPython(t)
 			dir, data := t.TempDir(), t.TempDir()
 			writeInputs(t, dir, pin)
