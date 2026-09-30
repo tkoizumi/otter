@@ -26,10 +26,11 @@ to Castor's job owner, not a deploy.
 | Provisioning | `cloud-init: done`, no errors; swap and `/var/log/otter-provision-report.txt` present |
 | Key | `.otter-keys/otter-castor.pem` (workspace-local, outside both git repos) |
 | API token | `otter_examples/.otter/state.secret.json` (gitignored there) |
-| Drill target | **destroyed.** Recreate with `npx cdk deploy CastorDrillTarget --profile otter -c sshCidr=… -c drillTarget=true` when a second host is next needed |
+| Drill target | **destroyed** |
+| Runtime host | **DESTROYED 2026-09-30.** No instances, no Elastic IPs, no volumes remain. Recreate with `npx cdk deploy --profile otter -c sshCidr="$(curl -s https://checkip.amazonaws.com)/32"`, then `otter deploy` from the `otter_examples` checkout — about ten minutes, and `otter.deploy.yaml` pins the workspace id so it lands on the same name |
 
-The host costs ~$11/month whether or not it is used. Stop or destroy it if it
-will sit idle for a long time.
+**Nothing is running in AWS.** The stacks are deleted; the teardown was verified against instances,
+Elastic IPs and volumes. The only thing that costs money is recreating a host.
 
 ## Windows done, with evidence
 
