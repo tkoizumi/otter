@@ -353,6 +353,19 @@ fail() {
 # get reads one key out of a probe report.
 get() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
 
+# backup_path echoes the path of one member inside the expanded local archive.
+#
+# The archive's shape is an interface between lib/hot-backup.sh and this
+# script's assertions: <backup>/otter.db, <backup>/data/<data members>,
+# <backup>/jobs/<jobs root contents>, plus RECORD and MANIFEST.sha256. Every
+# member read goes through this helper so the shape is stated once -- and so the
+# selfcheck can extract the list of paths this script requires and check each
+# one against an archive hot-backup.sh really produced. That contract was
+# untested until the first real HW-7 run, which looked for the job's marker one
+# level too high (<archive>/<job>/.otter-id instead of
+# <archive>/jobs/<job>/.otter-id) and failed after a clean backup and transfer.
+backup_path() { printf '%s/%s' "$WORK/backup" "$1"; }
+
 cleanup() {
 	status=$?
 	[ "$cleaning" -eq 1 ] && exit "$status"
@@ -617,18 +630,19 @@ remote_cmd "$TARGET_HOST" "tar -C $TGT_STAGE -xzf -" <"$ARCHIVE" ||
 # the restore must reproduce, and the live source keeps moving after the copy.
 mkdir -p "$WORK/backup"
 tar -xzf "$ARCHIVE" -C "$WORK/backup" || fail "could not expand the archive locally"
-[ -f "$WORK/backup/$JOB_REL/.otter-id" ] ||
-	fail "the backup holds no $JOB_REL/.otter-id: the job's identity did not make it into the archive"
-EXPECT_MARKER=$(sha256_of "$WORK/backup/$JOB_REL/.otter-id")
+MARKER="$(backup_path "jobs/$JOB_REL/.otter-id")"
+[ -f "$MARKER" ] ||
+	fail "the backup holds no jobs/$JOB_REL/.otter-id: the job's identity did not make it into the archive"
+EXPECT_MARKER=$(sha256_of "$MARKER")
 EXPECT_MARKER_SRC=$(remote_cmd "$SOURCE_HOST" "sha256sum $SRC_JOBDIR/.otter-id" | cut -d' ' -f1)
 [ "$EXPECT_MARKER" = "$EXPECT_MARKER_SRC" ] ||
 	fail "the marker in the archive does not match the marker on the source host"
 
-REL_LINK="$WORK/backup/data/.releases/active/$SRC_JOBID"
+REL_LINK="$(backup_path "data/.releases/active/$SRC_JOBID")"
 [ -L "$REL_LINK" ] || fail "the backup holds no active release link for $SRC_JOBID"
 REL_TARGET=$(readlink "$REL_LINK")
 REL_DIGEST=$(basename "$REL_TARGET")
-META="$WORK/backup/data/.releases/$SRC_JOBID/$REL_DIGEST/otter-release.json"
+META="$(backup_path "data/.releases/$SRC_JOBID/$REL_DIGEST/otter-release.json")"
 [ -f "$META" ] || fail "the backup holds no release metadata at $META"
 ENV_DIGEST=$(sed -n 's/^[[:space:]]*"environment": "\([^"]*\)".*/\1/p' "$META")
 REL_SOURCE=$(sed -n 's/^[[:space:]]*"source": "\([^"]*\)".*/\1/p' "$META")
@@ -638,7 +652,7 @@ REL_SOURCE=$(sed -n 's/^[[:space:]]*"source": "\([^"]*\)".*/\1/p' "$META")
 	fail "the release records source $REL_SOURCE, not the live job directory $SRC_JOBDIR"
 say "release     $REL_DIGEST, environment $ENV_DIGEST, source $REL_SOURCE"
 
-DB="$WORK/backup/otter.db"
+DB="$(backup_path "otter.db")"
 EXPECT_STATE=$(sqlite3 "$DB" "select key || '=' || value from job_state where job_id='$SRC_JOBID' order by key;") ||
 	fail "could not read durable state from the backup database"
 STATE_KEY=$(sqlite3 "$DB" "select key from job_state where job_id='$SRC_JOBID' order by key limit 1;") ||

@@ -973,6 +973,38 @@ grep -q "data_dir=$RT_DATA" "$BACKUP/RECORD" || fail "RECORD does not carry the 
 grep -q "jobs_dir=$RT_JOBS" "$BACKUP/RECORD" || fail "RECORD does not carry the jobs root"
 say "  ok  a complete backup holds the database, releases, environments, tools, python, cache and job sources"
 
+# The archive's SHAPE is an interface between lib/hot-backup.sh and the mode's
+# assertions, and nothing tested it. The first real HW-7 run looked for the job
+# marker at <archive>/<job>/.otter-id instead of <archive>/jobs/<job>/.otter-id
+# and failed after a clean backup and transfer -- a path bug that four
+# verification rounds could not see, because no case ever reached that line.
+# So the mode reads every member through backup_path(), and this case extracts
+# those paths from the mode's own source and asserts each one resolves inside an
+# archive that hot-backup.sh really produced (the one above, from a real data
+# directory and jobs root).
+LAYOUT_TEMPLATES=$(sed -n 's/.*backup_path "\([^"]*\)".*/\1/p' "$CLEAN_HOST" | sort -u)
+[ -n "$LAYOUT_TEMPLATES" ] ||
+	fail "the mode no longer reads the archive through backup_path, so the layout contract is untested"
+# A raw member path is the shape of the HW-7 defect: "$WORK/backup/<member>".
+# The helper is the only place allowed to name the expansion root, and it names
+# it without a trailing slash, so any occurrence of the former is a read that
+# bypassed the helper -- and a read this case cannot see.
+ROOT_REFS=$(grep -c '[$]WORK/backup/' "$CLEAN_HOST" || true)
+[ "$ROOT_REFS" = 0 ] ||
+	fail "the mode builds $ROOT_REFS archive path(s) as \$WORK/backup/<member>; every member read must go through backup_path so this case can check the layout"
+for tmpl in $LAYOUT_TEMPLATES; do
+	rel=$(printf '%s' "$tmpl" | sed -e 's/[$]JOB_REL/app/g' -e "s/[$]SRC_JOBID/$JOBID/g" \
+		-e "s/[$]REL_DIGEST/$REL_DIGEST/g" -e "s/[$]ENV_DIGEST/$ENV_DIGEST/g")
+	case "$rel" in
+	*'$'*)
+		fail "the layout case cannot resolve the mode's archive path '$tmpl'; teach it the new placeholder"
+		;;
+	esac
+	[ -e "$BACKUP/$rel" ] ||
+		fail "the mode reads $rel from the archive, but hot-backup.sh did not put it there"
+done
+say "  ok  every archive path the mode reads exists in a real archive ($(printf '%s' "$LAYOUT_TEMPLATES" | tr '\n' ' '))"
+
 # A corrupted archive must be refused before anything is written.
 printf 'corrupt\n' >>"$BACKUP/data/.releases/$JOBID/$REL_DIGEST/otter-release.json"
 out=$(sh "$LIB/restore-host.sh" "$BACKUP" "$RT_DATA" "$RT_JOBS" - 2>&1) && status=0 || status=$?
