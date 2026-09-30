@@ -281,7 +281,7 @@ func TestGeneratedScriptsParse(t *testing.T) {
 		"install":  InstallScript(target, testUnitOptions()),
 		"prepare":  PrepareScript(target),
 		"activate": ActivateScript(target, testUnitOptions()),
-		"release":  ReleaseScript(target, []string{"counter"}, "", DefaultKeep),
+		"release":  ReleaseScript(target, []string{"counter"}, ReleaseOptions{Keep: DefaultKeep}),
 		"destroy":  DestroyScript(target, true),
 	} {
 		// -n parses without executing, so nothing here touches a host.
