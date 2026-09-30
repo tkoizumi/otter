@@ -53,6 +53,7 @@ is not.
 | 2026-09-30 | P0-07 HW-1 blocked | [2026-09-30-p0-07-hw1-deploy-blocked.txt](2026-09-30-p0-07-hw1-deploy-blocked.txt) | operator checkout; the documented first-run deploy command deploys nothing |
 | 2026-09-30 | P0-07 HW-1 deploy | [2026-09-30-p0-07-hw1-deploy.txt](2026-09-30-p0-07-hw1-deploy.txt) | the Castor VM: v0.3.0-rc1 deployed, caps live, CPython 3.13.1 prepared on arm64 |
 | 2026-09-30 | P0-04 host re-run (failed) | [2026-09-30-p0-04-unit-caps-host-failure.txt](2026-09-30-p0-04-unit-caps-host-failure.txt) | the Castor VM: a runaway job is throttled and swapped, not OOM-killed; otterd starved |
+| 2026-09-30 | P0-03 HW-7 **passed** | [2026-09-30-p0-03-hw7-clean-host.txt](2026-09-30-p0-03-hw7-clean-host.txt) | two real hosts: a live runtime restored onto a clean second host, and a job run there |
 | 2026-09-30 | P0-03 HW-7 first run | [2026-09-30-p0-03-hw7-first-run.txt](2026-09-30-p0-03-hw7-first-run.txt) | two real hosts: the gate passed and the run failed at the archive identity check |
 | 2026-09-30 | P0-07 HW-8 assertion | [2026-09-30-p0-07-hw8-assertion.txt](2026-09-30-p0-07-hw8-assertion.txt) | the Castor host: external scan plus the permission assertion passing on the real runtime |
 | 2026-09-30 | P0-07 host rebuilt | [2026-09-30-p0-07-host-rebuilt.txt](2026-09-30-p0-07-host-rebuilt.txt) | the Castor host rebuilt from the fixed stack: cloud-init done, swap and report present, deploy, and the permission assertion |

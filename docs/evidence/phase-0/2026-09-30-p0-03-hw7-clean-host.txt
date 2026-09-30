@@ -1,0 +1,128 @@
+=== Phase 0 evidence: HW-7, a live runtime restored onto a clean second host ===
+task:      P0-03 deliverable 3. Its evidence bar is "a drill script plus its recorded output,
+           against a real host — not a synthetic CI workspace".
+result:    PASSED, exit 0.
+date:      2026-09-30 18:24:07 EDT
+hosts:     source ubuntu@44.213.227.52 (i-01ed07dce59ba3f5b) — a live runtime
+           target ubuntu@13.216.223.122 (i-0454a0f5372fe572c) — a clean, empty second host
+workspace: otter-examples-e0309b8c on BOTH hosts, both otter v0.3.0-rc1
+drill:     branch p0-03-clean-host-mode @ 93f046b (layout fix 644949a)
+job:       drill-job, a managed-Python job that needs no secret and is safe to run repeatedly
+
+--- the run ---
+$ DRILL_CLEAN_HOST=1 DRILL_SOURCE_HOST=ubuntu@44.213.227.52 DRILL_TARGET_HOST=ubuntu@13.216.223.122 \
+  DRILL_SSH_KEY=otter-castor.pem DRILL_REMOTE_DIR=<ws>/.otter/data DRILL_REMOTE_JOBS_DIR=<ws>/jobs \
+  DRILL_REMOTE_SERVICE=otterd-<ws> DRILL_JOB=drill-job DRILL_REMOTE_SUDO=1 make drill DRILL=backup-restore
+
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-56-g93f046b" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-56-g93f046b" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-56-g93f046b)
+
+===== drill: backup-restore =====
+date:     2026-09-30 18:23:24 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-56-g93f046b
+drill: clean host mode: ubuntu@44.213.227.52 -> ubuntu@13.216.223.122
+drill: data /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data jobs /opt/otter/workspaces/otter-examples-e0309b8c/jobs service otterd-otter-examples-e0309b8c job drill-job
+drill: api http://127.0.0.1:7337 bin /usr/local/bin/otter sudo=1 sabotage=none run limit 25
+drill: probing ubuntu@44.213.227.52
+drill: probing ubuntu@13.216.223.122
+drill: source  ip-10-42-0-180 (kernel Linux, version otter v0.3.0-rc1, daemon running)
+drill: target  ip-10-42-0-91 (kernel Linux, version otter v0.3.0-rc1, daemon stopped)
+drill: target data /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data clean=yes reason=-
+drill: target jobs /opt/otter/workspaces/otter-examples-e0309b8c/jobs clean=yes reason=-
+drill: unit    otterd-otter-examples-e0309b8c -> /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data + /opt/otter/workspaces/otter-examples-e0309b8c/jobs on 127.0.0.1:7337
+drill: token   source unit-env /etc/otter/workspaces/otter-examples-e0309b8c.env, target unit-env /etc/otter/workspaces/otter-examples-e0309b8c.env
+drill: reports    both hosts answered the probe (source source, target target)
+drill: distinct   source ec2b47395c70d1c0b945a358ba58aa09 / target ec25d294729aab6eb95eb8926ed499a6 (ssh host keys 549db18d7dcd… / 5f7b068d5594…)
+drill: paths      data /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data, jobs /opt/otter/workspaces/otter-examples-e0309b8c/jobs on both hosts
+drill: clean      target data directory is empty or absent
+drill: clean      target jobs root is empty or absent
+drill: target     no daemon is serving on the target (otter: cannot reach otterd at http://127.0.0.1:7337: Get "http://127.0.0.1:7337/health": dial tcp 127.0.0.1:7337: connect: connection refused)
+drill: target     service otterd-otter-examples-e0309b8c is installed and inactive
+drill: unit       both units serve /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data and /opt/otter/workspaces/otter-examples-e0309b8c/jobs on 127.0.0.1:7337
+drill: live       the source runtime is serving
+drill: token      unit-env, /etc/otter/workspaces/otter-examples-e0309b8c.env authenticates on the source
+drill: token      the target resolves one too (unit-env, /etc/otter/workspaces/otter-examples-e0309b8c.env)
+drill: kernel     both hosts are Linux
+drill: version    otter v0.3.0-rc1 on both hosts
+drill: version    the source daemon and its CLI agree (v0.3.0-rc1, CLI otter v0.3.0-rc1)
+drill: tools      sqlite3, tar, find, sha256sum, readlink on both hosts
+drill: owner      the restored trees will be owned by otter:otter on the target (checked before the restore)
+drill: privilege  uid=0 on the source, uid=0 on the target (sudo=1)
+drill: ok: the target is a clean, empty host of the same shape; a restore onto it is a clean-host restore
+drill: job         81f22f5f-4122-4566-9889-d7ed5316c42d at /opt/otter/workspaces/otter-examples-e0309b8c/jobs/drill-job (.otter-id agrees)
+drill: backing up   ubuntu@44.213.227.52:/opt/otter/workspaces/otter-examples-e0309b8c/.otter/data (daemon still serving)
+hot-backup: dest=/var/tmp/otter-drill-backup/20260930T222324Z-31981
+hot-backup: db=188416 bytes, members= .releases environments python cache, job files=52, files=3986, symlinks=1062
+hot-backup: secrets excluded (/etc/otter/*.env is not part of this archive)
+drill: transferring ubuntu@44.213.227.52:/var/tmp/otter-drill-backup/20260930T222324Z-31981 -> ubuntu@13.216.223.122:/var/tmp/otter-drill-backup/20260930T222324Z-31981 (through Takas-MacBook-Pro.local)
+drill: archive     18232136 bytes, 5298 entries
+drill: release     a8b0c3d2a7a8b7252ef627a6c149914a7097a0cfdf7d9f70e530a358229193d2, environment 946f98cbbb873817410f0a2451a46bec381bafe7c26b7b51cf1847f128249fcf, source /opt/otter/workspaces/otter-examples-e0309b8c/jobs/drill-job
+drill: snapshot    0 runs in total, 0 checked; 
+drill: owner       otter:otter exists on ubuntu@13.216.223.122
+drill: restoring    ubuntu@13.216.223.122:/opt/otter/workspaces/otter-examples-e0309b8c/.otter/data from the archive
+restore-host: data=/opt/otter/workspaces/otter-examples-e0309b8c/.otter/data jobs=/opt/otter/workspaces/otter-examples-e0309b8c/jobs owner=otter:otter
+restore-host: verified 3986 files against MANIFEST.sha256
+restore-host: members= .releases environments python cache, identity markers=3, db=188416 bytes
+restore-host: active release link active/81f22f5f-4122-4566-9889-d7ed5316c42d -> /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/.releases/81f22f5f-4122-4566-9889-d7ed5316c42d/a8b0c3d2a7a8b7252ef627a6c149914a7097a0cfdf7d9f70e530a358229193d2
+drill: starting     systemctl start otterd-otter-examples-e0309b8c on ubuntu@13.216.223.122
+drill: restored     the target daemon is serving /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data
+drill: version     restored daemon runs the same build as the source (v0.3.0-rc1)
+drill: identity    survived (81f22f5f-4122-4566-9889-d7ed5316c42d, marker sha256 d1d5e7c0f21f1238fb45d9a8d2e189cca6c606907c1a1ee93042d02685ffabae)
+drill: history     0 of 0 run ids present (the most recent 25)
+drill: state       the backup holds no state rows for drill-job; nothing to compare
+drill: release     snapshot present and active -> /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/.releases/81f22f5f-4122-4566-9889-d7ed5316c42d/a8b0c3d2a7a8b7252ef627a6c149914a7097a0cfdf7d9f70e530a358229193d2
+Python 3.13.1)
+drill: executing   a new run of drill-job on the restored host
+drill: executed    run d38b162f-9f41-488b-8ca8-b06f1b12db02 succeeded from /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/.releases/81f22f5f-4122-4566-9889-d7ed5316c42d/a8b0c3d2a7a8b7252ef627a6c149914a7097a0cfdf7d9f70e530a358229193d2/drill-job
+drill: cross-host  the source runtime does not know run d38b162f-9f41-488b-8ca8-b06f1b12db02; it ran on ubuntu@13.216.223.122
+drill: source      still serving /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data on ubuntu@44.213.227.52
+drill: cleanup     stopped otterd-otter-examples-e0309b8c on the target and removed the staged archives on both hosts
+drill: not proven  secrets (/etc/otter/*.env excluded), interpreters across architectures, and that 'otter prepare' can rebuild python/ or cache/uv/
+drill: ok: a live runtime was backed up, restored onto a clean second host, and the job runs there
+drill: elapsed 30s
+
+exit 0
+
+--- what each step establishes ---
+The gate refused nothing and asserted everything: the token resolves from the serving unit's own
+EnvironmentFiles on both hosts, both are Linux, both report v0.3.0-rc1, the source daemon and its
+CLI agree, the required tools exist, the restored trees will be owned by otter:otter on the
+target, and the target is a CLEAN EMPTY HOST OF THE SAME SHAPE. That last refusal is what makes
+this a clean-host restore rather than a restore onto a host that already held a runtime.
+
+The backup was taken from a LIVE runtime ("daemon still serving") — a hot backup, not a stopped
+one — and the archive crossed to the second host through the operator machine.
+
+The restore verified 3986 files against MANIFEST.sha256 before writing, restored the members,
+three identity markers and the database, and repointed the active release link inside the
+restored data directory rather than at the source's.
+
+Then the assertions that matter:
+  version     the restored daemon runs the same build as the source
+  identity    survived — the .otter-id marker sha256 matches the source
+  release     snapshot present and active, resolving inside the restored data directory
+  executed    a NEW run succeeded, and it executed from under the restored data directory
+  cross-host  the source runtime does NOT know that run id, which is what proves the run
+              happened on the second host and not on the first
+  source      still serving throughout
+
+The drill then stopped the target unit and removed the staged archives on both hosts.
+
+--- its own statement of what it does not prove ---
+  "not proven  secrets (/etc/otter/*.env excluded), interpreters across architectures, and
+   that otter prepare can rebuild python/ or cache/uv/"
+That is the right kind of honesty: the backup deliberately excludes the credential files, so a
+restore supplies no secrets; and the prepared interpreter travelled in the archive rather than
+being rebuilt on the target, which is a different claim from the one tested.
+
+--- verdict ---
+P0-03 deliverable 3 is met. A live runtime was backed up while serving, the backup was restored
+onto a genuinely clean second host of the same shape, and a job ran there from the restored
+release and environment — proven from outside Otter by the source not knowing the run id.
+
+This is also the run that found the archive-layout defect: the first execution failed at
+modes/backup-restore-clean-host.sh:620, which read the job marker one directory above where
+hot-backup.sh puts it. See 2026-09-30-p0-03-hw7-first-run.txt. Three independent verification
+rounds had not reached that line, because the hostless suite stops at the gate.
