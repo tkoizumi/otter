@@ -25,6 +25,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:7337", "API listen address")
 	memoryMax := flag.String("memory-max", deploy.DefaultMemoryMax, "MemoryMax= value, or off")
 	memoryHigh := flag.String("memory-high", deploy.DefaultMemoryHigh, "MemoryHigh= value, or off")
+	memorySwapMax := flag.String("memory-swap-max", deploy.DefaultMemorySwapMax, "MemorySwapMax= value (0 forbids swap), or off")
 	cpuQuota := flag.String("cpu-quota", deploy.DefaultCPUQuota, "CPUQuota= value, or off")
 	tasksMax := flag.String("tasks-max", deploy.DefaultTasksMax, "TasksMax= value, or off")
 	flag.Parse()
@@ -41,10 +42,11 @@ func main() {
 	target.ApplyDefaults()
 
 	opts := deploy.UnitOptions{
-		MemoryMax:  *memoryMax,
-		MemoryHigh: *memoryHigh,
-		CPUQuota:   *cpuQuota,
-		TasksMax:   *tasksMax,
+		MemoryMax:     *memoryMax,
+		MemoryHigh:    *memoryHigh,
+		MemorySwapMax: *memorySwapMax,
+		CPUQuota:      *cpuQuota,
+		TasksMax:      *tasksMax,
 	}
 	if err := deploy.ValidateUnitPaths(target, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "unit-caps-gen:", err)

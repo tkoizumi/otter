@@ -17,9 +17,20 @@ import (
 // The zero value asks systemd for its own defaults: no resource cap is emitted
 // and the standard hardening below is. A cap that is empty, or the explicit
 // "off" sentinel, emits no directive at all. Emitting a zero is not the same
-// thing and is not offered: systemd logs a zero size as out of range, ignores
-// it, and runs the cgroup uncapped, so the unit would look capped while
-// enforcing nothing. The deploy validator refuses a zero for that reason.
+// thing and is not offered for MemoryMax, MemoryHigh, CPUQuota and TasksMax:
+// systemd logs a zero size as out of range, ignores it, and runs the cgroup
+// uncapped, so the unit would look capped while enforcing nothing. The deploy
+// validator refuses a zero for those for that reason.
+//
+// MemorySwapMax is the exception, and the exception is the whole point of the
+// directive. Zero is not out of range there: the kernel reads memory.swap.max=0
+// as a real limit that means "this cgroup may not swap at all". So
+// MemorySwapMax=0 is emitted verbatim (writeCap does not special-case it) and is
+// the deploy default. It is what keeps MemoryMax binding on a host with a
+// swapfile: with the cgroup's swap unbounded, a runaway is throttled at
+// MemoryHigh and paged out instead of reaching memory.max, so the hard cap never
+// binds and the OOM killer never runs. "off" (or empty) restores systemd's
+// default of unbounded swap and with it that failure mode.
 //
 // The caps are unit-wide, and that is the point of them. otterd and every
 // Python child it spawns share one cgroup, so MemoryMax bounds the *sum* of the
@@ -36,6 +47,14 @@ type UnitOptions struct {
 	// reclaims before MemoryMax is reached, so a job that briefly overruns its
 	// budget is slowed rather than killed.
 	MemoryHigh string
+	// MemorySwapMax bounds the swap the whole cgroup may use. The deploy
+	// default is "0", which forbids swap for the unit: with nowhere to page
+	// anonymous memory out to, a runaway can only grow into MemoryMax, so the
+	// hard cap binds and the OOM killer runs. Unlike the other caps a zero is
+	// meaningful here and must be emitted, not refused. "off" (or empty)
+	// restores systemd's default of unbounded swap, which lets a cgroup exceed
+	// MemoryMax through swap and starve the daemon sharing the same cgroup.
+	MemorySwapMax string
 	// CPUQuota bounds CPU time as a percentage of one core, so 200% is two
 	// cores' worth regardless of how many the host has.
 	CPUQuota string
@@ -111,10 +130,12 @@ func UnitFile(t Target, opts UnitOptions) string {
 	// Resource caps. Every directive is optional: a configured "off" (or an
 	// empty value) emits nothing, so systemd's own default applies and an
 	// operator who needs no cap gets no cap. The values are emitted verbatim,
-	// so systemd's own syntax -- 4G, 75%, infinity -- works.
+	// so systemd's own syntax -- 4G, 75%, infinity -- works. MemorySwapMax=0 is
+	// a value, not an absence: see the UnitOptions comment.
 	var caps strings.Builder
 	writeCap(&caps, "MemoryMax", opts.MemoryMax)
 	writeCap(&caps, "MemoryHigh", opts.MemoryHigh)
+	writeCap(&caps, "MemorySwapMax", opts.MemorySwapMax)
 	writeCap(&caps, "CPUQuota", opts.CPUQuota)
 	writeCap(&caps, "TasksMax", opts.TasksMax)
 	if caps.Len() > 0 {
@@ -145,7 +166,8 @@ func UnitFile(t Target, opts UnitOptions) string {
 // writeCap emits one systemd resource-control directive, or nothing when the
 // cap is unset. The explicit "off" spelling exists so an operator can remove a
 // cap a previous deploy installed; an empty value is what an unset field looks
-// like.
+// like. Only those two spellings mean "no directive": a numeric zero is a value
+// and is written verbatim, which is what lets MemorySwapMax=0 reach the unit.
 func writeCap(b *strings.Builder, key, value string) {
 	if !CapEnabled(value) {
 		return

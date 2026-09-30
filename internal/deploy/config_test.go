@@ -792,34 +792,40 @@ func TestDeployUnitCapsSurface(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		cfg := load(t, newRepo(t), &Flags{set: map[string]bool{}})
 		if cfg.MemoryMax != DefaultMemoryMax || cfg.MemoryHigh != DefaultMemoryHigh ||
+			cfg.MemorySwapMax != DefaultMemorySwapMax ||
 			cfg.CPUQuota != DefaultCPUQuota || cfg.TasksMax != DefaultTasksMax {
-			t.Errorf("caps = %q/%q/%q/%q, want the defaults %q/%q/%q/%q",
-				cfg.MemoryMax, cfg.MemoryHigh, cfg.CPUQuota, cfg.TasksMax,
-				DefaultMemoryMax, DefaultMemoryHigh, DefaultCPUQuota, DefaultTasksMax)
+			t.Errorf("caps = %q/%q/%q/%q/%q, want the defaults %q/%q/%q/%q/%q",
+				cfg.MemoryMax, cfg.MemoryHigh, cfg.MemorySwapMax, cfg.CPUQuota, cfg.TasksMax,
+				DefaultMemoryMax, DefaultMemoryHigh, DefaultMemorySwapMax, DefaultCPUQuota, DefaultTasksMax)
 		}
-		// The unit the deploy would write must actually carry them.
+		// The unit the deploy would write must actually carry them, and the
+		// swap bound must be 0 -- an absent directive leaves the cgroup free to
+		// swap past MemoryMax, which is the failure this default exists for.
 		unit := UnitFile(cfg.Target, cfg.UnitOptions())
 		if !strings.Contains(unit, "\nMemoryMax="+DefaultMemoryMax+"\n") {
 			t.Errorf("the rendered unit does not carry the default cap:\n%s", unit)
 		}
+		if !strings.Contains(unit, "\nMemorySwapMax="+DefaultMemorySwapMax+"\n") {
+			t.Errorf("the rendered unit does not carry the default swap bound:\n%s", unit)
+		}
 	})
 
 	t.Run("flags override", func(t *testing.T) {
-		f := &Flags{MemoryMax: "8G", MemoryHigh: "6G", CPUQuota: "400%", TasksMax: "1024", set: map[string]bool{}}
+		f := &Flags{MemoryMax: "8G", MemoryHigh: "6G", MemorySwapMax: "512M", CPUQuota: "400%", TasksMax: "1024", set: map[string]bool{}}
 		cfg := load(t, newRepo(t), f)
-		if cfg.MemoryMax != "8G" || cfg.MemoryHigh != "6G" || cfg.CPUQuota != "400%" || cfg.TasksMax != "1024" {
+		if cfg.MemoryMax != "8G" || cfg.MemoryHigh != "6G" || cfg.MemorySwapMax != "512M" || cfg.CPUQuota != "400%" || cfg.TasksMax != "1024" {
 			t.Errorf("flags did not override the defaults: %+v", cfg.UnitOptions())
 		}
 	})
 
 	t.Run("the config file sets them", func(t *testing.T) {
 		repo := newRepo(t)
-		config := "memory_max: 2G\nmemory_high: 1G\ncpu_quota: 100%\ntasks_max: 128\nread_write_paths:\n  - /srv/scratch\n"
+		config := "memory_max: 2G\nmemory_high: 1G\nmemory_swap_max: 256M\ncpu_quota: 100%\ntasks_max: 128\nread_write_paths:\n  - /srv/scratch\n"
 		if err := os.WriteFile(filepath.Join(repo, ConfigFileName), []byte(config), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		cfg := load(t, repo, &Flags{set: map[string]bool{}})
-		if cfg.MemoryMax != "2G" || cfg.MemoryHigh != "1G" || cfg.CPUQuota != "100%" || cfg.TasksMax != "128" {
+		if cfg.MemoryMax != "2G" || cfg.MemoryHigh != "1G" || cfg.MemorySwapMax != "256M" || cfg.CPUQuota != "100%" || cfg.TasksMax != "128" {
 			t.Errorf("config file caps did not apply: %+v", cfg.UnitOptions())
 		}
 		if len(cfg.ReadWritePaths) != 1 || cfg.ReadWritePaths[0] != "/srv/scratch" {
@@ -852,6 +858,32 @@ func TestDeployUnitCapsSurface(t *testing.T) {
 		unit := UnitFile(cfg.Target, cfg.UnitOptions())
 		if strings.Contains(unit, "MemoryMax=") {
 			t.Errorf("an opted-out cap was still emitted:\n%s", unit)
+		}
+		// Opting one cap out must not opt the swap bound out with it: the
+		// swap directive is independent, and its default is a real limit.
+		if !strings.Contains(unit, "\nMemorySwapMax="+DefaultMemorySwapMax+"\n") {
+			t.Errorf("opting MemoryMax out also dropped the default swap bound:\n%s", unit)
+		}
+	})
+
+	t.Run("the swap bound accepts zero", func(t *testing.T) {
+		// Unlike the other caps, a zero here is a meaningful limit ("no
+		// swap"), so it must survive validation and reach the unit.
+		for _, value := range []string{"0", "0M"} {
+			f := &Flags{MemorySwapMax: value, set: map[string]bool{}}
+			cfg := load(t, newRepo(t), f)
+			if cfg.MemorySwapMax != value {
+				t.Errorf("MemorySwapMax = %q, want %q", cfg.MemorySwapMax, value)
+			}
+			cfg.ProjectRoot = t.TempDir()
+			cfg.Target.Host = "example.test"
+			cfg.Timeout = time.Minute
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("--memory-swap-max %s was refused: %v", value, err)
+			}
+			if unit := UnitFile(cfg.Target, cfg.UnitOptions()); !strings.Contains(unit, "\nMemorySwapMax="+value+"\n") {
+				t.Errorf("unit does not carry MemorySwapMax=%s:\n%s", value, unit)
+			}
 		}
 	})
 
@@ -886,6 +918,9 @@ func TestDeployRejectsMalformedCaps(t *testing.T) {
 		{"memory zero G", func(c *Config) { c.MemoryMax = "0G" }, "memory-max"},
 		{"memory zero percent", func(c *Config) { c.MemoryMax = "0%" }, "memory-max"},
 		{"memory high zero", func(c *Config) { c.MemoryHigh = "0" }, "memory-high"},
+		{"memory swap size", func(c *Config) { c.MemorySwapMax = "lots" }, "memory-swap-max"},
+		{"memory swap suffix", func(c *Config) { c.MemorySwapMax = "4X" }, "memory-swap-max"},
+		{"memory swap negative percent", func(c *Config) { c.MemorySwapMax = "-10%" }, "memory-swap-max"},
 		{"cpu quota", func(c *Config) { c.CPUQuota = "half" }, "cpu-quota"},
 		{"cpu quota zero", func(c *Config) { c.CPUQuota = "0%" }, "cpu-quota"},
 		{"tasks max", func(c *Config) { c.TasksMax = "many" }, "tasks-max"},
@@ -895,7 +930,8 @@ func TestDeployRejectsMalformedCaps(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base()
-			cfg.MemoryMax, cfg.MemoryHigh, cfg.CPUQuota, cfg.TasksMax = DefaultMemoryMax, DefaultMemoryHigh, DefaultCPUQuota, DefaultTasksMax
+			cfg.MemoryMax, cfg.MemoryHigh, cfg.MemorySwapMax = DefaultMemoryMax, DefaultMemoryHigh, DefaultMemorySwapMax
+			cfg.CPUQuota, cfg.TasksMax = DefaultCPUQuota, DefaultTasksMax
 			tc.mutate(&cfg)
 			err := cfg.Validate()
 			if err == nil {
