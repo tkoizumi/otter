@@ -171,7 +171,16 @@ release remains active and serving.
 
 - unprivileged `otter` service account with a `nologin` shell (`otter deploy`
   already does this — [render.go](../internal/deploy/render.go) line 137);
-- data directory `0700`, environment file `0600`, owned by the service account;
+- data directory `0700` owned by the service account; environment file `0600`
+  **root**-owned, inside a `0700` root-owned directory. The daemon reads it
+  through systemd's `EnvironmentFile=`, which runs as root before dropping to
+  `User=otter`, so the service account — and therefore any job it runs — cannot
+  read or rewrite its own credentials. *(Corrected 2026-09-30: this line said the
+  file was owned by the service account. That is the weaker posture, it is not
+  what `otter deploy` does, and an independent verifier confirmed the
+  implementation in P0-12 — root-owned `0600` under `umask 077` in a `0700`
+  directory. The permission assertion that encoded the old wording was
+  corrected rather than the host.)*
 - systemd unit installed and enabled;
 - **no public API ingress.** `otter deploy` already refuses a wildcard bind
   ([target.go](../internal/deploy/target.go) lines 415–422); verify it on the real
