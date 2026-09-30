@@ -1,89 +1,101 @@
-# Aggregate drill suite — 2026-09-29 23:32 EDT
-# Host: macOS 15.7.3 arm64; checkout v0.2.0-35-gda2873b at da2873b
-# Purpose: prove the three merged drills run together from 'make drill' on main —
-#   backup-restore (P0-03), deploy-failure (P0-06), unit-caps (P0-04).
-#   The deploy-failure stub is deliberately not named *.sh so the dispatcher
+# Aggregate drill suite — 2026-09-29 23:35 EDT
+# Host: macOS 15.7.3 arm64; checkout v0.2.0-36-g5a20602 at 5a20602
+# Purpose: prove every merged drill runs together from 'make drill' on main —
+#   backup-restore (P0-03), deploy-failure (P0-06), liveness (P0-10), unit-caps (P0-04).
+#   The deploy-failure uv stub is deliberately not named *.sh so the dispatcher
 #   does not run it as a drill.
 
 $ make drill
 
-go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-35-gda2873b" -o bin/otterd ./cmd/otterd
-go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-35-gda2873b" -o bin/otter ./cmd/otter
-built bin/otterd and bin/otter (v0.2.0-35-gda2873b)
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-36-g5a20602-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-36-g5a20602-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-36-g5a20602-dirty)
 
 ===== drill: backup-restore =====
-date:     2026-09-29 23:32:17 EDT
+date:     2026-09-29 23:35:29 EDT
 host:     Darwin 24.6.0 (arm64)
-checkout: v0.2.0-35-gda2873b
-drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.7Te73o/ws
+checkout: v0.2.0-36-g5a20602-dirty
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.RLIvJ6/ws
 drill: released job is managed Python, pinned to 3.13.5
 drill: staging release (environment preparation fails here by design)
 drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
-drill: job         16ae2230-4902-4cb1-9e0a-a47a83e162e1
-drill: release     070914211f1db7bdca12eb2a28bd9f97bc878a1a8dbe6fac72a83a37969add92
-drill: environment c5abde60d5129d11771b86657e0c51b4b882c86baea0fc788c66f2dc8aafc3eb
-drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.7Te73o/ws/.otter/data/environments/c5abde60d5129d11771b86657e0c51b4b882c86baea0fc788c66f2dc8aafc3eb
+drill: job         da455853-e08d-4427-8640-3249027a556f
+drill: release     5869b1cbbc5c43bc8eef80253d5cb68ddab2de0a0e001d5ec5d8027aa6ac7573
+drill: environment 7aace17861125b39787d416a631d030e05732784abad1909f3930091eac0e1e4
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.RLIvJ6/ws/.otter/data/environments/7aace17861125b39787d416a631d030e05732784abad1909f3930091eac0e1e4
 drill: releasing with the stub environment
-drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.7Te73o/ws/.otter/data
-drill: run 1       a82eb4b1-326c-47e4-8bbb-0111b27ddeb0 succeeded (state count=1)
-drill: run 2       8e9bfd1e-4cd4-4923-948d-a87e148d28a4 is running; taking the hot backup (daemon still writing)
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.RLIvJ6/ws/.otter/data
+drill: run 1       18f617ca-64f5-4f5a-b3a7-8ee6270b71b7 succeeded (state count=1)
+drill: run 2       a73679e6-f648-42c8-b26d-ef7b17ceec99 is running; taking the hot backup (daemon still writing)
 drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
 drill: run 2       settled as succeeded
 drill: restore     repointed active release link into the restored data directory
 drill: restore     repointed an environment interpreter into the restored data directory
-drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.7Te73o/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.7Te73o/data-origin
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.RLIvJ6/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.RLIvJ6/data-origin
 drill: restored    fresh daemon is serving the restored data directory
-drill: identity    survived (16ae2230-4902-4cb1-9e0a-a47a83e162e1)
+drill: identity    survived (da455853-e08d-4427-8640-3249027a556f)
 drill: history     run 1 and the in-flight run 2 are both present
 drill: state       count=1 survived
 drill: executing   a new run on the restored runtime
-drill: executed    run 9ee36d16-0413-45b1-bef0-436c830de536 succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.7Te73o/restore-data/.releases/16ae2230-4902-4cb1-9e0a-a47a83e162e1/070914211f1db7bdca12eb2a28bd9f97bc878a1a8dbe6fac72a83a37969add92/drill-job
+drill: executed    run c6e7560c-e376-4ae3-841d-6adcfb79d4b6 succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.RLIvJ6/restore-data/.releases/da455853-e08d-4427-8640-3249027a556f/5869b1cbbc5c43bc8eef80253d5cb68ddab2de0a0e001d5ec5d8027aa6ac7573/drill-job
 drill: snapshots   release and environment present in the restored data directory
 drill: ok: hot backup restored onto a fresh data directory; the job runs again
-drill: elapsed 20s
+drill: elapsed 21s
 
 ===== drill: deploy-failure =====
-date:     2026-09-29 23:32:37 EDT
+date:     2026-09-29 23:35:50 EDT
 host:     Darwin 24.6.0 (arm64)
-checkout: v0.2.0-35-gda2873b
-deploy-failure: work        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.nV9YDD
+checkout: v0.2.0-36-g5a20602-dirty
+deploy-failure: work        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.0AoToi
 deploy-failure: image       otter-deploy-target
 deploy-failure: sabotage    none
 deploy-failure: building the deploy-target image
 deploy-failure: building the host CLI and the linux target binaries
 deploy-failure: starting the target container
-deploy-failure: target      systemd running, ssh on 127.0.0.1:63667
+deploy-failure: target      systemd running, ssh on 127.0.0.1:64431
 deploy-failure: python pin  3.12.3 (the target's python3)
 deploy-failure: deploy 1    known-good release
 deploy-failure:   release:  releasing 1 job(s)
-deploy-failure:   install:  writing /etc/systemd/system/otterd-ws-b34ccabd.service and restarting otterd-ws-b34ccabd.service
+deploy-failure:   install:  writing /etc/systemd/system/otterd-ws-beccd152.service and restarting otterd-ws-beccd152.service
 deploy-failure:   verify:   waiting for the health endpoint
-deploy-failure:   verify:   healthy: {"status":"ok","version":"dev","uptime_seconds":0.046717417,"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":0}
-deploy-failure:   done:     v0.2.0-35-gda2873b deployed to root@127.0.0.1:63667 in 2s
+deploy-failure:   verify:   healthy: {"status":"ok","version":"dev","uptime_seconds":0.047217125,"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":0}
+deploy-failure:   done:     v0.2.0-36-g5a20602-dirty deployed to root@127.0.0.1:64431 in 3s
 deploy-failure:   install:       /opt/otter
-deploy-failure: workspace   ws-b34ccabd at 127.0.0.1:7337
-deploy-failure: release 1   0d5fbc6f0c069ace7c3a0bfa96cefb10511ed4709844a99c0684878e7d251ca4
-deploy-failure: env 1       45bde94a4c64b27ee7ff9526ccba21bdc26580308c0624b1764eccd64555b22e
-deploy-failure: run 1       d2881047-e072-4689-a01d-deb9aead6133 succeeded from release 1 (revision 1 executed)
+deploy-failure: workspace   ws-beccd152 at 127.0.0.1:7337
+deploy-failure: release 1   08e5931b22ef45c8197ad5ab89bbaa7e4c603a87e87a9541382c9d5000b27b3d
+deploy-failure: env 1       bd092515d68cbc58fbd5df21eec946a807118e9736c1685ba09ec281434c833f
+deploy-failure: run 1       504865b5-9105-4bb7-b84a-078c423ca135 succeeded from release 1 (revision 1 executed)
 deploy-failure: unit        MainPID 263 before the candidate deploy
 deploy-failure: deploy 2    candidate release (expected to fail after staging)
 deploy-failure: inject      making preparation fail on the host
 deploy-failure: deploy 2    failed as injected
-deploy-failure:   counter: release bc59e9af30e1
+deploy-failure:   counter: release 0c67f4cf57db
 deploy-failure:   otter: release counter: not activating: install Python 3.12.3: exit status 1: minimal-uv: preparation is injected to fail (/etc/otter/drill-preparation-fail)
-deploy-failure:   otter: release jobs on root@127.0.0.1:63667: ssh root@127.0.0.1: exit status 1
-deploy-failure: staged      candidate bc59e9af30e17346da1c4806906a975896dd3bf60e6aad4b861eabad37bcb6f7 is on disk but not active
-deploy-failure: injected    candidate environment f0892d19478aaec6100c65c187c9941826f888f7698366c6cfc289e8825380e0 was never published
+deploy-failure:   otter: release jobs on root@127.0.0.1:64431: ssh root@127.0.0.1: exit status 1
+deploy-failure: staged      candidate 0c67f4cf57db3745d433c41634aed95151d1dc211a21178787d36fa5cbd05858 is on disk but not active
+deploy-failure: injected    candidate environment c64dc5f81fc5699dcc1a34679935e3f77f814b38e26c4250ca3c10e5a547ff5d was never published
 deploy-failure: unit        same process as before the failed deploy (MainPID 263)
-deploy-failure: run 2       e5ffc6f4-560a-488b-ae07-aa7be48a68fb succeeded from release 1 (revision 1 executed; revision 2 was never served)
+deploy-failure: run 2       e055a7ef-a9e1-459c-aa36-c1cb03092b3f succeeded from release 1 (revision 1 executed; revision 2 was never served)
 deploy-failure: unit        still active after the failed deploy; /health answered
 deploy-failure: ok: a mid-deploy failure left the previous release active and serving
-deploy-failure: elapsed 23s
+deploy-failure: elapsed 22s
+
+===== drill: liveness =====
+date:     2026-09-29 23:36:13 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-36-g5a20602-dirty
+liveness: receiver http://127.0.0.1:64823/heartbeat (a ping is a GET /heartbeat in its log)
+heartbeat: http://127.0.0.1:64826/health did not answer; not pinging, so the switch fires
+liveness: down      no runtime, no ping, non-zero exit
+liveness: up        real otterd on 64828, ping delivered
+heartbeat: http://127.0.0.1:64828/health did not answer; not pinging, so the switch fires
+liveness: killed    pings stopped, so the switch fires
+liveness: ok: pings track the runtime and stop when it dies
 
 ===== drill: unit-caps =====
-date:     2026-09-29 23:33:01 EDT
+date:     2026-09-29 23:36:14 EDT
 host:     Darwin 24.6.0 (arm64)
-checkout: v0.2.0-35-gda2873b
+checkout: v0.2.0-36-g5a20602-dirty
 unit-caps: image      otter-systemd-caps
 unit-caps: target     linux/arm64
 unit-caps: caps       memory-max=192M memory-high=off cpu-quota=200% tasks-max=512
@@ -143,19 +155,19 @@ runaway: activated 15ec3e346c71
 Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
 
 unit-caps: waiting for the health endpoint
-health: {"status":"ok","version":"dev","uptime_seconds":0.212121209}
-cgroup: /docker/5181b855d2bf37a17ba9c05ca837a6f7df31a86d11c7ecbf27127e79a839e160/system.slice/otterd-drill.service
+health: {"status":"ok","version":"dev","uptime_seconds":0.224844625}
+cgroup: /docker/f1cbe598d56fc8c1a924805ac4e7f4e8addb4c53018d9384c6aebd09ac664271/system.slice/otterd-drill.service
 memory.max:  201326592 (set from MemoryMax=192M)
 memory.high: max
 otterd MainPID before: 135
 
 unit-caps: triggering the runaway job
-fa145f60-f98d-4416-9749-896bfa512d68
+1b73f303-fa1c-499b-97af-ae5446f3e702
 
 --- cgroup memory.events ---
 low 0
 high 0
-max 5009
+max 5100
 oom 1
 oom_kill 1
 --- cgroup memory.peak (bytes) ---
@@ -172,13 +184,13 @@ OOMPolicy:             continue
 (none)
 --- run history ---
 RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
-fa145f60-f98d-4416-9749-896bfa512d68  runaway  manual   failed  1        2026-09-30T03:33:06Z  3.801s
+1b73f303-fa1c-499b-97af-ae5446f3e702  runaway  manual   failed  1        2026-09-30T03:36:20Z  3.996s
 --- host responsiveness ---
 is-system-running: running
-{"status":"ok","version":"dev","uptime_seconds":5.178022419}
+{"status":"ok","version":"dev","uptime_seconds":5.390903377}
 
 --- daemon journal, OOM lines ---
-Sep 30 03:33:10 5181b855d2bf systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+Sep 30 03:36:24 f1cbe598d56f systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
 unit-caps: PASS: the runaway job was OOM-killed, otterd (PID 135) survived, and the host answered.
 drill: all drills passed
 

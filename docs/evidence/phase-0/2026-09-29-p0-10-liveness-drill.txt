@@ -1,0 +1,49 @@
+# P0-10 — independent liveness detection (dead-man's switch) — captured runs
+#
+# Claim (CA-31, R-05): when the runtime stops answering, the heartbeat stops
+#   pinging, so an external dead-man service fires with nobody watching.
+# When:   2026-09-29 23:35 EDT
+# Where:  macOS 15.7.3 arm64; real otterd on loopback +
+#         a local stand-in for the dead-man service (python http.server, /heartbeat -> 200).
+# Build:  v0.2.0-36-g5a20602 at 5a20602
+# Artifacts under test: scripts/heartbeat.sh, scripts/heartbeat.service, scripts/heartbeat.timer
+# Falsifiability: DRILL_SABOTAGE=ping-always substitutes a naive POSITIVE check that
+#   pings whether or not the runtime is healthy; the drill must then go red on its first
+#   assertion, or it is only testing that a shell script can exit non-zero.
+
+$ make drill DRILL=liveness
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-36-g5a20602" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-36-g5a20602" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-36-g5a20602)
+
+===== drill: liveness =====
+date:     2026-09-29 23:35:20 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-36-g5a20602
+liveness: receiver http://127.0.0.1:64208/heartbeat (a ping is a GET /heartbeat in its log)
+heartbeat: http://127.0.0.1:64211/health did not answer; not pinging, so the switch fires
+liveness: down      no runtime, no ping, non-zero exit
+liveness: up        real otterd on 64213, ping delivered
+heartbeat: http://127.0.0.1:64213/health did not answer; not pinging, so the switch fires
+liveness: killed    pings stopped, so the switch fires
+liveness: ok: pings track the runtime and stop when it dies
+EXIT=0
+
+$ DRILL_SABOTAGE=ping-always make drill DRILL=liveness   # must be non-zero
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-36-g5a20602" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-36-g5a20602" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-36-g5a20602)
+
+===== drill: liveness =====
+date:     2026-09-29 23:35:21 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-36-g5a20602
+liveness: receiver http://127.0.0.1:64219/heartbeat (a ping is a GET /heartbeat in its log)
+liveness: FAILED: the check succeeded although nothing was listening on http://127.0.0.1:64222
+liveness: workspace kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-liveness.FrDuI8
+make: *** [drill] Error 1
+EXIT=2
+
+# Verdict: down -> no ping and a non-zero exit; up -> a ping the receiver logged;
+#   killed -> pings stop. With a positive check the first assertion fails, so the
+#   dead-man property is what the drill tests.

@@ -46,4 +46,5 @@ is not.
 | 2026-09-29 | P0-04 | [2026-09-29-p0-04-unit-caps-drill.txt](2026-09-29-p0-04-unit-caps-drill.txt) | macOS 15 arm64; systemd 255 in an Ubuntu 24.04 container |
 | 2026-09-29 | P0-04 falsification | [2026-09-29-p0-04-unit-caps-mutation.txt](2026-09-29-p0-04-unit-caps-mutation.txt) | same |
 | 2026-09-29 | P0-06 | [2026-09-29-p0-06-deploy-failure-drill.txt](2026-09-29-p0-06-deploy-failure-drill.txt) | macOS 15 arm64; Ubuntu 24.04 with systemd and sshd as the deploy target |
-| 2026-09-29 | aggregate suite | [2026-09-29-aggregate-drills.txt](2026-09-29-aggregate-drills.txt) | macOS 15 arm64; `make drill` runs all three drills on `main` |
+| 2026-09-29 | aggregate suite | [2026-09-29-aggregate-drills.txt](2026-09-29-aggregate-drills.txt) | macOS 15 arm64; `make drill` runs all four drills on `main` |
+| 2026-09-29 | P0-10 | [2026-09-29-p0-10-liveness-drill.txt](2026-09-29-p0-10-liveness-drill.txt) | macOS 15 arm64; real `otterd` on loopback plus a local stand-in for the dead-man service |

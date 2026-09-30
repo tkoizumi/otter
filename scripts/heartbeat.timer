@@ -1,0 +1,22 @@
+# Otter dead-man's-switch heartbeat — systemd timer.
+#
+# Minute-level, because the alarm is the gap: a switch configured to expect a
+# ping every minute raises its own alert when a few minutes pass without one, so
+# the detection window is the timer interval plus the service's grace period.
+#
+# Install with heartbeat.service; see the header there.
+[Unit]
+Description=Run the Otter dead-man's-switch heartbeat every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+# Without this, a busy host can drift the interval by a minute or more and a
+# healthy runtime looks like a missed ping.
+AccuracySec=5s
+# Run once after a suspend/resume rather than catching up on every missed tick.
+Persistent=false
+Unit=otter-heartbeat.service
+
+[Install]
+WantedBy=timers.target

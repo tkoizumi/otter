@@ -35,7 +35,7 @@ Status values: `not started`, `in progress`, `blocked`, `host-gated`,
 | P0-07 | Provision the Castor host | host-gated | artifact not written | pending | pending |
 | P0-08 | Egress and managed Python | host-gated | artifact not written | pending | pending |
 | P0-09 | Failure notification | blocked on human | code already complete | pending — needs a real channel | pending |
-| P0-10 | Independent liveness detection | host-gated | artifact not written | pending | pending |
+| P0-10 | Independent liveness detection | in progress — artifact done, **evidence host-gated** | `main`; `scripts/heartbeat.sh`, `heartbeat.service`, `heartbeat.timer`, `scripts/drill/liveness.sh` | [record](evidence/phase-0/2026-09-29-p0-10-liveness-drill.txt) — no runtime → no ping and a non-zero exit; real `otterd` → the ping is logged; runtime killed → pings stop. `DRILL_SABOTAGE=ping-always` goes red on the first assertion, so the drill tests the dead-man property rather than a script's exit code. The task's own evidence — kill the daemon and watch an alert arrive — still needs the external service and the host | pending |
 | P0-11 | Disk retention and thresholds | not started | — | pending | pending |
 | P0-12 | Scope Castor's credentials | blocked on human | code already complete | pending — needs names, scopes, values | pending |
 | P0-13 | Select and harden the job | blocked on customer | — | pending | pending |
