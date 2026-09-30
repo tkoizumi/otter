@@ -306,7 +306,8 @@ the child process's environment just before execution.
 - Keep values out of YAML: put `SHOPIFY_TOKEN=...` in the systemd
   `EnvironmentFile` (mode `0600`, owned by the service user) or a secret manager
   that populates the daemon environment. `otter deploy` writes that file itself,
-  root owned and chmod `0600`, from the checkout's `.env`.
+  root owned and chmod `0600`, from `otter.env` at the project root (or
+  `--env-file`).
 - If a listed name is missing from the daemon environment, the run **fails
   before Python starts** with an error naming the missing secret, and it is not
   retried. A variable that is set but empty counts as missing — a blank token is
