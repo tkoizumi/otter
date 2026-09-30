@@ -240,6 +240,26 @@ jobs (default: number of CPU cores, capped at 8). Both limits apply at
 once — a manifest `concurrency: 8` on a machine started with `--workers 2` still
 runs at most two jobs at a time.
 
+### Manifest timeouts versus the host's resource caps
+
+`timeout`, `concurrency` and `--workers` are Otter's own limits: they decide how
+long a job may run and how many run at once. They do **not** bound CPU, memory
+or the number of processes. A job that allocates without limit or forks without
+limit is stopped by the *host's* cgroup caps in the generated systemd unit
+(`MemoryMax`, `MemoryHigh`, `CPUQuota`, `TasksMax`), which a deploy sets and
+[deploy.md](deploy.md#resource-caps-and-the-sandbox) explains how to size.
+
+The two fail differently, and the difference matters for sizing:
+
+- A job that exceeds `timeout` is `SIGTERM`ed then `SIGKILL`ed and the run is
+  marked `timed_out`, with the manifest's retry policy applied.
+- A job that exceeds the unit's `MemoryMax` is killed by the kernel OOM killer.
+  The unit is capped as a whole, so `--workers` and every job's `concurrency`
+  decide how much memory can be in use at once; size `MemoryMax` above the sum
+  of what can run concurrently, not above one run. Too low a cap turns a working
+  job into a killed one — raise `--memory-max` rather than lowering the job's
+  work.
+
 ## Environment variables
 
 ```yaml

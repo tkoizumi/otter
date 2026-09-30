@@ -134,6 +134,13 @@ provide. The deploy verifies it immediately rather than hanging on a password
 prompt, and it escalates the remote `rsync` too, so a login like `ec2-user` or
 `ubuntu` can write into `/opt/otter`.
 
+The generated unit uses resource-control and sandbox directives that expect a
+reasonably current systemd and the unified cgroup hierarchy: Amazon Linux 2023
+and Ubuntu 22.04+ qualify. The memory default is a percentage, which systemd
+resolves against the host's RAM, so no per-host arithmetic is needed. If the
+host is older, set absolute caps instead (`--memory-max 4G`); the directives are
+emitted verbatim either way.
+
 ## Where the executables come from
 
 A project that is not the runtime's own source tree has nothing to compile, so
@@ -271,6 +278,76 @@ live SQLite database on every deploy would be pointless and risky.
 
 If any step fails, the ones after it do not run, and no state file is written:
 a failed deploy never claims success.
+
+## Resource caps and the sandbox
+
+The unit `otter deploy` writes bounds the whole workspace and confines it. Both
+are part of the generated file, so they cannot drift from what the deploy does;
+`--dry-run` prints the plan and changes nothing.
+
+Every cap applies to the **whole unit's cgroup**, not to one job: `otterd` and
+every Python child it starts share it, so `MemoryMax` bounds the sum of the
+concurrent runs plus the daemon. Size it for `--workers` runs, not one.
+
+```ini
+[Service]
+# A capped job killed by the OOM killer must not stop the daemon.
+OOMPolicy=continue
+
+MemoryMax=75%
+MemoryHigh=60%
+CPUQuota=200%
+TasksMax=512
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/otter/workspaces/<workspace> /opt/otter/workspaces/<workspace>/.otter/data
+```
+
+| Directive | Flag | Default | What it does, and how to size it |
+| --- | --- | --- | --- |
+| `MemoryMax` | `--memory-max` | `75%` | Hard memory ceiling. Above it the kernel OOM-kills a process in the unit's cgroup. Size it to the **sum of the concurrent runs** (peak RSS of the largest run × how many can overlap) plus roughly 256 MiB for `otterd`, then add headroom. A percentage is resolved by systemd against the host's physical RAM, so the same deploy is safe on a 2 GiB VPS and a 16 GiB machine. Too low: a working job is OOM-killed. Too high: the host itself runs out of memory instead. |
+| `MemoryHigh` | `--memory-high` | `60%` | Soft ceiling. Between `MemoryHigh` and `MemoryMax` the kernel throttles and reclaims, so a run that briefly overruns is slowed rather than killed. Keep it meaningfully below `MemoryMax`. |
+| `CPUQuota` | `--cpu-quota` | `200%` | CPU time as a percentage of **one** core. `200%` is two cores' worth, whatever the host has, so a runaway job cannot monopolise a large machine. Too low: long jobs run slower and may hit their manifest `timeout`. |
+| `TasksMax` | `--tasks-max` | `512` | Processes **and threads** in the cgroup — the fork-bomb guard. Python threads and subprocesses all count, so keep it well above the largest realistic job. Too low: the job cannot create a thread or a subprocess and fails. |
+| `OOMPolicy` | — | `continue` | systemd's own default is `stop`, which stops the whole unit when the OOM killer kills any process in it — taking `otterd` and every other in-flight run with it. `continue` lets the runaway child die and leaves `otterd` to record the failed run. |
+
+`--memory-max off` (and the same for the other three) emits no directive at all,
+leaving systemd's own default; the value is emitted verbatim, so `4G`, `512M`,
+`75%` and `infinity` all work. A size must be positive: `0`, `0M` and `0G` are
+refused before the push, because systemd discards an out-of-range zero and would
+leave the unit uncapped while it looked capped.
+
+The four caps can be committed in `otter.deploy.yaml` (`memory_max`,
+`memory_high`, `cpu_quota`, `tasks_max`), and an explicit flag wins over the
+file. `read_write_paths` is the exception: the committed list and every
+`--rw-path` are **merged**, so a one-off extra path on the command line does not
+drop the committed ones. The same applies to the repeatable flag itself — each
+`--rw-path` adds a path rather than replacing the previous one.
+
+### The sandbox
+
+| Directive | What it constrains |
+| --- | --- |
+| `NoNewPrivileges=true` | The service and every job cannot gain privileges through a setuid/setgid binary or a file capability. |
+| `ProtectSystem=strict` | The whole filesystem hierarchy is mounted read-only except `/dev`, `/proc`, `/sys` and the paths in `ReadWritePaths=`. |
+| `ProtectHome=true` | `/home`, `/root` and `/run/user` are made inaccessible. A workspace or data directory under one of them cannot be reopened with `ReadWritePaths=`, so `otter deploy` refuses it before the push rather than failing at start. |
+| `PrivateTmp=true` | The unit gets its own `/tmp` and `/var/tmp`. Jobs cannot see or race the host's temporary files. |
+| `ReadWritePaths=` | Reopens the workspace and data directory under `ProtectSystem=strict`, because those are the only places the runtime writes (job identity markers, releases, prepared environments, the SQLite database). |
+
+A job that writes scratch space **outside** its workspace needs that directory
+listed too, with a repeatable `--rw-path` or the `read_write_paths` list in
+`otter.deploy.yaml`:
+
+```sh
+otter deploy --host droplet --rw-path /srv/scratch
+```
+
+Operator paths are emitted with a leading `-`, so systemd ignores one that does
+not exist yet instead of refusing to start the unit. A job that writes somewhere
+not listed fails with `Permission denied` at run time, not at deploy time.
 
 ## Daemon-wide settings
 
@@ -473,10 +550,21 @@ host: droplet              # or root@203.0.113.10, or an ~/.ssh/config alias
 remote_dir: /opt/otter
 service_user: otter
 listen: 127.0.0.1:7337
+memory_max: 4G             # optional: override the host-relative default (75%)
+memory_high: 3G
+cpu_quota: 200%
+tasks_max: 512
+read_write_paths:          # optional: scratch a job writes outside its workspace
+  - /srv/scratch
 ```
 
 Precedence, lowest to highest: built-in defaults, `otter.deploy.yaml`, the
-previous successful deploy, then the command line.
+previous successful deploy, then the command line. The resource caps follow the
+same order except that the previous deploy is not consulted — a cap describes
+the host, so it is not carried to a different machine — and
+`read_write_paths`, which is merged across the file and every `--rw-path`
+rather than overridden. See
+[Resource caps and the sandbox](#resource-caps-and-the-sandbox).
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
@@ -498,6 +586,10 @@ previous successful deploy, then the command line.
 | `--verbose` | stream every remote command | off |
 | `--timeout` | overall bound | `10m` |
 | `--keep` | inactive releases retained per job (`0` keeps every release) | `3` |
+| `--memory-max`, `--memory-high` | systemd memory caps for the unit (`off` emits none) | `75%`, `60%` |
+| `--cpu-quota` | systemd CPU cap, percent of one core (`off` emits none) | `200%` |
+| `--tasks-max` | systemd process/thread cap (`off` emits none) | `512` |
+| `--rw-path` | extra path jobs may write under `ProtectSystem=strict` (repeatable) | — |
 | `--status` | show this project's deploys, and with `--host` what that host holds | — |
 | `--destroy`, `--keep-data`, `--yes` | removal | — |
 

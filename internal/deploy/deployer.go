@@ -262,7 +262,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 
 	// --- activate ----------------------------------------------------------
 	d.step("install", "writing %s and restarting %s", cfg.Target.UnitPath(), cfg.Target.ServiceUnit())
-	if err := d.Runner.RunScript(ctx, ActivateScript(cfg.Target)); err != nil {
+	if err := d.Runner.RunScript(ctx, ActivateScript(cfg.Target, cfg.UnitOptions())); err != nil {
 		return nil, d.hint(err)
 	}
 	if err := d.Runner.RunScript(ctx, ServiceStatusScript(cfg.Target)); err != nil {

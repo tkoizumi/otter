@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +64,22 @@ type Config struct {
 	// Zero keeps every release, which is the explicit opt-out; the default is
 	// DefaultKeep.
 	Keep int
+
+	// MemoryMax, MemoryHigh, CPUQuota and TasksMax are the systemd resource
+	// caps written into the generated unit. They bound the whole workspace:
+	// otterd and every job it runs share one cgroup, so the value covers the
+	// sum of the concurrent runs plus the daemon, not one run. A value of
+	// CapOff (or empty) emits no directive and leaves systemd's own default.
+	MemoryMax  string
+	MemoryHigh string
+	CPUQuota   string
+	TasksMax   string
+
+	// ReadWritePaths are extra absolute paths the service may write, on top of
+	// the workspace and data directories the unit always lists. They are how a
+	// job that writes scratch outside its workspace keeps working under
+	// ProtectSystem=strict.
+	ReadWritePaths []string
 
 	// DryRun prints the plan and performs no remote change.
 	DryRun bool
@@ -131,6 +148,17 @@ type Flags struct {
 	// deploy converges, so its own default is DefaultKeep.
 	Keep int
 
+	// MemoryMax, MemoryHigh, CPUQuota and TasksMax size the unit's cgroup.
+	// Empty means "use the built-in default"; CapOff means "emit no cap".
+	MemoryMax  string
+	MemoryHigh string
+	CPUQuota   string
+	TasksMax   string
+	// ReadWritePaths are extra paths outside the workspace that jobs may
+	// write, collected from every --rw-path. They extend the unit's
+	// ReadWritePaths= under ProtectSystem=strict.
+	ReadWritePaths stringList
+
 	// Build forces a compile from Go source, refusing to fall back to released
 	// binaries. It is how a contributor deploying from the runtime checkout
 	// says "ship what I have, not what was tagged".
@@ -155,6 +183,49 @@ const ConfigFileName = "otter.deploy.yaml"
 // remember `otter release --keep`; this keeps the active release plus a bounded
 // rollback window. `--keep 0` keeps every release.
 const DefaultKeep = 3
+
+// Default resource caps for the generated unit.
+//
+// Memory is expressed as a percentage of the host's physical RAM rather than a
+// fixed number of bytes, because systemd resolves the percentage on the host.
+// The same deploy is therefore safe on a 2 GiB VPS and a 16 GiB machine, and
+// the cap cannot silently become too small when the workload or the host
+// changes. The cap is set below 100% on purpose: the kernel, sshd, systemd and
+// the page cache live outside the unit's cgroup, and leaving them a quarter of
+// RAM is what keeps the host answering while the unit is under pressure.
+//
+// CPUQuota is a percentage of one core, so 200% is two cores' worth on any
+// host and a runaway job cannot monopolise a large machine. TasksMax bounds
+// processes plus threads, which is the fork-bomb guard; it is deliberately
+// generous because every Python thread counts against it.
+const (
+	DefaultMemoryMax  = "75%"
+	DefaultMemoryHigh = "60%"
+	DefaultCPUQuota   = "200%"
+	DefaultTasksMax   = "512"
+
+	// CapOff is the explicit "emit no directive" value for any cap. It is
+	// deliberately not "0": systemd logs a zero size as out of range, ignores
+	// it, and leaves the cgroup uncapped, so a zero would look like a cap
+	// while enforcing nothing. validateMemoryCap rejects it for that reason.
+	CapOff = "off"
+)
+
+// stringList collects a repeatable flag, one value per occurrence. It is used
+// for --rw-path, where a deployment may need several extra writable paths and
+// losing an earlier one to a later flag would be a surprise.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("path must not be empty")
+	}
+	*s = append(*s, value)
+	return nil
+}
 
 // DaemonEnvFileName is the daemon-wide environment file at the repository
 // root. It is not committed, because a notification URL or an API token is a
@@ -208,6 +279,35 @@ type deployFile struct {
 	// project deploys into the same workspace instead of creating a new one.
 	Workspace string `yaml:"workspace"`
 	Slug      string `yaml:"slug"`
+
+	// Unit resource policy, committed so the caps a workspace was sized for do
+	// not have to be retyped on every deploy. Empty means "use the built-in
+	// default"; CapOff means "emit no directive".
+	MemoryMax      string   `yaml:"memory_max"`
+	MemoryHigh     string   `yaml:"memory_high"`
+	CPUQuota       string   `yaml:"cpu_quota"`
+	TasksMax       string   `yaml:"tasks_max"`
+	ReadWritePaths []string `yaml:"read_write_paths"`
+}
+
+// fileConfig is the parsed, committed otter.deploy.yaml.
+type fileConfig struct {
+	Target    Target
+	EnvFile   string
+	Workspace fileWorkspace
+	Unit      unitSettings
+}
+
+// unitSettings is what a deploy config file may say about the generated unit's
+// resource policy. It is separate from Target because a cap is resource policy
+// for the host, not part of how to reach it, and it must not travel to another
+// machine through the deploy state.
+type unitSettings struct {
+	MemoryMax      string
+	MemoryHigh     string
+	CPUQuota       string
+	TasksMax       string
+	ReadWritePaths []string
 }
 
 // RegisterFlags binds the deploy flags.
@@ -239,6 +339,11 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&f.Verbose, "verbose", false, "stream every remote command")
 	fs.DurationVar(&f.Timeout, "timeout", 10*time.Minute, "overall timeout for the deploy")
 	fs.IntVar(&f.Keep, "keep", DefaultKeep, "inactive releases to retain per job (0 keeps every release)")
+	fs.StringVar(&f.MemoryMax, "memory-max", "", "systemd MemoryMax for the workspace: a size (4G) or a percent of host RAM (default "+DefaultMemoryMax+"; \""+CapOff+"\" emits no cap)")
+	fs.StringVar(&f.MemoryHigh, "memory-high", "", "systemd MemoryHigh, the soft memory ceiling (default "+DefaultMemoryHigh+"; \""+CapOff+"\" emits no cap)")
+	fs.StringVar(&f.CPUQuota, "cpu-quota", "", "systemd CPUQuota, percent of one CPU (default "+DefaultCPUQuota+"; \""+CapOff+"\" emits no cap)")
+	fs.StringVar(&f.TasksMax, "tasks-max", "", "systemd TasksMax, processes and threads (default "+DefaultTasksMax+"; \""+CapOff+"\" emits no cap)")
+	fs.Var(&f.ReadWritePaths, "rw-path", "extra path the service may write under ProtectSystem=strict (repeatable)")
 }
 
 // ParseDeployFlags parses the arguments of `otter deploy`.
@@ -306,16 +411,20 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 	if path == "" {
 		path = projectRoot + "/" + ConfigFileName
 	}
-	fromFile, fileEnv, fromWorkspace, err := loadConfigFile(path)
+	file, err := loadConfigFile(path)
 	if err != nil {
 		return cfg, err
 	}
-	if fromFile != nil {
-		cfg.Target = mergeTarget(cfg.Target, *fromFile)
+	if file != nil {
+		cfg.Target = mergeTarget(cfg.Target, file.Target)
 	}
 	// A config file may point at a shared secrets file, but a flag still wins.
-	if f.EnvFile == "" && fileEnv != "" {
-		f.EnvFile = resolveRelative(projectRoot, fileEnv)
+	if f.EnvFile == "" && file != nil && file.EnvFile != "" {
+		f.EnvFile = resolveRelative(projectRoot, file.EnvFile)
+	}
+	fromWorkspace := fileWorkspace{}
+	if file != nil {
+		fromWorkspace = file.Workspace
 	}
 
 	// 2. The previous deploy, so a bare `otter deploy` after the first one goes
@@ -368,7 +477,21 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 	}
 	cfg.Target.ApplyDefaults()
 
-	// 4. The daemon-wide environment file. It is optional: a deployment that
+	// 5. The unit's resource policy. Precedence matches everything else: an
+	//    explicit flag beats the committed file, which beats the built-in
+	//    default. A config file's writable paths are kept and the flag's are
+	//    added, so a one-off --rw-path does not drop the committed ones.
+	var fileUnit unitSettings
+	if file != nil {
+		fileUnit = file.Unit
+	}
+	cfg.MemoryMax = firstNonEmpty(f.MemoryMax, fileUnit.MemoryMax, DefaultMemoryMax)
+	cfg.MemoryHigh = firstNonEmpty(f.MemoryHigh, fileUnit.MemoryHigh, DefaultMemoryHigh)
+	cfg.CPUQuota = firstNonEmpty(f.CPUQuota, fileUnit.CPUQuota, DefaultCPUQuota)
+	cfg.TasksMax = firstNonEmpty(f.TasksMax, fileUnit.TasksMax, DefaultTasksMax)
+	cfg.ReadWritePaths = append(append([]string{}, fileUnit.ReadWritePaths...), f.ReadWritePaths...)
+
+	// 6. The daemon-wide environment file. It is optional: a deployment that
 	//    configures nothing beyond per-job secrets does not need one.
 	daemonEnv := f.DaemonEnv
 	if daemonEnv == "" {
@@ -379,7 +502,7 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 		cfg.DaemonEnv = daemonEnv
 	}
 
-	// 5. The shared credentials file, which every job draws from. Also
+	// 7. The shared credentials file, which every job draws from. Also
 	//    optional: a job whose secrets all come from its own manifest
 	//    needs none, and a deployment with no credentials at all is legal.
 	sharedEnv := f.EnvFile
@@ -408,32 +531,56 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 }
 
 // loadConfigFile reads otter.deploy.yaml. A missing file is not an error: the
-// whole configuration can come from flags instead.
-func loadConfigFile(path string) (*Target, string, fileWorkspace, error) {
+// whole configuration can come from flags instead. A nil result means the file
+// was not there.
+func loadConfigFile(path string) (*fileConfig, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, "", fileWorkspace{}, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, "", fileWorkspace{}, fmt.Errorf("read deploy config %s: %w", path, err)
+		return nil, fmt.Errorf("read deploy config %s: %w", path, err)
 	}
 
 	var df deployFile
 	if err := yaml.Unmarshal(data, &df); err != nil {
-		return nil, "", fileWorkspace{}, fmt.Errorf("parse deploy config %s: %w", path, err)
+		return nil, fmt.Errorf("parse deploy config %s: %w", path, err)
 	}
 
-	return &Target{
-		Host:         df.Host,
-		User:         df.User,
-		Port:         df.Port,
-		IdentityFile: df.Identity,
-		RemoteDir:    df.RemoteDir,
-		ServiceName:  df.Service,
-		RunAsUser:    df.ServiceUser,
-		DataDir:      df.DataDir,
-		Listen:       df.Listen,
-	}, df.EnvFile, fileWorkspace{ID: df.Workspace, Slug: df.Slug}, nil
+	return &fileConfig{
+		Target: Target{
+			Host:         df.Host,
+			User:         df.User,
+			Port:         df.Port,
+			IdentityFile: df.Identity,
+			RemoteDir:    df.RemoteDir,
+			ServiceName:  df.Service,
+			RunAsUser:    df.ServiceUser,
+			DataDir:      df.DataDir,
+			Listen:       df.Listen,
+		},
+		EnvFile:   df.EnvFile,
+		Workspace: fileWorkspace{ID: df.Workspace, Slug: df.Slug},
+		Unit: unitSettings{
+			MemoryMax:      df.MemoryMax,
+			MemoryHigh:     df.MemoryHigh,
+			CPUQuota:       df.CPUQuota,
+			TasksMax:       df.TasksMax,
+			ReadWritePaths: df.ReadWritePaths,
+		},
+	}, nil
+}
+
+// firstNonEmpty returns the first value that is not blank. It is how the
+// layered deploy configuration spells "lower precedence wins only when the
+// higher one said nothing".
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // fileWorkspace is the workspace identity a committed config file names.
@@ -689,6 +836,118 @@ func (c *Config) Validate() error {
 	}
 	if c.Keep < 0 {
 		return errors.New("--keep must not be negative; use 0 to keep every release")
+	}
+	// A malformed cap would otherwise be written into the unit and only fail on
+	// the host, at restart, after the deploy had reported success.
+	for _, cap := range []struct{ name, value string }{
+		{"--memory-max", c.MemoryMax},
+		{"--memory-high", c.MemoryHigh},
+	} {
+		if err := validateMemoryCap(cap.name, cap.value); err != nil {
+			return err
+		}
+	}
+	if err := validateCPUQuota(c.CPUQuota); err != nil {
+		return err
+	}
+	if err := validateTasksMax(c.TasksMax); err != nil {
+		return err
+	}
+	for _, path := range c.ReadWritePaths {
+		if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t") {
+			return fmt.Errorf("--rw-path must be an absolute path without whitespace, got %q", path)
+		}
+	}
+	// The unit's own sandbox must not make the workspace it runs from
+	// unreachable.
+	if err := ValidateUnitPaths(c.Target, c.ReadWritePaths); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UnitOptions is the resource policy this deploy bakes into the generated unit.
+func (c Config) UnitOptions() UnitOptions {
+	return UnitOptions{
+		MemoryMax:      c.MemoryMax,
+		MemoryHigh:     c.MemoryHigh,
+		CPUQuota:       c.CPUQuota,
+		TasksMax:       c.TasksMax,
+		ReadWritePaths: c.ReadWritePaths,
+	}
+}
+
+// validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
+// the CapOff opt-out, a size with an optional binary or decimal suffix, or a
+// percentage of the host's physical RAM.
+// validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
+// the CapOff opt-out, a positive size with an optional binary or decimal
+// suffix, or a positive percentage of the host's physical RAM.
+//
+// A zero is rejected even though systemd parses it: systemd logs "memory limit
+// is out of range, ignoring" and leaves the cgroup uncapped, so accepting it
+// would write a unit that looks capped and enforces nothing.
+func validateMemoryCap(name, value string) error {
+	s := strings.TrimSpace(value)
+	if s == "" || strings.EqualFold(s, CapOff) || strings.EqualFold(s, "infinity") {
+		return nil
+	}
+	bad := fmt.Errorf("%s must be a positive size (4G, 512M), a positive percent of RAM (75%%), or %q, got %q",
+		name, CapOff, value)
+	if strings.HasSuffix(s, "%") {
+		number := strings.TrimSuffix(s, "%")
+		percent, err := strconv.ParseFloat(number, 64)
+		if err != nil || percent <= 0 || percent != percent {
+			return bad
+		}
+		return nil
+	}
+	digits := 0
+	for digits < len(s) && s[digits] >= '0' && s[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return bad
+	}
+	size, err := strconv.ParseFloat(s[:digits], 64)
+	if err != nil || size <= 0 {
+		return bad
+	}
+	switch strings.ToUpper(s[digits:]) {
+	case "", "K", "M", "G", "T", "KB", "MB", "GB", "TB", "KIB", "MIB", "GIB", "TIB":
+		return nil
+	}
+	return fmt.Errorf("%s has an unknown size suffix, got %q", name, value)
+}
+
+// validateCPUQuota accepts the CapOff opt-out or a positive percentage of one
+// CPU.
+func validateCPUQuota(value string) error {
+	s := strings.TrimSpace(value)
+	if s == "" || strings.EqualFold(s, CapOff) {
+		return nil
+	}
+	bad := fmt.Errorf("--cpu-quota must be a positive percentage such as 200%% (or %q), got %q", CapOff, value)
+	if !strings.HasSuffix(s, "%") {
+		return bad
+	}
+	percent, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+	if err != nil || percent <= 0 {
+		return bad
+	}
+	return nil
+}
+
+// validateTasksMax accepts the CapOff opt-out, "infinity", or a positive
+// integer.
+func validateTasksMax(value string) error {
+	s := strings.TrimSpace(value)
+	if s == "" || strings.EqualFold(s, CapOff) || strings.EqualFold(s, "infinity") {
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return fmt.Errorf("--tasks-max must be a positive integer or %q, got %q", CapOff, value)
 	}
 	return nil
 }
