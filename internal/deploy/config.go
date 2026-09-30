@@ -213,9 +213,24 @@ const DefaultKeep = 3
 // It is overridable like every other cap: a size, a percentage of RAM, or
 // infinity bounds swap without forbidding it, and "off" restores systemd's
 // unbounded default.
+//
+// MemoryHigh defaults to "off" for the same reason, and the two defaults are
+// only safe together. A soft cap does not kill: it throttles and reclaims. With
+// MemorySwapMax=0 there is nowhere to reclaim anonymous pages to, so a
+// hold-everything allocator parks just above memory.high and creeps toward
+// memory.max instead of being OOM-killed. Measured on 2026-09-30 with
+// MemoryHigh=20%/MemoryMax=25% (the deployed 60%/75% ratio): memory.current
+// settled at 803 -> 831 MiB against a 787 MiB soft cap and a 983 MiB hard cap
+// with oom_kill 0, and only the job's own 600s manifest timeout ended it. That
+// turns a one-second OOM kill into a multi-minute pin, and on a --workers=1
+// host it occupies the only worker for the whole timeout. The guarantee P0-04
+// documents is that a runaway is *killed*, so the default is no soft cap --
+// which is also systemd's own default. The flag is unchanged: an operator who
+// wants throttling can still set --memory-high below --memory-max, and now
+// knows it delays the kill rather than replacing it.
 const (
 	DefaultMemoryMax     = "75%"
-	DefaultMemoryHigh    = "60%"
+	DefaultMemoryHigh    = CapOff
 	DefaultMemorySwapMax = "0"
 	DefaultCPUQuota      = "200%"
 	DefaultTasksMax      = "512"
@@ -361,7 +376,7 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.DurationVar(&f.Timeout, "timeout", 10*time.Minute, "overall timeout for the deploy")
 	fs.IntVar(&f.Keep, "keep", DefaultKeep, "inactive releases to retain per job (0 keeps every release)")
 	fs.StringVar(&f.MemoryMax, "memory-max", "", "systemd MemoryMax for the workspace: a size (4G) or a percent of host RAM (default "+DefaultMemoryMax+"; \""+CapOff+"\" emits no cap)")
-	fs.StringVar(&f.MemoryHigh, "memory-high", "", "systemd MemoryHigh, the soft memory ceiling (default "+DefaultMemoryHigh+"; \""+CapOff+"\" emits no cap)")
+	fs.StringVar(&f.MemoryHigh, "memory-high", "", "systemd MemoryHigh, the soft memory ceiling (default "+DefaultMemoryHigh+", so memory.max kills; a percent or size throttles and reclaims until memory.max instead)")
 	fs.StringVar(&f.MemorySwapMax, "memory-swap-max", "", "systemd MemorySwapMax, the cgroup's swap bound (default "+DefaultMemorySwapMax+", which forbids swap so MemoryMax binds; \""+CapOff+"\" leaves swap unbounded)")
 	fs.StringVar(&f.CPUQuota, "cpu-quota", "", "systemd CPUQuota, percent of one CPU (default "+DefaultCPUQuota+"; \""+CapOff+"\" emits no cap)")
 	fs.StringVar(&f.TasksMax, "tasks-max", "", "systemd TasksMax, processes and threads (default "+DefaultTasksMax+"; \""+CapOff+"\" emits no cap)")

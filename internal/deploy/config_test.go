@@ -808,6 +808,20 @@ func TestDeployUnitCapsSurface(t *testing.T) {
 		if !strings.Contains(unit, "\nMemorySwapMax="+DefaultMemorySwapMax+"\n") {
 			t.Errorf("the rendered unit does not carry the default swap bound:\n%s", unit)
 		}
+		// The default soft cap is the opt-out: with memory.high off, memory.max
+		// is what stops a runaway instead of throttling it below the hard cap.
+		if cfg.MemoryHigh != CapOff {
+			t.Errorf("MemoryHigh = %q, want the default %q", cfg.MemoryHigh, CapOff)
+		}
+		if strings.Contains(unit, "MemoryHigh=") {
+			t.Errorf("the default deploy emits a soft cap:\n%s", unit)
+		}
+		// An explicit soft cap still reaches the unit: only the default changed.
+		withHigh := cfg.UnitOptions()
+		withHigh.MemoryHigh = "50%"
+		if !strings.Contains(UnitFile(cfg.Target, withHigh), "\nMemoryHigh=50%\n") {
+			t.Errorf("an explicit MemoryHigh no longer reaches the unit:\n%s", UnitFile(cfg.Target, withHigh))
+		}
 	})
 
 	t.Run("flags override", func(t *testing.T) {

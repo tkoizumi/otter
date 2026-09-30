@@ -108,12 +108,14 @@ func TestUnitFileEmitsResourceCaps(t *testing.T) {
 }
 
 // The defaults are what a plain `otter deploy` writes, so they must be present
-// without any flag being passed.
+// without any flag being passed. MemoryHigh is the exception: its default is the
+// "off" opt-out, because a soft cap delays the OOM kill instead of replacing it
+// (with MemorySwapMax=0 there is nowhere to reclaim the pages to, so a runaway
+// parks above memory.high). Under the default, memory.max is what kills.
 func TestUnitFileEmitsTheDefaultCaps(t *testing.T) {
 	unit := UnitFile(testTarget(), testUnitOptions())
 	for _, want := range []string{
 		"\nMemoryMax=" + DefaultMemoryMax + "\n",
-		"\nMemoryHigh=" + DefaultMemoryHigh + "\n",
 		"\nMemorySwapMax=" + DefaultMemorySwapMax + "\n",
 		"\nCPUQuota=" + DefaultCPUQuota + "\n",
 		"\nTasksMax=" + DefaultTasksMax + "\n",
@@ -121,6 +123,12 @@ func TestUnitFileEmitsTheDefaultCaps(t *testing.T) {
 		if !strings.Contains(unit, want) {
 			t.Errorf("unit file is missing the default cap %q\n---\n%s", want, unit)
 		}
+	}
+	if DefaultMemoryHigh != CapOff {
+		t.Errorf("DefaultMemoryHigh = %q, want the %q opt-out: a soft cap turns the kill into a pin", DefaultMemoryHigh, CapOff)
+	}
+	if strings.Contains(unit, "MemoryHigh=") {
+		t.Errorf("the default deploy emits a soft cap; it would pin a runaway below MemoryMax instead of letting the OOM killer run:\n%s", unit)
 	}
 }
 
