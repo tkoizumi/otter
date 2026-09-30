@@ -1,0 +1,72 @@
+=== Phase 0 evidence: HW-6b, the disk-fill drill on the real host ===
+task:      P0-11. Its deliverable says "Include a disk-fill drill: the failure mode is
+           not slow, it is the daemon cannot write".
+date:      2026-09-30 19:17:00 EDT
+host:      the Castor runtime host 44.213.227.52, workspace otter-examples-e0309b8c, otter v0.3.0-rc1
+method:    fallocate a single file on the data filesystem, with a detached safety net that
+           removes it unconditionally after 180-300s so a lost session cannot leave the host full.
+           sshd and systemd live in /run (tmpfs) and need no disk, so the session survives.
+
+--- pass 1: 200 MiB free (99%) ---
+  otter can write 1 MiB:      YES
+  root can write 1 MiB:       YES
+  /health:                    ok
+  a run of drill-job:         accepted and started
+  Result: headroom, not failure. The runtime is unaffected at 99% full.
+
+--- pass 2: 10 MiB free (100%) ---
+  exact free:                 10232 KiB
+  otter can write 1 MiB:      YES
+  root can write 1 MiB:       YES
+  /health:                    ok, unit active
+  a run of drill-job:         exit=0, status succeeded, 558ms
+  Result: 10 MiB is still ample for a small job. The daemon commits its WAL, writes its
+  logs and reports health with kilobytes to spare, so "the daemon cannot write" is NOT
+  reached by filling the disk alone -- it needs a write larger than what is left.
+
+--- pass 3: 10 MiB free, and a job that emits 64 MiB ---
+  free at start:              10232 KiB
+  the job:                    bigout, managed nothing, emits ~64 MiB to stdout
+  run:                        1d54e281-0235-4db7-b118-05d9c22fd83e
+  RESULT:                     succeeded, exit_code 0, 5.073s  <- succeeded
+
+  and the journal, repeatedly, at level error:
+
+    {"error":"runs: commit log batch: database or disk is full (13)",
+     "event":"run_log_write_failed","level":"error","lines":50,
+     "run_id":"1d54e281-0235-4db7-b118-05d9c22fd83e", ...}
+    ... the same event 11 times as the batches failed ...
+    {"attempt":1,"event":"run_succeeded","exit_code":0,"status":"succeeded", ...}
+    {"error":"runs: commit log batch: database or disk is full (13)",
+     "event":"run_log_write_failed","level":"error", ...}   <- again, AFTER the success
+
+--- what this actually establishes ---
+The failure is loud in the JOURNAL and silent everywhere an operator normally looks:
+
+  the run list        says "succeeded"
+  /health             says ok
+  systemd             says active
+  the captured output is incomplete, and only the journal says so
+
+So the disk-check this task adds is not a convenience. It is the only surface that would
+report this condition at all, and it reports it by SILENCE: the check stops pinging its
+dead-man service, and that service own grace timer raises the alarm. A check that could
+not measure -- no data directory, no curl, a full filesystem -- must go quiet for the same
+reason, because a host that cannot write may also be unable to send.
+
+It is also the sharpest argument for the free-space floor: the daemon reports success
+while losing a job output, and 10 MiB of headroom looked like plenty right up until a
+job produced more than that.
+
+--- state after the drill ---
+  the filler was removed on every pass; the filesystem returned to 14 GiB free
+  /health ok, unit active, the otter account can write again
+  the bigout job was removed and the workspace is back to its three jobs
+  otter.db: 12800000 bytes -- it absorbed about 12 MB of logs before the space ran out,
+  which is the order of magnitude a 64 MiB job needed and did not get
+
+--- limits of this drill ---
+The dead-man ALERT itself is not exercised end to end: OTTER_DISK_URL needs an external
+service that does not exist, the same missing piece as HW-4b heartbeat URL. What the
+artifact drill (scripts/drill/disk-pressure.sh) proves is the check going silent when a
+threshold is crossed, against a stand-in listener that records the pings.

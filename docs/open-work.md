@@ -100,6 +100,7 @@ paying operator would care.
 | OT-017 | The backup/restore drill never runs the case where the original data directory still exists | test | `scripts/drill/backup-restore.sh` moves the original away, so silent resolution against the old directory is untested; the drill's own `release_source_dir` assertion would catch it | open |
 | OT-018 | The prune test copies the CLI's pin query instead of exercising it | test | `internal/daemon/retry_binding_test.go` (import cycle keeps `internal/cli` out); the CLI's own test covers that entry point | open |
 | OT-019 | The backup drill does not cover the secrets file or the pinned binary | test | `docs/operations.md` §Backups lists both; the drill covers database, releases, environments, tools and job sources | open |
+| OT-020 | A run whose captured output cannot be written still reports **succeeded**, and no queryable surface signals the loss | design | Found by the HW-6b disk-fill on the real host: with 10 MiB free, a job emitting 64 MiB produced repeated `run_log_write_failed` events (`runs: commit log batch: database or disk is full (13)`) at level error, while the run finished `status=succeeded, exit_code=0` and `/health` stayed `ok`. The job's exit code is honest, but its output is gone and only the journal says so. Evidence: `docs/evidence/phase-0/2026-09-30-p0-11-host-hw6b-disk-fill.txt`. A per-run log-loss flag surfaced through the API would make it visible where operators look | open |
 
 #### Backlog behavior to document
 
