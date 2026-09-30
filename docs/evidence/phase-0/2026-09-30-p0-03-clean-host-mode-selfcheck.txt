@@ -29,7 +29,9 @@
 #         mode itself never ran against a host here; the two-host preflight was
 #         driven by a test double that answers the probe from local directories
 #         (the selfcheck prints which fields it substitutes).
-# Build:  branch p0-03-clean-host-mode @ 07e6484 (v0.2.0-38-g07e6484)
+# Build:  branch p0-03-clean-host-mode. Sections 1-4 ran against 07e6484
+#         (v0.2.0-38-g07e6484); section 5 was re-run after 8ca7f5c, which
+#         changed only the Go wrapper around the same selfcheck.
 # Commands: the five sections below, in order.
 # Falsifiability:
 #   * DRILL_SABOTAGE=drop-marker must make the same-host drill exit non-zero at
@@ -238,7 +240,7 @@ exit=0
 $ scripts/go test ./internal/drill/ -count=1 -v
 === RUN   TestSelfchecks
 === RUN   TestSelfchecks/clean-host-mode.sh
-    selfcheck_test.go:41: selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.GfGyxC/otter)
+    selfcheck_test.go:42: selfcheck: 1/6 parameter enforcement (probe binary: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-selfcheck-clean-host.RAI9ff/otter)
         selfcheck:   ok  opt-in without parameters names all seven missing values and does not fall back
         selfcheck:   ok  parameters without the opt-in refuse instead of silently running the local drill
         selfcheck:   ok  an unknown opt-in value refuses
@@ -266,8 +268,8 @@ $ scripts/go test ./internal/drill/ -count=1 -v
         selfcheck:       red reason: the target data directory /var/lib/otter is not clean (not empty (1 entries: otter.db )): a restore onto a host that alr
         selfcheck:   ok  an empty target passes the gate; the run then stops on the next precondition (the target has no systemd unit named otter-selfcheck (service_state=no)
         selfcheck: ok: the clean-host mode validates, refuses, gates, backs up and restores without a host
---- PASS: TestSelfchecks (3.26s)
-    --- PASS: TestSelfchecks/clean-host-mode.sh (3.26s)
+--- PASS: TestSelfchecks (3.13s)
+    --- PASS: TestSelfchecks/clean-host-mode.sh (3.13s)
 PASS
-ok  	github.com/tkoizumi/otter/internal/drill	3.421s
+ok  	github.com/tkoizumi/otter/internal/drill	3.286s
 exit=0
