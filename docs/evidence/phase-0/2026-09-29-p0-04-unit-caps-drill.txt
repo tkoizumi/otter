@@ -3,25 +3,27 @@
 # Claim (CA-08): a deliberately runaway Python job is killed by the caps in
 # the generated systemd unit; otterd survives and the host stays responsive.
 #
-# When:   2026-09-29 22:00 EDT (2026-09-30 02:00 UTC)
+# When:   2026-09-29 22:44 EDT (2026-09-30 02:44 UTC)
 # Where:  macOS 15.7.3 arm64 / Docker Desktop; the systemd host is an
 #         Ubuntu 24.04 container (systemd 255, kernel 5.10.76-linuxkit),
 #         started --privileged --cgroupns=host with /sys/fs/cgroup mounted.
-# Build:  branch p0-04-unit-caps at 9909051 (working tree dirty at capture)
+# Build:  branch p0-04-unit-caps at def32b8, clean tree (v0.2.0-10-gdef32b8)
 # Command: GOMODCACHE=/Users/taka/Desktop/otter/.cache/gomod make drill DRILL=unit-caps
 #
 # The unit installed is rendered by the real renderer
 # (scripts/drill/unit-caps-gen -> internal/deploy.UnitFile). The drill
 # overrides MemoryMax to 192M and MemoryHigh to off so the hard cap is
-# the binding constraint; production defaults are 75% / 60%.
+# the binding constraint; production defaults are 75% / 60%. It asserts the
+# cgroup's memory.max equals the rendered MemoryMax (line 'memory.max: set
+# from MemoryMax=192M'), and that a bounded /health request still succeeds.
 #
 # Full raw output follows. EXIT=0.
 
 
 ===== drill: unit-caps =====
-date:     2026-09-29 22:00:59 EDT
+date:     2026-09-29 22:44:24 EDT
 host:     Darwin 24.6.0 (arm64)
-checkout: v0.2.0-8-g9909051-dirty
+checkout: v0.2.0-10-gdef32b8
 unit-caps: image      otter-systemd-caps
 unit-caps: target     linux/arm64
 unit-caps: caps       memory-max=192M memory-high=off cpu-quota=200% tasks-max=512
@@ -81,19 +83,19 @@ runaway: activated 15ec3e346c71
 Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
 
 unit-caps: waiting for the health endpoint
-health: {"status":"ok","version":"dev","uptime_seconds":0.219896958}
-cgroup: /docker/ed55a720feeadb4e8af2315cc3becdc344899a01294fb271f655ea1dfe50eb10/system.slice/otterd-drill.service
-otterd MainPID before: 132
-memory.max:  201326592
+health: {"status":"ok","version":"dev","uptime_seconds":0.206328334}
+cgroup: /docker/939c798bb5f9ab4fb459207e1ee6904c6482c7f2761f49394b218a0948e6b611/system.slice/otterd-drill.service
+memory.max:  201326592 (set from MemoryMax=192M)
 memory.high: max
+otterd MainPID before: 139
 
 unit-caps: triggering the runaway job
-a51169d0-7dcb-4e26-8c03-279936f2405c
+023ea5cf-3ccf-4f43-a89d-911ec587e360
 
 --- cgroup memory.events ---
 low 0
 high 0
-max 5190
+max 5126
 oom 1
 oom_kill 1
 --- cgroup memory.peak (bytes) ---
@@ -103,21 +105,19 @@ oom_kill 1
 
 --- unit state after the kill ---
 is-active: active
-otterd MainPID after:  132
+otterd MainPID after:  139
 NRestarts:             0
 OOMPolicy:             continue
 --- runaway processes still alive (want none) ---
 (none)
 --- run history ---
 RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
-a51169d0-7dcb-4e26-8c03-279936f2405c  runaway  manual   failed  1        2026-09-30T02:01:06Z  4.041s
+023ea5cf-3ccf-4f43-a89d-911ec587e360  runaway  manual   failed  1        2026-09-30T02:44:32Z  6.401s
 --- host responsiveness ---
-host-responsive
 is-system-running: running
---- daemon journal, OOM lines ---
-Sep 30 02:01:10 ed55a720feea systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
---- otterd still serving ---
-{"status":"ok","version":"dev","uptime_seconds":5.449769919}
+{"status":"ok","version":"dev","uptime_seconds":7.756692212}
 
-unit-caps: PASS: the runaway job was OOM-killed, otterd (PID 132) survived, and the host answered.
+--- daemon journal, OOM lines ---
+Sep 30 02:44:38 939c798bb5f9 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS: the runaway job was OOM-killed, otterd (PID 139) survived, and the host answered.
 EXIT=0
