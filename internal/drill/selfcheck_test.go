@@ -31,6 +31,7 @@ func TestSelfchecks(t *testing.T) {
 	if len(scripts) == 0 {
 		t.Fatalf("no selfchecks found at %s: the drills' hostless checks are gone", pattern)
 	}
+	registerInputs(t, root)
 
 	for _, script := range scripts {
 		script := script
@@ -43,6 +44,36 @@ func TestSelfchecks(t *testing.T) {
 				t.Fatalf("%s failed: %v", filepath.Base(script), err)
 			}
 		})
+	}
+}
+
+// registerInputs reads the shell the selfchecks are made of, so the Go test
+// cache is keyed on it.
+//
+// The selfchecks run `sh`, which reads the drill scripts in a child process.
+// cmd/go tracks the files a test *opens*, not the ones its children open, so
+// without this the package would serve a cached PASS after a drill changed —
+// exactly the stale green this test exists to prevent. Reading each file here
+// makes it a declared input of the test result.
+func registerInputs(t *testing.T, root string) {
+	t.Helper()
+	var files []string
+	for _, dir := range []string{
+		filepath.Join(root, "scripts", "drill", "selfcheck"),
+		filepath.Join(root, "scripts", "drill", "lib"),
+		filepath.Join(root, "scripts", "drill", "modes"),
+	} {
+		found, err := filepath.Glob(filepath.Join(dir, "*.sh"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", dir, err)
+		}
+		files = append(files, found...)
+	}
+	files = append(files, filepath.Join(root, "scripts", "drill", "backup-restore.sh"))
+	for _, file := range files {
+		if _, err := os.ReadFile(file); err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
 	}
 }
 
