@@ -912,8 +912,9 @@ func TestDeployUnitCapsSurface(t *testing.T) {
 	})
 }
 
-// A malformed cap would be written into the unit and only fail on the host, at
-// restart, after the deploy claimed success. Each is refused locally.
+// A malformed cap or retention window would be written into the unit and only
+// fail on the host, at restart, after the deploy claimed success. Each is
+// refused locally.
 func TestDeployRejectsMalformedCaps(t *testing.T) {
 	base := func() Config {
 		target := DefaultTarget()
@@ -941,6 +942,9 @@ func TestDeployRejectsMalformedCaps(t *testing.T) {
 		{"tasks max zero", func(c *Config) { c.TasksMax = "0" }, "tasks-max"},
 		{"rw path relative", func(c *Config) { c.ReadWritePaths = []string{"srv/scratch"} }, "rw-path"},
 		{"rw path in home", func(c *Config) { c.ReadWritePaths = []string{"/home/deploy/scratch"} }, "ProtectHome"},
+		{"run retention is not a Go duration", func(c *Config) { c.RunRetention = "90d" }, "run-retention"},
+		{"log retention negative", func(c *Config) { c.LogRetention = "-1h" }, "log-retention"},
+		{"capture retention not a duration", func(c *Config) { c.CaptureRetention = "forever" }, "capture-retention"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base()
@@ -956,4 +960,97 @@ func TestDeployRejectsMalformedCaps(t *testing.T) {
 			}
 		})
 	}
+}
+
+// OT-026: the retention windows are committed policy, not a line in the
+// gitignored otter.daemon.env, so a rebuilt host comes up with them. They are
+// delivered as flags on ExecStart, which the daemon applies after the
+// environment, so a stale value in the daemon env file cannot shadow the
+// committed one.
+func TestDeployRetentionSurface(t *testing.T) {
+	newRepo := func(t *testing.T) string {
+		t.Helper()
+		repo := t.TempDir()
+		if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		job := filepath.Join(repo, "jobs", "counter")
+		if err := os.MkdirAll(job, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(job, "otter.yaml"),
+			[]byte("version: 1\nname: counter\nentrypoint: main.py\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(job, "main.py"), []byte("print(1)\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+	load := func(t *testing.T, repo string, f *Flags) Config {
+		t.Helper()
+		cfg, err := LoadConfig(repo, f, HostDeploy{})
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("an unset window emits no flag, so the daemon default stands", func(t *testing.T) {
+		cfg := load(t, newRepo(t), &Flags{set: map[string]bool{}})
+		if cfg.RunRetention != "" || cfg.LogRetention != "" || cfg.CaptureRetention != "" {
+			t.Errorf("retention defaulted to %q/%q/%q, want empty",
+				cfg.RunRetention, cfg.LogRetention, cfg.CaptureRetention)
+		}
+		unit := UnitFile(cfg.Target, cfg.UnitOptions())
+		for _, flag := range []string{"--run-retention", "--log-retention", "--capture-retention"} {
+			if strings.Contains(unit, flag) {
+				t.Errorf("an unset window emitted %s:\n%s", flag, unit)
+			}
+		}
+	})
+
+	t.Run("the config file sets them and they reach ExecStart", func(t *testing.T) {
+		repo := newRepo(t)
+		config := "run_retention: 2160h\nlog_retention: 720h\ncapture_retention: 168h\n"
+		if err := os.WriteFile(filepath.Join(repo, ConfigFileName), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := load(t, repo, &Flags{set: map[string]bool{}})
+		if cfg.RunRetention != "2160h" || cfg.LogRetention != "720h" || cfg.CaptureRetention != "168h" {
+			t.Fatalf("config file retention did not apply: %q/%q/%q",
+				cfg.RunRetention, cfg.LogRetention, cfg.CaptureRetention)
+		}
+		unit := UnitFile(cfg.Target, cfg.UnitOptions())
+		for _, want := range []string{"--run-retention 2160h", "--log-retention 720h", "--capture-retention 168h"} {
+			if !strings.Contains(unit, want) {
+				t.Errorf("ExecStart is missing %q:\n%s", want, unit)
+			}
+		}
+	})
+
+	t.Run("a flag beats the config file", func(t *testing.T) {
+		repo := newRepo(t)
+		if err := os.WriteFile(filepath.Join(repo, ConfigFileName), []byte("run_retention: 2160h\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := load(t, repo, &Flags{RunRetention: "24h", set: map[string]bool{}})
+		if cfg.RunRetention != "24h" {
+			t.Errorf("RunRetention = %q, want the flag's 24h", cfg.RunRetention)
+		}
+	})
+
+	t.Run("a misspelt key is refused, not silently ignored", func(t *testing.T) {
+		repo := newRepo(t)
+		if err := os.WriteFile(filepath.Join(repo, ConfigFileName), []byte("run_retentionn: 2160h\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadConfig(repo, &Flags{set: map[string]bool{}}, HostDeploy{})
+		if err == nil {
+			t.Fatal("a misspelt deploy-config key was accepted; a typo must not leave a host retaining forever")
+		}
+		if !strings.Contains(err.Error(), "run_retentionn") {
+			t.Errorf("refusal %q does not name the offending key", err)
+		}
+	})
 }

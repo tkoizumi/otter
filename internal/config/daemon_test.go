@@ -117,13 +117,19 @@ func TestRetentionDefaultsAreZero(t *testing.T) {
 		t.Errorf("retention defaults = log %s, run %s; want both 0 (retain forever)",
 			c.LogRetention, c.RunRetention)
 	}
+	// Capture is the exception: payloads are large, so they expire by default
+	// rather than growing for the life of the host.
+	if c.CaptureRetention != DefaultCaptureRetention {
+		t.Errorf("CaptureRetention default = %s, want %s", c.CaptureRetention, DefaultCaptureRetention)
+	}
 }
 
-// Both windows are reachable from the environment and the flag, and the flag
-// wins over the environment.
+// All three windows are reachable from the environment and the flag, and the
+// flag wins over the environment.
 func TestRetentionFromEnvAndFlags(t *testing.T) {
 	t.Setenv("OTTER_LOG_RETENTION", "336h")
 	t.Setenv("OTTER_RUN_RETENTION", "2160h")
+	t.Setenv("OTTER_CAPTURE_RETENTION", "120h")
 
 	c := DefaultDaemonConfig("test")
 	if err := c.ApplyEnv(); err != nil {
@@ -135,10 +141,13 @@ func TestRetentionFromEnvAndFlags(t *testing.T) {
 	if c.RunRetention != 2160*time.Hour {
 		t.Errorf("RunRetention = %s, want 2160h", c.RunRetention)
 	}
+	if c.CaptureRetention != 120*time.Hour {
+		t.Errorf("CaptureRetention = %s, want 120h", c.CaptureRetention)
+	}
 
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	c.RegisterFlags(fs)
-	if err := fs.Parse([]string{"--log-retention", "24h", "--run-retention", "720h"}); err != nil {
+	if err := fs.Parse([]string{"--log-retention", "24h", "--run-retention", "720h", "--capture-retention", "48h"}); err != nil {
 		t.Fatal(err)
 	}
 	if c.LogRetention != 24*time.Hour {
@@ -146,6 +155,9 @@ func TestRetentionFromEnvAndFlags(t *testing.T) {
 	}
 	if c.RunRetention != 720*time.Hour {
 		t.Errorf("RunRetention = %s, want the flag value 720h", c.RunRetention)
+	}
+	if c.CaptureRetention != 48*time.Hour {
+		t.Errorf("CaptureRetention = %s, want the flag value 48h", c.CaptureRetention)
 	}
 }
 
@@ -161,6 +173,13 @@ func TestRetentionRejectsMalformedValues(t *testing.T) {
 	c = DefaultDaemonConfig("test")
 	if err := c.ApplyEnv(); err == nil {
 		t.Error("a non-duration OTTER_RUN_RETENTION was accepted")
+	}
+
+	t.Setenv("OTTER_RUN_RETENTION", "")
+	t.Setenv("OTTER_CAPTURE_RETENTION", "a week")
+	c = DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err == nil {
+		t.Error("a non-duration OTTER_CAPTURE_RETENTION was accepted")
 	}
 }
 

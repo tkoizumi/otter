@@ -107,6 +107,50 @@ func TestUnitFileEmitsResourceCaps(t *testing.T) {
 	}
 }
 
+// OT-026: the retention windows are flags on ExecStart, not Environment= lines,
+// because the daemon applies its flags after the environment. A window committed
+// in otter.deploy.yaml therefore wins over a stale copy left in the
+// EnvironmentFile= instead of being shadowed by it -- which is the failure that
+// let a rebuilt host come up retaining forever.
+func TestUnitFileEmitsRetentionFlags(t *testing.T) {
+	opts := testUnitOptions()
+	opts.RunRetention = "2160h"
+	opts.LogRetention = "720h"
+	opts.CaptureRetention = "168h"
+	unit := UnitFile(testTarget(), opts)
+
+	execStart := ""
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStart=") {
+			execStart = line
+		}
+	}
+	for _, want := range []string{"--run-retention 2160h", "--log-retention 720h", "--capture-retention 168h"} {
+		if !strings.Contains(execStart, want) {
+			t.Errorf("ExecStart is missing %q:\n%s", want, execStart)
+		}
+	}
+	// And nowhere else: a duplicate in the environment would reintroduce exactly
+	// the ordering ambiguity this design avoids.
+	for _, leaked := range []string{"OTTER_RUN_RETENTION=", "OTTER_LOG_RETENTION=", "OTTER_CAPTURE_RETENTION="} {
+		if strings.Contains(unit, leaked) {
+			t.Errorf("retention leaked into the environment as %q:\n%s", leaked, unit)
+		}
+	}
+}
+
+// An unset window emits no flag, so the daemon's own default applies and a
+// window removed from otter.deploy.yaml disappears from the unit instead of
+// being frozen at its last value.
+func TestUnitFileOmitsUnsetRetention(t *testing.T) {
+	unit := UnitFile(testTarget(), testUnitOptions())
+	for _, flag := range []string{"--run-retention", "--log-retention", "--capture-retention"} {
+		if strings.Contains(unit, flag) {
+			t.Errorf("an unset retention window emitted %s:\n%s", flag, unit)
+		}
+	}
+}
+
 // The defaults are what a plain `otter deploy` writes, so they must be present
 // without any flag being passed. MemoryHigh is the exception: its default is the
 // "off" opt-out, because a soft cap delays the OOM kill instead of replacing it

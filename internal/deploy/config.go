@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -82,6 +83,21 @@ type Config struct {
 	// job that writes scratch outside its workspace keeps working under
 	// ProtectSystem=strict.
 	ReadWritePaths []string
+
+	// RunRetention, LogRetention and CaptureRetention are the daemon's retention
+	// windows, rendered into the generated unit's ExecStart as --run-retention,
+	// --log-retention and --capture-retention.
+	//
+	// They belong here rather than only in the gitignored otter.daemon.env
+	// because they are resource policy, not a per-machine secret: a rebuilt host
+	// must come up with the same windows without anyone remembering to retype
+	// them. Empty means "say nothing", which leaves the daemon's own default --
+	// retain runs and logs forever, expire capture payloads after 168h. An
+	// explicit flag beats a value left in the daemon environment file, so a stale
+	// copy there cannot silently outlive the committed one.
+	RunRetention     string
+	LogRetention     string
+	CaptureRetention string
 
 	// DryRun prints the plan and performs no remote change.
 	DryRun bool
@@ -178,6 +194,14 @@ type Flags struct {
 	// write, collected from every --rw-path. They extend the unit's
 	// ReadWritePaths= under ProtectSystem=strict.
 	ReadWritePaths stringList
+
+	// RunRetention, LogRetention and CaptureRetention are the daemon's retention
+	// windows, passed to the deployed unit as flags. Empty means "use the
+	// daemon's default"; see Config for why they are committed rather than left
+	// in the environment file.
+	RunRetention     string
+	LogRetention     string
+	CaptureRetention string
 
 	// Build forces a compile from Go source, refusing to fall back to released
 	// binaries. It is how a contributor deploying from the runtime checkout
@@ -339,6 +363,12 @@ type deployFile struct {
 	CPUQuota       string   `yaml:"cpu_quota"`
 	TasksMax       string   `yaml:"tasks_max"`
 	ReadWritePaths []string `yaml:"read_write_paths"`
+
+	// Retention windows for the daemon's growing stores. Committed because a
+	// rebuild must reproduce them; see Config.RunRetention.
+	RunRetention     string `yaml:"run_retention"`
+	LogRetention     string `yaml:"log_retention"`
+	CaptureRetention string `yaml:"capture_retention"`
 }
 
 // fileConfig is the parsed, committed otter.deploy.yaml.
@@ -347,6 +377,7 @@ type fileConfig struct {
 	EnvFile   string
 	Workspace fileWorkspace
 	Unit      unitSettings
+	Daemon    daemonSettings
 }
 
 // unitSettings is what a deploy config file may say about the generated unit's
@@ -360,6 +391,17 @@ type unitSettings struct {
 	CPUQuota       string
 	TasksMax       string
 	ReadWritePaths []string
+}
+
+// daemonSettings is what a deploy config file may say about the daemon's own
+// retention windows. It is separate from unitSettings because it is daemon
+// policy that happens to be delivered through the unit, and separate from
+// Target for the same reason a cap is: it describes the workload, not how to
+// reach the machine, so it must not travel through the deploy state.
+type daemonSettings struct {
+	RunRetention     string
+	LogRetention     string
+	CaptureRetention string
 }
 
 // RegisterFlags binds the deploy flags.
@@ -401,6 +443,9 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.CPUQuota, "cpu-quota", "", "systemd CPUQuota, percent of one CPU (default "+DefaultCPUQuota+"; \""+CapOff+"\" emits no cap)")
 	fs.StringVar(&f.TasksMax, "tasks-max", "", "systemd TasksMax, processes and threads (default "+DefaultTasksMax+"; \""+CapOff+"\" emits no cap)")
 	fs.Var(&f.ReadWritePaths, "rw-path", "extra path the service may write under ProtectSystem=strict (repeatable)")
+	fs.StringVar(&f.RunRetention, "run-retention", "", "how long terminal run history is kept, e.g. 2160h (empty: the daemon's default, retain forever)")
+	fs.StringVar(&f.LogRetention, "log-retention", "", "how long a run's captured output is kept, e.g. 720h (empty: the daemon's default, retain forever)")
+	fs.StringVar(&f.CaptureRetention, "capture-retention", "", "how long captured HTTP payloads are kept, e.g. 168h (empty: the daemon's default)")
 }
 
 // ParseDeployFlags parses the arguments of `otter deploy`.
@@ -539,8 +584,10 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 	//    default. A config file's writable paths are kept and the flag's are
 	//    added, so a one-off --rw-path does not drop the committed ones.
 	var fileUnit unitSettings
+	var fileDaemon daemonSettings
 	if file != nil {
 		fileUnit = file.Unit
+		fileDaemon = file.Daemon
 	}
 	cfg.MemoryMax = firstNonEmpty(f.MemoryMax, fileUnit.MemoryMax, DefaultMemoryMax)
 	cfg.MemoryHigh = firstNonEmpty(f.MemoryHigh, fileUnit.MemoryHigh, DefaultMemoryHigh)
@@ -548,6 +595,14 @@ func LoadConfig(projectRoot string, f *Flags, previous HostDeploy) (Config, erro
 	cfg.CPUQuota = firstNonEmpty(f.CPUQuota, fileUnit.CPUQuota, DefaultCPUQuota)
 	cfg.TasksMax = firstNonEmpty(f.TasksMax, fileUnit.TasksMax, DefaultTasksMax)
 	cfg.ReadWritePaths = append(append([]string{}, fileUnit.ReadWritePaths...), f.ReadWritePaths...)
+
+	// 5b. The daemon's retention windows. Precedence matches the caps, and there
+	//     is deliberately no built-in default: an unset window emits nothing so
+	//     the daemon's own default applies, and a window dropped from the file
+	//     disappears from the unit instead of being frozen at its last value.
+	cfg.RunRetention = firstNonEmpty(f.RunRetention, fileDaemon.RunRetention)
+	cfg.LogRetention = firstNonEmpty(f.LogRetention, fileDaemon.LogRetention)
+	cfg.CaptureRetention = firstNonEmpty(f.CaptureRetention, fileDaemon.CaptureRetention)
 
 	// 6. The daemon-wide environment file. It is optional: a deployment that
 	//    configures nothing beyond per-job secrets does not need one.
@@ -600,8 +655,14 @@ func loadConfigFile(path string) (*fileConfig, error) {
 		return nil, fmt.Errorf("read deploy config %s: %w", path, err)
 	}
 
+	// Strict decoding: an unknown key in this file is almost always a typo, and a
+	// typo here is precisely how a retention window can look configured while
+	// the host runs with none. yaml.v3 names the offending field, so a misspelt
+	// `run_retention` fails the deploy instead of being silently dropped.
 	var df deployFile
-	if err := yaml.Unmarshal(data, &df); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&df); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse deploy config %s: %w", path, err)
 	}
 
@@ -626,6 +687,11 @@ func loadConfigFile(path string) (*fileConfig, error) {
 			CPUQuota:       df.CPUQuota,
 			TasksMax:       df.TasksMax,
 			ReadWritePaths: df.ReadWritePaths,
+		},
+		Daemon: daemonSettings{
+			RunRetention:     df.RunRetention,
+			LogRetention:     df.LogRetention,
+			CaptureRetention: df.CaptureRetention,
 		},
 	}, nil
 }
@@ -917,6 +983,18 @@ func (c *Config) Validate() error {
 	if err := validateTasksMax(c.TasksMax); err != nil {
 		return err
 	}
+	// A malformed retention window would otherwise be written into the unit's
+	// ExecStart and only rejected by the daemon at restart, after the deploy had
+	// reported success.
+	for _, retention := range []struct{ name, value string }{
+		{"--run-retention", c.RunRetention},
+		{"--log-retention", c.LogRetention},
+		{"--capture-retention", c.CaptureRetention},
+	} {
+		if err := validateRetention(retention.name, retention.value); err != nil {
+			return err
+		}
+	}
 	for _, path := range c.ReadWritePaths {
 		if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t") {
 			return fmt.Errorf("--rw-path must be an absolute path without whitespace, got %q", path)
@@ -933,13 +1011,34 @@ func (c *Config) Validate() error {
 // UnitOptions is the resource policy this deploy bakes into the generated unit.
 func (c Config) UnitOptions() UnitOptions {
 	return UnitOptions{
-		MemoryMax:      c.MemoryMax,
-		MemoryHigh:     c.MemoryHigh,
-		MemorySwapMax:  c.MemorySwapMax,
-		CPUQuota:       c.CPUQuota,
-		TasksMax:       c.TasksMax,
-		ReadWritePaths: c.ReadWritePaths,
+		MemoryMax:        c.MemoryMax,
+		MemoryHigh:       c.MemoryHigh,
+		MemorySwapMax:    c.MemorySwapMax,
+		CPUQuota:         c.CPUQuota,
+		TasksMax:         c.TasksMax,
+		ReadWritePaths:   c.ReadWritePaths,
+		RunRetention:     c.RunRetention,
+		LogRetention:     c.LogRetention,
+		CaptureRetention: c.CaptureRetention,
 	}
+}
+
+// RetentionSummary renders the configured retention windows for the deploy plan,
+// so an operator sees which ones the unit is about to enforce rather than
+// discovering after the fact that none were set. Empty when none are configured,
+// which is what leaves the daemon's own defaults in place.
+func (c Config) RetentionSummary() string {
+	var parts []string
+	if v := strings.TrimSpace(c.RunRetention); v != "" {
+		parts = append(parts, "runs "+v)
+	}
+	if v := strings.TrimSpace(c.LogRetention); v != "" {
+		parts = append(parts, "logs "+v)
+	}
+	if v := strings.TrimSpace(c.CaptureRetention); v != "" {
+		parts = append(parts, "captures "+v)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // validateMemoryCap accepts what systemd's MemoryMax= and MemoryHigh= accept:
@@ -1053,6 +1152,29 @@ func validateTasksMax(value string) error {
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
 		return fmt.Errorf("--tasks-max must be a positive integer or %q, got %q", CapOff, value)
+	}
+	return nil
+}
+
+// validateRetention accepts an absent window, or a non-negative Go duration
+// such as 720h. An absent window is not "no retention": it means the deploy
+// says nothing and the daemon's own default applies, which for runs and logs is
+// retain-forever and for captures is 168h.
+//
+// The syntax is Go's, not a calendar's, because the value is handed to the
+// daemon's own flag parser on the host: `90d` is rejected here rather than
+// written into a unit that would fail to start.
+func validateRetention(name, value string) error {
+	s := strings.TrimSpace(value)
+	if s == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("%s must be a duration such as 2160h (or empty for the daemon's default), got %q", name, value)
+	}
+	if d < 0 {
+		return fmt.Errorf("%s must not be negative, got %q", name, value)
 	}
 	return nil
 }

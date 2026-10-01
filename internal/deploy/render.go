@@ -67,6 +67,17 @@ type UnitOptions struct {
 	// writes scratch outside its workspace keeps working. A path that does not
 	// exist yet is ignored rather than failing the start.
 	ReadWritePaths []string
+
+	// RunRetention, LogRetention and CaptureRetention are the daemon's retention
+	// windows, emitted as flags on ExecStart. Empty emits no flag, which leaves
+	// the daemon's own default (retain runs and logs forever; expire captures
+	// after 168h). They are flags rather than Environment= entries because the
+	// daemon applies flag values after the environment, so a window committed in
+	// otter.deploy.yaml wins over a stale copy in the EnvironmentFile= instead of
+	// being shadowed by it.
+	RunRetention     string
+	LogRetention     string
+	CaptureRetention string
 }
 
 // UnitFile renders the systemd unit for otterd.
@@ -100,8 +111,8 @@ func UnitFile(t Target, opts UnitOptions) string {
 	fmt.Fprintf(&b, "User=%s\n", t.RunAsUser)
 	fmt.Fprintf(&b, "Group=%s\n", t.RunAsUser)
 	fmt.Fprintf(&b, "WorkingDirectory=%s\n", t.WorkspaceDir())
-	fmt.Fprintf(&b, "ExecStart=%s --jobs %s --data %s --listen %s --log-format json\n",
-		t.BinaryPath(), t.JobsDir(), t.DataDir, t.Listen)
+	fmt.Fprintf(&b, "ExecStart=%s --jobs %s --data %s --listen %s --log-format json%s\n",
+		t.BinaryPath(), t.JobsDir(), t.DataDir, t.Listen, retentionFlags(opts))
 	// Two files, in precedence order: systemd applies a later EnvironmentFile
 	// over an earlier one, so daemon settings load first and the credentials
 	// every job shares load second.
@@ -181,6 +192,25 @@ func writeCap(b *strings.Builder, key, value string) {
 func CapEnabled(value string) bool {
 	v := strings.TrimSpace(value)
 	return v != "" && !strings.EqualFold(v, CapOff)
+}
+
+// retentionFlags renders the daemon's retention windows as ExecStart arguments.
+// An unset window emits nothing, so the daemon's own default stands and a window
+// dropped from otter.deploy.yaml disappears from the unit instead of being
+// frozen at its last value. Values are Go durations that the deploy has already
+// validated, so they never contain whitespace and need no quoting.
+func retentionFlags(opts UnitOptions) string {
+	var b strings.Builder
+	writeRetention(&b, "run-retention", opts.RunRetention)
+	writeRetention(&b, "log-retention", opts.LogRetention)
+	writeRetention(&b, "capture-retention", opts.CaptureRetention)
+	return b.String()
+}
+
+func writeRetention(b *strings.Builder, flag, value string) {
+	if v := strings.TrimSpace(value); v != "" {
+		fmt.Fprintf(b, " --%s %s", flag, v)
+	}
 }
 
 // readWritePaths is the set of paths the unit may write under

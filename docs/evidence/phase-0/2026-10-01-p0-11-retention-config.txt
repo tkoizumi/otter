@@ -1,0 +1,121 @@
+===== OT-026 (finding D1) — retention committed, rendered and in force ==========
+status:   closes finding D1 of the 2026-10-01 independent verification.
+date:     2026-10-01 EDT (host clock read 2026-10-01T03:50Z)
+where:    otter @ working tree on top of 5ca81ff, otter-platform untouched;
+          applied to the live host i-0ba293ef4c5926b04 / 52.202.163.124
+          (ip-10-42-0-131), workspace otter-examples-e0309b8c, otter v0.3.0-rc1
+
+The finding, restated: the three retention windows lived either on a host that no
+longer exists or in the gitignored otter.daemon.env, so the rebuilt host retained
+forever and nothing recorded that a window was ever wanted.
+
+WHAT CHANGED
+------------
+
+1. The windows are committed deploy config. otter.deploy.yaml gains
+   `run_retention`, `log_retention` and `capture_retention`; they merge with the
+   same precedence as the resource caps (flag > file > the daemon's own default,
+   and never the previous deploy, because a window describes the workload rather
+   than the machine).
+2. They are rendered into the unit's ExecStart as
+   `--run-retention … --log-retention … --capture-retention …`, not as
+   Environment= lines. The daemon applies flag values after it reads the
+   environment, so a committed window beats a stale copy left in the
+   EnvironmentFile= instead of being shadowed by it. An unset window emits no
+   flag, so a window dropped from the file disappears from the unit rather than
+   being frozen at its last value.
+3. The deploy config is decoded strictly. A misspelt key used to be silently
+   ignored, which is the same shape as the bug being fixed; `run_retentionn` now
+   fails the deploy and names the offending field.
+4. `OTTER_CAPTURE_RETENTION` exists. Capture retention previously had no
+   environment variable at all (only the flag), so the daemon's config surface
+   was two-thirds complete.
+5. `otter deploy --dry-run` prints the windows it is about to enforce, and prints
+   the daemon defaults when none are set — the visibility whose absence let D1 go
+   unnoticed.
+
+MUTATIONS (each must, and did, go red)
+--------------------------------------
+
+  render.go: drop the `--run-retention` emission
+      FAIL TestUnitFileEmitsRetentionFlags
+      FAIL TestDeployRetentionSurface/the_config_file_sets_them_and_they_reach_ExecStart
+  config.go: `dec.KnownFields(true)` -> `false`
+      FAIL TestDeployRetentionSurface/a_misspelt_key_is_refused,_not_silently_ignored
+  config/daemon.go: rename the OTTER_CAPTURE_RETENTION lookup
+      FAIL TestRetentionFromEnvAndFlags, TestRetentionRejectsMalformedValues
+  config.go: neuter validateRetention
+      FAIL 3 cases of TestDeployRejectsMalformedCaps (run/log/capture retention)
+
+LOCAL PROOF FOR THE COMMITTED FILE
+----------------------------------
+
+  $ cd otter_examples && otter deploy --dry-run --host ubuntu@52.202.163.124 …
+    plan:     retention: runs 2160h, logs 720h, captures 168h
+    nothing was changed (--dry-run)
+
+  go test ./...                     all packages pass
+  scripts/test-unit-names.sh        6 cases pass
+  scripts/test-otter-metric.sh      29 cases pass
+  scripts/test-disk-check.sh        18 cases pass
+
+THE HOST, BEFORE AND AFTER
+--------------------------
+
+Before (2026-10-01T03:13:47Z), the finding as recorded:
+
+  {"event":"retention_configured","log_retention":"0s","run_retention":"0s"}
+  ExecStart=…/bin/otterd --jobs … --data … --listen 127.0.0.1:7337 --log-format json
+
+Applied, and after (2026-10-01T03:50:08Z):
+
+  ExecStart=…/bin/otterd --jobs … --data … --listen 127.0.0.1:7337 --log-format json
+    --run-retention 2160h --log-retention 720h --capture-retention 168h
+  {"event":"capture_configured","retention":"168h0m0s"}
+  {"event":"retention_configured","log_retention":"720h0m0s","run_retention":"2160h0m0s"}
+  /health: {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":4.0…}
+  timers: otterd active, heartbeat.timer active, disk-check.timer active
+
+How it was applied, stated plainly: this was **not** a full `otter deploy`. A
+deploy from this checkout would have compiled and shipped a new daemon and moved
+the P0-05 pin, which is a decision this change does not have. Instead the flags
+were appended to the live unit's ExecStart and the unit reloaded and restarted.
+That edit was then shown to be exactly what the new renderer produces:
+
+  $ diff /tmp/examples-unit.service /tmp/live-unit.service
+  IDENTICAL: the live unit is exactly what the renderer emits
+
+where the rendered file came from `UnitFile(cfg.Target, cfg.UnitOptions())` over
+the committed otter_examples config with the host's listen address. So the next
+real deploy reproduces this unit from the committed file rather than reverting it,
+which is the property D1 was missing.
+
+The deployed binary already accepted all three flags (`otterd --help` on the host
+lists them), so no daemon rebuild was required to put the windows in force; the
+capture window is the daemon's own default value written out explicitly.
+
+WHERE THE CONFIG HAS TO LIVE, AND A SECOND GAP FOUND ON THE WAY
+---------------------------------------------------------------
+
+Committing the windows is only half the fix if the file itself is not committed.
+`otter_examples/otter.deploy.yaml` was **untracked** in that repository: the
+workspace id, and therefore anything else in the file, existed only in one
+checkout. The clean-host drill's whole premise is that a committed workspace id
+lets one set of parameters describe two hosts, and that id had never been
+committed either. The file is now tracked there (otter_examples `8b27693`), with
+the retention windows and no secrets.
+
+That matters beyond the stand-in: for Castor, the windows are durable only in the
+repository that owns the deployment, which is the P0-13 decision. A value typed
+into a host is D1 again.
+
+WHAT THIS DOES NOT PROVE
+------------------------
+
+  * The run/log windows are long (90 and 30 days), so nothing in the live store is
+    old enough to prune. This record proves the windows are *configured and
+    enforced*, not that they prune — pruning was re-derived separately on this
+    host in the 2026-10-01 verification record.
+  * A rebuild's reproduction of the unit is argued from the renderer's output, not
+    from having rebuilt the host. The next real deploy is the confirmation.
+  * `OTTER_WORKERS=1` has the same class of problem and is filed as OT-028.

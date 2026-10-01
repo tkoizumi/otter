@@ -89,22 +89,19 @@ conflicts are the ones git cannot see.
 
 1. **Ask Castor's job owner** which import, with destination, owner and business
    effect. Everything else is waiting on this. Still the critical path.
-2. **Restore retention on the live host (`OT-026`, finding D1).** The 2026-10-01
-   independent verification found the runtime runs `run_retention 0s /
-   log_retention 0s`: HW-6a's configuration was on the host destroyed on
-   2026-09-30, and no rebuild step re-applies it. Fix it with a deploy-time key or
-   a drop-in so a rebuild cannot silently revert it — capture retention still has
-   no configuration surface at all.
-3. **Fix the monitoring fixtures (`OT-027`, finding D2).** The suites are green
+2. **Fix the monitoring fixtures (`OT-027`, finding D2).** The suites are green
    with the publisher unsigned, the `DiskCheck` metric renamed and `heartbeat.sh`
    neutered; wire them into `make test`/CI while you are there.
-4. **Then the ordinary backlog**: HW-5 needs Castor's credential values, and the
-   OT-022 installer probe fix is small and self-contained.
+3. **Then the ordinary backlog**: HW-5 needs Castor's credential values, the
+   OT-022 installer probe fix is small and self-contained, and `OT-028` (split
+   daemon settings by secrecy) is the design follow-up to `OT-026`.
 
-The independent verification record is
+**Finding D1 is closed.** Retention is now committed in `otter.deploy.yaml` and
+rendered into the unit, so a rebuild reproduces it; the live host logs
+`run_retention=2160h0m0s log_retention=720h0m0s`. The independent verification
+record is
 [2026-10-01-p0-09-p0-11-independent-verification.txt](evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt):
-P0-09, P0-10 and P0-11's mechanism are `VERIFIED`; P0-11's deliverable is not, and
-that is D1 above.
+P0-09, P0-10 and P0-11 are all `VERIFIED`, and D1/D2 are the two findings it left.
 
 Do not start another verification round on `p0-08`. Its residual is three
 labelled conservative refusals, all with a terminating remedy, and it is not on

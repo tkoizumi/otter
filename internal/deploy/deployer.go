@@ -793,6 +793,15 @@ func (d *Deployer) plan(missing []string, started time.Time) *Result {
 	} else {
 		d.step("plan", "secrets:   no %s; jobs rely on their manifest env", SharedEnvFileName)
 	}
+	// Retention is committed policy, so the plan says which windows the unit is
+	// about to carry. Silence here means the daemon's own defaults, which is
+	// worth printing: a host that retains forever by omission is the failure
+	// this line exists to make visible before the change lands.
+	if windows := cfg.RetentionSummary(); windows != "" {
+		d.step("plan", "retention: %s", windows)
+	} else {
+		d.step("plan", "retention: daemon defaults (runs and logs forever, captures 168h)")
+	}
 	if len(cfg.Jobs) > 0 {
 		managed := d.managedJobs(cfg)
 		line := "release:   would stage and activate " + strings.Join(cfg.JobNames(), ", ")

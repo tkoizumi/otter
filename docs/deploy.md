@@ -365,6 +365,32 @@ every `--rw-path` are **merged**, so a one-off extra path on the command line
 does not drop the committed ones. The same applies to the repeatable flag itself
 — each `--rw-path` adds a path rather than replacing the previous one.
 
+### Retention windows
+
+Three stores have a retention window: terminal run history, a run's captured
+output, and captured HTTP payloads. All three are off or defaulted unless you say
+otherwise, and the daemon defaults are retain-forever for runs and logs and 168h
+for payloads.
+
+| What it bounds | Flag | `otter.deploy.yaml` | Unset means |
+| --- | --- | --- | --- |
+| terminal run history | `--run-retention` | `run_retention` | retain forever |
+| a run's captured output | `--log-retention` | `log_retention` | retain forever |
+| captured HTTP payloads | `--capture-retention` | `capture_retention` | expire after 168h |
+
+Values are Go durations — `720h`, `2160h`. Calendar spellings are refused
+(`90d`), before the push, because the daemon's own flag parser would refuse them
+at restart instead, after the deploy had reported success.
+
+**Commit them in `otter.deploy.yaml`, not in `otter.daemon.env`.** The env file is
+gitignored, so a window that lives only there does not survive a rebuild and
+nothing records that it was ever wanted. A committed window is rendered into the
+unit's `ExecStart`; the daemon applies flags *after* the environment, so the
+committed value also wins over a stale copy left in the env file rather than being
+shadowed by it. Removing a window from the file removes it from the unit on the
+next deploy, which returns that store to the daemon's default — it is not frozen
+at its last value.
+
 ### The sandbox
 
 | Directive | What it constrains |
@@ -415,6 +441,11 @@ EnvironmentFile=-/etc/otter/workspaces/<workspace>.env          ← credentials
 The leading dash on both is deliberate: a project without either deploys and
 starts normally. Order matters — systemd applies a later `EnvironmentFile` over
 an earlier one, so daemon settings load first and credentials second.
+
+Retention windows are the exception to "daemon settings live in
+`otter.daemon.env`": they are committed in `otter.deploy.yaml` and rendered into
+the unit, because the env file is gitignored and a rebuilt host would otherwise
+come up retaining forever. See [Retention windows](#retention-windows).
 
 ### Notification formats
 
@@ -597,6 +628,9 @@ cpu_quota: 200%
 tasks_max: 512
 read_write_paths:          # optional: scratch a job writes outside its workspace
   - /srv/scratch
+run_retention: 2160h        # optional: 90 days of run history (default: forever)
+log_retention: 720h         # optional: 30 days of captured output (default: forever)
+capture_retention: 168h     # optional: 7 days of HTTP payloads (the default)
 ```
 
 Precedence, lowest to highest: built-in defaults, `otter.deploy.yaml`, the
@@ -604,8 +638,10 @@ previous successful deploy, then the command line. The resource caps follow the
 same order except that the previous deploy is not consulted — a cap describes
 the host, so it is not carried to a different machine — and
 `read_write_paths`, which is merged across the file and every `--rw-path`
-rather than overridden. See
-[Resource caps and the sandbox](#resource-caps-and-the-sandbox).
+rather than overridden. The retention windows follow the caps: flag, then file,
+then the daemon's own default, with the previous deploy never consulted. See
+[Resource caps and the sandbox](#resource-caps-and-the-sandbox) and
+[Retention windows](#retention-windows).
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
@@ -636,6 +672,7 @@ rather than overridden. See
 | `--cpu-quota` | systemd CPU cap, percent of one core (`off` emits none) | `200%` |
 | `--tasks-max` | systemd process/thread cap (`off` emits none) | `512` |
 | `--rw-path` | extra path jobs may write under `ProtectSystem=strict` (repeatable) | — |
+| `--run-retention`, `--log-retention`, `--capture-retention` | retention windows for run history, a run's output and HTTP payloads | the daemon's defaults: forever, forever, `168h` |
 | `--status` | show this project's deploys, and with `--host` what that host holds | — |
 | `--destroy`, `--keep-data`, `--yes` | removal | — |
 

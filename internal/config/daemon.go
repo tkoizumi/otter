@@ -301,6 +301,13 @@ func (c *DaemonConfig) ApplyEnv() error {
 		}
 		c.RunRetention = d
 	}
+	if v, ok := os.LookupEnv("OTTER_CAPTURE_RETENTION"); ok && strings.TrimSpace(v) != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("OTTER_CAPTURE_RETENTION must be a duration such as 168h, got %q", v)
+		}
+		c.CaptureRetention = d
+	}
 	if v, ok := os.LookupEnv("OTTER_CAPTURE_DEFAULT"); ok && strings.TrimSpace(v) != "" {
 		c.CaptureDefault = inspection.Policy(strings.ToLower(strings.TrimSpace(v)))
 	}
