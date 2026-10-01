@@ -1,0 +1,99 @@
+===== HW-6b — P0-11 storage alerting: the check goes silent, the alarm fires =====
+date:     2026-10-01T02:08:22Z
+host:     52.202.163.124 (ip-10-42-0-131)
+observer: CloudWatch alarm CastorRuntime-disk (wall-clock window, treatMissingData=breaching)
+volume:   /dev/nvme1n1 mounted at /mnt/hw6b (2 GiB, dedicated to this drill)
+
+--- precondition ---
+  alarm:     OK
+  datapoints in the last 6 minutes: 6
+  env sha256: 75dd6d656bc46eaf64671f0cbded05cf9ef5a59e96a1f650e7a959acb89c9c9b
+  live stores: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db=1MB /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/environments=1MB 
+
+--- the drill volume: a real filesystem, filled until it is nearly full ---
+  /mnt/hw6b after the fill: 50M free of 2.0G (98% used)
+  the four stores are planted there; the free-space floor is 2048MB by default
+
+--- breach (a): a store cap crossed on the LIVE stores ---
+  disk-check: BREACH environments + python is 62MB, over the 1MB cap
+  disk-check:   why it matters: prepared environments and the managed interpreter are re-creatable but expensive, and environment GC is deferred, so this store grows on its own.
+  disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+
+--- breach (b): the free floor crossed on the real root filesystem ---
+  disk-check: BREACH free space is 14240MB, below the 999999MB floor
+  disk-check:   why it matters: with no free space the daemon cannot write the database, stage a release or fetch an interpreter, and it may not even be able to write the log that would explain it.
+  disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+
+--- breach (c): the free floor crossed on the REAL full volume ---
+  disk-check: BREACH free space is 49MB, below the 2048MB floor
+  disk-check:   why it matters: with no free space the daemon cannot write the database, stage a release or fetch an interpreter, and it may not even be able to write the log that would explain it.
+  disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+  (all three exited non-zero and published nothing: a breach is silence)
+  control: the same check against the live stores inside every bound:
+  disk-check: ok db=1/512MB releases=1/1024MB environments=62/3072MB cache=1/1024MB free=14240/2048MB: publishing DiskCheck=1 DiskFreeMB=14240
+
+--- point the deployed check at the full volume, so the TIMER stops publishing ---
+  2c2
+  < OTTER_DATA_DIR=/opt/otter/workspaces/otter-examples-e0309b8c/.otter/data
+  ---
+  > OTTER_DATA_DIR=/mnt/hw6b/data
+  disk-check.service exit status now: 1
+  Oct 01 02:08:50 ip-10-42-0-131 disk-check.sh[16646]: disk-check: BREACH free space is 49MB, below the 2048MB floor
+  Oct 01 02:08:50 ip-10-42-0-131 disk-check.sh[16646]: disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+  datapoints in the last 3 minutes: 3 (they must stop)
+
+--- wait: the alarm needs the missing publishes to accumulate ---
+  02:09:51Z  OK
+  02:10:52Z  OK
+  02:11:53Z  OK
+  02:12:53Z  OK
+  02:13:54Z  OK
+  02:14:55Z  ALARM
+  ALARM observed at: 2026-10-01T02:14:55Z
+
+--- restore the deployed configuration ---
+  env sha256: 75dd6d656bc46eaf64671f0cbded05cf9ef5a59e96a1f650e7a959acb89c9c9b (was 75dd6d656bc46eaf64671f0cbded05cf9ef5a59e96a1f650e7a959acb89c9c9b)
+rm: cannot remove '/mnt/hw6b/filler': Permission denied
+  disk-check: ok db=1/512MB releases=1/1024MB environments=62/3072MB cache=1/1024MB free=14240/2048MB: publishing DiskCheck=1 DiskFreeMB=14240
+
+--- wait: the alarm returns to OK ---
+  02:14:58Z  ALARM
+  02:15:59Z  OK
+
+--- the observer's own record ---
+  [
+      {
+          "Time": "2026-09-30T20:21:01.353000-04:00",
+          "Summary": "Alarm updated from INSUFFICIENT_DATA to OK"
+      },
+      {
+          "Time": "2026-09-30T22:14:18.409000-04:00",
+          "Summary": "Alarm updated from OK to ALARM"
+      },
+      {
+          "Time": "2026-09-30T22:15:18.408000-04:00",
+          "Summary": "Alarm updated from ALARM to OK"
+      }
+  ]
+
+--- what SNS did with it (best effort) ---
+  [
+      {
+          "Time": "2026-09-30T22:10:00-04:00",
+          "Delivered": 1.0
+      }
+  ]
+
+--- end state ---
+  alarm:            OK
+  publishes resumed: 1 datapoint(s) in the last 3 minutes
+  /mnt/hw6b:              50M free
+
+hw6b: ok: three real breaches silenced the check, the external alarm fired, and the restore cleared it
+
+--- restore ---
+  env file restored from the saved copy
+  env sha256 matches: 75dd6d656bc46eaf64671f0cbded05cf9ef5a59e96a1f650e7a959acb89c9c9b
+  /mnt/hw6b unmounted
+  disk-check.service exit: 0
+  timer: active
