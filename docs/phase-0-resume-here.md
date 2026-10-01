@@ -1,7 +1,8 @@
 # Phase 0 — resume here
 
-Date: 2026-09-30. This replaces the running commentary as the place to pick up
-from. It says what is true, what is still in flight, and what to do next.
+Date: 2026-09-30; last session entry 2026-10-01. This replaces the running
+commentary as the place to pick up from. It says what is true, what is still in
+flight, and what to do next.
 
 ## The one thing that matters
 
@@ -42,6 +43,55 @@ host. Skip the installer and the checks never publish: the alarms exist and go
 to `ALARM` about five minutes after `alertEmail` is passed, so the omission is
 loud rather than silent — but only once that second deploy has run.
 
+## Last session — 2026-09-30 16:00 → 2026-10-01 00:20
+
+One line: the runtime half merged and was independently verified; the host was
+destroyed, rebuilt and made to alert; P0-09/P0-10/P0-11 were verified a second
+time, and the two real gaps that round found were fixed the same night.
+
+**Merged** — P0-12, P0-04, P0-03, P0-08 and P0-07, serially. The gate caught a
+build break git could not see: P0-07's test called `ReleaseScript` with the
+signature P0-08 had changed, in a different file.
+[phase-0-guarantees.md](phase-0-guarantees.md) records what P0-01…P0-08 buy and
+where each claim stops.
+
+**Host** — the previous host was destroyed and the teardown verified, then
+rebuilt from the fixed stack: `i-0ba293ef4c5926b04` / `52.202.163.124`. HW-0
+clean, HW-1 converged in **13 s** with CPython 3.13.1 prepared for all three
+stand-in jobs.
+
+**Alerts** — the checks were installed, a CloudWatch publisher written and two
+alarms made live. HW-4b found the sliding-window latency (**11m10s**) and the
+wall-clock fix measured **5m34s**. HW-6b-alert: ALARM in **5m28s**, one SNS
+delivery, restored in 60 s. The disk-fill found `OT-020` — output lost at 10 MiB
+free while the run still reported `succeeded`.
+
+**Verified independently** — P0-09, P0-10 and P0-11 re-derived on the live host
+and under mutation: [independent
+record](evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt).
+Two findings. **D1 (material):** retention was **not in force** on the live host
+— it ran `run/log retention 0s`, i.e. retain forever, because the configuration
+lived on a host destroyed the same day and nothing re-applied it on a rebuild.
+**D2:** the monitoring suites stayed green with the publisher unsigned, the disk
+metric renamed and `df` measuring the wrong filesystem.
+
+**Fixed the same night** — `OT-026` (`7760c5a`): the windows are committed in
+`otter.deploy.yaml` and rendered into the unit's `ExecStart`, so a stale value in
+the env file cannot shadow them; the live host now logs `run_retention=2160h
+log_retention=720h` and its unit is byte-identical to the renderer's output.
+`otter_examples/otter.deploy.yaml` was **untracked** and is now committed
+(`8b27693`). `OT-027` (`c23b0a6`): the fixtures were hardened and wired into
+`make test` plus a CI `monitoring` job — which immediately caught a real
+Linux-only false red in the permission suite, fixed and re-run **48/48** on the
+Castor host. `make test-shell` is six suites, 200 cases.
+
+**State at the end** — host up on `v0.3.0-rc1`, retention in force across a
+reboot, both alarms `OK` with actions armed, every host mutation restored
+byte-for-byte, and both repositories clean.
+
+**Pick up here tomorrow** — P0-13 is still the critical path, and it still needs
+a person rather than a deploy. Nothing in the session above changes that.
+
 ## Windows done, with evidence
 
 | Window | What it proved |
@@ -76,12 +126,14 @@ conflicts are the ones git cannot see.
 1. **Which Castor import, and its owner (P0-13).** The critical path. Nothing
    else on this list matters until it is answered.
 2. **Castor's credential names and values (HW-5).**
-3. **A notification channel** — one already exists in `otter.daemon.env` (a Slack
-   webhook, gitignored), so HW-4a is runnable; it just needs a deliberate go-ahead
-   to post to a real channel.
-4. **A dead-man's-switch endpoint for HW-4b** (`OTTER_HEARTBEAT_URL`, a
-   healthchecks.io-style URL). **This does not exist** and cannot be invented —
-   Slack cannot alert on absence. HW-4b cannot run without it.
+3. **A notification channel** — exists in `otter.daemon.env` (a Slack webhook,
+   gitignored) and HW-4a did post to it, on the host destroyed 2026-09-30. The
+   2026-10-01 round re-derived the path against a loopback stand-in rather than
+   re-posting to the channel. Posting stays a deliberate act, not a side effect
+   of a deploy.
+4. **A dead-man's-switch endpoint** — **no longer needed.** HW-4b passed twice,
+   and the observer is the CloudWatch liveness alarm (wall-clock window), so
+   there is no healthchecks.io-style URL to obtain.
 5. **A second host for HW-7** — destroyed; recreate from the committed stack in
    about three minutes when needed.
 
