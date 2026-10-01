@@ -218,9 +218,14 @@ Additional holes confirmed by an independent sub-audit (report kept; substantive
   * The IMDSv2 stand-in checks token *presence*, not value; a bogus token passes.
   * The disk suite's `df` tap ignores its arguments: measuring `/` instead of the
     data filesystem stays green.
-  * `heartbeat.sh` is executed by NO test (`grep -l heartbeat.sh scripts/test-*.sh`
-    finds only the installer's upload and the unit-name check). Neutering its
-    publish to a no-op left 165 cases across five suites green.
+  * `heartbeat.sh` is executed by no *suite* (only the committed liveness drill
+    runs it). Neutering its publish to a no-op left 165 cases across the five
+    test suites green -- but the drill DOES catch it: with `heartbeat.sh:42`
+    replaced by `:`, `sh scripts/drill/liveness.sh` exits 1 with "the check did
+    not publish for a healthy runtime". The real gap is narrower than "untested":
+    a reader of `make test` sees green, and the drills are not in CI either. This
+    was checked after the sub-audit reported the stronger claim; the stronger
+    claim is wrong.
   * The shell suites are not wired into `make test` or CI; they are manual-only.
   * OT-022 (author-reported) is CONFIRMED: the installer's convergence probe runs
     `[ -f /etc/otter/*.env ]` as the login user against a 0750 root:root directory,
