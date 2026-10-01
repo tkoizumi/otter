@@ -1,0 +1,156 @@
+=== Phase 0 evidence: the Castor host rebuilt — clean baseline and the pin deployed (HW-0 and HW-1 re-run) ===
+task:      P0-07's venue for the remaining windows. HW-0's clean baseline and HW-1's deploy of the
+           pin, re-run because the previous host was destroyed the same day.
+date:      2026-09-30 EDT (the host clock reads 2026-10-01T00:11Z)
+host:      i-0ba293ef4c5926b04 / 52.202.163.124, Ubuntu 24.04.5 LTS arm64 (kernel 7.0.0-1013-aws),
+           t4g.micro, 20 GiB gp3, 2 GiB swap
+checkout:  otter @ cfd595c; binaries cross-built for linux/arm64 and stamped VERSION=v0.3.0-rc1
+stack:     CastorRuntime, sshCidr 68.161.218.138/32, -c terminationProtection=false, no alertEmail
+ami:       ami-0bec8cef5313300ad
+key:       key-096f5d276bd8eea63 -> .otter-keys/otter-castor.pem (0600, never into a repo)
+method:    cdk deploy (~3 min) -> the private key read once from SSM -> wait for cloud-init ->
+           capture the baseline -> otter deploy --binaries, with OTTER_UV_CACHE inside the workspace
+
+--- why this window exists ---
+The previous host was destroyed on 2026-09-30 and its teardown verified (no instances, no Elastic
+IPs, no volumes). Every remaining host-gated window therefore had no venue. This is the rebuild, and
+it is also the first time the host's identity has been written down before the drills that cite it:
+the first host's InstanceId, EIP and AMI existed only in a cdk deploy stdout nobody saved.
+
+--- the clean baseline (HW-0 re-run) ---
+===== Castor host rebuilt — clean baseline (HW-0 re-run) =====
+date:     2026-10-01T00:11:00Z
+instance: i-0ba293ef4c5926b04   eip: 52.202.163.124   ami: ami-0bec8cef5313300ad
+
+--- cloud-init:
+status: done
+extended_status: done
+boot_status_code: enabled-by-generator
+last_update: Thu, 01 Jan 1970 00:00:44 +0000
+detail: DataSourceEc2Local
+--- kernel/arch:
+Linux 7.0.0-1013-aws
+aarch64
+--- memory and swap:
+               total        used        free      shared  buff/cache   available
+Mem:             904         328         187           0         470         575
+Swap:           2047           0        2047
+--- disk:
+/dev/root        19G  4.3G   15G  24% /
+--- provisioning report:
+--- otter runtime host ---
+provisioned:  2026-10-01T00:10:52+00:00
+architecture: aarch64
+release:      Ubuntu 24.04.5 LTS
+kernel:       7.0.0-1013-aws
+vcpus:        2
+memory:       904Mi
+root disk:    19G total, 15G available
+
+otter deploy preflight dependencies:
+  ok      rsync
+  ok      find
+  ok      curl
+  ok      install
+  ok      chown
+  ok      ln
+  ok      getent
+  ok      groupadd
+  ok      useradd
+  ok      sudo
+  ok      runuser
+  ok      sqlite3
+
+listening sockets (expect no public 7337):
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                                   
+LISTEN 0      4096      127.0.0.54:53        0.0.0.0:*    users:(("systemd-resolve",pid=370,fd=17))
+LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("systemd",pid=1,fd=167))         
+LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*    users:(("systemd-resolve",pid=370,fd=15))
+LISTEN 0      4096            [::]:22           [::]:*    users:(("systemd",pid=1,fd=168))         
+--- listeners:
+LISTEN 0      4096      127.0.0.54:53        0.0.0.0:*          
+LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*          
+LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*          
+LISTEN 0      4096            [::]:22           [::]:*          
+--- otterd unit (must not exist):
+0
+Unit otterd.service could not be found.
+--- IMDSv1 (expect 401) / v2 (expect a token):
+v1=401 v2=200
+--- instance role:
+CastorRuntime-InstanceRole3CCE2F1D-eudbVygL7KHf--- the deploy (HW-1 re-run) ---
+connect:  checking ssh access to ubuntu@52.202.163.124
+Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+connect:  ubuntu@52.202.163.124 is linux/arm64
+platform: building for linux/arm64; this machine is darwin/arm64
+workspace: creating otter-examples-e0309b8c on ubuntu@52.202.163.124 (127.0.0.1:7337)
+token:    generated a new API token
+build:    cross-compiling otterd and otter for linux/arm64
+build:    vendoring uv 0.5.9 for linux/arm64
+fetching https://github.com/astral-sh/uv/releases/download/0.5.9/uv-aarch64-unknown-linux-gnu.tar.gz
+uv 0.5.9 ready (sha256 376d5d52a4b3)
+prepare:  creating the service account and layout
+sync:     pushing 3 job(s) and the shared library
+sync:     pushing the binaries
+sync:     pushing uv
+prepare:  handing the workspace to otter
+env:        OTTER_WORKERS
+env:      wrote 1 daemon setting(s) to /etc/otter/workspaces/otter-examples-e0309b8c.daemon.env
+secrets:  no otter.env, deploying anyway (the daemon will refuse to run a job whose declared secrets are absent)
+release:  releasing 3 job(s)
+releasing drill-job
+drill-job: release 06e2f05059fb
+otter: egress preflight ok for environment 443cb40b04af: package index https://pypi.org/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+drill-job: environment 443cb40b04af (python 3.13.1)
+drill-job: activated 06e2f05059fb
+releasing shopify-product-to-salesforce-product
+shopify-product-to-salesforce-product: release 1a1415733251
+otter: egress preflight ok for environment 690fb68d1b89: package index https://pypi.org/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+shopify-product-to-salesforce-product: environment 690fb68d1b89 (python 3.13.1)
+shopify-product-to-salesforce-product: activated 1a1415733251
+releasing shopify_customer_to_salesforce_contact
+shopify_customer_to_salesforce_contact: release 400e651ab07b
+otter: egress preflight ok for environment 3902f41ba695: package index https://pypi.org/simple, managed Python downloads https://github.com/indygreg/python-build-standalone/releases/download
+shopify_customer_to_salesforce_contact: environment 3902f41ba695 (python 3.13.1)
+shopify_customer_to_salesforce_contact: activated 400e651ab07b
+install:  writing /etc/systemd/system/otterd-otter-examples-e0309b8c.service and restarting otterd-otter-examples-e0309b8c.service
+unit: active
+verify:   waiting for the health endpoint
+verify:   healthy: {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":0.120745783,"jobs":{"total":3,"valid":3,"invalid":0},"queue_depth":0}
+bindings: recorded 3 destination identity(ies)
+done:     v0.3.0-rc1 deployed to ubuntu@52.202.163.124 in 13s
+deployed v0.3.0-rc1 to 52.202.163.124 (linux/arm64)
+workspace:     otter-examples-e0309b8c
+jobs:          drill-job, shopify-product-to-salesforce-product, shopify_customer_to_salesforce_contact
+install:       /opt/otter
+
+API token (store it now; it is also in .otter/state.secret.json):
+  export OTTER_API_TOKEN=<redacted — read it from otter_examples/.otter/state.secret.json, it is never committed>
+
+the API listens on loopback only. Reach it with a tunnel:
+  ssh -N -L 7337:127.0.0.1:7337 52.202.163.124 &
+  otter --api http://127.0.0.1:7337 status
+
+--- what this establishes ---
+- The rebuilt host is the same shape as the one destroyed: arm64, 20 GiB root, 2 GiB swap present,
+  no `otterd` unit at baseline, nothing but SSH listening on a public interface, IMDSv2 enforced
+  (IMDSv1 answers 401 while a v2 token answers 200), and the provisioning report on disk with every
+  `otter deploy` dependency present, including sqlite3 for the backup runbook.
+- `otter deploy` converged it to v0.3.0-rc1 in 13s, preparing CPython 3.13.1 for all three stand-in
+  jobs with the egress preflight green on each. That is P0-08's core assertion reproducing on a
+  second, independent host rather than the one it was first measured on.
+- Both cron schedules were paused immediately afterwards, matching the previous host's state, so no
+  stand-in run fires underneath the monitoring windows.
+- The instance role may publish into the `Otter` CloudWatch namespace (the policy ships with this
+  stack), but no alarms exist yet. That is deliberate: they are created by a second deploy after the
+  checks are installed and publishing, so a breaching alarm never fires against a host that has
+  nothing to report.
+- The private key is new. The old one cannot reach this host — the concrete cost of the teardown,
+  and the reason the resume doc says to re-fetch it rather than reuse the file.
+
+--- limits ---
+- HW-3's caps were proven on the previous host and are not re-measured here. This host renders its
+  unit from the same code and the same `otter.deploy.yaml`, but "same code" is not a measurement.
+- HW-8's posture scan has not been re-run against this instance's Elastic IP.
+- The loopback tunnel used to pause the schedules was closed after the command; `/health` above was
+  read by the deploy's own verification over SSH.

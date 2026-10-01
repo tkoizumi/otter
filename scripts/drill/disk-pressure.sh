@@ -5,24 +5,25 @@
 # .releases snapshots, the prepared environments (environments/ plus the
 # managed interpreter in python/) and the uv cache -- and each has a cap, with a
 # free-space floor over all four. While every measure is inside its bound the
-# check pings the external service; when one crosses, or when a measure cannot
-# be taken at all, the check goes quiet and the service's own grace timer
-# raises the alert. The failure mode is not "slow", it is "the daemon cannot
-# write", so silence on the wire is the only report that is still available
-# when the host is out of space.
+# check publishes DiskCheck and DiskFreeMB; when one crosses, or when a measure
+# cannot be taken at all, the check goes quiet and the alarm over the missing
+# datapoint raises the alert. The failure mode is not "slow", it is "the daemon
+# cannot write", so silence on the wire is the only report that is still
+# available when the host is out of space.
 #
 # The daemon has no storage surface to poll -- /health answers with status,
 # version and uptime, and counts only with a token -- so the subject here is
 # the host-level check itself (scripts/disk-check.sh), run against a throwaway
 # data directory whose four stores have sizes this script controls. The
-# dead-man service is stood in for by a plain HTTP server that records every
-# request it receives, so "did we ping?" is read off a log rather than asserted
-# from the script's own opinion.
+# CloudWatch endpoint and IMDSv2 metadata service are stood in for by one local
+# HTTP server that records every request it receives, so "did we publish?" is
+# read off a log rather than asserted from the script's own opinion. Nothing
+# here goes to AWS or to 169.254.169.254.
 #
 # Falsifiability (DRILL_SABOTAGE=ping-always): replace the threshold logic with
-# the naive check that always pings. The drill must go red on the FIRST
+# the naive check that always publishes. The drill must go red on the FIRST
 # threshold assertion -- a store over its cap where the check still reported
-# health -- because a check that pings no matter what keeps the switch quiet
+# health -- because a check that publishes no matter what keeps the alarm quiet
 # while the disk fills, which is the failure this task exists to prevent. If
 # that run passes, this drill is only testing that a shell script can exit
 # non-zero.
@@ -31,7 +32,8 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 # OTTER_DISK_CHECK_SUBJECT points the drill at a mutated copy of the check, the
 # same way scripts/test-disk-check.sh and scripts/test-provision.sh do, so its
-# assertions can be falsified without touching the checkout.
+# assertions can be falsified without touching the checkout. A mutated copy must
+# have otter-metric.sh installed beside it: the check calls its sibling.
 subject=${OTTER_DISK_CHECK_SUBJECT:-$root/scripts/disk-check.sh}
 
 [ -f "$subject" ] || {
@@ -40,9 +42,10 @@ subject=${OTTER_DISK_CHECK_SUBJECT:-$root/scripts/disk-check.sh}
 }
 # The check reads only these; a stray value in the caller's environment must not
 # change what the drill measures.
-unset OTTER_DISK_URL OTTER_DATA_DIR OTTER_DISK_MAX_DB_MB OTTER_DISK_MAX_RELEASES_MB \
+unset OTTER_DATA_DIR OTTER_DISK_MAX_DB_MB OTTER_DISK_MAX_RELEASES_MB \
 	OTTER_DISK_MAX_ENVIRONMENTS_MB OTTER_DISK_MAX_CACHE_MB OTTER_DISK_MIN_FREE_MB \
-	OTTER_DISK_TIMEOUT 2>/dev/null || true
+	OTTER_METRIC_ENDPOINT OTTER_METRIC_REGION OTTER_METRIC_HOST \
+	OTTER_METRIC_TIMEOUT OTTER_IMDS_ENDPOINT 2>/dev/null || true
 
 SABOTAGE=${DRILL_SABOTAGE:-}
 case "$SABOTAGE" in
@@ -67,9 +70,10 @@ print(s.getsockname()[1])
 s.close()'
 }
 
-# pings reads the receiver's log. The count is what the switch would see.
+# pings reads the receiver's log. The count is what the alarm would see: only a
+# POST / carries a metric, so the IMDS reads around it do not count.
 pings() {
-	count=$(grep -c 'GET /heartbeat' "$work/receiver.log" 2>/dev/null || true)
+	count=$(grep -c '^POST ' "$work/receiver.log" 2>/dev/null || true)
 	echo "${count:-0}"
 }
 
@@ -86,23 +90,98 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# --- the stand-in dead-man service -------------------------------------------
-# `/heartbeat` must answer 2xx: the real service does, and the check treats a
-# failed delivery as a failure. python's http.server serves files, so the path
-# exists as an empty file.
-mkdir -p "$work/served"
-: >"$work/served/heartbeat"
+# --- the stand-in CloudWatch endpoint and IMDS -------------------------------
+# One server answers both: the IMDSv2 routes under /latest/ and the
+# PutMetricData POST at /. It records each request in its log, and refuses a
+# credential read that does not carry the token, the way the instance does.
+cat >"$work/receiver.py" <<'PY'
+import http.server, json, os, sys
+
+port = int(sys.argv[1])
+log = os.environ["OTTER_STANDIN_LOG"]
+role = "otter-metric-role"
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def body(self):
+        try:
+            n = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            n = 0
+        return self.rfile.read(n) if n > 0 else b""
+
+    def record(self, payload=b""):
+        with open(log, "a") as f:
+            f.write("%s %s\n" % (self.command, self.path))
+            if payload:
+                f.write(payload.decode("utf-8", "replace") + "\n")
+
+    def reply(self, status, payload=b"", ctype="text/plain"):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def do_PUT(self):
+        self.record()
+        if self.path == "/latest/api/token" and \
+                self.headers.get("X-aws-ec2-metadata-token-ttl-seconds"):
+            self.reply(200, b"standin-imds-token")
+            return
+        self.reply(400)
+
+    def do_GET(self):
+        self.record()
+        path = self.path.split("?")[0]
+        if path == "/__ready":
+            self.reply(200, b"ok")
+            return
+        if not self.headers.get("X-aws-ec2-metadata-token"):
+            self.reply(401)
+            return
+        if path == "/latest/meta-data/placement/region":
+            self.reply(200, b"us-east-1")
+            return
+        if path == "/latest/meta-data/iam/security-credentials/":
+            self.reply(200, role.encode())
+            return
+        if path.startswith("/latest/meta-data/iam/security-credentials/"):
+            self.reply(200, json.dumps({
+                "Code": "Success",
+                "AccessKeyId": "AKIA-STANDIN-ACCESS-KEY",
+                "SecretAccessKey": "standin-secret-access-key",
+                "Token": "standin-session-token",
+            }).encode(), "application/json")
+            return
+        self.reply(404)
+
+    def do_POST(self):
+        self.record(self.body())
+        self.reply(200, b"<PutMetricDataResponse/>", "text/xml")
+
+
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+
 receiver_port=$(free_port)
-python3 -m http.server "$receiver_port" --bind 127.0.0.1 --directory "$work/served" >"$work/receiver.log" 2>&1 &
+OTTER_STANDIN_LOG=$work/receiver.log python3 "$work/receiver.py" "$receiver_port" >"$work/receiver.out" 2>&1 &
 receiver_pid=$!
-HB_URL="http://127.0.0.1:$receiver_port/heartbeat"
+METRIC_URL="http://127.0.0.1:$receiver_port"
+IMDS_URL="http://127.0.0.1:$receiver_port"
 ready=0
 for _ in $(seq 1 50); do
-	if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$receiver_port/__ready"; then ready=1; break; fi
+	if curl -s -o /dev/null --max-time 1 "$METRIC_URL/__ready"; then ready=1; break; fi
 	sleep 0.2
 done
-[ "$ready" -eq 1 ] || fail "the stand-in dead-man service did not start"
-echo "disk-pressure: receiver $HB_URL (a ping is a GET /heartbeat in its log)"
+[ "$ready" -eq 1 ] || fail "the stand-in metric endpoint did not start"
+echo "disk-pressure: receiver $METRIC_URL (a publish is a POST / in its log)"
 
 # --- the four stores, in a throwaway data directory --------------------------
 # The sizes are this script's to choose; the caps are derived from what du
@@ -162,28 +241,30 @@ inside_caps() {
 	min_free=$floor
 }
 
-# check runs the disk check, or the naive always-ping check under sabotage. It
-# reads $data, $HB_URL and the caps from this script.
+# check runs the disk check, or the naive always-publish check under sabotage.
+# It reads $data, $METRIC_URL and the caps from this script.
 check() {
 	if [ "$SABOTAGE" = ping-always ]; then
-		curl -fsS --max-time 5 "$HB_URL" >/dev/null 2>&1
+		curl -fsS --max-time 5 -X POST --data "Action=PutMetricData" "$METRIC_URL/" >/dev/null 2>&1
 		return $?
 	fi
 	OTTER_DATA_DIR=$data \
-		OTTER_DISK_URL=$HB_URL \
+		OTTER_METRIC_ENDPOINT=$METRIC_URL \
+		OTTER_IMDS_ENDPOINT=$IMDS_URL \
+		OTTER_METRIC_HOST=disk-pressure-drill \
 		OTTER_DISK_MAX_DB_MB=$cap_db \
 		OTTER_DISK_MAX_RELEASES_MB=$cap_releases \
 		OTTER_DISK_MAX_ENVIRONMENTS_MB=$cap_environments \
 		OTTER_DISK_MAX_CACHE_MB=$cap_cache \
 		OTTER_DISK_MIN_FREE_MB=$min_free \
-		OTTER_DISK_TIMEOUT=5 \
+		OTTER_METRIC_TIMEOUT=5 \
 		sh "$subject"
 }
 
-# expect_ping asserts the dead-man service was told the host is alive, exactly
-# once. expect_silence asserts it was told nothing at all, which is what makes
-# the switch fire -- and that the check's own words name the measure that
-# crossed, so a silence from some unrelated crash cannot stand in for pressure.
+# expect_ping asserts the alarm was told the host is alive, exactly once.
+# expect_silence asserts it was told nothing at all, which is what makes the
+# alarm fire -- and that the check's own words name the measure that crossed, so
+# a silence from some unrelated crash cannot stand in for pressure.
 expect_ping() {
 	before=$(pings)
 	status=0
@@ -191,9 +272,9 @@ expect_ping() {
 	after=$(pings)
 	if [ -n "$out" ]; then printf '%s\n' "$out"; fi
 	[ "$status" -eq 0 ] ||
-		fail "$1: the check refused to ping while every measure was inside its bound, so the switch would fire on a healthy host"
+		fail "$1: the check refused to publish while every measure was inside its bound, so the alarm would fire on a healthy host"
 	[ "$after" -eq "$((before + 1))" ] ||
-		fail "$1: the check exited 0 but the receiver saw $((after - before)) pings, not one"
+		fail "$1: the check exited 0 but the receiver saw $((after - before)) publishes, not one"
 	echo "disk-pressure: ok inside    $1"
 }
 
@@ -204,46 +285,46 @@ expect_silence() { # what, why it is correct, text the check must print
 	after=$(pings)
 	if [ -n "$out" ]; then printf '%s\n' "$out"; fi
 	[ "$status" -ne 0 ] ||
-		fail "$1: the check pinged, so the switch stays quiet: $2"
+		fail "$1: the check published, so the alarm stays quiet: $2"
 	[ "$after" -eq "$before" ] ||
-		fail "$1: the check failed *and* pinged, so the switch stays quiet: $2"
+		fail "$1: the check failed *and* published, so the alarm stays quiet: $2"
 	if [ -n "$3" ] && ! printf '%s\n' "$out" | grep -Fq "$3"; then
 		fail "$1: the check went silent without naming the measure that crossed (wanted '$3'): $2"
 	fi
 	echo "disk-pressure: ok silent    $1"
 }
 
-# --- 1. every store inside its cap: the check pings ---------------------------
+# --- 1. every store inside its cap: the check publishes ----------------------
 # This is also the control for the four crosses below: the same data directory,
 # the same stores, the same receiver, with only the one cap moved.
 inside_caps
 expect_ping "all four stores under their caps"
 
 # --- 2. one store over its cap: silence --------------------------------------
-# Each cross is the control pair to assertion 1: if the check pinged here, a
+# Each cross is the control pair to assertion 1: if the check published here, a
 # host whose disk is filling would look healthy.
 inside_caps
 cap_db=$((db_mb - 1))
 expect_silence "otter.db at ${db_mb}MB over a $((db_mb - 1))MB cap" \
-	"a database over its cap must stop the pings, or the switch stays quiet while SQLite runs out of disk" \
+	"a database over its cap must stop the publishes, or the alarm stays quiet while SQLite runs out of disk" \
 	"BREACH otter.db"
 
 inside_caps
 cap_releases=$((releases_mb - 1))
 expect_silence ".releases at ${releases_mb}MB over a $((releases_mb - 1))MB cap" \
-	"release snapshots over their cap must stop the pings, or a deploy can fill the disk unnoticed" \
+	"release snapshots over their cap must stop the publishes, or a deploy can fill the disk unnoticed" \
 	"BREACH .releases"
 
 inside_caps
 cap_environments=$((environments_mb - 1))
 expect_silence "environments plus python at ${environments_mb}MB over a $((environments_mb - 1))MB cap" \
-	"the prepared environments over their cap must stop the pings, or the store with deferred GC grows unnoticed" \
+	"the prepared environments over their cap must stop the publishes, or the store with deferred GC grows unnoticed" \
 	"BREACH environments + python"
 
 inside_caps
 cap_cache=$((cache_mb - 1))
 expect_silence "the uv cache at ${cache_mb}MB over a $((cache_mb - 1))MB cap" \
-	"a cache over its cap must stop the pings, or it takes the headroom the other three stores need" \
+	"a cache over its cap must stop the publishes, or it takes the headroom the other three stores need" \
 	"BREACH cache"
 
 # --- 3. the free-space floor: silence ----------------------------------------
@@ -251,10 +332,10 @@ expect_silence "the uv cache at ${cache_mb}MB over a $((cache_mb - 1))MB cap" \
 inside_caps
 min_free=999999999
 expect_silence "a free-space floor of ${min_free}MB" \
-	"a host with less free space than the floor must stop the pings, or the daemon runs out of disk with the switch still quiet" \
+	"a host with less free space than the floor must stop the publishes, or the daemon runs out of disk with the alarm still quiet" \
 	"BREACH free space"
 
-# --- 4. restored: it pings again ---------------------------------------------
+# --- 4. restored: it publishes again -----------------------------------------
 # The control that proves the silence above was the crossed bound and not the
 # check having died for some other reason.
 inside_caps
@@ -269,4 +350,4 @@ expect_silence "a data directory that does not exist" \
 	"is not a directory"
 data=$data_kept
 
-echo "disk-pressure: ok: pings track the four stores and the free-space floor, and stop when one is crossed"
+echo "disk-pressure: ok: publishes track the four stores and the free-space floor, and stop when one is crossed"

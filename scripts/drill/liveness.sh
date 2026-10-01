@@ -2,25 +2,31 @@
 # P0-10 — liveness detection is a dead-man's switch, not a positive check.
 #
 # Claim (CA-31, R-05): when the runtime stops answering, the heartbeat stops
-# pinging, so an external switch fires without anyone watching a terminal.
+# reporting, so an alarm raised by the *absence* of its metric fires without
+# anyone watching a terminal.
 #
 # The runtime under test is a real `otterd` from this checkout on a loopback
-# port. The dead-man service is stood in for by a plain HTTP server that records
-# every request it receives, so "did we ping?" is read off a log rather than
-# asserted from the script's own opinion.
+# port. The CloudWatch endpoint and IMDSv2 metadata service are stood in for by
+# one local HTTP server that records every request it receives, so "did we
+# publish?" is read off a log rather than asserted from the script's own
+# opinion. It answers the IMDSv2 routes as the instance would -- the token PUT
+# needs its TTL header, the credential reads need the token -- so the publisher
+# is exercised through the same sequence it uses on a host, with nothing going
+# to AWS or to 169.254.169.254.
 #
 # Falsifiability (DRILL_SABOTAGE=ping-always): replace the check with the naive
-# positive version that pings whether or not the runtime is healthy. The drill
-# must go red on the FIRST assertion, because a positive check pings into the
-# void and keeps the switch quiet while the runtime is dead. If that run passes,
-# this drill is only testing that a shell script can exit non-zero.
+# positive version that publishes whether or not the runtime is healthy. The
+# drill must go red on the FIRST assertion, because a positive check publishes
+# into the void and keeps the alarm quiet while the runtime is dead. If that run
+# passes, this drill is only testing that a shell script can exit non-zero.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 OTTERD_BIN=${OTTERD_BIN:-$root/bin/otterd}
 
 [ -x "$OTTERD_BIN" ] || { echo "liveness: not executable: $OTTERD_BIN (run make build)" >&2; exit 2; }
-unset OTTER_API_URL OTTER_API_TOKEN 2>/dev/null || true
+unset OTTER_API_URL OTTER_API_TOKEN OTTER_METRIC_ENDPOINT OTTER_METRIC_REGION \
+	OTTER_METRIC_HOST OTTER_METRIC_TIMEOUT OTTER_IMDS_ENDPOINT 2>/dev/null || true
 
 SABOTAGE=${DRILL_SABOTAGE:-}
 case "$SABOTAGE" in
@@ -46,9 +52,10 @@ print(s.getsockname()[1])
 s.close()'
 }
 
-# pings reads the receiver's log. The count is what the switch would see.
+# pings reads the receiver's log. The count is what the alarm would see: only a
+# POST / carries a metric, so the IMDS reads around it do not count.
 pings() {
-	count=$(grep -c 'GET /heartbeat' "$work/receiver.log" 2>/dev/null || true)
+	count=$(grep -c '^POST ' "$work/receiver.log" 2>/dev/null || true)
 	echo "${count:-0}"
 }
 
@@ -67,32 +74,112 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# --- the stand-in dead-man service -------------------------------------------
-# `/heartbeat` must answer 2xx: the real service does, and the heartbeat treats a
-# failed delivery as a failure. python's http.server serves files, so the path
-# exists as an empty file.
-mkdir -p "$work/served"
-: >"$work/served/heartbeat"
+# --- the stand-in CloudWatch endpoint and IMDS -------------------------------
+# One server answers both: the IMDSv2 routes under /latest/ and the
+# PutMetricData POST at /. It records each request in its log, and refuses a
+# credential read that does not carry the token, the way the instance does.
+cat >"$work/receiver.py" <<'PY'
+import http.server, json, os, sys
+
+port = int(sys.argv[1])
+log = os.environ["OTTER_STANDIN_LOG"]
+role = "otter-metric-role"
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def body(self):
+        try:
+            n = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            n = 0
+        return self.rfile.read(n) if n > 0 else b""
+
+    def record(self, payload=b""):
+        with open(log, "a") as f:
+            f.write("%s %s\n" % (self.command, self.path))
+            if payload:
+                f.write(payload.decode("utf-8", "replace") + "\n")
+
+    def reply(self, status, payload=b"", ctype="text/plain"):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def do_PUT(self):
+        self.record()
+        if self.path == "/latest/api/token" and \
+                self.headers.get("X-aws-ec2-metadata-token-ttl-seconds"):
+            self.reply(200, b"standin-imds-token")
+            return
+        self.reply(400)
+
+    def do_GET(self):
+        self.record()
+        path = self.path.split("?")[0]
+        if path == "/__ready":
+            self.reply(200, b"ok")
+            return
+        if not self.headers.get("X-aws-ec2-metadata-token"):
+            self.reply(401)
+            return
+        if path == "/latest/meta-data/placement/region":
+            self.reply(200, b"us-east-1")
+            return
+        if path == "/latest/meta-data/iam/security-credentials/":
+            self.reply(200, role.encode())
+            return
+        if path.startswith("/latest/meta-data/iam/security-credentials/"):
+            self.reply(200, json.dumps({
+                "Code": "Success",
+                "AccessKeyId": "AKIA-STANDIN-ACCESS-KEY",
+                "SecretAccessKey": "standin-secret-access-key",
+                "Token": "standin-session-token",
+            }).encode(), "application/json")
+            return
+        self.reply(404)
+
+    def do_POST(self):
+        self.record(self.body())
+        self.reply(200, b"<PutMetricDataResponse/>", "text/xml")
+
+
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+
 receiver_port=$(free_port)
-python3 -m http.server "$receiver_port" --bind 127.0.0.1 --directory "$work/served" >"$work/receiver.log" 2>&1 &
+OTTER_STANDIN_LOG=$work/receiver.log python3 "$work/receiver.py" "$receiver_port" >"$work/receiver.out" 2>&1 &
 receiver_pid=$!
-HB_URL="http://127.0.0.1:$receiver_port/heartbeat"
+METRIC_URL="http://127.0.0.1:$receiver_port"
+IMDS_URL="http://127.0.0.1:$receiver_port"
 ready=0
 for _ in $(seq 1 50); do
-	if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$receiver_port/__ready"; then ready=1; break; fi
+	if curl -s -o /dev/null --max-time 1 "$METRIC_URL/__ready"; then ready=1; break; fi
 	sleep 0.2
 done
-[ "$ready" -eq 1 ] || fail "the stand-in dead-man service did not start"
-echo "liveness: receiver $HB_URL (a ping is a GET /heartbeat in its log)"
+[ "$ready" -eq 1 ] || fail "the stand-in metric endpoint did not start"
+echo "liveness: receiver $METRIC_URL (a publish is a POST / in its log)"
 
 # check runs the heartbeat, or the naive positive check under sabotage. It reads
-# $API and $HB_URL from the environment of this script.
+# $API, $METRIC_URL and $IMDS_URL from the environment of this script.
 check() {
 	if [ "$SABOTAGE" = ping-always ]; then
-		curl -fsS --max-time 5 "$HB_URL" >/dev/null 2>&1
+		curl -fsS --max-time 5 -X POST --data "Action=PutMetricData" "$METRIC_URL/" >/dev/null 2>&1
 		return $?
 	fi
-	OTTER_API_URL=$API OTTER_HEARTBEAT_URL=$HB_URL sh "$root/scripts/heartbeat.sh"
+	OTTER_API_URL=$API \
+		OTTER_METRIC_ENDPOINT=$METRIC_URL \
+		OTTER_IMDS_ENDPOINT=$IMDS_URL \
+		OTTER_METRIC_HOST=liveness-drill \
+		OTTER_METRIC_TIMEOUT=5 \
+		sh "$root/scripts/heartbeat.sh"
 }
 
 # --- 1. no runtime: silence, and a non-zero exit -----------------------------
@@ -103,10 +190,10 @@ if check; then
 	fail "the check succeeded although nothing was listening on $API"
 fi
 after=$(pings)
-[ "$after" -eq "$before" ] || fail "the check pinged although the runtime was down: the switch would never fire"
-echo "liveness: down      no runtime, no ping, non-zero exit"
+[ "$after" -eq "$before" ] || fail "the check published although the runtime was down: the alarm would never fire"
+echo "liveness: down      no runtime, no publish, non-zero exit"
 
-# --- 2. a real runtime: it pings ---------------------------------------------
+# --- 2. a real runtime: it publishes -----------------------------------------
 api_port=$(free_port)
 API="http://127.0.0.1:$api_port"
 # The daemon needs a jobs root it can scan; an empty one answers /health, and
@@ -125,10 +212,10 @@ done
 before=$(pings)
 check || fail "the check failed against a healthy runtime answering $API/health"
 after=$(pings)
-[ "$after" -gt "$before" ] || fail "the check did not ping a healthy runtime"
-echo "liveness: up        real otterd on $api_port, ping delivered"
+[ "$after" -gt "$before" ] || fail "the check did not publish for a healthy runtime"
+echo "liveness: up        real otterd on $api_port, metric delivered"
 
-# --- 3. the runtime dies: the pings stop -------------------------------------
+# --- 3. the runtime dies: the publishes stop ---------------------------------
 kill "$daemon_pid" 2>/dev/null || true
 wait "$daemon_pid" 2>/dev/null || true
 daemon_pid=""
@@ -137,7 +224,7 @@ if check; then
 	fail "the check succeeded after the runtime was killed"
 fi
 after=$(pings)
-[ "$after" -eq "$before" ] || fail "the check pinged after the runtime was killed"
-echo "liveness: killed    pings stopped, so the switch fires"
+[ "$after" -eq "$before" ] || fail "the check published after the runtime was killed"
+echo "liveness: killed    publishes stopped, so the alarm fires"
 
-echo "liveness: ok: pings track the runtime and stop when it dies"
+echo "liveness: ok: publishes track the runtime and stop when it dies"

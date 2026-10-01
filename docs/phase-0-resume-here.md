@@ -19,18 +19,17 @@ to Castor's job owner, not a deploy.
 
 | | |
 | --- | --- |
-| Runtime host | `i-01ed07dce59ba3f5b` / `44.213.227.52`, Ubuntu 24.04 arm64, `t4g.micro`, 20 GiB gp3, 2 GiB swap |
-| Running | `otter v0.3.0-rc1`, built from `main` @ `7319363` |
+| Runtime host | `i-0ba293ef4c5926b04` / `52.202.163.124`, Ubuntu 24.04 arm64, `t4g.micro`, 20 GiB gp3, 2 GiB swap — **rebuilt 2026-09-30** after the teardown below |
+| Running | `otter v0.3.0-rc1`, built from `main` @ `cfd595c` (the string is hand-stamped: the repo's newest tag is `v0.2.0`) |
 | Workspace | `otter-examples-e0309b8c` — the stand-in, three jobs, **both cron schedules paused**, **no credentials deployed** |
-| Unit caps | `MemoryMax=75%`, `MemorySwapMax=0`, `CPUQuota=200%`, `TasksMax=512`, **no `MemoryHigh`** — proven by HW-3 |
+| Unit caps | `MemoryMax=75%`, `MemorySwapMax=0`, `CPUQuota=200%`, `TasksMax=512`, **no `MemoryHigh`** — proven by HW-3 on the previous host; not yet re-run here |
 | Provisioning | `cloud-init: done`, no errors; swap and `/var/log/otter-provision-report.txt` present |
-| Key | `.otter-keys/otter-castor.pem` (workspace-local, outside both git repos) |
-| API token | `otter_examples/.otter/state.secret.json` (gitignored there) |
+| Key | `.otter-keys/otter-castor.pem` — **re-fetched from SSM** for the new key pair `key-096f5d276bd8eea63`; the old key belongs to the destroyed host |
+| API token | `otter_examples/.otter/state.secret.json` — a new token per host, keyed by `<ip>/<workspace-id>` |
+| Identity record | `.otter-keys/host-identity.txt` (workspace-local, outside both repos) and [2026-09-30-p0-07-host-rebuilt-2.txt](evidence/phase-0/2026-09-30-p0-07-host-rebuilt-2.txt) |
+| Monitoring | the instance role may publish `Otter`-namespace metrics; **no alarms yet** — the topic and both alarms are a second deploy, deliberately after the checks are installed |
 | Drill target | **destroyed** |
-| Runtime host | **DESTROYED 2026-09-30.** No instances, no Elastic IPs, no volumes remain. Recreate with `npx cdk deploy --profile otter -c sshCidr="$(curl -s https://checkip.amazonaws.com)/32"`, then `otter deploy` from the `otter_examples` checkout — about ten minutes, and `otter.deploy.yaml` pins the workspace id so it lands on the same name |
-
-**Nothing is running in AWS.** The stacks are deleted; the teardown was verified against instances,
-Elastic IPs and volumes. The only thing that costs money is recreating a host.
+| Previous host | **DESTROYED 2026-09-30**, and verified: no instances, no Elastic IPs, no volumes. That teardown is why the private key above had to be re-fetched rather than reused |
 
 ## Windows done, with evidence
 

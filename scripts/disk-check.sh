@@ -6,26 +6,31 @@
 # reports none of them: /health answers with status, version and uptime (plus
 # counts, with a token), so nothing in the runtime can tell an operator that
 # the disk is filling. This check therefore runs beside the runtime, on the
-# host, and reports by *silence*, exactly like heartbeat.sh: it pings the
-# external service only while every storage measure is inside its threshold.
+# host, and reports by *silence*, exactly like heartbeat.sh: it publishes a
+# DiskCheck metric only while every storage measure is inside its threshold.
 # When a threshold is crossed -- or when a measure cannot be taken at all -- it
-# exits non-zero and sends nothing, and the external service's own grace timer
+# exits non-zero and publishes nothing, and the CloudWatch alarm over the
+# `Otter` namespace, which is configured to treat missing data as breaching,
 # raises the alert.
 #
-# That inversion is why a failed delivery is fatal here too: a host whose
+# That inversion is why a failed publish is fatal here too: a host whose
 # filesystem is full may be unable to send anything, and a check that dies must
 # not look healthy. The cost is that a broken *check* -- a bad threshold, a
 # data directory that does not exist, no curl -- also fires the alarm. That is
 # deliberate: an unmeasurable host is not a verified host.
 #
-#   OTTER_DISK_URL                 dead-man service to ping (required)
 #   OTTER_DATA_DIR                 the runtime's data directory (default below)
 #   OTTER_DISK_MAX_DB_MB           otter.db                          (default 512)
 #   OTTER_DISK_MAX_RELEASES_MB     .releases snapshots               (default 1024)
 #   OTTER_DISK_MAX_ENVIRONMENTS_MB environments/ plus python/        (default 3072)
 #   OTTER_DISK_MAX_CACHE_MB        the uv cache under cache/         (default 1024)
 #   OTTER_DISK_MIN_FREE_MB         free space on the data filesystem (default 2048)
-#   OTTER_DISK_TIMEOUT             seconds to wait for the ping      (default 10)
+#
+# The metric is published by otter-metric.sh, installed beside this script in
+# /usr/local/lib/otter/. It takes the Host dimension from OTTER_METRIC_HOST, its
+# timeout from OTTER_METRIC_TIMEOUT and its credentials from the instance role
+# through IMDSv2; see that script's header. There is no URL here to configure
+# any more.
 #
 # The defaults are sized for the runtime host as it is: a t4g.micro with a
 # 20 GiB root volume, 14 GiB of it free when P0-11 was measured (HW-6a,
@@ -80,20 +85,19 @@
 # the path, so a host with a different workspace must set OTTER_DATA_DIR in
 # /etc/otter/disk-check.env. It is deliberately *not* a neutral parent such as
 # /opt/otter: a parent that exists but holds none of the four stores would
-# measure zeros and ping forever, which is the one failure this switch exists
+# measure zeros and publish forever, which is the one failure this switch exists
 # to prevent. A default that does not exist fails loudly on the first run
 # instead, and the journal says which path was missing.
 #
-# Exit status: 0 means every measure was inside its threshold and the ping was
-# delivered. Non-zero means a threshold was crossed, a measure failed, or the
-# ping itself could not be delivered -- in every one of those cases nothing was
-# sent, deliberately. Run it from a systemd timer; see disk-check.service and
-# disk-check.timer beside this script.
+# Exit status: 0 means every measure was inside its threshold and the metric was
+# accepted. Non-zero means a threshold was crossed, a measure failed, or the
+# publish itself could not be delivered -- in every one of those cases nothing
+# was sent, deliberately. Run it from a systemd timer; see disk-check.service
+# and disk-check.timer beside this script.
 set -eu
 
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 data=${OTTER_DATA_DIR:-/opt/otter/workspaces/otter-examples-e0309b8c/.otter/data}
-url=${OTTER_DISK_URL:?set OTTER_DISK_URL to the dead-man switch to ping}
-timeout=${OTTER_DISK_TIMEOUT:-10}
 
 max_db=${OTTER_DISK_MAX_DB_MB:-512}
 max_releases=${OTTER_DISK_MAX_RELEASES_MB:-1024}
@@ -104,7 +108,7 @@ min_free=${OTTER_DISK_MIN_FREE_MB:-2048}
 # A threshold that is not a whole number of MB is not treated as "no cap" and
 # not as a rounded value: an operator who typed 1.5 or 512MB made a mistake,
 # and a switch that quietly ignored its own configuration would report health
-# it never checked. Fail loudly, and do not ping.
+# it never checked. Fail loudly, and publish nothing.
 whole_number() {
 	case $1 in
 	"" | *[!0-9]*) return 1 ;;
@@ -114,7 +118,7 @@ whole_number() {
 
 threshold() { # name, value
 	whole_number "$2" || {
-		echo "disk-check: $1=$2 is not a whole number of MB; refusing to guess, not pinging, so the switch fires" >&2
+		echo "disk-check: $1=$2 is not a whole number of MB; refusing to guess, publishing nothing, so the alarm fires" >&2
 		exit 1
 	}
 }
@@ -134,19 +138,19 @@ measure_kib() {
 		return 0
 	fi
 	out=$(du -sk "$1" 2>/dev/null) || {
-		echo "disk-check: cannot measure $1: du failed; not pinging, so the switch fires" >&2
+		echo "disk-check: cannot measure $1: du failed; publishing nothing, so the alarm fires" >&2
 		exit 1
 	}
 	kib=$(printf '%s\n' "$out" | awk 'NR == 1 { print $1 }') || kib=
 	whole_number "$kib" || {
-		echo "disk-check: cannot read a size for $1 from du: '$out'; not pinging, so the switch fires" >&2
+		echo "disk-check: cannot read a size for $1 from du: '$out'; publishing nothing, so the alarm fires" >&2
 		exit 1
 	}
 	printf '%s\n' "$kib"
 }
 
 data_missing() {
-	echo "disk-check: $data is not a directory: cannot measure any of the four stores; not pinging, so the switch fires" >&2
+	echo "disk-check: $data is not a directory: cannot measure any of the four stores; publishing nothing, so the alarm fires" >&2
 	echo "disk-check:   why it matters: a check that cannot see the stores must never report health; set OTTER_DATA_DIR to the runtime's data directory in /etc/otter/disk-check.env" >&2
 	exit 1
 }
@@ -169,12 +173,12 @@ cache_kib=$(measure_kib "$data/cache")
 # ~270 GiB free. The last line carrying four fields is the filesystem itself;
 # a device name long enough to wrap would only add lines before it.
 df_out=$(df -Pk "$data" 2>/dev/null) || {
-	echo "disk-check: cannot read free space for $data: df failed; not pinging, so the switch fires" >&2
+	echo "disk-check: cannot read free space for $data: df failed; publishing nothing, so the alarm fires" >&2
 	exit 1
 }
 free_kib=$(printf '%s\n' "$df_out" | awk 'NR > 1 && NF >= 4 { v = $4 } END { print v }') || free_kib=
 whole_number "$free_kib" || {
-	echo "disk-check: cannot read free space for $data from df: '$df_out'; not pinging, so the switch fires" >&2
+	echo "disk-check: cannot read free space for $data from df: '$df_out'; publishing nothing, so the alarm fires" >&2
 	exit 1
 }
 
@@ -216,14 +220,14 @@ if [ "$free_mb" -lt "$min_free" ]; then
 fi
 
 if [ "$pressed" -ne 0 ]; then
-	echo "disk-check: not pinging: the switch must stay silent so the external service's grace timer raises the alert" >&2
+	echo "disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert" >&2
 	exit 1
 fi
 
-echo "disk-check: ok db=${db_mb}/${max_db}MB releases=${releases_mb}/${max_releases}MB environments=${environments_mb}/${max_environments}MB cache=${cache_mb}/${max_cache}MB free=${free_mb}/${min_free}MB: pinging"
+echo "disk-check: ok db=${db_mb}/${max_db}MB releases=${releases_mb}/${max_releases}MB environments=${environments_mb}/${max_environments}MB cache=${cache_mb}/${max_cache}MB free=${free_mb}/${min_free}MB: publishing DiskCheck=1 DiskFreeMB=${free_mb}"
 
-# Every measure is inside its bound: say so. A delivery failure is a real
-# failure rather than something to swallow -- a switch that is not told this
-# host is alive will fire, which is the correct alarm for a ping that could not
-# be delivered.
-curl -fsS --max-time "$timeout" "$url" >/dev/null
+# Every measure is inside its bound: say so. A publish failure is a real failure
+# rather than something to swallow -- a switch that is not told this host is
+# alive will fire, which is the correct alarm for a metric that could not be
+# delivered.
+sh "$here/otter-metric.sh" DiskCheck=1 DiskFreeMB="$free_mb"

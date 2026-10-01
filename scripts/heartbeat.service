@@ -2,22 +2,33 @@
 #
 # Install beside heartbeat.timer:
 #
-#   sudo install -m 0755 scripts/heartbeat.sh /usr/local/lib/otter/heartbeat.sh
+#   sudo install -m 0755 scripts/heartbeat.sh     /usr/local/lib/otter/heartbeat.sh
+#   sudo install -m 0755 scripts/otter-metric.sh  /usr/local/lib/otter/otter-metric.sh
 #   sudo install -m 0644 scripts/heartbeat.service /etc/systemd/system/
 #   sudo install -m 0644 scripts/heartbeat.timer   /etc/systemd/system/
 #   sudo install -d -m 0750 /etc/otter
-#   printf 'OTTER_HEARTBEAT_URL=https://hc-ping.com/<uuid>\n' |
+#   printf 'OTTER_METRIC_HOST=castor-runtime\n' |
 #       sudo tee /etc/otter/heartbeat.env >/dev/null
 #   sudo chmod 0640 /etc/otter/heartbeat.env
 #   sudo systemctl daemon-reload && sudo systemctl enable --now heartbeat.timer
 #
-# The URL lives in an EnvironmentFile rather than in this unit so it is not
-# world-readable, and so a deploy can change it without editing a file systemd
-# owns.
+# The three check scripts -- heartbeat.sh, disk-check.sh and the otter-metric.sh
+# they both call -- live together in /usr/local/lib/otter/, so a check always
+# finds the publisher installed beside it. The install lines above place the two
+# the heartbeat needs; disk-check.service installs the third.
+#
+# The host name lives in an EnvironmentFile rather than in this unit so an
+# operator can change it without editing a file systemd owns. Unlike the ping
+# URL it replaces, it is not a secret: the metric is authenticated by the
+# instance role the host already has, so anyone who reads this file learns a
+# label, not a credential. Add OTTER_METRIC_REGION=<region> to the same file if
+# the instance metadata region is not the one the stack's alarm reads; otherwise
+# the region is read from IMDS.
 #
 # There is deliberately no OnFailure= that raises its own alert: this host
 # cannot be trusted to report its own death, which is the whole point of the
-# switch. A missing ping is the alarm, and it is raised by the external service.
+# switch. A missing datapoint is the alarm, and it is raised by the CloudWatch
+# alarm in the stack.
 [Unit]
 Description=Otter dead-man's-switch heartbeat
 Documentation=https://github.com/tkoizumi/otter

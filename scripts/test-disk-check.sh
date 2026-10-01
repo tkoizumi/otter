@@ -15,9 +15,10 @@
 #   * free space rounds down, so a shortfall smaller than a whole MB still
 #     counts against the floor (an implementation that rounded up would claim
 #     headroom the host does not have);
-#   * a missing ping URL is a loud failure, not a silent skip;
+#   * a metric endpoint that cannot be reached is a loud failure, not a silent
+#     skip;
 #   * a data directory that does not exist is a measurement failure, while a
-#     *store* that does not exist yet is 0MB and still pings -- the runtime
+#     *store* that does not exist yet is 0MB and still publishes -- the runtime
 #     creates .releases, environments/, python/ and cache/ lazily, and a fresh
 #     host is not a host under pressure.
 #
@@ -32,10 +33,15 @@
 # used, so a filesystem where it is untrue fails the test loudly instead of
 # quietly testing a different number.
 #
+# The CloudWatch endpoint and IMDSv2 metadata service are stood in for by one
+# local HTTP server that records every request, so a "publish" is a POST in its
+# log and nothing here reaches AWS or 169.254.169.254.
+#
 #   sh scripts/test-disk-check.sh
 #
 # OTTER_DISK_CHECK_SUBJECT points the matrix at a mutated copy of the script,
-# the same way scripts/test-provision.sh does.
+# the same way scripts/test-provision.sh does. A mutated copy must have
+# otter-metric.sh installed beside it: the check calls its sibling.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -74,11 +80,87 @@ show() {
 	printf '%s\n' "$1" | sed 's/^/    /' >&2
 }
 
-# --- the stand-in dead-man service -------------------------------------------
-# The subject reports health by pinging and reports pressure by not pinging, so
-# every case here has to count pings, not just read an exit status.
-mkdir -p "$work/served"
-: >"$work/served/heartbeat"
+# --- the stand-in CloudWatch endpoint and IMDS -------------------------------
+# The subject reports health by publishing a metric and reports pressure by
+# publishing nothing, so every case here has to count publishes, not just read
+# an exit status. One server answers both the IMDSv2 routes under /latest/ and
+# the PutMetricData POST at /, and records each request in its log.
+cat >"$work/receiver.py" <<'PY'
+import http.server, json, os, sys
+
+port = int(sys.argv[1])
+log = os.environ["OTTER_STANDIN_LOG"]
+role = "otter-metric-role"
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def body(self):
+        try:
+            n = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            n = 0
+        return self.rfile.read(n) if n > 0 else b""
+
+    def record(self, payload=b""):
+        with open(log, "a") as f:
+            f.write("%s %s\n" % (self.command, self.path))
+            if payload:
+                f.write(payload.decode("utf-8", "replace") + "\n")
+
+    def reply(self, status, payload=b"", ctype="text/plain"):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if payload:
+            self.wfile.write(payload)
+
+    def do_PUT(self):
+        self.record()
+        if self.path == "/latest/api/token" and \
+                self.headers.get("X-aws-ec2-metadata-token-ttl-seconds"):
+            self.reply(200, b"standin-imds-token")
+            return
+        self.reply(400)
+
+    def do_GET(self):
+        self.record()
+        path = self.path.split("?")[0]
+        if path == "/__ready":
+            self.reply(200, b"ok")
+            return
+        if not self.headers.get("X-aws-ec2-metadata-token"):
+            self.reply(401)
+            return
+        if path == "/latest/meta-data/placement/region":
+            self.reply(200, b"us-east-1")
+            return
+        if path == "/latest/meta-data/iam/security-credentials/":
+            self.reply(200, role.encode())
+            return
+        if path.startswith("/latest/meta-data/iam/security-credentials/"):
+            self.reply(200, json.dumps({
+                "Code": "Success",
+                "AccessKeyId": "AKIA-STANDIN-ACCESS-KEY",
+                "SecretAccessKey": "standin-secret-access-key",
+                "Token": "standin-session-token",
+            }).encode(), "application/json")
+            return
+        self.reply(404)
+
+    def do_POST(self):
+        self.record(self.body())
+        self.reply(200, b"<PutMetricDataResponse/>", "text/xml")
+
+
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+
 free_port() {
 	python3 -c 'import socket
 s = socket.socket()
@@ -86,19 +168,25 @@ s.bind(("127.0.0.1", 0))
 print(s.getsockname()[1])
 s.close()'
 }
+
 receiver_port=$(free_port)
-python3 -m http.server "$receiver_port" --bind 127.0.0.1 --directory "$work/served" >"$work/receiver.log" 2>&1 &
+OTTER_STANDIN_LOG=$work/receiver.log python3 "$work/receiver.py" "$receiver_port" >"$work/receiver.out" 2>&1 &
 receiver_pid=$!
-HB_URL="http://127.0.0.1:$receiver_port/heartbeat"
+METRIC_URL="http://127.0.0.1:$receiver_port"
+IMDS_URL="http://127.0.0.1:$receiver_port"
+# A port nothing listens on, for the case that proves an unreachable endpoint is
+# fatal rather than a silent skip.
+dead_port=$(free_port)
+DEAD_URL="http://127.0.0.1:$dead_port"
 ready=0
 for _ in $(seq 1 50); do
-	if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$receiver_port/__ready"; then ready=1; break; fi
+	if curl -s -o /dev/null --max-time 1 "$METRIC_URL/__ready"; then ready=1; break; fi
 	sleep 0.2
 done
-[ "$ready" -eq 1 ] || fatal "the stand-in dead-man service did not start"
+[ "$ready" -eq 1 ] || fatal "the stand-in metric endpoint did not start"
 
 pings() {
-	count=$(grep -c 'GET /heartbeat' "$work/receiver.log" 2>/dev/null || true)
+	count=$(grep -c '^POST ' "$work/receiver.log" 2>/dev/null || true)
 	echo "${count:-0}"
 }
 
@@ -155,34 +243,33 @@ releases_mb=$(((releases_kib + 1023) / 1024))
 # --- the matrix ---------------------------------------------------------------
 reset_env() {
 	OTTER_DATA_DIR=$data
-	OTTER_DISK_URL=$HB_URL
-	OTTER_DISK_TIMEOUT=5
+	OTTER_METRIC_ENDPOINT=$METRIC_URL
+	OTTER_IMDS_ENDPOINT=$IMDS_URL
+	OTTER_METRIC_HOST=disk-check-test
+	OTTER_METRIC_TIMEOUT=5
 	OTTER_DISK_MAX_DB_MB=64
 	OTTER_DISK_MAX_RELEASES_MB=64
 	OTTER_DISK_MAX_ENVIRONMENTS_MB=64
 	OTTER_DISK_MAX_CACHE_MB=64
 	OTTER_DISK_MIN_FREE_MB=1
-	export OTTER_DATA_DIR OTTER_DISK_URL OTTER_DISK_TIMEOUT \
+	export OTTER_DATA_DIR OTTER_METRIC_ENDPOINT OTTER_IMDS_ENDPOINT \
+		OTTER_METRIC_HOST OTTER_METRIC_TIMEOUT \
 		OTTER_DISK_MAX_DB_MB OTTER_DISK_MAX_RELEASES_MB \
 		OTTER_DISK_MAX_ENVIRONMENTS_MB OTTER_DISK_MAX_CACHE_MB \
 		OTTER_DISK_MIN_FREE_MB
 	unset OTTER_TEST_FREE_KIB 2>/dev/null || true
-	unset_url=0
 }
 
 run_subject() {
-	if [ "$unset_url" -eq 1 ]; then
-		unset OTTER_DISK_URL
-	fi
 	PATH="$work/bin:$PATH" sh "$subject" 2>&1
 }
 
 # expect NAME want one|none SUBSTRING [VAR=value ...]
 #
-# `one` means the check must exit 0 and deliver exactly one ping; `none` means
-# it must exit non-zero and deliver none. Both halves matter: a check that
-# failed for the wrong reason, or that pinged anyway, is not the behaviour the
-# switch depends on. UNSET_DISK_URL=1 runs with no ping URL at all.
+# `one` means the check must exit 0 and deliver exactly one publish; `none`
+# means it must exit non-zero and deliver none. Both halves matter: a check that
+# failed for the wrong reason, or that published anyway, is not the behaviour
+# the alarm depends on.
 expect() {
 	name=$1
 	want=$2
@@ -190,10 +277,7 @@ expect() {
 	shift 3
 	reset_env
 	for assignment in "$@"; do
-		case $assignment in
-		UNSET_DISK_URL=1) unset_url=1 ;;
-		*) export "$assignment" ;;
-		esac
+		export "$assignment"
 	done
 
 	before=$(pings)
@@ -204,23 +288,23 @@ expect() {
 
 	if [ "$want" = one ]; then
 		if [ "$status" -ne 0 ]; then
-			fail "$name: want a delivered ping, got exit $status"
+			fail "$name: want a delivered publish, got exit $status"
 			show "$out"
 			return
 		fi
 		if [ "$delta" -ne 1 ]; then
-			fail "$name: want one ping, the receiver saw $delta"
+			fail "$name: want one publish, the receiver saw $delta"
 			show "$out"
 			return
 		fi
 	else
 		if [ "$status" -eq 0 ]; then
-			fail "$name: want a non-zero exit and no ping, got exit 0"
+			fail "$name: want a non-zero exit and no publish, got exit 0"
 			show "$out"
 			return
 		fi
 		if [ "$delta" -ne 0 ]; then
-			fail "$name: want no ping, the receiver saw $delta"
+			fail "$name: want no publish, the receiver saw $delta"
 			show "$out"
 			return
 		fi
@@ -235,7 +319,7 @@ expect() {
 	echo "ok: $name"
 }
 
-echo "test-disk-check: receiver $HB_URL, subject $subject"
+echo "test-disk-check: receiver $METRIC_URL, subject $subject"
 
 # --- the size boundary -------------------------------------------------------
 # otter.db is one file, so there is no directory block in the measure: 1 MiB of
@@ -287,8 +371,11 @@ expect "a negative floor fails loudly" none "OTTER_DISK_MIN_FREE_MB=-1 is not a 
 expect "a cap with a trailing space fails loudly" none "OTTER_DISK_MAX_CACHE_MB=2  is not a whole number of MB" \
 	"OTTER_DISK_MAX_CACHE_MB=2 "
 
-# --- the ping URL and the data directory -------------------------------------
-expect "a missing ping URL fails loudly" none "OTTER_DISK_URL" "UNSET_DISK_URL=1"
+# --- the metric endpoint and the data directory ------------------------------
+# An endpoint nothing answers must be fatal: a check that cannot publish has not
+# reported health, however healthy the stores are.
+expect "a metric endpoint that cannot be reached fails loudly" none "PutMetricData" \
+	"OTTER_METRIC_ENDPOINT=$DEAD_URL"
 expect "a data directory that does not exist is a measurement failure" none "does-not-exist" \
 	"OTTER_DATA_DIR=$work/does-not-exist"
 expect "a data directory that is a file is a measurement failure" none "is not a directory" \
@@ -298,7 +385,7 @@ expect "a data directory that is a file is a measurement failure" none "is not a
 fresh=$work/fresh
 mkdir -p "$fresh"
 dd if=/dev/zero of="$fresh/otter.db" bs=1024 count=1 2>/dev/null
-expect "stores that do not exist yet measure 0MB and still ping" one "" "OTTER_DATA_DIR=$fresh"
+expect "stores that do not exist yet measure 0MB and still publish" one "" "OTTER_DATA_DIR=$fresh"
 
 # --- outcome -----------------------------------------------------------------
 if [ "$failed" -ne 0 ]; then

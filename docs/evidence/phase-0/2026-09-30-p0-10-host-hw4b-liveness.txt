@@ -1,0 +1,80 @@
+===== HW-4b — P0-10 liveness: kill the daemon, watch the external alarm =====
+date:     2026-10-01T00:43:23Z
+host:     52.202.163.124 (ip-10-42-0-131)
+unit:     otterd-otter-examples-e0309b8c.service
+observer: CloudWatch alarm CastorRuntime-liveness -> SNS arn:aws:sns:us-east-1:426714791664:CastorRuntime-alarms
+
+--- precondition: the runtime is up and the heartbeat is publishing ---
+  health:   {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":1858.601810173}
+  datapoints in the last 6 minutes: 5
+  alarm:    OK
+  SNS:      1 confirmed subscription(s)
+  (from here on, nothing watches a terminal: the alarm and the mail are the record)
+
+--- kill: stop otterd for real ---
+  MainPID before: 2297
+  stopped at:     2026-10-01T00:43:27Z
+  is-active:      inactive
+  MainPID after:  0
+
+--- the check goes silent (run by hand, as systemd would) ---
+  heartbeat.service exit status: 1
+  Oct 01 00:43:29 ip-10-42-0-131 systemd[1]: heartbeat.service: Main process exited, code=exited, status=1/FAILURE
+  Oct 01 00:43:29 ip-10-42-0-131 systemd[1]: heartbeat.service: Failed with result 'exit-code'.
+  Oct 01 00:43:29 ip-10-42-0-131 systemd[1]: Failed to start heartbeat.service - Otter dead-man's-switch heartbeat.
+
+--- wait: the alarm needs the missing datapoints to accumulate ---
+  00:43:30Z  OK
+  00:44:31Z  OK
+  00:45:31Z  OK
+  00:46:32Z  OK
+  00:47:33Z  OK
+  00:48:34Z  OK
+  00:49:34Z  OK
+  00:50:35Z  OK
+  00:51:36Z  OK
+  00:52:36Z  OK
+  00:53:37Z  OK
+  00:54:37Z  ALARM
+  ALARM observed at: 2026-10-01T00:54:37Z (otterd down since 2026-10-01T00:43:27Z)
+
+--- restore: start otterd and let the publishes resume ---
+  /health:  {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":0.912823744}
+  heartbeat.service exit status after restart: 0
+
+--- wait: the alarm returns to OK ---
+  00:54:40Z  ALARM
+  00:55:41Z  OK
+
+--- the observer's own record (timestamped, not a terminal) ---
+  [
+      {
+          "Time": "2026-09-30T20:20:35.383000-04:00",
+          "Summary": "Alarm updated from INSUFFICIENT_DATA to OK"
+      },
+      {
+          "Time": "2026-09-30T20:54:35.384000-04:00",
+          "Summary": "Alarm updated from OK to ALARM"
+      },
+      {
+          "Time": "2026-09-30T20:55:35.380000-04:00",
+          "Summary": "Alarm updated from ALARM to OK"
+      }
+  ]
+
+--- what SNS did with it (best effort) ---
+  [
+      {
+          "Time": "2026-09-30T20:50:00-04:00",
+          "Delivered": 1.0
+      }
+  ]
+
+  otterd down:      2026-10-01T00:43:27Z
+  alarm ALARM at:   2026-10-01T00:54:37Z
+  alarm OK at:      2026-10-01T00:55:41Z
+  publishes resumed: 1 datapoint(s) in the last 3 minutes
+
+hw4b: ok: killing the runtime silenced the check, the external alarm fired, and starting it again cleared the alarm
+  unit:    active
+  /health: {"status":"ok","version":"v0.3.0-rc1","uptime_seconds":66.86500534}
