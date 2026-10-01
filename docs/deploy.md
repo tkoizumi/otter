@@ -588,12 +588,35 @@ writes neither: the state file is only touched by a deploy that succeeded.
 
 ## Talking to the remote daemon
 
-The deployed API binds `127.0.0.1:7337` — loopback only. There is no open port,
-no firewall rule, no reverse proxy and no TLS certificate to provision or
+The deployed API binds `127.0.0.1:7337` by default — loopback, with no open
+port, no firewall rule, no reverse proxy and no TLS certificate to provision or
 renew. Reach it with a tunnel:
 
 ```sh
 ssh -N -L 7337:127.0.0.1:7337 droplet    # foreground, Ctrl-C to stop
+```
+
+### Binding a private address
+
+`--listen` accepts a loopback or **private** address — `10.42.0.131:7337`,
+`192.168.1.10:7337`. Use it when a caller on the same private network should
+reach the API without a tunnel. The daemon already required an API token when
+it is not on loopback, and now the deploy honours the address instead of
+substituting the recorded loopback one:
+
+```sh
+otter deploy --host droplet --listen 10.42.0.131:7337
+```
+
+A wildcard (`0.0.0.0`, `::`, `:7337`, `*`) and a public address are both refused
+before the host is touched. The wildcard is the deployment CA-10 exists to
+avoid; a named public address reaches the same place, so the check is on the
+address's scope rather than on its shape. With a private bind there is no
+loopback socket, so a tunnel must target the bound address
+(`ssh -N -L 7337:10.42.0.131:7337 droplet`) — the deploy prints that command for
+you.
+
+```sh
 export OTTER_API_URL=http://127.0.0.1:7337   # name the daemon; without it `otter jobs` reads this workspace's registry
 export OTTER_API_TOKEN=$(python3 -c 'import json;print(json.load(open(".otter/state.secret.json"))["api_token"])')
 otter jobs

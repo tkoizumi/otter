@@ -223,9 +223,9 @@ func (a *App) deployStatus(store deploy.StateStore, state deploy.State, f *deplo
 			}
 		}
 		if token, err := store.LoadToken(rec.Host, rec.Target.WorkspaceID); err == nil && token != "" {
-			port := portFromListen(rec.Target.Listen)
+			listenHost, port := hostPortFromListen(rec.Target.Listen)
 			fmt.Fprintf(a.Stdout, "\nexport OTTER_API_TOKEN=%s\n", token)
-			fmt.Fprintf(a.Stdout, "ssh -N -L %d:127.0.0.1:%d %s &\n", port, port, rec.Target)
+			fmt.Fprintf(a.Stdout, "ssh -N -L %d:%s:%d %s &\n", port, listenHost, port, rec.Target)
 		}
 	}
 
@@ -283,17 +283,27 @@ func (a *App) deployProjectRoot() string {
 	return root
 }
 
-// portFromListen extracts the port so a tunnel command can be printed.
-func portFromListen(listen string) int {
-	_, port, err := net.SplitHostPort(strings.TrimSpace(listen))
+// hostPortFromListen splits a listen address or an API URL into the host and
+// port a tunnel must target. The host matters: an API bound to a private
+// address has no loopback socket, so forwarding to 127.0.0.1 would open a
+// tunnel to nothing and fail only once a request was made.
+func hostPortFromListen(listen string) (string, int) {
+	value := strings.TrimSpace(listen)
+	if i := strings.Index(value, "://"); i >= 0 {
+		value = value[i+3:]
+	}
+	host, port, err := net.SplitHostPort(value)
 	if err != nil {
-		return deploy.DefaultListenPort
+		return deploy.DefaultListenHost, deploy.DefaultListenPort
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil {
-		return deploy.DefaultListenPort
+		n = deploy.DefaultListenPort
 	}
-	return n
+	if strings.TrimSpace(host) == "" {
+		host = deploy.DefaultListenHost
+	}
+	return host, n
 }
 
 func (a *App) printDeployResult(r *deploy.Result) {
@@ -320,9 +330,9 @@ func (a *App) printDeployResult(r *deploy.Result) {
 		fmt.Fprintf(a.Stdout, "  export OTTER_API_TOKEN=%s\n", r.APIToken)
 	}
 
-	port := portFromListen(r.APIURL)
-	fmt.Fprintf(a.Stdout, "\nthe API listens on loopback only. Reach it with a tunnel:\n")
-	fmt.Fprintf(a.Stdout, "  ssh -N -L %d:127.0.0.1:%d %s &\n", port, port, r.Host)
+	listenHost, port := hostPortFromListen(r.APIURL)
+	fmt.Fprintf(a.Stdout, "\nreach the API with a tunnel:\n")
+	fmt.Fprintf(a.Stdout, "  ssh -N -L %d:%s:%d %s &\n", port, listenHost, port, r.Host)
 	fmt.Fprintf(a.Stdout, "  otter --api %s status\n", r.APIURL)
 }
 

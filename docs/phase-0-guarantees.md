@@ -213,7 +213,7 @@ recoverable.
 ## P0-07 — The host is provisioned reproducibly and exposes nothing it should not
 
 **Guarantee.** One script takes an empty Linux VM to a running daemon with an
-unprivileged service account, a systemd unit, a loopback-only API, restricted
+unprivileged service account, a systemd unit, a loopback-or-private API, restricted
 SSH, and a filesystem posture you can *assert* rather than read about.
 
 **Before.** Provisioning was a stack nobody had booted. Two things were wrong

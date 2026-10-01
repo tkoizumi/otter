@@ -15,6 +15,7 @@ package deploy
 
 import (
 	"fmt"
+	"net"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -403,8 +404,11 @@ func validateListen(listen string) error {
 	if strings.ContainsAny(listen, " \t") {
 		return fmt.Errorf("--listen must not contain whitespace, got %q", listen)
 	}
-	host, port, ok := strings.Cut(listen, ":")
-	if !ok || port == "" {
+	// SplitHostPort rather than a cut on the first colon: a bracketed IPv6
+	// literal contains several, and cutting would read the address as a
+	// malformed port instead of an address.
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil || port == "" {
 		return fmt.Errorf("--listen must be host:port, got %q", listen)
 	}
 	for _, r := range port {
@@ -420,7 +424,34 @@ func validateListen(listen string) error {
 		return fmt.Errorf("refusing a wildcard listen address %q: bind to %s and reach "+
 			"the API through an SSH tunnel", listen, DefaultListenAddr)
 	}
+	// A named address is supported. It is not the wildcard case: the operator
+	// has picked which interface the API is on, and the network still governs
+	// who can reach it. It must be loopback or private -- naming a public
+	// address is the deployment CA-10 exists to refuse.
+	if err := validateListenScope(host); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateListenScope accepts a loopback or private listen host and refuses a
+// public one. Refusing the wildcard is not enough on its own: an operator
+// naming the host's own public address would reach the same place, so the
+// check is on the address's scope rather than on its shape.
+func validateListenScope(host string) error {
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return fmt.Errorf("--listen host %q is not an IP address: use a loopback or "+
+			"private address such as %s", host, DefaultListenAddr)
+	}
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return nil
+	}
+	return fmt.Errorf("refusing a public listen address %q: bind a loopback or private "+
+		"address, or reach the API through an SSH tunnel", host)
 }
 
 // ParsePlatform splits and validates a "goos/goarch" platform string.

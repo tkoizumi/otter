@@ -6,7 +6,8 @@
 # ingress clauses: the data directory is private to the service account, the
 # environment files are 0600 and owned by it, the systemd unit is installed,
 # enabled and active with its sandbox directives intact, the API is bound to
-# loopback only, and nothing but the explicitly approved ports is listening.
+# loopback or private, and nothing but the explicitly approved ports is
+# listening.
 #
 # `otter deploy` is what *creates* that state -- the account, the modes, the
 # unit. This script asserts it, so "the permissions are right" is read off the
@@ -26,7 +27,7 @@
 #   --data-dir DIR         data directory
 #   --env-dir DIR          directory holding the workspace env files
 #   --env-file NAME        the workspace's env basename, without the .env suffix
-#   --listen ADDR          the loopback address the API must hold
+#   --listen ADDR          the loopback or private address the API must hold
 #   --approved-ports LIST  ports this host may be listening on (default 22);
 #                          the check is `ss -tln` on the host, not a scan from
 #                          outside it
@@ -99,7 +100,7 @@ Exit status is 0 only when every assertion holds.
   --env-owner U:G       owner the env files must have (default root:root, which
                         is what `otter deploy` writes)
   --env-dir-mode MODE   mode the env directory must have (default 700)
-  --listen ADDR         loopback host:port the API must hold
+  --listen ADDR         loopback or private host:port the API must hold
   --approved-ports LIST comma-separated ports (default 22). A listener on any
                         other port fails unless it is on loopback.
   --min-swap-mib N      minimum active swap in MiB (default 256; 0 disables)
@@ -491,8 +492,14 @@ else
 	127.* | localhost | ::1)
 		ok "listen address $api_addr is loopback"
 		;;
+	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | fd* | fc*)
+		# A private address is supported: the operator chose which interface the
+		# API is on, and the network still governs who can reach it. A wildcard
+		# or public address is refused by the deploy and re-checked below.
+		ok "listen address $api_addr is private"
+		;;
 	*)
-		fail "listen address $api_addr is not loopback; the API must not be reachable off the host"
+		fail "listen address $api_addr is neither loopback nor private; the API must not be reachable off the network"
 		;;
 	esac
 fi
@@ -541,11 +548,12 @@ else
 	# loopback. A check that only greps for wildcard binds would pass on a host
 	# where the daemon never started.
 	if [ -n "$api_addr" ]; then
-		if grep -qx "127\.0\.0\.1 $api_port" "$listeners" ||
-			grep -qx "::1 $api_port" "$listeners"; then
-			ok "the API is listening on $api_port over loopback"
+		# The address it was configured with, not an assumed loopback one: with
+		# a private listen there is no loopback socket to find.
+		if grep -qx "$api_host $api_port" "$listeners"; then
+			ok "the API is listening on $api_addr"
 		else
-			fail "nothing is listening on the API's loopback address $api_addr"
+			fail "nothing is listening on the API's configured address $api_addr"
 		fi
 	fi
 
@@ -584,6 +592,10 @@ else
 		case $hostpart in
 		127.* | ::1) continue ;;
 		esac
+		# The API's own address is expected to be here, and section 5 already
+		# decided whether it is allowed to be non-loopback. Reporting it as an
+		# unapproved listener would count one deliberate bind as two faults.
+		if [ "$hostpart $port" = "$api_host $api_port" ]; then continue; fi
 		case $approved_list in
 		*" $port "*) ok "port $port is approved (bound to $hostpart)" ;;
 		*)

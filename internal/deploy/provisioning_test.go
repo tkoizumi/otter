@@ -131,6 +131,44 @@ func TestValidationRefusesIngressBeforeAnyHostIsTouched(t *testing.T) {
 	}
 }
 
+// CA-10 refuses the wildcard, but the wildcard is not the only way to end up
+// with an internet-reachable admin API: naming the host's own public address
+// reaches the same place. The scope of the address is what decides, so a
+// private address is accepted and a public one is refused.
+func TestValidationScopesTheListenAddress(t *testing.T) {
+	accepted := []string{
+		"127.0.0.1:7337",
+		"10.42.0.131:7337",
+		"192.168.1.10:7337",
+		"172.16.5.4:7337",
+		"[fd00::1]:7337",
+		"localhost:7337",
+	}
+	for _, listen := range accepted {
+		target := testTarget()
+		target.Listen = listen
+		target.ApplyDefaults()
+		if err := target.Validate(); err != nil {
+			t.Errorf("Validate rejected the loopback or private address %q: %v", listen, err)
+		}
+	}
+
+	refused := []string{
+		"52.202.163.124:7337",
+		"8.8.8.8:7337",
+		"[2001:4860:4860::8888]:7337",
+		"otter.example.com:7337",
+	}
+	for _, listen := range refused {
+		target := testTarget()
+		target.Listen = listen
+		target.ApplyDefaults()
+		if err := target.Validate(); err == nil {
+			t.Errorf("Validate accepted the public or non-IP listen address %q", listen)
+		}
+	}
+}
+
 // P0-07's deliverable is one script from an empty VM to a running daemon, and
 // it is deliberately not a reimplementation of `otter deploy`. This pins the
 // boundary: the script must exist, be a POSIX sh script, and hand off to the

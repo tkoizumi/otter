@@ -63,6 +63,44 @@ func TestNextListenPortSkipsClaimedAndListeningPorts(t *testing.T) {
 	}
 }
 
+// The recorded address is a default, not an override. An operator naming a
+// private address on this run has to get it: silently substituting the recorded
+// loopback one produced a deploy that reported success and bound elsewhere, and
+// the difference was only visible by inspecting the socket afterwards.
+func TestSelectWorkspaceKeepsAnExplicitListen(t *testing.T) {
+	records := []WorkspaceRecord{
+		{ID: "aaaa1111-0000-0000-0000-000000000000", Slug: "shop", Name: "shop-aaaa1111", Unit: "otterd-shop-aaaa1111", Listen: "127.0.0.1:7337"},
+	}
+	target := Target{
+		RemoteDir:     "/opt/otter",
+		Host:          "h",
+		WorkspaceID:   "aaaa1111-0000-0000-0000-000000000000",
+		WorkspaceSlug: "shop",
+		Listen:        "10.42.0.131:7337",
+	}
+
+	got, created, err := SelectWorkspace(target, records, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Error("an existing workspace was reported as created")
+	}
+	if got.Listen != "10.42.0.131:7337" {
+		t.Errorf("Listen = %q, want the requested private address", got.Listen)
+	}
+
+	// With no request, the recorded address still wins.
+	target.Listen = ""
+	got, _, err = SelectWorkspace(target, records, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Listen != "127.0.0.1:7337" {
+		t.Errorf("Listen = %q, want the recorded address when none was requested", got.Listen)
+	}
+}
+
 // The same project must land on the same workspace however it is reached; a
 // different one must get its own directory and its own port.
 func TestSelectWorkspaceAdoptsOrCreates(t *testing.T) {

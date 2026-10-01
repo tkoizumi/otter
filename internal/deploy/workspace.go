@@ -185,6 +185,7 @@ func withListenPort(t Target, records []WorkspaceRecord, listening []int) Target
 func adoptWorkspace(t Target, rec WorkspaceRecord) Target {
 	dataWasDefault := t.DataDir == "" || t.DataDir == filepath.Join(t.WorkspaceDir(), StateDirName, "data")
 	serviceWasDefault := t.ServiceName == "" || t.ServiceName == DefaultServicePrefix+"-"+t.WorkspaceName()
+	listenWasDefault := strings.TrimSpace(t.Listen) == ""
 
 	t.JobsLayout = rec.JobsLayout
 	if t.JobsLayout == "" {
@@ -196,7 +197,12 @@ func adoptWorkspace(t Target, rec WorkspaceRecord) Target {
 	// The recorded name wins outright: it names a directory, a unit and an
 	// environment file that already exist, so reproducing it is not optional.
 	t.WorkspaceNameOverride = strings.TrimSpace(rec.Name)
-	t.Listen = rec.Listen
+	// The recorded address is the default, not an override. Without this an
+	// operator asking for a private address was silently handed the loopback
+	// one instead, and only found out by inspecting the socket.
+	if listenWasDefault {
+		t.Listen = rec.Listen
+	}
 	if dataWasDefault {
 		t.DataDir = filepath.Join(t.WorkspaceDir(), StateDirName, "data")
 	}

@@ -414,7 +414,9 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.Target.ServiceName, "service", "", "systemd unit name (default "+DefaultServicePrefix+"-<workspace>)")
 	fs.StringVar(&f.Target.RunAsUser, "service-user", "", "service account owning the unit and data (default otter)")
 	fs.StringVar(&f.Target.DataDir, "data-dir", "", "remote data directory holding otter.db (default <workspace>/.otter/data)")
-	fs.StringVar(&f.Target.Listen, "listen", "", "remote API listen address (default the first free port from "+DefaultListenAddr+")")
+	fs.StringVar(&f.Target.Listen, "listen", "", "remote API listen address: a loopback or "+
+		"private host:port (default the first free port from "+DefaultListenAddr+"); wildcard and "+
+		"public addresses are refused")
 	fs.StringVar(&f.Workspace, "workspace", "", "workspace on the host to deploy into (default: this project's own)")
 	fs.StringVar(&f.Target.Platform, "platform", "", "remote GOOS/GOARCH; detected over SSH when empty")
 	fs.BoolVar(&f.Target.RotateAPIToken, "rotate-token", false, "generate and install a fresh API token")

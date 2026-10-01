@@ -82,7 +82,7 @@ Two settings decide whether a small host survives:
 | Script | Runs on | What it is for |
 | --- | --- | --- |
 | `scripts/provision.sh` | your workstation | Empty Ubuntu 24.04 host → `otter deploy` → asserted host. Drills the plan with `--dry-run`. |
-| `scripts/assert-host-permissions.sh` | the host | Asserts CA-09/CA-10 on a deployed host: account, modes, ownership, unit state and sandbox, loopback-only API, approved ports, swap, provisioning report. |
+| `scripts/assert-host-permissions.sh` | the host | Asserts CA-09/CA-10 on a deployed host: account, modes, ownership, unit state and sandbox, loopback-or-private API, approved ports, swap, provisioning report. |
 | `scripts/test-provision.sh` | your workstation | Falsifiability for `provision.sh`: 27 fixture cases. A ready fixture must pass, and a missing swap, missing report, unreadable `sshd`, half-provisioned host or failed deploy must each fail the named check. |
 | `scripts/test-assert-host-permissions.sh` | your workstation | Falsifiability for the assertion script: 48 fixture cases, one per assertion it names. Every check can be disabled by mutating the script and the case that names it goes red. |
 
