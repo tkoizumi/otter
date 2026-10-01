@@ -167,6 +167,9 @@ func (d *Daemon) purgeInstance(ctx context.Context, inst identity.Instance) erro
 	if err := d.paused.Delete(ctx, id); err != nil {
 		return err
 	}
+	if err := d.schedules.Delete(ctx, id); err != nil {
+		return err
+	}
 	if err := (release.Manager{DataDir: d.cfg.DataDir}).DeleteAll(id); err != nil {
 		return err
 	}

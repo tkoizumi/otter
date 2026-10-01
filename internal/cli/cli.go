@@ -114,6 +114,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdPauseResume(ctx, g, commandArgs, true)
 	case "resume":
 		return a.cmdPauseResume(ctx, g, commandArgs, false)
+	case "schedule":
+		return a.cmdSchedule(ctx, g, commandArgs)
 	case "inspect":
 		return a.cmdInspect(ctx, g, commandArgs)
 	case "register":
@@ -1308,6 +1310,8 @@ Runtime:
   reload                          re-read the jobs directory; no restart
   pause [<job>|.]         suspend cron and webhook; manual runs still work
   resume [<job>|.]        re-arm the triggers a pause suspended
+  schedule [show|set|clear] [job] [cron]
+                          read or replace when a job fires on its own
   inspect [<job>|.]       show one job in detail
   run [<job>] [--no-wait] run it, wait, print the outcome and its output
   run --capture off|metadata|full override this run's HTTP capture policy

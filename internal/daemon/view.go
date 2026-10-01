@@ -81,7 +81,7 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 			MaxDelay:     m.Retry.MaxDelay.String(),
 		}
 		view.Triggers = api.TriggerView{
-			Cron:           m.Cron(),
+			Cron:           d.effectiveCron(it.ID, m),
 			WebhookEnabled: m.WebhookEnabled(),
 		}
 		if m.WebhookEnabled() {

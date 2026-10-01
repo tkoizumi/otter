@@ -74,6 +74,12 @@ type Backend interface {
 	// directory. Manual runs are unaffected in both directions.
 	SetPaused(ctx context.Context, ref string, paused bool) (PauseView, error)
 
+	// SetSchedule replaces a job's cadence, or clears it when cron is empty.
+	// A cleared schedule is a deliberate "never fire on its own" and does not
+	// fall back to the manifest, so a reload cannot resurrect it. Manual runs
+	// are unaffected.
+	SetSchedule(ctx context.Context, ref, cron string) (ScheduleView, error)
+
 	// Reload re-reads the jobs directory and applies what it finds to
 	// the running daemon, without stopping it. Executing runs and unchanged
 	// cron schedules are left alone.

@@ -169,6 +169,21 @@ func (c *Client) ResumeJob(ctx context.Context, ref string) (*PauseView, error) 
 	return &out, nil
 }
 
+// SetSchedule replaces a job's cadence. An empty cron clears the schedule,
+// which means the job never fires on its own and a reload will not restore it.
+func (c *Client) SetSchedule(ctx context.Context, ref, cron string) (*ScheduleView, error) {
+	body, err := json.Marshal(ScheduleRequest{Cron: cron})
+	if err != nil {
+		return nil, err
+	}
+	var out ScheduleView
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/schedule"
+	if err := c.do(ctx, http.MethodPut, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // DeleteJob purges an identity's durable artifacts.
 func (c *Client) DeleteJob(ctx context.Context, ref string) (*DeletedView, error) {
 	var out DeletedView

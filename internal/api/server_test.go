@@ -55,6 +55,9 @@ type fakeBackend struct {
 	pauseCalls []pauseCall
 	pauseErr   error
 
+	scheduleCalls []scheduleCall
+	scheduleErr   error
+
 	reloads   int
 	reloadOut ReloadResult
 	reloadErr error
@@ -69,6 +72,12 @@ type submittedRun struct {
 type pauseCall struct {
 	ref    string
 	paused bool
+}
+
+// scheduleCall records one schedule change the handler forwarded to the backend.
+type scheduleCall struct {
+	ref  string
+	cron string
 }
 
 var _ Backend = (*fakeBackend)(nil)
@@ -252,6 +261,32 @@ func (f *fakeBackend) SetPaused(_ context.Context, ref string, paused bool) (Pau
 		out.Since = &at
 	}
 	return out, nil
+}
+
+// SetSchedule records the cadence and mirrors it into the job's view, so a
+// handler test can read back the schedule the API reported.
+func (f *fakeBackend) SetSchedule(_ context.Context, ref, cron string) (ScheduleView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.scheduleErr != nil {
+		return ScheduleView{}, f.scheduleErr
+	}
+	f.scheduleCalls = append(f.scheduleCalls, scheduleCall{ref: ref, cron: cron})
+
+	view, ok := f.jobs[ref]
+	if !ok {
+		return ScheduleView{}, ErrNotFound
+	}
+	changed := view.Triggers.Cron != cron
+	view.Triggers.Cron = cron
+	f.jobs[ref] = view
+
+	return ScheduleView{
+		JobID:   ref,
+		Name:    view.Name,
+		Cron:    cron,
+		Changed: changed,
+	}, nil
 }
 
 func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {

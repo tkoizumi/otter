@@ -89,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/jobs/{id}/move", s.admin(s.handleMoveJob))
 	mux.Handle("POST /v1/jobs/{id}/pause", s.admin(s.handlePauseJob))
 	mux.Handle("POST /v1/jobs/{id}/resume", s.admin(s.handleResumeJob))
+	mux.Handle("PUT /v1/jobs/{id}/schedule", s.admin(s.handleSetSchedule))
+	mux.Handle("DELETE /v1/jobs/{id}/schedule", s.admin(s.handleClearSchedule))
 	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
 	mux.Handle("POST /v1/jobs/{id}/runs", s.admin(s.handleSubmitRun))
@@ -489,6 +491,45 @@ func (s *Server) handleResumeJob(w http.ResponseWriter, r *http.Request) {
 // apart between them. Neither takes a request body.
 func (s *Server) setPaused(w http.ResponseWriter, r *http.Request, paused bool) {
 	view, err := s.backend.SetPaused(r.Context(), r.PathValue("id"), paused)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleSetSchedule replaces a job's cadence. The body is {"cron": "..."}, and
+// an empty cron clears the schedule.
+//
+// The schedule is runtime state rather than manifest state: a cadence changes
+// far more often than a job's code, and a value that a file and an API can both
+// write is a value that eventually disagrees with itself.
+func (s *Server) handleSetSchedule(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req ScheduleRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "body must be a JSON object with a cron field")
+		return
+	}
+	view, err := s.backend.SetSchedule(r.Context(), r.PathValue("id"), strings.TrimSpace(req.Cron))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleClearSchedule removes a job's cadence.
+//
+// Clearing is a first-class request rather than "put the manifest's value
+// back": it means the job should not fire on its own at all, and a later reload
+// must not undo it.
+func (s *Server) handleClearSchedule(w http.ResponseWriter, r *http.Request) {
+	view, err := s.backend.SetSchedule(r.Context(), r.PathValue("id"), "")
 	if err != nil {
 		s.fail(w, r, err)
 		return

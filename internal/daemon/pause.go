@@ -86,7 +86,7 @@ func (d *Daemon) armCron(jobID string, m *config.Manifest) {
 		// arms it once the manifest validates, because it is no longer paused.
 		return
 	}
-	spec := m.Cron()
+	spec := d.effectiveCron(jobID, m)
 	if spec == "" {
 		return
 	}

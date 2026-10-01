@@ -103,6 +103,26 @@ type PauseView struct {
 	Since   *time.Time `json:"since,omitempty"`
 }
 
+// ScheduleRequest is the body of a schedule change. Cron is a standard
+// five-field expression; an empty value clears the schedule.
+type ScheduleRequest struct {
+	Cron string `json:"cron"`
+}
+
+// ScheduleView reports a job's cadence after a change.
+//
+// Cron is empty when the schedule was cleared. NextRunAt is absent when nothing
+// is armed -- a cleared schedule, or a paused job -- so a caller cannot mistake
+// a stored cadence for a trigger that will actually fire.
+type ScheduleView struct {
+	JobID     string     `json:"job_id"`
+	Name      string     `json:"name,omitempty"`
+	Cron      string     `json:"cron"`
+	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	Paused    bool       `json:"paused,omitempty"`
+	Changed   bool       `json:"changed"`
+}
+
 // ResetView reports the identity change a reset performed. The old identity is
 // retired but its data is kept until an explicit delete.
 type ResetView struct {

@@ -512,6 +512,58 @@ Resuming a job that was not paused is a successful no-op with
 
 Errors: `404 not_found`, `409 conflict`.
 
+### `PUT /v1/jobs/{id}/schedule`
+
+Replace a job's cadence. The schedule is **runtime state**, not manifest state:
+a cadence changes far more often than a job's code, and a value that both a file
+and an API can write eventually disagrees with itself. A manifest's
+`trigger.cron` is imported once, for jobs that predate this endpoint, and
+ignored from then on.
+
+```json
+{"cron": "*/15 * * * *"}
+```
+
+The response reports the stored cadence and, when one is armed, the next fire
+time. `changed: false` means the value was already in force, so a deploy script
+can apply it unconditionally.
+
+```json
+{
+  "job_id": "0195a7c2-...",
+  "name": "shopify-to-erp",
+  "cron": "*/15 * * * *",
+  "next_run_at": "2026-10-01T12:45:00Z",
+  "changed": true
+}
+```
+
+An invalid expression is rejected **before** anything is written, so a failed
+change leaves the previous cadence in force and armed.
+
+Errors: `400 invalid_request` (malformed body or an unparseable expression),
+`404 not_found`, `409 conflict` (a retired or deleted identity).
+
+### `DELETE /v1/jobs/{id}/schedule`
+
+Clear a job's cadence. The job stops firing on its own; `POST /v1/jobs/{id}/runs`
+still works.
+
+Clearing is a first-class state rather than a return to the manifest default.
+The row survives with an empty `cron`, so a later `otter reload` cannot
+re-import `trigger.cron` and silently undo the decision.
+
+```json
+{
+  "job_id": "0195a7c2-...",
+  "name": "shopify-to-erp",
+  "cron": "",
+  "changed": true
+}
+```
+
+Errors: `404 not_found`, `409 conflict`.
+
 ### `DELETE /v1/jobs/{id}`
 
 Purge the identity's state, run history and logs, queue rows, webhook token and

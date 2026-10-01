@@ -31,6 +31,7 @@ import (
 	"github.com/tkoizumi/otter/internal/pause"
 	"github.com/tkoizumi/otter/internal/queue"
 	"github.com/tkoizumi/otter/internal/runs"
+	"github.com/tkoizumi/otter/internal/schedule"
 	"github.com/tkoizumi/otter/internal/scheduler"
 	"github.com/tkoizumi/otter/internal/secrets"
 	"github.com/tkoizumi/otter/internal/state"
@@ -123,10 +124,11 @@ type Daemon struct {
 	// so every read it performs is bounded by timeline.ReadBudget.
 	timeline *timeline.Reader
 
-	sched    *scheduler.Scheduler
-	exec     *executor.Executor
-	secrets  secrets.Provider
-	notifier *notify.Notifier
+	sched     *scheduler.Scheduler
+	schedules *schedule.Store
+	exec      *executor.Executor
+	secrets   secrets.Provider
+	notifier  *notify.Notifier
 
 	reg *registry
 	cap *capacity
@@ -213,6 +215,13 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// The schedule table is read once here and mirrored in memory, so a reload
+	// can arm every job without a database read.
+	scheduleStore, err := schedule.NewStore(ctx, db.DB)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	d := &Daemon{
 		cfg:        cfg,
 		owner:      owner,
@@ -227,6 +236,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		inspection: inspectionStore,
 		timeline:   timeline.NewReader(db, runsStore, logsStore, inspectionStore),
 		sched:      scheduler.New(opts.Logger),
+		schedules:  scheduleStore,
 		secrets:    provider,
 		reg:        newRegistry(),
 		cap:        newCapacity(cfg.Workers),
@@ -518,10 +528,19 @@ func (d *Daemon) syncSchedules(items []*config.Job) {
 		if !it.Valid || it.Manifest == nil {
 			continue
 		}
+		// A manifest's trigger.cron is imported once, on first sight. The store
+		// owns the cadence from then on, so a cadence changed through the API
+		// is never undone by a reload and the file can never contradict what
+		// the daemon does.
+		if spec := it.Manifest.Cron(); spec != "" {
+			if _, err := d.schedules.Seed(context.Background(), it.ID, spec); err != nil {
+				d.log.Error("schedule_seed_failed", err, "job", it.ID)
+			}
+		}
 		if d.paused.Paused(it.ID) {
 			continue
 		}
-		if spec := it.Manifest.Cron(); spec != "" {
+		if spec := d.effectiveCron(it.ID, it.Manifest); spec != "" {
 			want[it.ID] = spec
 		}
 	}
@@ -560,6 +579,22 @@ func (d *Daemon) syncSchedules(items []*config.Job) {
 // job does no work itself, so a slow job never blocks the cron runner.
 func (d *Daemon) cronJob(jobID, spec string) func() {
 	return func() { d.cronTick(jobID, spec) }
+}
+
+// effectiveCron resolves the cadence the daemon should actually use: the stored
+// schedule when the job has one, and the manifest's trigger.cron only as the
+// pre-migration fallback for a job that has no row yet.
+//
+// A stored but empty cron is deliberate. It is the result of clearing the
+// schedule, and it must not fall through to the manifest.
+func (d *Daemon) effectiveCron(jobID string, m *config.Manifest) string {
+	if rec, ok := d.schedules.Get(jobID); ok {
+		return rec.Cron
+	}
+	if m == nil {
+		return ""
+	}
+	return m.Cron()
 }
 
 // Reload re-reads the jobs directory and applies what it finds to the
