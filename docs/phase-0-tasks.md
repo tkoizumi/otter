@@ -30,7 +30,7 @@ P0-14 and P0-16 are elapsed time, not effort.
 | P0-10 | Independent liveness detection | Blocker | `CA-31`, R-05 | M | P0-07 |
 | P0-11 | Disk retention and thresholds | Blocker | `CA-19`, `CA-33`, R-17 | M | P0-07 |
 | P0-12 | Scope Castor's credentials | Prereq | `CA-12` | S | P0-07 |
-| P0-13 | Select and harden the job | Blocker | `CA-02`, `CA-40`–`CA-46` | L | — |
+| P0-13 | Select and harden the job | Blocker | `CA-02`, `CA-40`–`CA-46` | L | P0-12 |
 | P0-14 | Shadow run beside the Lambda | Blocker | R-02, R-18 | elapsed | P0-13 |
 | P0-15 | Cutover | Milestone | — | S | all blockers |
 | P0-16 | Operate for 30+ days | Observe | — | elapsed | P0-15 |
@@ -273,23 +273,38 @@ cleanly and repeatedly.
 ### P0-13 — Select and harden the job — `CA-02`, `CA-40`–`CA-46`
 
 **What.** The job is where a duplicate write becomes a real business problem, and no
-runtime guarantee prevents it ([runtime-contract.md](runtime-contract.md) §5.2).
+runtime guarantee prevents it ([runtime-contract.md](runtime-contract.md) §5.2). The
+job is Castor's scheduled Shopify import. The revised design — the control-surface
+contract, the Castor-side queue change, and both manifests — is in
+[p0-13-castor-import-implementation-plan.md](p0-13-castor-import-implementation-plan.md).
 
 **Deliverable.**
 
 - Pick an import that is **scheduled** (not event-driven, so cron and backlog
-  behavior get exercised), **watermark- or checkpoint-shaped** (so `ctx.state` is
-  used for real), **upsert-shaped or idempotent** at the destination, and
-  **verifiable from outside Otter**.
+  behavior get exercised), **checkpoint-shaped** (so `ctx.state` is used for real),
+  **upsert-shaped or idempotent** at the destination, and **verifiable from outside
+  Otter**. Recommended: Shopify `orders`.
 - Document input, output, business effect, replay behavior, and owner.
+- **Preserve the UI contract.** `datasets.sync_enabled`,
+  `datasets.sync_interval_minutes`, `datasets.next_sync_at` and `sync_runs` remain
+  the schedule and status of record. Cadence must never be encoded in `otter.yaml`;
+  Otter's cron expression is a heartbeat. Castor's `PATCH /v1/datasets/{id}` and the
+  interval set stay unchanged.
+- Move the queue to Postgres: `sync_runs` is the durable hand-off, claimed with a
+  lease and a single-active-run index, so Lambda and Otter cannot double-execute and
+  cutover is a configuration flip rather than a rewrite.
 - Apply: upsert by a stable external id; idempotency key from business input, not
   the run id; `concurrency: 1` around `ctx.state` checkpoints; bounded work units
   (one page, not one sync); reconcile ambiguous remote writes before replaying;
   bound concurrency, retries and backoff; verify the outcome by querying the
   destination.
 
+**Depends on.** P0-12 (scoped credentials) and the P0-07/P0-08 host. Steps 1–3 of
+the plan are Castor-side and independent of Otter.
+
 **Evidence.** A destination-side assertion — the record appears exactly once — not a
-run status.
+run status. Plus the control-surface checks: an interval change and `Off` are
+honoured, a manual import is picked up, and a killed run resumes without duplicates.
 
 ---
 

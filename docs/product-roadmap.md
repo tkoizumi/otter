@@ -262,6 +262,43 @@ Exit gate: the phase 3 gate review has made an explicit go decision, and the
 published contract matches a release that passed the fault matrix. Calendar
 pressure is not a substitute for passing.
 
+## Recorded decisions
+
+### 2026-10-01 — The runtime API is a product surface, and schedules are runtime state
+
+**Decision.** The runtime API is a first-class surface for a self-hosted,
+single-tenant deployment — not only an internal transport for the CLI and a future
+control plane. An operator may reach it remotely with a scoped credential, and
+gating that access is the operator's decision rather than a blanket refusal in the
+tooling. Schedules become runtime state that the API and the CLI can create,
+change and remove, not only a manifest plus `otter reload`.
+
+**Why now.** Two drivers arrived together. Castor's ingestion cannot migrate to a
+design that is not close to the end state, and for a single tenant the end state
+*is* the runtime API: dynamic schedules (`CL-22`) plus a reachable, scoped API
+(`CL-23`). Neither is multi-tenant Cloud work, so neither needs the Phase B gate.
+The interim alternative — a tick job claiming a database queue and mirroring sync
+status back into Castor — would be discarded at cutover.
+
+**Consequences.**
+
+- `CL-22` and `CL-23` are pulled forward of the Phase B gate and belong to the
+  Phase 2 "Operable runtime" track, where `v0.4.0` already promises that the API
+  stops moving.
+- The scheduler becomes store-backed. The invasive half of that change lands
+  before Castor's job is live, while the host runs only paused stand-ins.
+- Three artifacts that currently disagree about bind addresses
+  (`internal/config/daemon.go`, `internal/deploy/target.go`,
+  `scripts/assert-host-permissions.sh`) are reconciled, and `P0-07`'s recorded
+  host evidence is re-run rather than amended.
+- [cloud-alpha-readiness.md](cloud-alpha-readiness.md) Phase E's "control-plane
+  API rather than the runtime API" is reconciled with `CL-10`'s actual wording.
+- The interim Castor scheduling shim is cancelled. The durable Castor fixes —
+  lease, single-active-run index, cancel, shared import core — proceed regardless,
+  because they improve the Lambda path too.
+
+**Design.** [dynamic-schedules-design.md](dynamic-schedules-design.md).
+
 ## Immediate planning backlog
 
 1. Inventory each runtime contract as documented, implemented, tested, or proven

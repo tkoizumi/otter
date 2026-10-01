@@ -242,6 +242,66 @@ correctness.
 runtime execution state — and the reconstruction path is a tested procedure, not
 an assertion.
 
+## CL-22 — Add dynamic schedules — MUST
+
+*Runtime work, not control-plane work*, and not in the first draft. `CL-04`'s
+command list does not include scheduling, and schedules are manifest-only today:
+changing one means editing a released file and running `otter reload`. A control
+plane cannot manage a schedule it cannot create, and a UI cannot offer "every
+fifteen minutes for this dataset" without a per-occurrence payload.
+
+The runtime must gain first-class schedules: create, update, pause, resume and
+remove without a reload, keyed by durable job identity, carrying a payload for
+each occurrence, with manifest-declared schedules still reconciling
+declaratively and neither owner silently overwriting the other. One occurrence
+must produce at most one run across restarts and duplicate commands.
+
+The design is [dynamic-schedules-design.md](dynamic-schedules-design.md).
+
+**Done when:** a runtime behind an inbound-deny firewall can be given a new
+schedule by the control plane, the occurrence fires with its payload, a restart
+neither replays nor drops it, a duplicate command produces no second schedule,
+and `otter reload` leaves an API-created schedule untouched.
+
+## CL-23 — Make the runtime API a supported remote surface — MUST
+
+*Runtime work, not control-plane work.* The API is loopback-only by convention,
+not by necessity, and the artifacts that govern it disagree: the daemon permits a
+non-loopback bind when a token is set, `otter deploy` refuses a wildcard address
+and plans the API as loopback with `ssh -L`, and `assert-host-permissions.sh`
+fails any non-loopback listen address.
+
+Loopback is standing in for authorization. The credential that guards the API is a
+single static admin token with full control-plane authority — including
+`POST /v1/jobs/{id}/runs`, which executes arbitrary code — and no read-only or
+per-job variant ([security.md](security.md)). An operator who needs the API from
+another host, another container, or a client's backend has no supported path but a
+tunnel.
+
+An operator running Otter on their own host owns that decision. The runtime makes
+the safe configuration the default and the reachable configuration possible,
+rather than refusing on the operator's behalf.
+
+Deliverables:
+
+- Operator credentials gain scopes — control (run, pause, schedule), read (jobs,
+  runs, logs, state), admin — with multiple named tokens, rotation and revocation.
+  `CL-21` scopes the credential *Cloud* holds; this scopes the operator's.
+- TLS is either supported directly or covered by a documented reverse-proxy
+  pattern. The daemon serves plain HTTP today.
+- `otter deploy` accepts a non-loopback or wildcard bind behind an explicit opt-in
+  and a warning, instead of refusing it.
+- `assert-host-permissions.sh` asserts the *configured* posture — loopback, or a
+  token with an expected bind or CIDR — rather than hardcoding loopback, and its
+  recorded Phase 0 evidence is re-run.
+- [security.md](security.md)'s blanket prohibition and `CL-04`'s inbound-access
+  wording are reconciled with the capability.
+
+**Done when:** a runtime on a private network, behind TLS, is operated from
+another host by a client holding a read-only token that cannot execute code, and
+the host assertion passes on that configuration without weakening the loopback
+default.
+
 ## CL-11 — Make control commands idempotent — MUST
 
 *Not in the first draft; this is a correctness gap.*
@@ -943,8 +1003,9 @@ reachable at all depends on it (`R-23`).
 ## Phase B — build the minimal control plane
 
 `CL-01`, `CL-02`, `CL-04`, `CL-05`, `CL-07`, plus `CL-11`, `CL-12`, `CL-14`,
-`CL-17`, `CL-18`–`CL-21` — including `CL-21`, the runtime-side control credential,
-which is runtime work on this phase's critical path.
+`CL-17`, `CL-18`–`CL-23` — including `CL-21`, the runtime-side control credential,
+`CL-22`, dynamic schedules, and `CL-23`, the reachable and scoped API, all three of
+which are runtime work on this phase's critical path.
 
 At this point Cloud can securely operate one runtime. Ship the API before any UI:
 Castor is the first consumer (`CL-10`).
@@ -967,9 +1028,16 @@ disk monitoring. Result: a repeatable client onboarding process.
 
 Castor already migrated in Phase 0. This phase moves *additional* Castor workloads
 onto the platform and, where Castor needs Otter status or controls inside its own
-UI, points it at the control-plane API (`CL-10`) rather than the runtime API.
-Doing `CL-10` here rather than in Phase 0 avoids building an integration against an
-API that is about to be superseded, and then re-pointing it.
+UI, points it at the control-plane API (`CL-10`).
+
+`CL-10`'s requirement is "the same API the frontend uses, not an internal
+shortcut" — not "the control-plane API specifically". Once `CL-23` makes the
+runtime API a supported, scoped, remote surface, a single-tenant Castor backend
+consuming it directly is an ordinary client relationship rather than a shortcut,
+and `CL-10` is satisfied by the runtime API until a Cloud frontend exists to share
+it. Whichever surface is chosen, Castor's **backend** holds the credential, never
+the browser. The decision is recorded in
+[product-roadmap.md](product-roadmap.md#recorded-decisions).
 
 ## Phase F — onboard the first external client
 
