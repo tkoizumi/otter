@@ -1,0 +1,310 @@
+===== Phase 0 independent verification: P0-09, P0-10, P0-11 =====
+status:   INDEPENDENT round. This session did not write the publisher, the alarms,
+          the checks or the drills under test (they landed in 0b78f77..3e6a15e and
+          otter-platform 44b19d9..522006a). Every claim below was re-derived from a
+          primary source -- live CloudWatch, the live host, the raw publisher -- and
+          then the production behaviour was mutated to confirm the assertion goes
+          red. Run in a git worktree (verify/p0-09-11); the worktree is clean.
+date:     2026-10-01 EDT (AWS and host clocks read 2026-10-01T02:5x-03:2xZ)
+host:     i-0ba293ef4c5926b04 / 52.202.163.124 (ip-10-42-0-131), Ubuntu 24.04 arm64,
+          workspace otter-examples-e0309b8c, otter v0.3.0-rc1
+build:    otter @ 3e6a15e; otter-platform @ 522006a
+brief:    docs/phase-0-verification-p0-09-p0-11.md
+
+verdicts: P0-09  VERIFIED
+          P0-10  VERIFIED
+          P0-11  VERIFIED (mechanism, thresholds and alert path) -- but its
+                 DELIVERABLE IS NOT IN FORCE on the live host: the runtime runs
+                 run/log retention 0s (retain forever). See D1.
+
+The round's own brief is corrected twice, by measurement, in CORRECTIONS below.
+The two findings that matter are D1 (retention not configured on the host the
+ledger believes it is configured on) and D2 (the local suites and the disk drill
+stay green with the behaviour the P0-10/P0-11 alarms depend on deleted).
+
+
+=== P0-09 -- Failure notification (CA-30) -- VERIFIED ===========================
+
+Mechanism, in the code and under mutation (worktree, `GOCACHE=$PWD/.cache/go-build`):
+
+  go test ./internal/notify/ ./internal/daemon/            all green at 3e6a15e
+  notify.go:172  `if resp.StatusCode < 200 || > 299` -> `if false`
+      RED: TestSendRetriesThenSucceeds, TestSendGivesUpAfterBoundedAttempts
+      (delivery is recorded only after post() returns nil; a broken endpoint is
+      not "sent")
+  notify.go:105  `Wants` forced to `return true`
+      RED: TestDisabledNotifierDoesNothing and TestWantsFiltersByStatus (notify),
+      plus TestNotifyFailureSendsOnlyReportedStatuses (daemon). The filter really
+      is applied at workers.go:656 before the payload is built, so the daemon-level
+      case is load-bearing, not decorative.
+
+Host re-derivation on the CURRENT host, against a loopback stand-in receiver that
+records every body and can be made to answer 500. The real Slack webhook was NOT
+used this round; the standing env file is notify-off and was restored byte-for-byte.
+
+  case 1  notify on, failed  -> 1 `notification_sent`, attempt=1, 1 POST
+          body: {"text":":red_circle: *<job>* failed\nnot started: job ... requires
+          secrets ..."}                                 (slack format on the wire)
+  case 2  OTTER_NOTIFY_ON=timed_out, failed run -> 0 sent, 0 POST
+          (the allow-list is load-bearing on the real daemon)
+  case 3  receiver answers 500 -> 0 sent, 1 `notification_failed`, 3 POSTs
+          ("notify: delivery failed after 3 attempt(s): endpoint returned 500")
+          delivery requires a 2xx; a retried request is not a notification
+  case 4  drill-job -> run_succeeded, exit_code 0 -> 0 sent, 0 POST
+  case 5  OTTER_NOTIFY_FORMAT=json -> the body is the full JSON payload
+          {"job":..,"run_id":..,"status":"failed","attempt":1,"error":..,"detail":..,
+           "duration_ms":0,"release":..,"host":"ip-10-42-0-131"}
+  restore env sha256 46d68c61b81959baa5c568575d58cb274c6de387e1693747ddaf927d6b2e1a84
+          unchanged before and after; /health 200
+
+  Residual: discord and teams remain unit-tested only; json is now exercised on a
+  host, slack was already. The Slack channel itself was owner-confirmed on the old
+  host (below) and was not re-posted to.
+
+PROVENANCE: the ledger's P0-09 host evidence, HW-4a
+(2026-09-30-p0-09-host-hw4a.txt), names host 44.213.227.52 (ip-10-42-0-180) --
+the host DESTROYED on 2026-09-30. The row does not say so. This round re-ran the
+claim on the host that exists.
+
+
+=== P0-10 -- Independent liveness detection (CA-31) -- VERIFIED =================
+
+Live configuration, read from AWS (not from the transcript), matches the stack:
+
+  CastorRuntime-liveness / CastorRuntime-disk
+    Otter / Heartbeat | DiskCheck, Host=castor-runtime
+    Period 60, EvaluationPeriods 5, DatapointsToAlarm 5,
+    TreatMissingData=breaching, LessThanThreshold 1,
+    EvaluationWindow={WallClockWindow:{}}, ActionsEnabled=true,
+    AlarmActions=[arn:...:CastorRuntime-alarms]
+  IAM: cloudwatch:PutMetricData conditioned StringEquals cloudwatch:namespace=Otter
+  SNS: one confirmed email subscription
+
+Stack mutation (otter-platform, npx jest):
+  remove `cfnAlarm.evaluationWindow = { wallClockWindow: {} }`
+      RED: "uses a wall-clock evaluation window, so five periods mean five minutes"
+  TreatMissingData.BREACHING -> MISSING
+      RED: "creates one alarm per check, and treats missing data as breaching"
+
+THE CRUX, re-derived on the REAL metric, current host. Two verification alarms on
+Otter/Heartbeat Host=castor-runtime, identical settings except the window, no
+actions; the host's heartbeat timer was stopped (the daemon left running). Latency
+is from CloudWatch's own StateUpdate history, from the silence at 02:59:49Z:
+
+  zz-v-walled   (WallClockWindow)  OK->ALARM 23:05:31.383 EDT   342s = 5m42s
+  zz-v-sliding  (default)          OK->ALARM 23:10:26.996 EDT   637s = 10m37s
+  CastorRuntime-liveness (prod, actions muted) OK->ALARM 23:05:08.699 319s = 5m19s
+
+So the wall-clock window is what makes 60s x 5 mean about five minutes, and the
+default sliding window takes nearly twice as long. The production run of the same
+drill measured 11m10s and 5m34s (HW-4b, already on this host); this round measures
+both arms against the same silence, which the earlier runs did not.
+
+TOLERANCE (the design claim: five periods tolerate one missed minute). A
+wall-clock alarm with the production settings was published to for 6 minutes until
+OK, one minute was skipped, then publishing resumed for 5 minutes. Sampled
+every 20-60s: OK at every sample. RESULT: tolerated. A single missed period does
+not alarm.
+
+ABSENT HOST: the same window stopped the heartbeat timer while otterd stayed up;
+the alarm fired. A host that can send nothing looks the same as a host that is
+gone, which is the switch's premise.
+
+  Note, measured: an alarm created with NO datapoints and treatMissingData=breaching
+  goes to ALARM after ~5 minutes of silence (seen in the synthetic ramp:
+  INSUFFICIENT_DATA -> ALARM at 03:00:06, then -> OK at 03:01:07 as data arrived).
+  That is why a rebuilt host with no checks "looks dead about five minutes after the
+  second cdk deploy"; the documented rebuild order (install the checks first) avoids
+  it, and the installer header says so.
+
+  Residual: this round muted the alarms' actions, so no new SNS email was observed.
+  The alarm->action wiring is unchanged and was owner-confirmed earlier; it was not
+  re-derived end to end here.
+
+
+=== P0-11 -- Disk retention and thresholds (CA-19, CA-33) -- VERIFIED ==========
+
+Thresholds and rounding (local, `sh scripts/test-disk-check.sh` -> 18/18 green):
+  disk-check.sh:216  `-lt` -> `-le` on the free-space floor
+      RED: "free space exactly at the floor passes", "the same tap passes a floor
+      it does meet" (2 cases); the other 16 stay green
+  scripts/drill/disk-pressure.sh clean -> green; DRILL_SABOTAGE=ping-always -> RED
+  at the first assertion (a positive check keeps the alarm quiet)
+
+RETENTION re-derived on the CURRENT host. Three runs were created, a consistent
+copy of the live data directory was taken, and four passes were run over copies
+(counts are runs|logs|http_exchanges|run_capture|payloads_expired):
+
+  live before                 5|21|0|5|0
+  after creating three runs   8|34|0|8|0
+  snapshot                    8|34|0|8|0
+  control-long 2160h/2160h/2160h   8|34|0|8|0   nothing pruned
+  run-window   1s/0/0              0|0|0|0|0   runs pruned (logs and capture cascade)
+  log-window   0/1s/0              8|0|0|8|0   only logs pruned
+  capture-window 0/0/1s            8|34|0|8|8   only the capture expiry flag moved
+  live after (untouched)           8|34|0|8|0
+
+Each window moves its own store and nothing else; the long window prunes nothing.
+This is the same shape the HW-6a record claims, reproduced on the host that exists.
+
+ALERT PATH re-derived on the CURRENT host. disk-check.timer stopped (no publishes),
+disk alarm actions muted; from the silence at 03:16:14Z:
+
+  CastorRuntime-disk  OK->ALARM 23:21:19.446 EDT   305s = 5m05s
+  CastorRuntime-liveness  no transition in the window (the two arms are independent)
+  after the timer restarted: disk OK ~1 minute later
+
+  Given: the alert path was already evidenced on this host (HW-6b-alert, 5m28s). This
+  round is the independent re-derivation the brief asks for.
+
+CA-19 (SHOULD, prime the uv cache): `cache/uv/` exists with the interpreter-v4 and
+sdists layout but measures only 32K; the 61M managed CPython is under `python/` and
+three prepared environments under `environments/`. The interpreter is genuinely
+prepared (CA-17/CA-18 met); a *wheel* cache is not present. "Prime cache/uv" is
+satisfied only in the weak sense that the cache directory is in use.
+
+The threshold values (512/1024/3072/1024 MB, 2048 MB floor) are ours, not Castor's;
+the free-space floor is the interesting one, as the fill drill showed. Not a defect,
+a judgement call for P0-13.
+
+
+=== D1 (material) -- the retention deliverable is not in force on the live host ===
+
+The live daemon logs, on every start:
+
+  {"event":"retention_configured","log_retention":"0s","run_retention":"0s"}
+
+and `capture_configured` at its 168h default (no environment variable exists).
+The deployed daemon env file contains OTTER_WORKERS and nothing else; there is no
+retention key, no unit drop-in and no `retention:` key in `otter.deploy.yaml`.
+
+The ledger's HW-6 row says the live runtime "was left configured
+OTTER_RUN_RETENTION=2160h / OTTER_LOG_RETENTION=720h" -- true of the host that
+produced HW-6a, 44.213.227.52, which was destroyed the same day. Nothing re-applies
+it on a rebuild: the retention windows are enabled only by editing an env file by
+hand, and the rebuild procedure in phase-0-resume-here.md does not mention it.
+
+Consequence: CA-33's "define retention ... before enabling unattended jobs" is not
+met on the host that would run Castor's job, and a rebuild silently reverts it.
+
+
+=== D2 -- the suites are green with the behaviour the alarms depend on deleted ===
+
+Spot-checked by this session (not only reported), because it goes to the heart of
+the house bar ("a green test that would pass with the behaviour removed is not
+evidence"). Every mutation below was run against a copy; the suite stayed green.
+
+  test-otter-metric.sh (29/29 green) with the publisher UNSIGNED:
+      delete `--aws-sigv4`, `--user "$ak:$sk"` and the session-token header from
+      otter-metric.sh:186-188 -> 29 cases pass. The stand-in accepts any request
+      and records no headers, so the SigV4 signature -- the thing that makes the
+      metric land -- is asserted nowhere. Real CloudWatch would 403.
+
+  test-disk-check.sh (18/18 green) AND the disk-pressure drill (green) with the
+      DISK CHECK PUBLISHING THE WRONG METRIC:
+      disk-check.sh:233 `DiskCheck=1 DiskFreeMB="$free_mb"` -> `AnythingIsFine=1`
+      -> 18 cases pass and the drill passes. The P0-11 alarm is on Otter/DiskCheck;
+      the check could publish nothing the alarm reads and every test still passes.
+
+Additional holes confirmed by an independent sub-audit (report kept; substantive):
+
+  * `assert_log` is an unanchored substring match: Namespace Otter->OtterMetricsX,
+    StorageResolution 60->600, dimension Host->HostName, the default host value,
+    the metric name and the values can all be *extended* and stay green.
+  * The stand-in conflates the CloudWatch endpoint and IMDS (one host:port); the
+    publish can be pointed at IMDS and the suite stays green.
+  * OTTER_METRIC_REGION is only proven to skip the IMDS lookup; hardcoding the
+    signing region elsewhere stays green.
+  * The IMDSv2 stand-in checks token *presence*, not value; a bogus token passes.
+  * The disk suite's `df` tap ignores its arguments: measuring `/` instead of the
+    data filesystem stays green.
+  * `heartbeat.sh` is executed by NO test (`grep -l heartbeat.sh scripts/test-*.sh`
+    finds only the installer's upload and the unit-name check). Neutering its
+    publish to a no-op left 165 cases across five suites green.
+  * The shell suites are not wired into `make test` or CI; they are manual-only.
+  * OT-022 (author-reported) is CONFIRMED: the installer's convergence probe runs
+    `[ -f /etc/otter/*.env ]` as the login user against a 0750 root:root directory,
+    so it reports both env files missing on every run and the "already converged"
+    branch is unreachable. The stack sets `PermitRootLogin no`, so the root login
+    that would make it pass is impossible on any host it builds. The suite cannot
+    see it because its fixture intercepts the whole probe.
+
+None of this makes the production code wrong -- the publisher and the checks are
+correct as deployed, and the real API path was re-derived below. It means the
+suites do not prove what the ledger's "verified by mutation" language implies, and
+a regression in the signature, the region or the metric name would ship green.
+
+
+=== Cross-cutting: the metric contract, verified against the real API ==========
+
+The contract matches on both sides today, checked by hand against live AWS:
+  publisher  otter-metric.sh  Namespace=Otter (:192), dimension Host (:109-110),
+             default castor-runtime (:65); callers Heartbeat=1 (heartbeat.sh:42) and
+             DiskCheck=1 DiskFreeMB (disk-check.sh:233)
+  stack      MONITORING_NAMESPACE/MONITORING_DIMENSION/DEFAULT_MONITORING_HOST/
+             HEARTBEAT_METRIC/DISK_CHECK_METRIC (castor-runtime-stack.ts:64-76)
+  live       alarms, IAM condition and SNS above.
+
+Re-derived on the host with no endpoint override:
+  /usr/local/lib/otter/otter-metric.sh ContractProbe=1   -> exit 0
+  aws cloudwatch get-metric-statistics --namespace Otter --metric-name ContractProbe
+      --dimensions Name=Host,Value=castor-runtime -> Sum 1 at 2026-09-30T23:13:00-04:00
+The real PutMetricData path (instance role -> IMDSv2 -> SigV4 -> CloudWatch) works
+from the host.
+
+OT-024 stands: nothing ties the two repos' copies of these strings together.
+
+
+=== CORRECTIONS to the brief ====================================================
+
+C1. "A mismatch [of the metric contract] is silent." Measured: the alarm is on the
+    watch side with TreatMissingData=breaching and threshold 1, so a dimension or
+    metric name that stops matching parks the alarm in ALARM -- loud, not silent.
+    What is silent is the TEST SUITE (D2): D2's disk mutation detaches the alarm
+    and every local case and the drill stay green.
+
+C2. HW-6b-alert's prose -- "three real breaches ... the alarm went ALARM 5m28s
+    later, SNS delivered, and a byte-exact restore cleared it" -- reads as three
+    alarm cycles. CloudWatch history shows one OK->ALARM->OK cycle: the three
+    breaches were staged inside one silence, then the timer was pointed at the
+    full volume for 5m28s. The transcript's own history block is correct; the
+    sentence is not.
+
+Also stale, and fixed in this round: phase-0-status.md still says "The host was
+destroyed on 2026-09-30 -- every remaining window needs a rebuild first". The host
+was rebuilt that day (launched 2026-10-01T00:10Z) and is the one this round used.
+
+
+=== Evidence provenance (why D1 exists) ========================================
+
+Reading the `host:` line of every record: HW-4a (notify), HW-6a (retention), HW-6b
+disk-fill, HW-7 (clean-host restore) and HW-1/HW-3 ran on hosts that no longer
+exist -- 44.198.213.184, 44.213.227.52 and the two drill hosts. Only HW-4b
+(liveness), HW-6b-alert, HW-8 and this round ran on 52.202.163.124. The ledger
+presents the destroyed-host runs as current evidence without saying so, which is
+how D1 survived: the retention config was real, on a host that was then replaced.
+
+
+=== Residual, not verified =====================================================
+
+  * No SNS email was observed this round (actions muted during both alarm windows).
+  * discord and teams notification bodies remain unit-tested only.
+  * The disk-fill finding (OT-020: a run reports succeeded while its output is lost)
+    was not re-derived; HW-6b's transcript is unchanged and uncontested.
+  * Unit caps (HW-3), the clean-host restore (HW-7) and the posture scan (HW-8) are
+    outside this brief and were not re-run.
+  * Castor's own retention values and credential scopes remain owner decisions.
+
+
+=== Round hygiene ==============================================================
+
+  * Every host mutation was restored: both production alarms are OK with actions
+    enabled, heartbeat.timer and disk-check.timer are active, otterd /health 200,
+    and the daemon env sha256 is byte-for-byte the value it started with.
+  * The two production alarms' actions were muted only while their arm was being
+    deliberately silenced, and re-enabled at the end of each window.
+  * No verification alarm was left behind (zz-* count: 0); the synthetic namespace
+    ZZVerify is left to age out.
+  * Host scratch (/tmp/h1*, /tmp/h3*, the stand-in receiver) was removed.
+  * The worktree verify/p0-09-11 is clean; no product source was changed by this
+    round. The only artifacts are this record and the ledger updates beside it.

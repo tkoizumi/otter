@@ -27,7 +27,7 @@ to Castor's job owner, not a deploy.
 | Key | `.otter-keys/otter-castor.pem` — **re-fetched from SSM** for the new key pair `key-096f5d276bd8eea63`; the old key belongs to the destroyed host |
 | API token | `otter_examples/.otter/state.secret.json` — a new token per host, keyed by `<ip>/<workspace-id>` |
 | Identity record | `.otter-keys/host-identity.txt` (workspace-local, outside both repos) and [2026-09-30-p0-07-host-rebuilt-2.txt](evidence/phase-0/2026-09-30-p0-07-host-rebuilt-2.txt) |
-| Monitoring | the instance role may publish `Otter`-namespace metrics; **no alarms yet** — the topic and both alarms are a second deploy, deliberately after the checks are installed |
+| Monitoring | checks installed and both alarms live: `CastorRuntime-liveness` and `CastorRuntime-disk`, `OK`, actions armed, wall-clock window, one confirmed email subscription. OT-022 still makes the installer's convergence probe report "not yet converged" on every run |
 | Drill target | **destroyed** |
 | Previous host | **DESTROYED 2026-09-30**, and verified: no instances, no Elastic IPs, no volumes. That teardown is why the private key above had to be re-fetched rather than reused |
 
@@ -85,15 +85,26 @@ conflicts are the ones git cannot see.
 5. **A second host for HW-7** — destroyed; recreate from the committed stack in
    about three minutes when needed.
 
-## Next three actions, in order
+## Next actions, in order
 
 1. **Ask Castor's job owner** which import, with destination, owner and business
-   effect. Everything else is waiting on this.
-2. **Merge the branches whose verdicts are VERIFIED** (`p0-07`, `p0-03`, and
-   `p0-08` if its gate passed), then push so CI records the Linux-authoritative run.
-3. **Run HW-6's retention half** — enabling the three windows and demonstrating
-   pruning is actionable today; the alerting half needs v0.3.0's WS4 surface,
-   which is not built.
+   effect. Everything else is waiting on this. Still the critical path.
+2. **Restore retention on the live host (`OT-026`, finding D1).** The 2026-10-01
+   independent verification found the runtime runs `run_retention 0s /
+   log_retention 0s`: HW-6a's configuration was on the host destroyed on
+   2026-09-30, and no rebuild step re-applies it. Fix it with a deploy-time key or
+   a drop-in so a rebuild cannot silently revert it — capture retention still has
+   no configuration surface at all.
+3. **Fix the monitoring fixtures (`OT-027`, finding D2).** The suites are green
+   with the publisher unsigned, the `DiskCheck` metric renamed and `heartbeat.sh`
+   neutered; wire them into `make test`/CI while you are there.
+4. **Then the ordinary backlog**: HW-5 needs Castor's credential values, and the
+   OT-022 installer probe fix is small and self-contained.
+
+The independent verification record is
+[2026-10-01-p0-09-p0-11-independent-verification.txt](evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt):
+P0-09, P0-10 and P0-11's mechanism are `VERIFIED`; P0-11's deliverable is not, and
+that is D1 above.
 
 Do not start another verification round on `p0-08`. Its residual is three
 labelled conservative refusals, all with a terminating remedy, and it is not on
