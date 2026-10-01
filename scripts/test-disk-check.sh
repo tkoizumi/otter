@@ -20,14 +20,25 @@
 #   * a data directory that does not exist is a measurement failure, while a
 #     *store* that does not exist yet is 0MB and still publishes -- the runtime
 #     creates .releases, environments/, python/ and cache/ lazily, and a fresh
-#     host is not a host under pressure.
+#     host is not a host under pressure;
+#   * a publish that carries the wrong metric name, or that drops the free-space
+#     figure, is a failure: counting POSTs cannot tell DiskCheck from
+#     AnythingIsFine, and the P0-11 alarm watches the former;
+#   * free space must be measured on the data directory: the df tap records the
+#     arguments it was called with, and a check that asked about / has measured
+#     the root filesystem, not the one the stores fill.
 #
 # Where the fixture is: `du` is real (real files, real blocks). `df` is a tap in
 # the test's own bin directory that reports a fixed Available when the test asks
 # for one and passes through to the real df otherwise. Free space cannot be set
 # to an exact value on a live filesystem, and "exactly at the floor" is the one
 # case that tells >= from >, so a stand-in is the only honest way to pin it. The
-# sizes need no stand-in: a file of exactly 1 MiB and a file of 1 MiB + 1 byte
+# tap answers whatever it is asked -- a fixture that refused a wrong path would
+# report the check's mistake as the fixture's -- but it records the arguments it
+# was called with, and the matrix asserts the check asked about the data
+# directory: a fixed Available answers `df -Pk /` exactly as happily as
+# `df -Pk "$data"`, so nothing but the recording can tell the two apart.
+# The sizes need no stand-in: a file of exactly 1 MiB and a file of 1 MiB + 1 byte
 # are exact on both ext4 and APFS (du rounds up to the block, so the second
 # measures 1028 KiB), and the fixture asserts the first of those before it is
 # used, so a filesystem where it is untrue fails the test loudly instead of
@@ -35,7 +46,10 @@
 #
 # The CloudWatch endpoint and IMDSv2 metadata service are stood in for by one
 # local HTTP server that records every request, so a "publish" is a POST in its
-# log and nothing here reaches AWS or 169.254.169.254.
+# log and nothing here reaches AWS or 169.254.169.254. The log holds each POST's
+# body as well as its first line, so the matrix asserts the payload the alarm
+# would read -- the metric names and the free-space figure -- and not merely
+# that some POST happened.
 #
 #   sh scripts/test-disk-check.sh
 #
@@ -190,6 +204,40 @@ pings() {
 	echo "${count:-0}"
 }
 
+# payload prints the body of the most recent publish: the line the receiver
+# logged after the last `POST /`. A publish the alarm cannot read is still a
+# POST in the log, so the cases that must publish assert on this body and not on
+# the count alone. A POST with no body prints nothing, and the assertions below
+# then fail rather than passing by default.
+payload() {
+	awk '
+		BEGIN { posted = 0 }
+		/^POST / { posted = NR; next }
+		posted && NR == posted + 1 { body = $0 }
+		END { print body }
+	' "$work/receiver.log" 2>/dev/null || true
+}
+
+# field is true when the most recent publish carries KEY=VALUE as a whole form
+# field. The (^|&) and (&|$) boundaries are what make it exact: MetricName=
+# DiskCheck must not be satisfied by DiskCheckX, and Value=1 must not be
+# satisfied by 14200.
+field() { # key, value
+	payload | grep -Eq "(^|&)$1=$2(&|$)"
+}
+
+# want_field fails the named case -- and keeps the matrix going, like any other
+# case failure -- when the most recent publish does not carry KEY=VALUE. The
+# `why` is the sentence the failure would otherwise leave an operator to
+# reconstruct.
+want_field() { # name, key, value, why
+	field "$2" "$3" && return 0
+	fail "$1: the publish does not carry $2=$3"
+	echo "    why it matters: $4" >&2
+	show "$(payload)"
+	return 1
+}
+
 cleanup() {
 	status=$?
 	[ "$cleaning" -eq 1 ] && return
@@ -205,10 +253,16 @@ trap cleanup EXIT HUP INT TERM
 
 # --- the df tap ---------------------------------------------------------------
 # Reports a fixed Available (in KiB) when OTTER_TEST_FREE_KIB is set; otherwise
-# it is the real df, which is what the cases without the override exercise.
+# it is the real df, which is what the cases without the override exercise. It
+# answers either way -- it does not refuse a path it was not asked for -- but it
+# records every argument in $work/df.args first, overwriting per call, so
+# df_path below can say which filesystem the check actually asked about. The
+# check calls df once, so the file holds one call; the matrix clears it before
+# each case so a case with no call is not read as the previous case's.
 mkdir -p "$work/bin"
 cat >"$work/bin/df" <<SHIM
 #!/bin/sh
+printf '%s\\n' "\$@" >"$work/df.args"
 if [ -n "\${OTTER_TEST_FREE_KIB:-}" ]; then
 	printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
 	printf '/dev/stub 4194304 2097152 %s 50%% /stub\n' "\$OTTER_TEST_FREE_KIB"
@@ -217,6 +271,15 @@ fi
 exec "$real_df" "\$@"
 SHIM
 chmod +x "$work/bin/df"
+
+# df_path prints the path of the most recent df invocation: the tap's last
+# recorded argument, or nothing when df was never called. The check must ask
+# about the data directory; `df -Pk /` measures the root filesystem, whose free
+# space says nothing about the store that fills, and no count of publishes can
+# tell the two apart. `tail -n 1` because df was called with the path last.
+df_path() {
+	tail -n 1 "$work/df.args" 2>/dev/null || true
+}
 
 # --- the stores ---------------------------------------------------------------
 data=$work/data
@@ -280,6 +343,11 @@ expect() {
 		export "$assignment"
 	done
 
+	# The tap's record starts empty for every case: a check that never calls df
+	# must be seen as having asked about no path at all, not as having asked
+	# about whatever path the previous case used.
+	rm -f "$work/df.args"
+
 	before=$(pings)
 	status=0
 	out=$(run_subject) || status=$?
@@ -296,6 +364,31 @@ expect() {
 			fail "$name: want one publish, the receiver saw $delta"
 			show "$out"
 			return
+		fi
+		# One POST is not a report: the alarm reads the request body. Assert
+		# the two metric names the alarm and its dashboard are built on, so a
+		# check that renamed DiskCheck to AnythingIsFine -- or that dropped the
+		# free-space figure -- fails here rather than looking healthy.
+		want_field "$name" MetricData.member.1.MetricName DiskCheck \
+			"the P0-11 alarm watches the DiskCheck metric; a publish under any other name is a host the alarm never hears from" || return 0
+		want_field "$name" MetricData.member.2.MetricName DiskFreeMB \
+			"DiskFreeMB is the headroom series; a publish without it says the host is alive and not by how much" || return 0
+		# When the tap fixed the free space, the figure the check must report
+		# is not unknown: it is that fixture's value rounded down. Asserting
+		# the name alone would let the check publish a stale number, or the
+		# floor, and still pass.
+		if [ -n "${OTTER_TEST_FREE_KIB:-}" ]; then
+			want_field "$name" MetricData.member.2.Value "$((OTTER_TEST_FREE_KIB / 1024))" \
+				"the tap answered ${OTTER_TEST_FREE_KIB}KiB, so DiskFreeMB must be that figure rounded down" || return 0
+		fi
+		# The tap recorded what the check asked df about. This is the half no
+		# count of publishes can see: a check reading / has measured a
+		# different filesystem from the one the stores fill. Asserted only on
+		# a publish, because a case that fails before df runs would otherwise
+		# be judged on the previous case's call.
+		if [ "$(df_path)" != "${OTTER_DATA_DIR:-}" ]; then
+			fail "$name: the check measured free space on '$(df_path)', not the data directory '${OTTER_DATA_DIR:-}'"
+			return 0
 		fi
 	else
 		if [ "$status" -eq 0 ]; then

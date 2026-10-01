@@ -74,6 +74,29 @@ jobs:
           python-version: "3.13"
       - run: make smoke
 
+  # The host-side scripts, and the two checks that report to CloudWatch. These
+  # were manual-only, and an audit on 2026-10-01 found what that cost: the
+  # publisher's suite was green with the publisher completely unsigned, and the
+  # disk check's suite and drill were green with the check publishing a
+  # differently-named metric. Neither the suites nor the two drills were in CI.
+  #
+  # `make test-shell` runs every scripts/test-*.sh suite; `make test-monitoring`
+  # runs the liveness and disk-pressure drills, which need a built otterd. The
+  # other drills need Docker or sshd and stay out of CI deliberately.
+  monitoring:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: make test-shell
+      - run: make test-monitoring
+
   release-config:
     runs-on: ubuntu-latest
     steps:

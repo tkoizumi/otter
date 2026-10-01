@@ -24,18 +24,23 @@ access in the test suite.
 
 ```bash
 make build     # ./bin/otterd and ./bin/otter
-make test      # Go suite plus the embedded Python SDK
+make test      # Go suite, the embedded Python SDK, and the shell suites
 make lint      # gofmt (fails on offenders), go vet, golangci-lint if installed
 make smoke     # `otter init` end to end in a temporary workspace
-make drill     # run the operating drills and assert their outcomes
+make test-monitoring   # the two host checks end to end (liveness, disk pressure)
+make drill     # run every operating drill and assert its outcome
 make cross     # cross-compile for Linux and macOS
 ```
 
-`make help` lists every target. The five that matter:
+`make help` lists every target. The ones that matter:
 
 - **`make test`** runs the Go suite, which starts real daemons and real Python
-  child processes, and the SDK suite, which drives the SDK against a fake
-  daemon over HTTP.
+  child processes, the SDK suite, which drives the SDK against a fake daemon over
+  HTTP, and the shell suites (`scripts/test-*.sh`), which are the falsifiability
+  evidence for the host-side scripts: the CloudWatch publisher, the disk check,
+  the permission assertion and the provisioning script. Those suites were
+  manual-only until 2026-10-01, which is how the publisher's suite stayed green
+  with the publisher completely unsigned.
 - **`make lint`** fails on unformatted Go. `gofmt -l` on its own exits 0 while
   listing offenders, so both this target and CI wrap it deliberately.
 - **`make smoke`** is the end-to-end contract: it builds this checkout's binary,
@@ -44,6 +49,11 @@ make cross     # cross-compile for Linux and macOS
   canonical sample is `otter init`'s output, the scaffold users get is the
   scaffold this repository tests — which is why no example directories ship.
 - **`make cross`** proves the four release targets compile.
+- **`make test-monitoring`** runs the two host checks end to end: `liveness`
+  starts a real daemon and asserts the heartbeat publishes while it answers and
+  stops when it does not, and `disk-pressure` asserts the disk check publishes
+  while every store is inside its cap and goes quiet when one crosses. They are
+  separated from `make drill` because the other drills need Docker or sshd.
 - **`make drill`** runs the operating drills (`scripts/drill/<name>.sh`). A drill
   is evidence rather than a procedure: it builds its own world, asserts the
   behavior it claims, and exits non-zero with the failing output when the

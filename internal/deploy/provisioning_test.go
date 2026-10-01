@@ -211,7 +211,11 @@ func TestHostPermissionScriptAssertsEveryClaim(t *testing.T) {
 		"PrivateTmp",
 		"ReadWritePaths",
 		"--listen",
-		"ss -H -tln",
+		// The listener check runs ss with -H -tln. The binary itself comes from
+		// OTTER_SS_BIN, which is unset on a real host: that hook is what lets
+		// the fixture model a host with no ss at all, which PATH shadowing
+		// cannot do on a machine that has iproute2.
+		"-H -tln",
 		"approved_ports",
 		"/proc/swaps",
 		"otter-provision-report.txt",

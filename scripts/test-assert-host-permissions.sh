@@ -112,12 +112,17 @@ SHIM
 }
 
 # The ss and sshd shims own their own absence: when the knob is set the shim is
-# simply not written. Separate "remove it afterwards" helpers let the order of
-# generator calls decide whether the host looked like it had the tool.
+# simply not written, and the subject is pointed at the path either way
+# (OTTER_SS_BIN / OTTER_SSHD_BIN). PATH shadowing alone cannot express "this host
+# has no ss": on a machine with iproute2 the real ss is still found once the shim
+# is gone, which made the absent-ss case fail for the wrong reason on Ubuntu.
+# Separate "remove it afterwards" helpers let the order of generator calls decide
+# whether the host looked like it had the tool.
 write_ss() {
 	if [ "${FIX_SS_ABSENT:-}" = "yes" ]; then
-		# A host without ss. `command -v ss` must fail the way it would on a
-		# minimal image, so nothing named ss is left on the fixture PATH.
+		# A host without ss: the shim is removed and OTTER_SS_BIN still names
+		# it, so the "not installed" branch is reached deterministically rather
+		# than depending on whether the machine has its own ss.
 		rm -f "$work/bin/ss"
 		return
 	fi
@@ -438,6 +443,7 @@ run() {
 		OTTER_PROC_ROOT=$work/proc \
 		OTTER_PROVISION_REPORT=$work/provision-report.txt \
 		OTTER_SSHD_BIN=${FIX_SSHD_BIN:-$work/bin/sshd} \
+		OTTER_SS_BIN=${FIX_SS_BIN:-$work/bin/ss} \
 		"$sh_bin" "$subject" --workspace-dir "$workspace_dir" 2>&1
 }
 

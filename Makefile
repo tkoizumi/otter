@@ -49,7 +49,7 @@ export GOCACHE    ?= $(ROOT)/.cache/go-build
 export GOMODCACHE ?= $(ROOT)/.cache/gomod
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-go test-python smoke drill lint fmt tidy clean clean-pycache cross cross-build
+.PHONY: help build test test-go test-python test-shell test-monitoring smoke drill lint fmt tidy clean clean-pycache cross cross-build
 
 ## help: list the available targets (default goal)
 help:
@@ -75,8 +75,8 @@ build: clean-pycache
 clean-pycache:
 	@find sdk/python -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
-## test: run every suite (Go plus the embedded SDK)
-test: test-go test-python
+## test: run every suite (Go, the embedded SDK, and the shell suites)
+test: test-go test-python test-shell
 
 ## test-go: run the Go test suite
 test-go:
@@ -85,6 +85,33 @@ test-go:
 ## test-python: run the embedded Python SDK suite
 test-python:
 	@python3 -m unittest discover -s sdk/python/tests
+
+# The shell suites are the falsifiability evidence for the host-side scripts:
+# the monitoring publisher, the disk check, the permission assertion and the
+# provisioning script. They are cheap (about a minute in total) and they were
+# previously run by hand, which is how the publisher's suite stayed green with
+# the publisher unsigned (OT-027). A suite that only ever runs when someone
+# remembers to type its name is not a guard.
+## test-shell: run every shell suite under scripts/test-*.sh
+test-shell:
+	@failed=""; \
+	for suite in $(ROOT)/scripts/test-*.sh; do \
+		printf '\n=== %s\n' "$$(basename "$$suite")"; \
+		sh "$$suite" || failed="$$failed $$(basename "$$suite")"; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "" >&2; echo "test-shell: FAILED:$$failed" >&2; exit 1; \
+	fi; \
+	echo ""; echo "test-shell: every suite passed"
+
+# The two host checks, end to end rather than through a stand-in. They need a
+# built otterd (liveness runs the real daemon) and they are the only place that
+# executes heartbeat.sh at all. The other drills need Docker or sshd and stay
+# out of this target; see scripts/drill.sh.
+## test-monitoring: the two host checks end to end (liveness and disk pressure)
+test-monitoring: build
+	@sh $(ROOT)/scripts/drill.sh liveness
+	@sh $(ROOT)/scripts/drill.sh disk-pressure
 
 ## smoke: init, release, run and read back state in a temporary workspace
 smoke: build

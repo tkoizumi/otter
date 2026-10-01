@@ -1,0 +1,148 @@
+===== OT-027 (finding D2) — the monitoring fixtures can no longer pass with the
+      behaviour the alarms depend on deleted =====
+status:   closes finding D2 of the 2026-10-01 independent verification.
+date:     2026-10-01 EDT
+where:    otter @ working tree on top of 7760c5a, macOS 15 arm64 (Darwin 24.6.0);
+          scripts/otter-metric.sh, scripts/disk-check.sh and scripts/heartbeat.sh
+          are UNCHANGED — only their suites and the disk drill are.
+
+The finding, restated: the suites and the drill were green with the production
+behaviour removed. The publisher's suite was green with the publisher completely
+unsigned; the disk suite and drill were green with the check publishing a
+differently-named metric; the disk suite was green with the check measuring the
+root filesystem instead of the data filesystem. All three are the failure mode
+R-19 exists to prevent: a green test that would pass with the behaviour deleted.
+
+WHAT CHANGED
+------------
+
+scripts/test-otter-metric.sh (29 -> 37 cases)
+  * The stand-in records the POST's Authorization and X-Amz-Security-Token
+    headers, and refuses an unsigned POST with 403 and a
+    MissingAuthenticationToken body, as CloudWatch does. A fixture that accepts
+    anything was what made every signature claim unfalsifiable.
+  * A fixture self-check posts a metric body with no credentials and asserts the
+    403, that the body names the error, and that no metric body was recorded. The
+    fixture is now asserted, not assumed.
+  * The CloudWatch endpoint and the IMDSv2 service are two servers on two ports
+    (they are two services on a real host). A publish aimed at the metadata
+    service now fails instead of being counted as a delivery.
+  * Body parameters are matched at field boundaries — `(^|&)KEY=VALUE(&|$)` — so
+    `Namespace=Otter` is not satisfied by `OtterMetricsX`, `StorageResolution=60`
+    by `600`, `Name=Host` by `HostName`, `Value=1` by `14200`.
+  * The signature itself is asserted: the AWS4-HMAC-SHA256 algorithm, the region
+    in the credential scope (both the IMDS/placement region and an explicit
+    OTTER_METRIC_REGION, separately, because a hardcoded signing region was
+    previously undetectable), and the session token matching the one IMDS issued.
+
+scripts/test-disk-check.sh (18 cases, now asserting the payload)
+  * The publish's body is read from the receiver and asserted: member 1 is
+    `MetricName=DiskCheck`, member 2 is `MetricName=DiskFreeMB`, and when the df
+    tap fixed the free space, member 2's value is that figure rounded down. A
+    rename, a dropped member or a stale number now fails.
+  * The df tap records the arguments it was called with, and a publish asserts
+    the check asked about the data directory. A check reading `/` has measured a
+    different filesystem from the one the stores fill, and nothing that counts
+    publishes can see it.
+
+scripts/drill/disk-pressure.sh (8 assertions, now asserting the payload)
+  * Every publish is asserted to name DiskCheck and DiskFreeMB.
+  * The `ping-always` sabotage now publishes the real payload rather than a bare
+    Action=PutMetricData, so its first failure stays a *threshold* failure (the
+    property the sabotage exists to prove) instead of tripping the new payload
+    assertion first.
+
+WIRING (the reason none of this was caught)
+  * `make test-shell` runs every scripts/test-*.sh suite; `make test` now includes
+    it. `make test-monitoring` runs the liveness and disk-pressure drills, which
+    need a built otterd. The liveness drill is the only thing that executes
+    heartbeat.sh at all.
+  * CI gains a `monitoring` job running both. Previously CI ran gofmt, vet, the Go
+    suite, the SDK suite and `make smoke` — none of which touched the host-side
+    scripts. A regression in the publisher's signature or the disk metric's name
+    would have shipped green.
+  * CONTRIBUTING.md documents both targets.
+
+FOUND WHILE WIRING IT IN: the permission suite did not pass on Linux
+-------------------------------------------------------------------
+Putting `make test-shell` into CI ran the six suites on Ubuntu 24.04 for the
+first time (the `otter-deploy-target` image, the same base as `ubuntu-latest`).
+Five passed; `scripts/test-assert-host-permissions.sh` failed 1 of 48: "an absent
+ss fails" wants the subject to say "ss is not installed", but the fixture models
+absence by deleting its `ss` shim, and a machine with iproute2 then finds its own
+`/usr/bin/ss`. The subject answered from the real ss output instead, so the case
+failed for the wrong reason. The ledger had recorded exactly this ("FIX_SS_ABSENT
+removes only the fixture shim, so a test machine with a real ss on PATH gives a
+false red"); it is now fixed rather than tolerated.
+
+The subject takes `OTTER_SS_BIN` the way it already took `OTTER_SSHD_BIN`, and the
+fixture names the shim path either way, so "this host has no ss" is expressible on
+every machine. Behaviour on a real host is unchanged — with the variable unset the
+script resolves `ss` from PATH exactly as before — and the modified assertion was
+re-run on the Castor host: **all assertions passed**, including "the API is
+listening on 7337 over loopback".
+
+Re-run after the fix: all six suites pass on Ubuntu 24.04 (48 / 18 / 64 / 37 / 27
+/ 6 cases) and on macOS.
+
+MUTATIONS (each observed to fail; the six marked * were re-run by the verifying
+session against copies of the shipped scripts)
+------------------------------------------------------------------------------
+  * delete `--aws-sigv4` from the publisher            -> exit 1, the publish 403s
+    and no case can assert a body; "want success, got exit 1"
+  * delete `--user "$ak:$sk"`                          -> exit 1 (curl cannot sign)
+  * delete the `x-amz-security-token` header           -> exit 1; the token
+    assertion names the missing session token
+  * point the publish at the IMDS URL                  -> exit 1; the CloudWatch
+    port sees 0 posts, IMDS answers POST 405
+  * Namespace=Otter -> OtterMetricsX *                 -> exit 1, "the published
+    form body has no Namespace=Otter field"
+  * StorageResolution=60 -> 600 *                      -> exit 1, same shape
+  * dimension Name=Host -> HostName                    -> exit 1
+  * dimension value castor-runtime -> castor-runtime-2 -> exit 1
+  * metric name Heartbeat -> HeartbeatX                -> exit 1 (3 cases)
+  * hardcode the signing region us-east-1 while
+    OTTER_METRIC_REGION=eu-west-1                      -> exit 1, "the configured
+    region is the region signed for"; the us-east-1 case still passes, which is
+    why the two region cases are separate
+  * `DiskCheck=1 DiskFreeMB=…` -> `AnythingIsFine=1` * -> suite exit 1 AND drill
+    exit 1 (both halves, which is the point of the finding)
+  * drop DiskFreeMB, keep DiskCheck=1                  -> suite and drill exit 1
+  * DiskCheck -> Diskcheck                             -> suite and drill exit 1
+  * `df -Pk "$data"` -> `df -Pk /` *                   -> suite exit 1, "the check
+    measured free space on '/', not the data directory"
+  * hardcode the free-space reading and never call df  -> suite exit 1, "…on '',
+    not the data directory"
+  * DRILL_SABOTAGE=ping-always *                       -> drill exit 1 at the FIRST
+    threshold assertion, unchanged from before
+
+Meta-regression: reverting the publisher's receiver to the audited permissive
+form (accept any POST, record only method/path/body) turns the suite red — 8
+failures — so the audited scenario can no longer pass.
+
+COUNTS, AS RUN HERE
+-------------------
+  sh scripts/test-otter-metric.sh    37 cases passed
+  sh scripts/test-disk-check.sh      18 cases passed
+  sh scripts/drill/disk-pressure.sh  ok (8 assertions)
+  sh scripts/drill/liveness.sh       ok
+  make test-shell                    six suites, 200 cases, every suite passed
+  make test-monitoring               liveness + disk-pressure, ok
+  make test / make lint              exit 0
+
+WHAT THE FIXTURES STILL CANNOT EXPRESS
+--------------------------------------
+  * The signature is checked for shape, not correctness: no HMAC is recomputed,
+    no clock skew, and SignedHeaders covering the session token is not required. A
+    garbage signature carrying the right algorithm, scope and token would pass.
+  * `assert_field` pins value boundaries but not cardinality: two conflicting
+    Namespace fields would still satisfy `(^|&)Namespace=Otter(&|$)`.
+  * The drill has no df tap, so it cannot see *which* filesystem was measured;
+    only the suite's recorded-path assertion can.
+  * The IMDS stand-in always answers `us-east-1`, so the default-region case
+    cannot distinguish "read from placement" from "hardcoded us-east-1" on its
+    own; the explicit eu-west-1 case is the discriminator.
+  * Signature details are curl-version dependent (header casing, which headers
+    curl signs). The suite runs against the host's curl, 8.7.1 here.
+  * `make test-monitoring` is still separate from `make test` because it needs a
+    built otterd; the other drills stay out of CI because they need Docker or sshd.

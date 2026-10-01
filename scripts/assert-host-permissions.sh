@@ -504,10 +504,18 @@ fi
 # rather than trusted: the point is the full set of listeners, not one line of
 # output.
 
-if ! command -v ss >/dev/null 2>&1; then
+# OTTER_SS_BIN pins the binary for the fixture harness, the way OTTER_SSHD_BIN
+# does for sshd below. On a real host it is unset and ss is whatever PATH
+# resolves. The hook exists because PATH shadowing cannot model a host with no
+# ss: removing the fixture's shim only uncovers the machine's own ss, so on any
+# host with iproute2 (Ubuntu 24.04, where this was found on 2026-10-01) the
+# "not installed" branch was unreachable and the case failed for the wrong
+# reason.
+ss_bin=${OTTER_SS_BIN:-$(command -v ss 2>/dev/null || true)}
+if [ -z "$ss_bin" ] || [ ! -x "$ss_bin" ]; then
 	fail "ss is not installed; cannot enumerate listening sockets"
 else
-	ss_out=$(ss -H -tln 2>/dev/null || ss -tln 2>/dev/null || true)
+	ss_out=$("$ss_bin" -H -tln 2>/dev/null || "$ss_bin" -tln 2>/dev/null || true)
 	if [ -z "$ss_out" ]; then
 		fail "ss reported no TCP listeners at all, which cannot be true on a running host"
 	fi

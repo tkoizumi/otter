@@ -17,8 +17,11 @@
 # data directory whose four stores have sizes this script controls. The
 # CloudWatch endpoint and IMDSv2 metadata service are stood in for by one local
 # HTTP server that records every request it receives, so "did we publish?" is
-# read off a log rather than asserted from the script's own opinion. Nothing
-# here goes to AWS or to 169.254.169.254.
+# read off a log rather than asserted from the script's own opinion. That log
+# holds each POST's body too, so a publish is asserted to be the payload the
+# alarm reads -- DiskCheck and DiskFreeMB, in that order -- and not merely a
+# POST: a check that renamed its metric would otherwise satisfy every count
+# here. Nothing goes to AWS or to 169.254.169.254.
 #
 # Falsifiability (DRILL_SABOTAGE=ping-always): replace the threshold logic with
 # the naive check that always publishes. The drill must go red on the FIRST
@@ -26,7 +29,11 @@
 # health -- because a check that publishes no matter what keeps the alarm quiet
 # while the disk fills, which is the failure this task exists to prevent. If
 # that run passes, this drill is only testing that a shell script can exit
-# non-zero.
+# non-zero. The sabotage therefore publishes the payload the real check
+# publishes, unconditionally: it removes the threshold, not the report. A bare
+# POST would be caught by the payload assertions before any threshold was
+# crossed, which would turn the sabotage into a test of the payload instead of
+# the switch.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -75,6 +82,27 @@ s.close()'
 pings() {
 	count=$(grep -c '^POST ' "$work/receiver.log" 2>/dev/null || true)
 	echo "${count:-0}"
+}
+
+# payload prints the body of the most recent publish -- the line the receiver
+# logged after the last `POST /`. A POST the alarm cannot read is still a POST
+# in the log and every expect_ping below counts one, so the assertions read the
+# body too. A POST with no body prints nothing, and an assertion then fails
+# rather than passing by default.
+payload() {
+	awk '
+		BEGIN { posted = 0 }
+		/^POST / { posted = NR; next }
+		posted && NR == posted + 1 { body = $0 }
+		END { print body }
+	' "$work/receiver.log" 2>/dev/null || true
+}
+
+# field is true when the most recent publish carries KEY=VALUE as a whole form
+# field. The (^|&) and (&|$) boundaries stop MetricName=DiskCheck from being
+# satisfied by DiskCheckX and Value=1 by 14200.
+field() { # key, value
+	payload | grep -Eq "(^|&)$1=$2(&|$)"
 }
 
 cleanup() {
@@ -245,7 +273,18 @@ inside_caps() {
 # It reads $data, $METRIC_URL and the caps from this script.
 check() {
 	if [ "$SABOTAGE" = ping-always ]; then
-		curl -fsS --max-time 5 -X POST --data "Action=PutMetricData" "$METRIC_URL/" >/dev/null 2>&1
+		# The naive check the drill falsifies: the threshold gate removed,
+		# everything else the same. It publishes the payload the real check
+		# publishes -- with a value, because otter-metric.sh pairs a name with
+		# a value and the alarm reads both -- so the first assertion it fails
+		# is a threshold one and not a payload one.
+		curl -fsS --max-time 5 -X POST \
+			--data "Action=PutMetricData" \
+			--data-urlencode "MetricData.member.1.MetricName=DiskCheck" \
+			--data-urlencode "MetricData.member.1.Value=1" \
+			--data-urlencode "MetricData.member.2.MetricName=DiskFreeMB" \
+			--data-urlencode "MetricData.member.2.Value=$min_free" \
+			"$METRIC_URL/" >/dev/null 2>&1
 		return $?
 	fi
 	OTTER_DATA_DIR=$data \
@@ -261,10 +300,12 @@ check() {
 		sh "$subject"
 }
 
-# expect_ping asserts the alarm was told the host is alive, exactly once.
-# expect_silence asserts it was told nothing at all, which is what makes the
-# alarm fire -- and that the check's own words name the measure that crossed, so
-# a silence from some unrelated crash cannot stand in for pressure.
+# expect_ping asserts the alarm was told the host is alive, exactly once, in the
+# payload the alarm reads: one POST is not a report if it carries a metric the
+# alarm does not watch. expect_silence asserts it was told nothing at all, which
+# is what makes the alarm fire -- and that the check's own words name the
+# measure that crossed, so a silence from some unrelated crash cannot stand in
+# for pressure.
 expect_ping() {
 	before=$(pings)
 	status=0
@@ -275,6 +316,10 @@ expect_ping() {
 		fail "$1: the check refused to publish while every measure was inside its bound, so the alarm would fire on a healthy host"
 	[ "$after" -eq "$((before + 1))" ] ||
 		fail "$1: the check exited 0 but the receiver saw $((after - before)) publishes, not one"
+	field MetricData.member.1.MetricName DiskCheck ||
+		fail "$1: the publish does not name DiskCheck as metric member 1; a publish under another name is a host the alarm never hears from"
+	field MetricData.member.2.MetricName DiskFreeMB ||
+		fail "$1: the publish does not name DiskFreeMB as metric member 2; the free-space figure is the other half of the report"
 	echo "disk-pressure: ok inside    $1"
 }
 
