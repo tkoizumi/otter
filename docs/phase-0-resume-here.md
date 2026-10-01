@@ -31,6 +31,17 @@ to Castor's job owner, not a deploy.
 | Drill target | **destroyed** |
 | Previous host | **DESTROYED 2026-09-30**, and verified: no instances, no Elastic IPs, no volumes. That teardown is why the private key above had to be re-fetched rather than reused |
 
+A rebuild is `npx cdk deploy --profile otter -c sshCidr=…`, then `otter deploy`
+from the `otter_examples` checkout (~10 minutes), then
+`sh scripts/install-monitoring.sh --host ubuntu@<ip>`, then the second
+`cdk deploy` with `-c alertEmail=…`. The installer has to follow `otter deploy`,
+which creates the `<workspace>/.otter/data` the disk check measures; a host
+whose data directory does not exist yet must not have the disk check installed,
+and the installer refuses it by name because that check would alarm on a healthy
+host. Skip the installer and the checks never publish: the alarms exist and go
+to `ALARM` about five minutes after `alertEmail` is passed, so the omission is
+loud rather than silent — but only once that second deploy has run.
+
 ## Windows done, with evidence
 
 | Window | What it proved |

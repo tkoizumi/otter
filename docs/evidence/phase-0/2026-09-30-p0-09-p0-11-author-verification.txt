@@ -1,0 +1,106 @@
+=== Phase 0 verification record: P0-09, P0-10, P0-11 — AUTHOR-RUN round ===
+status:   NOT independent verification. This round was run by the session that wrote
+          the CloudWatch publisher, the host window scripts and these ledger rows. It
+          cannot fill the Verifier column; it records what an author can still falsify
+          and what remains for someone who did not write the thing.
+date:     2026-09-30 EDT (AWS and host clocks read 2026-10-01T02:2x-02:4xZ)
+brief:    docs/phase-0-verification-p0-09-p0-11.md
+method:   claims were re-derived from external ground truth -- live CloudWatch, the
+          live host, raw API responses -- and production behaviour was mutated to see
+          which assertions go red. No claim below was accepted from a transcript.
+verdicts: P0-09  VERIFIED (mechanism)
+          P0-10  VERIFIED (the crux reproduced under identical conditions)
+          P0-11  VERIFIED (alert path); retention NOT re-derived this round
+
+--- P0-10 crux: two alarms, one synthetic metric, identical conditions ------------
+Two alarms in the otter account, no actions attached (so nothing could be mailed),
+same namespace/metric/dimension/statistic/period/evaluation, differing only in the
+evaluation window. Six datapoints were published, both arms settled OK, publishes
+stopped, and CloudWatch's own state history timed each arm from the last datapoint.
+
+  arm               window              last datapoint      OK->ALARM            latency
+  verify-sliding    default (sliding)   2026-09-30T22:30Z   2026-09-30T22:41:57Z 11m57s
+  verify-walled     WallClockWindow     2026-09-30T22:30Z   2026-09-30T22:36:39Z  6m39s
+
+This reproduces the host drill's 11m10s vs 5m34s on a different metric with no host,
+no daemon and no config change between arms. The wall-clock window is what makes
+`Period 60s x 5` mean roughly five minutes; the default sliding window ignores the
+missing-data treatment while it can still find real datapoints and takes about
+twice as long. Both verification alarms were deleted afterwards.
+
+--- P0-11 alert path: re-derivation on the live host ---------------------------
+Cause removed rather than simulated: the timer was stopped (no breach, no EBS volume)
+with the disk alarm's actions muted, so the state machine was exercised without
+mailing a duplicate of a transition three earlier runs already delivered.
+
+  silenced at:   2026-10-01T02:31:39Z
+  OK->ALARM:     2026-09-30T22:37:37Z (CloudWatch's own transition; observed 02:37:46Z)
+  ALARM->OK:     2026-09-30T22:38:37Z, one minute after the timer resumed
+  the liveness arm stayed OK throughout -- the two arms are independent
+  end state: actions True, alarm OK, timer active, disk-check.service exit 0
+
+--- mutations run by the verifier (each must, and did, go red) ------------------
+  notify.go: `if resp.StatusCode < 200 || > 299` -> `if false`
+      TestSendRetriesThenSucceeds, TestSendGivesUpAfterBoundedAttempts
+      (delivery is only recorded on a 2xx; a broken endpoint is not "sent")
+  notify.go: `Wants` forced to true (the status filter ignored)
+      TestDisabledNotifierDoesNothing, TestWantsFiltersByStatus,
+      TestNotifyFailureSendsOnlyReportedStatuses   <- incl. a daemon-level test
+  disk-check.sh: free floor `-lt` -> `-le`
+      "free space exactly at the floor passes", "the same tap passes a floor it
+      does meet" (2 of 18 cases), with the unmutated copy passing all 18 as control
+
+--- defect found ---------------------------------------------------------------
+D1  install-monitoring.sh: the convergence probe can never report a converged host.
+    The probe (scripts/install-monitoring.sh:355-371) tests `/etc/otter/heartbeat.env`
+    and `/etc/otter/disk-check.env` with a plain `[ -f ]` run as the ssh user, but
+    `/etc/otter` is `drwxr-x--- root root`. The files exist and the units load them
+    (`EnvironmentFiles=/etc/otter/heartbeat.env (ignore_errors=no)`); the probe just
+    cannot see them, so `probe_out` is never empty, `already=0` always holds, and
+    every run reports "not yet converged: /etc/otter/heartbeat.env(missing)
+    /etc/otter/disk-check.env(missing)" and reinstalls.
+    Reproduced three times against the live host, at commit d03dbeb.
+    Harmless in behaviour (the install is idempotent and the assertions still run),
+    but the convergence claim is false, and its suite cannot see it: the fixture
+    intercepts the whole probe (`match *# install-monitoring-probe*`) and returns
+    whatever each case wants, so the probe's logic never executes, and the
+    "a converged host reports convergence" case asserts only how the installer handles
+    an empty result. Claim and test are both about a probe that was never exercised --
+    the fixture-contradicts-reality class of P0-03's D1/D2/D5. Filed as OT-022.
+    Fix: read those two files under privilege (`[ "$(id -u)" = 0 ]` or `sudo -n`) and
+    stop stubbing the probe wholesale, so the permission-sensitive lines run against a
+    fixture that models a 0750 directory the login cannot read.
+
+--- gaps, not defects ----------------------------------------------------------
+F1  No drill covers P0-09. scripts/drill/ holds backup-restore, deploy-failure,
+    disk-pressure, liveness and unit-caps; there is no notification drill, so
+    `make drill` never exercises the failure-notification path. Its only host evidence
+    is an ad-hoc window script that lives outside both repos. P0-10 and P0-11 each have
+    a committed, sabotaged drill.
+F2  The metric contract is asserted nowhere. The publisher hardcodes `Namespace=Otter`
+    and the dimension `Host` and takes `Heartbeat`/`DiskCheck` from its callers; the
+    stack declares MONITORING_NAMESPACE, MONITORING_DIMENSION, HEARTBEAT_METRIC and
+    DISK_CHECK_METRIC. They agree today (checked by hand against live AWS), but nothing
+    ties them: a rename on either side leaves the alarm firing forever and no test says
+    why.
+F3  The host-window harness is not in the repo. phase-0-host-run-plan.md §7 proposed a
+    `scripts/drill-host.sh`; what exists instead is one uncommitted script per window in
+    .otter-keys/. The transcripts are complete, the harness is not reproducible from the
+    repo.
+
+--- residuals: what this round did NOT verify ----------------------------------
+  * P0-11's retention pruning was not re-derived; it rests on the committed HW-6a
+    transcript (four passes over copies of a consistent snapshot, control included).
+  * P0-10's false-alarm tolerance was not measured: the design claims one missed minute
+    does not alarm, and nothing has tested it.
+  * P0-09's end-to-end delivery to a real Slack channel was not repeated this round
+    (the owner confirmed two messages earlier); the machine-side contract -- 2xx
+    required, status filter load-bearing -- is what the mutations above pinned.
+  * Only the `slack` notification format has ever posted from a host. `json`, `discord`
+    and `teams` are unit-tested only.
+  * The installer has not been run on a *fresh* host, only converged onto a monitored
+    one; its linux-only paths rest on the ssh fixture there.
+  * CA-31 names the control plane as the heartbeat tracker; CloudWatch is Phase 0's
+    stand-in. That substitution is recorded, not resolved.
+  * Capture retention still has no environment variable (on at its 168h default), so
+    "all three windows" is in force rather than configurable.
