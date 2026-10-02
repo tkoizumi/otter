@@ -1,0 +1,114 @@
+=== Otter v0.3.0 exit gate — FINDING: `otter start --detach` silently drops forwarded daemon flags ===
+date:      2026-10-02 13:10:31 EDT
+host:      Darwin 24.6.0 (arm64)
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+binary:    /Users/taka/Desktop/otter-workspace/otter/bin/otter
+
+`otter start --help` (the published instruction) says:
+  "The daemon's own flags are accepted and forwarded, so --workers,
+   --log-format, --api-token and the rest work here too."
+
+--- raw output ---
+
+$ cd /tmp/otter-finding-detach.ZpLzef
+$ otter init h-job
+
+$ otter start --detach --listen 127.0.0.1:7816 --api-token s3cret --workers 2 --log-format pretty
+started     pid 42085
+project     /tmp/otter-finding-detach.ZpLzef
+api         http://127.0.0.1:7816
+jobs        /tmp/otter-finding-detach.ZpLzef
+data        /tmp/otter-finding-detach.ZpLzef/.otter/data
+log         /tmp/otter-finding-detach.ZpLzef/.otter/serve/serve.log
+background; otter stop to stop it
+
+$ grep api_listening .otter/serve/serve.log   (auth_required must be true)
+{"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7816","timestamp":"2026-10-02T17:10:31.344827Z"}
+
+$ grep daemon_started .otter/serve/serve.log  (workers must be 2)
+{"cron_triggers":0,"data":"/tmp/otter-finding-detach.ZpLzef/.otter/data","database":"/tmp/otter-finding-detach.ZpLzef/.otter/data/otter.db","event":"daemon_started","level":"info","timestamp":"2026-10-02T17:10:31.34471Z","version":"v0.2.0-147-g6163a56","workers":8}
+
+$ curl -s http://127.0.0.1:7816/health | python3 -c "...sorted keys..."
+['freshness', 'jobs', 'queue', 'queue_depth', 'status', 'storage', 'uptime_seconds', 'version']
+
+$ curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:7816/health | ... keys ...
+['status', 'uptime_seconds', 'version']
+
+$ otter stop
+stopped      /tmp/otter-finding-detach.ZpLzef (pid 42085)
+
+--- the same flags, configured through the environment, DO take effect ---
+
+$ cd /tmp/otter-finding-detach-ok.xgWBmY
+$ OTTER_API_TOKEN=s3cret otter start --detach --listen 127.0.0.1:7817
+started     pid 42097
+project     /tmp/otter-finding-detach-ok.xgWBmY
+api         http://127.0.0.1:7817
+jobs        /tmp/otter-finding-detach-ok.xgWBmY
+data        /tmp/otter-finding-detach-ok.xgWBmY/.otter/data
+log         /tmp/otter-finding-detach-ok.xgWBmY/.otter/serve/serve.log
+background; otter stop to stop it
+
+$ grep api_listening .otter/serve/serve.log
+{"auth_required":true,"event":"api_listening","level":"info","listen":"127.0.0.1:7817","timestamp":"2026-10-02T17:10:31.597165Z"}
+
+$ curl -s http://127.0.0.1:7817/health | ... keys ...   (unauthenticated)
+['status', 'uptime_seconds', 'version']
+
+$ curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:7817/health | ... keys ...   (authenticated)
+['freshness', 'jobs', 'queue', 'queue_depth', 'status', 'storage', 'uptime_seconds', 'version']
+
+$ otter stop
+stopped      /tmp/otter-finding-detach-ok.xgWBmY (pid 42097)
+
+--- end raw output ---
+exit status: 0
+
+--- addendum: the published help text, raw ---
+$ otter start --help   (excerpt)
+Usage: otter start [flags]
+
+Starts the runtime for the project containing the working directory:
+its jobs are the project, its state lives in .otter/data, and
+it records the address it binds so every other command finds it.
+
+otter.env and otter.daemon.env at the project root are loaded first;
+a variable already set in the environment wins over the file.
+
+The daemon's own flags are accepted and forwarded, so --workers,
+--log-format, --api-token and the rest work here too.
+
+Flags:
+  -allow-incomplete-recovery
+    	start even when crash recovery or queue reconciliation fails
+  -api-token string
+    	bearer token required for API access
+  -capture-default string
+    	HTTP capture policy for runs that do not choose one: off, metadata or full
+  -capture-retention duration
+    	how long captured HTTP payloads are kept (0 disables expiry)
+  -data string
+    	data directory holding otter.db and the extracted SDK (default "./tmp")
+  -detach
+    	run in the background and return once the API answers
+  -jobs string
+    	directory scanned recursively for otter.yaml (default "./jobs")
+  -listen string
+    	HTTP API listen address; default picks a free loopback port
+  -log-format string
+
+--- end addendum ---
+
+--- addendum: the same flag in the FOREGROUND path does take effect ---
+$ otter start --listen 127.0.0.1:7843 --api-token s3cret   (no --detach; run with & so the shell returns)
+project     /tmp/otter-fg.VUFtme
+api         http://127.0.0.1:7843
+{"auth_required":true,"event":"api_listening","level":"info","listen":"127.0.0.1:7843","timestamp":"2026-10-02T17:26:07.757706Z"}
+$ curl -s http://127.0.0.1:7843/health | python3 -c "sorted keys"
+['status', 'uptime_seconds', 'version']
+So the loss is specific to --detach: foreground start calls daemonArgs() and forwards the flag;
+startDetached() rebuilds the child argv from jobs/data/listen plus trailing passthrough only
+(internal/cli/start.go:426-430) and drops every other parsed flag.
+
+--- end addendum ---

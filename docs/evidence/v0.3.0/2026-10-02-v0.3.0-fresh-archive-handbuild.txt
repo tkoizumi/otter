@@ -1,0 +1,31 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:05:21 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   set -x; goreleaser --version 2>/dev/null || echo "goreleaser: absent"; make build VERSION=v0.3.0; mkdir -p dist; tar -czf dist/otter_0.3.0_darwin_arm64.tar.gz -C bin otter otterd; tar -tzvf dist/otter_0.3.0_darwin_arm64.tar.gz; d=$(mktemp -d); tar -xzf dist/otter_0.3.0_darwin_arm64.tar.gz -C "$d"; "$d/otter" --version; "$d/otterd" --version; rm -rf "$d"
+--- raw output ---
++ goreleaser --version
++ echo 'goreleaser: absent'
+goreleaser: absent
++ make build VERSION=v0.3.0
+go build  -trimpath -ldflags "-s -w -X main.version=v0.3.0" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.3.0" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.3.0)
++ mkdir -p dist
++ tar -czf dist/otter_0.3.0_darwin_arm64.tar.gz -C bin otter otterd
++ tar -tzvf dist/otter_0.3.0_darwin_arm64.tar.gz
+-rwxr-xr-x  0 taka   staff 12992578 Oct  2 13:05 otter
+-rwxr-xr-x  0 taka   staff 12208482 Oct  2 13:05 otterd
+++ mktemp -d
++ d=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/tmp.6r7JzkFx5W
++ tar -xzf dist/otter_0.3.0_darwin_arm64.tar.gz -C /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/tmp.6r7JzkFx5W
++ /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/tmp.6r7JzkFx5W/otter --version
+otter v0.3.0
++ /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/tmp.6r7JzkFx5W/otterd --version
+otterd v0.3.0
++ rm -rf /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/tmp.6r7JzkFx5W
+--- end raw output ---
+exit status: 0

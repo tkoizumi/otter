@@ -1,0 +1,94 @@
+=== Otter v0.3.0 exit gate — doc claims: migrations on restart, reload does not release, the rename surfaces ===
+date:      2026-10-02 13:25:09 EDT
+host:      Darwin 24.6.0 (arm64)
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+
+--- raw output ---
+
+$ H=/tmp/otter-docclaims.JJaSXy ; otter init base
+created workspace  /tmp/otter-docclaims.JJaSXy
+job                base
+runtime version    v0.2.0-147-g6163a56
+wrote              .otter/version
+wrote              otter.env.example
+wrote              .gitignore
+wrote              base/otter.yaml
+wrote              base/main.py
+wrote              base/logic.py
+wrote              base/tests/test_logic.py
+
+next:
+  otter validate base
+  otter release base
+  otter start --detach
+  otter run base
+  otter stop
+
+$ otter start --detach --listen 127.0.0.1:7831   # first start: migrations 1..12 run
+started     pid 43098
+project     /tmp/otter-docclaims.JJaSXy
+api         http://127.0.0.1:7831
+jobs        /tmp/otter-docclaims.JJaSXy
+data        /tmp/otter-docclaims.JJaSXy/.otter/data
+log         /tmp/otter-docclaims.JJaSXy/.otter/serve/serve.log
+background; otter stop to stop it
+
+$ grep -c migration_applied .otter/serve/serve.log
+12
+
+$ otter stop ; otter start --detach --listen 127.0.0.1:7831   # restart, nothing pending
+
+$ grep -c migration_applied .otter/serve/serve.log   # still 12: the restart logged none
+12
+
+$ cp -a base newjob ; sed -i "" "s/^name: base/name: newjob/" newjob/otter.yaml ; otter reload
+added        newjob
+
+next: otter release <job>   (a run executes the active release,
+      so a newly discovered job must be released before it can run)
+
+$ otter jobs
+NAME    ID                                    STATUS  PATH
+base    91923d85-aeb9-4e86-9537-4526c5c2e4bd  active  /private/tmp/otter-docclaims.JJaSXy/base
+newjob  d9b39ad1-5918-4d13-914b-ac31b917f125  active  /private/tmp/otter-docclaims.JJaSXy/newjob
+
+$ otter run newjob   # docs: a newly visible job has no active release -> 409
+otter: job newjob has no active release; run otter release newjob before submitting runs: conflict (conflict, HTTP 409)
+exit=1
+
+$ cat newjob/main.py   # rewritten to print the child environment
+import os
+from otter import Context
+ctx = Context.from_environment()
+for k in ("OTTER_JOB_ID", "OTTER_JOB_NAME", "OTTER_JOB_DIR",
+          "OTTER_INTEGRATION_ID", "OTTER_INTEGRATION_NAME", "OTTER_INTEGRATION_DIR"):
+    ctx.log.info("env", name=k, value=os.environ.get(k, "<unset>"))
+
+$ otter release newjob ; otter run newjob
+newjob: release ec1bc52e804f
+newjob: activated ec1bc52e804f
+
+$ otter logs --pretty dd0f6e2f-8dff-4bf3-824a-5562bbdb12b9
+run queued (trigger manual)
+run started (attempt 1 of 3, trigger manual)
+env level=info logger=otter name=OTTER_JOB_ID value=d9b39ad1-5918-4d13-914b-ac31b917f125
+env level=info logger=otter name=OTTER_JOB_NAME value=newjob
+env level=info logger=otter name=OTTER_JOB_DIR value=/tmp/otter-docclaims.JJaSXy/.otter/data/.releases/d9b39ad1-5918-4d13-914b-ac31b917f125/ec1bc52e804fe724eb42925da73a196bae74ce2dad4ace76ea3b0d385766cf04/newjob
+env level=info logger=otter name=OTTER_INTEGRATION_ID value=d9b39ad1-5918-4d13-914b-ac31b917f125
+env level=info logger=otter name=OTTER_INTEGRATION_NAME value=newjob
+env level=info logger=otter name=OTTER_INTEGRATION_DIR value=/tmp/otter-docclaims.JJaSXy/.otter/data/.releases/d9b39ad1-5918-4d13-914b-ac31b917f125/ec1bc52e804fe724eb42925da73a196bae74ce2dad4ace76ea3b0d385766cf04/newjob
+run succeeded (attempt 1, 174ms), exit code 0
+
+$ otter runs --all --json | python3 -c "...top-level keys of the first run..."
+['attempt', 'capture_policy', 'created_at', 'error', 'exit_code', 'finished_at', 'id', 'job_generation', 'job_id', 'job_name', 'metadata', 'parent_run_id', 'python_mode', 'release_digest', 'sdk_version', 'started_at', 'status', 'trigger_type']
+
+$ otter requests --pretty dd0f6e2f-8dff-4bf3-824a-5562bbdb12b9   # the run used urllib? no -- expect an empty capture
+capture: complete - capture was enabled and observed no outgoing HTTP requests
+  coverage: urllib, httpx (other clients and raw sockets are not captured)
+
+$ otter stop
+stopped      /tmp/otter-docclaims.JJaSXy (pid 43108)
+
+--- end raw output ---
+exit status: 0

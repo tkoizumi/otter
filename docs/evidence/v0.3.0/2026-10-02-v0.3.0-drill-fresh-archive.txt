@@ -1,0 +1,30 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:05:26 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_darwin_arm64.tar.gz" make drill DRILL=fresh-archive
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-147-g6163a56)
+
+===== drill: fresh-archive =====
+date:     2026-10-02 13:05:27 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-147-g6163a56
+drill: extract     otter_0.3.0_darwin_arm64.tar.gz
+drill: members     otter, otterd
+drill: version     otter v0.3.0
+drill: smoke       init -> validate -> release -> start -> run -> state -> stop
+smoke: init
+smoke: release
+smoke: start
+smoke: run
+smoke: ok (count=1)
+drill: ok: otter_0.3.0_darwin_arm64.tar.gz installed outside the checkout and ran a job end to end
+drill: elapsed 1s
+--- end raw output ---
+exit status: 0

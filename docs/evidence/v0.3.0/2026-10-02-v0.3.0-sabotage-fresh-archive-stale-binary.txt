@@ -1,0 +1,27 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:06:32 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   DRILL_SABOTAGE=stale-binary OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_darwin_arm64.tar.gz" make drill DRILL=fresh-archive
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-147-g6163a56)
+
+===== drill: fresh-archive =====
+date:     2026-10-02 13:06:32 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-147-g6163a56
+drill: extract     otter_0.3.0_darwin_arm64.tar.gz
+drill: members     otter, otterd
+drill: version     otter v0.3.0
+drill: sabotage: driving the loop with this checkout's bin/otter
+drill: FAILED: the runtime under test is not from the archive (/Users/taka/Desktop/otter-workspace/otter/bin/otter)
+drill: elapsed 1s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-fresh-archive.J1t7RG
+make: *** [drill] Error 1
+--- end raw output ---
+exit status: 2

@@ -1,0 +1,78 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:07:40 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   DRILL_SABOTAGE=activate-before-stage make drill DRILL=deploy-failure
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-147-g6163a56)
+
+===== drill: deploy-failure =====
+date:     2026-10-02 13:07:41 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-147-g6163a56
+deploy-failure: work        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.OgmGp7
+deploy-failure: image       otter-deploy-target
+deploy-failure: sabotage    activate-before-stage
+deploy-failure: building the deploy-target image
+deploy-failure: building the host CLI and the linux target binaries
+deploy-failure: starting the target container
+deploy-failure: target      systemd running, ssh on 127.0.0.1:60180
+deploy-failure: python pin  3.12.3 (the target's python3)
+deploy-failure: deploy 1    known-good release
+deploy-failure:   release:  releasing 1 job(s)
+deploy-failure:   install:  writing /etc/systemd/system/otterd-ws-d7aa1596.service and restarting otterd-ws-d7aa1596.service
+deploy-failure:   verify:   waiting for the health endpoint
+deploy-failure:   verify:   healthy: {"status":"ok","version":"dev","uptime_seconds":0.029414125,"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":0,"queue":{"retrying":0},"freshness":[{"job_id":"ccfbcd2e-6de3-489f-ba60-961f2ab9d46b","name":"counter"}],"storage":{"db_bytes":196608,"disk_free_bytes":63730999296,"disk_total_bytes":151922814976}}
+deploy-failure:   done:     v0.2.0-147-g6163a56 deployed to root@127.0.0.1:60180 in 3s
+deploy-failure:   install:       /opt/otter
+deploy-failure: workspace   ws-d7aa1596 at 127.0.0.1:7337
+deploy-failure: release 1   8fa5e6d852932f369e009b88682a8dca4985bf2503afd81c906c11458e537e49
+deploy-failure: env 1       6064845b80dda16f7efa8fd530e20071046fc9bf9f0772e67e4584781d204991
+deploy-failure: run 1       65ed3b3f-9c9c-40d8-ab04-da865d044cf6 succeeded from release 1 (revision 1 executed)
+deploy-failure: unit        MainPID 268 before the candidate deploy
+deploy-failure: deploy 2    candidate release (expected to fail after staging)
+deploy-failure: inject      making preparation fail on the host
+deploy-failure: deploy 2    failed as injected
+deploy-failure:   counter: release 3a2e45578368
+deploy-failure:   otter: release counter: not activating: install Python 3.12.3: exit status 1: minimal-uv: preparation is injected to fail (/etc/otter/drill-preparation-fail)
+deploy-failure:   otter: release jobs on root@127.0.0.1:60180: ssh root@127.0.0.1: exit status 1
+deploy-failure: staged      candidate 3a2e455783681076c4f098dd047144342c76d82106f8ce3ebb63bd8bf66aaee4 is on disk but not active
+deploy-failure: injected    candidate environment 2ea0db971a0ecb56fa79d9ea1047ab3365ea4aa148dadbbdd1c56c9d9b5ea0b8 was never published
+deploy-failure: sabotage    activating the staged candidate and restarting the unit
+deploy-failure: FAILED: the active release is 8fa5e6d852932f369e009b88682a8dca4985bf2503afd81c906c11458e537e49
+3a2e455783681076c4f098dd047144342c76d82106f8ce3ebb63bd8bf66aaee4, not the previous release (8fa5e6d852932f369e009b88682a8dca4985bf2503afd81c906c11458e537e49)
+deploy-failure: last deploy output:
+deploy-failure:   platform: linux/arm64 (pinned by --platform or state)
+deploy-failure:   platform: building for linux/arm64; this machine is darwin/arm64
+deploy-failure:   workspace: using ws-d7aa1596 on root@127.0.0.1:60180 (127.0.0.1:7337)
+deploy-failure:   token:    reusing the stored API token
+deploy-failure:   build:    cross-compiling otterd and otter for linux/arm64
+deploy-failure:   build:    vendoring uv 0.5.9 for linux/arm64
+deploy-failure:   prepare:  creating the service account and layout
+deploy-failure:   Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+deploy-failure:   sync:     pushing 1 job(s) and the shared library
+deploy-failure:   sync:     pushing the binaries
+deploy-failure:   sync:     pushing uv
+deploy-failure:   prepare:  handing the workspace to otter
+deploy-failure:   Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+deploy-failure:   Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+deploy-failure:   env:      no otter.daemon.env; nothing daemon-wide to configure
+deploy-failure:   secrets:  no otter.env, deploying anyway (the daemon will refuse to run a job whose declared secrets are absent)
+deploy-failure:   Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+deploy-failure:   release:  releasing 1 job(s)
+deploy-failure:   Failed to add the host to the list of known hosts (/Users/taka/.ssh/known_hosts).
+deploy-failure:   releasing counter
+deploy-failure:   counter: release 3a2e45578368
+deploy-failure:   otter: release counter: not activating: install Python 3.12.3: exit status 1: minimal-uv: preparation is injected to fail (/etc/otter/drill-preparation-fail)
+deploy-failure:   otter: release jobs on root@127.0.0.1:60180: ssh root@127.0.0.1: exit status 1
+deploy-failure: work directory kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.OgmGp7
+deploy-failure: elapsed 20s
+deploy-failure: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.OgmGp7
+make: *** [drill] Error 1
+--- end raw output ---
+exit status: 2

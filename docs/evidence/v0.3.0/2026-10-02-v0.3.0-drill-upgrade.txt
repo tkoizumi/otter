@@ -1,0 +1,32 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:01:37 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   make drill DRILL=upgrade
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-147-g6163a56)
+
+===== drill: upgrade =====
+date:     2026-10-02 13:01:38 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-147-g6163a56
+drill: old         building v0.2.0 from source
+drill: old         otter v0.2.0
+drill: seed        init, release and migrate with the old binary
+drill: seed        database is at schema 10
+drill: start       this build against the previous release's database
+note: this workspace was created with otter v0.2.0; this is otter v0.2.0-147-g6163a56
+note: state migrates forward only, so do not point an older runtime at a newer workspace
+drill: applied     one record for each of: 11:0011_job_terminology.sql 12:0012_job_schedules.sql
+drill: schema      10 -> 12
+drill: commands    otter status, jobs and runs all work
+drill: run         39a2fe7e-d93a-4521-8e4e-4f5238e9677d succeeded after re-releasing
+drill: ok: v0.2.0's schema upgraded to 12, visibly, and the runtime works
+drill: elapsed 4s
+--- end raw output ---
+exit status: 0

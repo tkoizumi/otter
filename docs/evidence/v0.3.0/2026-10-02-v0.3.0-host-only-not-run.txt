@@ -1,0 +1,58 @@
+=== Otter v0.3.0 exit gate — Step 5 host-only items: NOT RUN ===
+date:      2026-10-02 13:25:55 EDT
+host:      Darwin 24.6.0 (arm64)
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+
+--- raw output ---
+
+$ env | grep -iE "OTTER_HOST|DRILL_SOURCE_HOST|DRILL_TARGET_HOST|DRILL_SSH_KEY|^OTTER_"
+(no host, credential or DRILL_* variables are present: no host was provided and none was authorised)
+
+$ DRILL_CLEAN_HOST=1 make -C /Users/taka/Desktop/otter-workspace/otter drill DRILL=backup-restore   # the two-host mode, no parameters
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-147-g6163a56)
+
+===== drill: backup-restore =====
+date:     2026-10-02 13:25:55 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-147-g6163a56
+drill: the clean-host mode needs parameters that are not set: DRILL_SOURCE_HOST DRILL_TARGET_HOST DRILL_SSH_KEY DRILL_REMOTE_DIR DRILL_REMOTE_JOBS_DIR DRILL_REMOTE_SERVICE DRILL_JOB
+drill: required: DRILL_SOURCE_HOST DRILL_TARGET_HOST DRILL_SSH_KEY
+drill:           DRILL_REMOTE_DIR DRILL_REMOTE_JOBS_DIR DRILL_REMOTE_SERVICE DRILL_JOB
+drill: optional: DRILL_REMOTE_BIN (default /usr/local/bin/otter),
+drill:           DRILL_REMOTE_API_URL (default http://127.0.0.1:7337),
+drill:           DRILL_REMOTE_BACKUP_DIR (default /var/tmp/otter-drill-backup),
+drill:           DRILL_REMOTE_SUDO=1 when the login is not root,
+drill:           DRILL_REMOTE_ENV_FILE when the token file must be named,
+drill:           DRILL_REMOTE_API_TOKEN, DRILL_REMOTE_ETC_DIR, DRILL_RUN_LIMIT,
+drill:           DRILL_SABOTAGE, DRILL_KEEP_TARGET=1
+drill: refusing to fall back to the same-host drill: that would record evidence for the wrong claim
+make: *** [drill] Error 2
+
+--- local filesystem-permission observations (security.md §Filesystem permissions) ---
+
+$ cd /tmp/otter-perms.2Jo4bo ; otter init perm-job ; otter start --detach --listen 127.0.0.1:7842
+
+$ stat -f "%Sp %Su:%Sg %N" <workspace> <workspace>/.otter/data <workspace>/otter.env.example <workspace>/perm-job
+drwx------ taka:wheel /tmp/otter-perms.2Jo4bo
+drwx------ taka:wheel /tmp/otter-perms.2Jo4bo/.otter/data
+-rw-r--r-- taka:wheel /tmp/otter-perms.2Jo4bo/otter.env.example
+drwxr-xr-x taka:wheel /tmp/otter-perms.2Jo4bo/perm-job
+
+$ ls -a /tmp/otter-perms.2Jo4bo   # otter.env is never created by init
+.
+..
+.gitignore
+.otter
+otter.env.example
+perm-job
+
+(Observed locally: workspace and .otter/data 0700; otter.env.example 0644; no otter.env.
+security.md's deployed claims — data dir otter:otter 0700, env files 0600 root:root under a
+0700 root /etc/otter/workspaces, jobs root root:otter 0750 — are host claims asserted by
+scripts/assert-host-permissions.sh, which was NOT RUN.)
+
+--- end raw output ---
+exit status: 0 (the host-only items were not attempted)

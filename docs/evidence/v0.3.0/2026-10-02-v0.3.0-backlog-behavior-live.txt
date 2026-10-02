@@ -1,0 +1,75 @@
+=== Otter v0.3.0 exit gate — operations.md §"Backlog behavior" checked against a real cron job ===
+date:      2026-10-02 13:24:41 EDT
+host:      Darwin 24.6.0 (arm64)
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+workspace: /tmp/otter-backlog.5rKTGj
+job:       tick, trigger.cron "* * * * *", entrypoint sleeps 65s
+
+The five points: 1 unconditional run per occurrence; 2 concurrency:1 serializes into a
+catch-up backlog; 3 downtime skips while slowness accumulates; 4 queued work runs the
+release bound at submission; 5 raising concurrency produces genuinely concurrent runs.
+
+--- raw output (commands run as shown) ---
+
+$ otter status   # 2026-10-02 13:19:08 EDT, after the 13:19:00 tick
+runs:          running=1 queued=1 retrying=0
+               succeeded=3 failed=3 timed_out=0 cancelled=0
+queue age:     oldest waiting 9s (submitted 2026-10-02 13:19:00)
+retries:       none
+backlog:       691d4ab8-5fd8-4712-997e-814221f1b8e7 1
+
+$ otter runs tick --limit 3   # same instant
+RUN ID                                JOB   TRIGGER  STATUS     ATTEMPT  STARTED               DURATION
+60a7d0ae-e006-4fe5-8999-32076287c851  tick  cron     queued     1        -                     0s
+f81e41a7-cacb-47ed-96d6-02f30c1c9c74  tick  cron     running    1        2026-10-02T17:18:16Z  52.788s
+5f622b0f-584d-44a4-9ef3-88ea235e5b57  tick  cron     succeeded  1        2026-10-02T17:17:10Z  1m5.273s
+   (points 1 and 2: the 13:19:00 occurrence is its own run and is queued behind 13:18:16)
+
+$ # 13:19:12 — sed concurrency: 1 -> 2 in tick/otter.yaml, then:
+$ otter reload
+changed      tick
+
+$ otter status   # 13:20:16, after the 13:20:00 tick
+runs:          running=2 queued=0 retrying=0
+
+$ otter runs tick --limit 4   # same instant
+RUN ID                                JOB   TRIGGER  STATUS     ATTEMPT  STARTED               DURATION
+0abd4322-cc67-4ab3-a569-25b90c791895  tick  cron     running    1        2026-10-02T17:20:00Z  16.908s
+60a7d0ae-e006-4fe5-8999-32076287c851  tick  cron     running    1        2026-10-02T17:19:12Z  1m4.221s
+   (point 5: two genuinely concurrent executions after the reload; the 13:20 run started at its tick)
+
+$ # 13:20:20 otter stop; daemon down across the 13:21, 13:22 and 13:23 ticks
+$ # 13:23:55 otter start --detach --listen 127.0.0.1:7825
+
+$ grep run_queued .otter/serve/serve.log   # every cron occurrence that became a run
+2026-10-02T17:12:00.006441Z 08b79bba-4e99-43ea-af40-2ca93d5213e9
+2026-10-02T17:13:00.007467Z 676930ef-0df3-440a-99db-5978b14c0786
+2026-10-02T17:14:00.009815Z 66daf44c-a987-4c62-95a2-e2fef6455447
+2026-10-02T17:15:00.02594Z d9cd07cf-a4c9-4a06-b2ea-53325b813f67
+2026-10-02T17:16:00.028804Z 58e6d228-2cc2-4b47-b71c-fe11c6d85a90
+2026-10-02T17:17:00.020027Z 5f622b0f-584d-44a4-9ef3-88ea235e5b57
+2026-10-02T17:18:00.027341Z f81e41a7-cacb-47ed-96d6-02f30c1c9c74
+2026-10-02T17:19:00.021634Z 60a7d0ae-e006-4fe5-8999-32076287c851
+2026-10-02T17:20:00.024007Z 0abd4322-cc67-4ab3-a569-25b90c791895
+2026-10-02T17:24:00.003661Z 4a782407-04a9-4283-a0ed-7e11a155df37
+   (point 3: the sequence jumps 17:20:00 -> 17:24:00; the three downtime occurrences left no run)
+
+$ otter runs tick --limit 20
+RUN ID                                JOB   TRIGGER  STATUS     ATTEMPT  STARTED               DURATION
+4a782407-04a9-4283-a0ed-7e11a155df37  tick  cron     running    1        2026-10-02T17:24:00Z  41.553s
+0abd4322-cc67-4ab3-a569-25b90c791895  tick  cron     failed     1        2026-10-02T17:20:00Z  35.502s
+60a7d0ae-e006-4fe5-8999-32076287c851  tick  cron     succeeded  1        2026-10-02T17:19:12Z  1m5.311s
+f81e41a7-cacb-47ed-96d6-02f30c1c9c74  tick  cron     succeeded  1        2026-10-02T17:18:16Z  1m5.269s
+5f622b0f-584d-44a4-9ef3-88ea235e5b57  tick  cron     succeeded  1        2026-10-02T17:17:10Z  1m5.273s
+58e6d228-2cc2-4b47-b71c-fe11c6d85a90  tick  cron     succeeded  1        2026-10-02T17:16:05Z  1m5.267s
+d9cd07cf-a4c9-4a06-b2ea-53325b813f67  tick  cron     succeeded  1        2026-10-02T17:15:00Z  1m5.505s
+66daf44c-a987-4c62-95a2-e2fef6455447  tick  cron     failed     1        2026-10-02T17:14:00Z  385ms
+676930ef-0df3-440a-99db-5978b14c0786  tick  cron     failed     1        2026-10-02T17:13:00Z  360ms
+08b79bba-4e99-43ea-af40-2ca93d5213e9  tick  cron     failed     1        2026-10-02T17:12:00Z  256ms
+
+$ otter stop
+stopped      /tmp/otter-backlog.5rKTGj (pid 42644)
+
+--- end raw output ---
+exit status: 0

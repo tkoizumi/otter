@@ -1,0 +1,31 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:01:21 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   make drill DRILL=downgrade-refusal
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-147-g6163a56" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-147-g6163a56)
+
+===== drill: downgrade-refusal =====
+date:     2026-10-02 13:01:22 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-147-g6163a56
+drill: init        scaffolding downgrade-job
+drill: start       bringing the runtime up
+drill: run         executing the job once
+drill: stop        the daemon must not hold the database while we edit it
+drill: newer       database now records migration 13, this build knows 12
+drill: start       expecting a refusal
+drill: refused     exit 1 and named both versions
+drill: intact      history=1 state=1 schema=13 unchanged
+drill: rollback    removing the newer row (the pre-upgrade backup's job in production)
+drill: recovered   the same binary serves the same data once the schema is understood
+drill: ok: a newer schema is refused, the data survives, and rollback is a restore
+drill: elapsed 1s
+--- end raw output ---
+exit status: 0

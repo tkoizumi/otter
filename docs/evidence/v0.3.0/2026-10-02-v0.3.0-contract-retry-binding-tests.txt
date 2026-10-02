@@ -1,0 +1,31 @@
+=== Otter v0.3.0 exit gate — independent operator transcript ===
+date:      2026-10-02 13:29:27 EDT
+host:      Darwin 24.6.0 (arm64)
+platform:  15.7.3
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+command:   scripts/go test ./internal/daemon/ -run 'TestRunExecutesTheActiveReleaseNotTheLiveTree|TestRetryExecutesTheParentsReleaseSnapshot|TestRetryResolvesTheParentsManagedEnvironment|TestPendingBacklogKeepsItsDigestThroughAReleasePrune|TestRecoveryPlansRetriesFromTheBoundRelease' -v -count=1; scripts/go test ./internal/cli/ -run 'TestReleaseKeepPrunesToTheWindowAndProtectsPins' -v -count=1
+--- raw output ---
+=== RUN   TestRunExecutesTheActiveReleaseNotTheLiveTree
+--- PASS: TestRunExecutesTheActiveReleaseNotTheLiveTree (0.95s)
+=== RUN   TestRetryExecutesTheParentsReleaseSnapshot
+--- PASS: TestRetryExecutesTheParentsReleaseSnapshot (3.96s)
+=== RUN   TestRetryResolvesTheParentsManagedEnvironment
+--- PASS: TestRetryResolvesTheParentsManagedEnvironment (4.09s)
+=== RUN   TestPendingBacklogKeepsItsDigestThroughAReleasePrune
+--- PASS: TestPendingBacklogKeepsItsDigestThroughAReleasePrune (3.95s)
+=== RUN   TestRecoveryPlansRetriesFromTheBoundRelease
+=== RUN   TestRecoveryPlansRetriesFromTheBoundRelease/live_policy_is_looser_than_the_bound_release
+=== RUN   TestRecoveryPlansRetriesFromTheBoundRelease/live_policy_is_stricter_than_the_bound_release
+--- PASS: TestRecoveryPlansRetriesFromTheBoundRelease (2.31s)
+    --- PASS: TestRecoveryPlansRetriesFromTheBoundRelease/live_policy_is_looser_than_the_bound_release (2.12s)
+    --- PASS: TestRecoveryPlansRetriesFromTheBoundRelease/live_policy_is_stricter_than_the_bound_release (0.20s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/daemon	15.534s
+=== RUN   TestReleaseKeepPrunesToTheWindowAndProtectsPins
+--- PASS: TestReleaseKeepPrunesToTheWindowAndProtectsPins (0.16s)
+PASS
+ok  	github.com/tkoizumi/otter/internal/cli	0.430s
+--- end raw output ---
+exit status: 0

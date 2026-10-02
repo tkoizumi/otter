@@ -1,0 +1,489 @@
+=== Otter v0.3.0 exit gate — independent second-operator record ===
+
+date:     2026-10-02
+host:     Takas-MacBook-Pro.local, Darwin 24.6.0 arm64 (macOS 15.7.3), developer checkout
+checkout: /Users/taka/Desktop/otter-workspace/otter
+git HEAD: 6163a56
+describe: v0.2.0-147-g6163a56
+operator: independent agent session, 2026-10-02 — wrote none of the v0.3.0 code, drills,
+          tests or documents under test. Read only what the repository publishes
+          (docs/operations.md, CONTRIBUTING.md, docs/releases/v0.3.0.md, docs/security.md,
+          docs/http-capture.md, docs/runtime-contract.md, the drill scripts and their
+          --help/header comments).
+
+countersigned: ____________
+
+
+=== VERDICT: NOT SATISFIED ===
+
+One line: every operating drill ran clean from the published instructions and the
+seeded-failure diagnosis worked from the docs alone, but the released binary ships a
+published instruction that is false and security-relevant — `otter start --help` says
+`--api-token` is forwarded, and `otter start --detach --api-token <t>` silently drops it,
+bringing the runtime up with the API unauthenticated — so the release would ship a
+known-false instruction, which the exit gate forbids. Two documentation statements about
+the `integration` -> `job` rename are also false, and `unit-caps` documents no
+`DRILL_SABOTAGE` mode although two published documents say every drill does.
+
+Nothing here required the author: every drill command in the tables below is a command the
+repository publishes, and no step needed knowledge that is written nowhere. The defects are
+in what the repository says, not in the operator's ability to proceed.
+
+
+=== 1. EVERY DRILL — PASS / FAIL / NOT RUN ===
+
+All runs on the host above, against 6163a56 (v0.2.0-147-g6163a56).
+
+| Drill | Result | Evidence file |
+| --- | --- | --- |
+| backup-restore | PASS | 2026-10-02-v0.3.0-drill-backup-restore.txt |
+| upgrade | PASS | 2026-10-02-v0.3.0-drill-upgrade.txt |
+| downgrade-refusal | PASS | 2026-10-02-v0.3.0-drill-downgrade-refusal.txt |
+| secret-rotation | PASS | 2026-10-02-v0.3.0-drill-secret-rotation.txt |
+| fresh-archive | PASS (hand-built archive; see caveat) | 2026-10-02-v0.3.0-drill-fresh-archive.txt + 2026-10-02-v0.3.0-fresh-archive-handbuild.txt |
+| deploy-failure | PASS | 2026-10-02-v0.3.0-drill-deploy-failure.txt |
+| unit-caps | PASS | 2026-10-02-v0.3.0-drill-unit-caps.txt |
+| disk-pressure | PASS | 2026-10-02-v0.3.0-drill-disk-pressure.txt |
+| liveness | PASS | 2026-10-02-v0.3.0-drill-liveness.txt |
+| `make drill` (aggregate, everything runnable) | PASS, exit 0, "drill: all drills passed" | 2026-10-02-v0.3.0-aggregate-make-drill.txt |
+| `make drill` (one drill cannot run) | FAILS LOUDLY, exit 2, "drill: FAILED: fresh-archive" | 2026-10-02-v0.3.0-aggregate-unrunnable-drill.txt |
+
+There were no FAIL results among the nine clean drills. The failures in this record are
+documentation/product defects found while checking the documents against behaviour
+(section 3).
+
+fresh-archive caveat (recorded as the task requires): `goreleaser` is absent on this host
+(`goreleaser --version` -> "goreleaser: absent"), so the archive was hand-built:
+
+    make build VERSION=v0.3.0
+    tar -czf dist/otter_0.3.0_darwin_arm64.tar.gz -C bin otter otterd
+
+That is `otter` and `otterd` at the archive root, named `otter_<version>_<os>_<arch>.tar.gz`,
+and the drill exercised its tag-style branch (the extracted binary reports `otter v0.3.0`).
+Because the archive did not come from `goreleaser release --snapshot --clean`, the release
+**layout** claim is weaker here and rests on the `release-config` CI job, not on this run.
+
+`make drill` with a drill that cannot run: with no usable archive the aggregate ran the
+other eight drills, did not skip the ninth, and printed at the end
+
+    drill: FAILED: fresh-archive
+    make: *** [drill] Error 1
+
+exiting 2. A drill that cannot run produces no green result and is named.
+
+
+=== 2. FALSIFIABILITY — which assertions were shown to be falsifiable ===
+
+Every red run below fails at the assertion that names the removed behaviour, not somewhere
+unrelated. A sabotage run is expected to exit non-zero; all did.
+
+| Drill | Sabotage | Red at | Evidence file |
+| --- | --- | --- | --- |
+| upgrade | skip-old-binary | "this build has no migration newer than schema 12; nothing to upgrade" (the pending-set gate) | 2026-10-02-v0.3.0-sabotage-upgrade-skip-old-binary.txt |
+| downgrade-refusal | hide-newer-row | "the daemon served a database migrated by a newer binary instead of refusing it" | 2026-10-02-v0.3.0-sabotage-downgrade-hide-newer-row.txt |
+| secret-rotation | reload-applies | "otter reload applied the rotated credential ... operations.md says reload does not re-read credentials" | 2026-10-02-v0.3.0-sabotage-secret-rotation-reload-applies.txt |
+| fresh-archive | stale-binary | "the runtime under test is not from the archive (.../bin/otter)" | 2026-10-02-v0.3.0-sabotage-fresh-archive-stale-binary.txt |
+| backup-restore | drop-releases | "the restored job cannot run" (daemon: "no active release") | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-releases.txt |
+| backup-restore | drop-environments | "the restored job cannot run" | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-environments.txt |
+| backup-restore | drop-marker | "the restored source directory lost its .otter-id marker" | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-marker.txt |
+| deploy-failure | activate-before-stage | step 4: "the active release is <candidate digest>" | 2026-10-02-v0.3.0-sabotage-deploy-failure-activate-before-stage.txt |
+| deploy-failure | stop-previous-release | step 4: "the previous release is not running: the unit is inactive" | 2026-10-02-v0.3.0-sabotage-deploy-failure-stop-previous-release.txt |
+| disk-pressure | ping-always | first threshold assertion: "otter.db at 2MB over a 1MB cap: the check published" | 2026-10-02-v0.3.0-sabotage-disk-pressure-ping-always.txt |
+| liveness | ping-always | first assertion: "the check succeeded although nothing was listening" | 2026-10-02-v0.3.0-sabotage-liveness-ping-always.txt |
+| unit-caps | **none documented** | — | — |
+
+`unit-caps` is the gap. `scripts/drill/unit-caps.sh` contains no `DRILL_SABOTAGE` (or any
+other mutation) handling at all, so the drill cannot be shown red at the drill level by the
+operator. Its falsifiability in the repository lives in Go render tests instead: the
+phase-0 record `docs/evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt` removes the
+`MemoryMax` emission from `UnitFile` and shows the render tests fail. That run was not
+repeated here, and it is a different mechanism from the eleven sabotage runs above. Two
+published documents claim otherwise — see finding F3. This is a gap in the drill-level
+evidence, not a false green: the unit-caps clean run above is still a real run with real
+cgroup observations.
+
+The `backup-restore` header documents four modes; `drop-releases`, `drop-environments` and
+`drop-marker` were run (three of four). `drop-tools` was not run; it is listed in the
+header and its red assertion ("resolves a DIFFERENT environment digest") is not established
+by this record.
+
+Not falsifiable by me, and recorded as such: the six tests named in
+`docs/runtime-contract.md` §5.1 pass (2026-10-02-v0.3.0-contract-retry-binding-tests.txt),
+but I did not mutate production code to show they can go red — editing the checkout is out
+of scope for this role. The guarantee is pinned by tests that pass and that assert the
+binding from the database rows (e.g. `TestRetryExecutesTheParentsReleaseSnapshot` reads the
+on-disk rows and runs release A's code), but their red side is not in this record.
+
+
+=== 3. FAILURES / DEFECTS, VERBATIM ===
+
+No drill failed. The following are the defects the document checks found. Each gives the
+exact command that reproduces it and the raw output.
+
+--- F1 (release blocker): `otter start --detach` silently drops forwarded daemon flags ----
+
+Reproduction (raw output in 2026-10-02-v0.3.0-finding-start-detach-flag-forwarding.txt):
+
+    $ otter start --detach --listen 127.0.0.1:7816 --api-token s3cret --workers 2 --log-format pretty
+    $ grep api_listening .otter/serve/serve.log
+    {"auth_required":false,"event":"api_listening","level":"info","listen":"127.0.0.1:7816",...}
+    $ grep daemon_started .otter/serve/serve.log
+    {...,"event":"daemon_started",...,"workers":8}
+    $ curl -s http://127.0.0.1:7816/health | python3 -c '...sorted keys...'
+    ['freshness', 'jobs', 'queue', 'queue_depth', 'status', 'storage', 'uptime_seconds', 'version']
+
+The token is not applied (`auth_required:false`), `--workers 2` is not applied
+(`workers:8`), `--log-format pretty` is not applied (the log stays JSON), and an
+unauthenticated caller therefore receives the full operational payload. The same flag in
+the foreground path *is* applied:
+
+    $ otter start --listen 127.0.0.1:7843 --api-token s3cret &   # no --detach
+    {"auth_required":true,"event":"api_listening","listen":"127.0.0.1:7843",...}
+    $ curl -s http://127.0.0.1:7843/health | ... keys ...
+    ['status', 'uptime_seconds', 'version']
+
+Cause (observed, then read): the foreground path builds the daemon argv with
+`daemonArgs(...)`, which forwards every flag the operator typed; `startDetached` rebuilds
+the child argv from `--jobs`, `--data`, `--listen` plus trailing passthrough only
+(`internal/cli/start.go:426-430`), dropping every other parsed flag. The bug also exists in
+`v0.2.0` (`git show v0.2.0:internal/cli/start.go`, same construction), so it is not a
+v0.3.0 regression — but v0.3.0 ships it.
+
+Classification: **product defect + documentation defect.** The product silently ignores
+flags it accepts; `otter start --help` (a published instruction, and `--help` is in scope
+for this gate) states:
+
+    The daemon's own flags are accepted and forwarded, so --workers,
+    --log-format, --api-token and the rest work here too.
+
+Security relevance: an operator who starts a loopback runtime with `--api-token` believes
+the control-plane API requires a token. It does not. Nothing prints a warning. (A loopback
+bind is the documented default, and `OTTER_API_TOKEN` in the environment or in
+`otter.env`/`otter.daemon.env`, or `otterd --api-token`, do work, so a workaround exists —
+but the published flag does not.)
+
+This is why section 4's `/health` claim is marked disagree: reached through the published
+`otter start` path, an unauthenticated caller gets everything.
+
+--- F2 (documentation defect): the rename table says `OTTER_INTEGRATION_*` are replaced ----
+
+`docs/releases/v0.3.0.md` line 21:
+
+    | Child environment | `OTTER_INTEGRATION_ID`, `OTTER_INTEGRATION_NAME`, `OTTER_INTEGRATION_DIR` | `OTTER_JOB_ID`, `OTTER_JOB_NAME`, `OTTER_JOB_DIR` |
+
+and lines 26-28:
+
+    A job that reads `os.environ["OTTER_INTEGRATION_ID"]` directly, or a dashboard that
+    parses `integration_id` out of `otter runs --json`, must be updated.
+
+Reproduction (raw output in 2026-10-02-v0.3.0-docclaims-migrations-reload-rename.txt): a
+released job logs each variable from its own environment.
+
+    env ... name=OTTER_JOB_ID value=d9b39ad1-5918-4d13-914b-ac31b917f125
+    env ... name=OTTER_JOB_NAME value=newjob
+    env ... name=OTTER_JOB_DIR value=.../newjob
+    env ... name=OTTER_INTEGRATION_ID value=d9b39ad1-5918-4d13-914b-ac31b917f125
+    env ... name=OTTER_INTEGRATION_NAME value=newjob
+    env ... name=OTTER_INTEGRATION_DIR value=.../newjob
+
+Both sets are exported. `internal/executor/executor.go:322-325` does this deliberately
+("Compatibility for code in immutable releases written before the rename"), so a job that
+reads `OTTER_INTEGRATION_ID` does **not** need updating, contrary to the release notes and
+to `docs/v0.3.0-release-plan.md:601`. The old names merely stop being the documented ones.
+
+Classification: **documentation defect** (the product behaviour is a reasonable choice; the
+documentation states the opposite). `OTTER_INTEGRATIONS_DIR` and `--integrations` are
+genuinely no longer read (`internal/config/job_compat.go:8-11`), so the daemon-configuration
+row of the table is correct. The `job_id` half of the table is correct.
+
+--- F3 (documentation defect + evidence gap): not every drill documents a sabotage mode ----
+
+`docs/operations.md` lines 144-146:
+
+    Each drill documents a `DRILL_SABOTAGE=<mode>` that removes the behavior under test,
+    so a green run is demonstrably falsifiable rather than merely green
+
+`docs/releases/v0.3.0.md` lines 112-113:
+
+    Each documents a `DRILL_SABOTAGE` mode that removes the behavior under test, so a
+    green run is demonstrably falsifiable.
+
+`unit-caps` does not:
+
+    $ grep -n "SABOTAGE" scripts/drill/unit-caps.sh
+    (no matches)
+
+Classification: **documentation defect** for the two statements; **evidence gap** for the
+drill, because the operator has no drill-level way to show unit-caps can go red. Eight of
+the nine drills document a `DRILL_SABOTAGE` mode (eleven red runs, all recorded above);
+`unit-caps` is the one without.
+
+--- F4 (documentation defect): the downgrade `migration_failed` example omits two fields ----
+
+`docs/operations.md` lines 1095-1097 present the downgrade refusal as:
+
+    {"level":"error","event":"migration_failed","error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","timestamp":"2024-06-01T03:00:00Z"}
+
+The emitted record carries two more fields. Reproduction (see section 4; the
+downgrade-refusal drill reproduces this state, or add a `schema_migrations` row with a
+version the build does not embed and start `otterd`):
+
+    $ sqlite3 <data>/otter.db "insert into schema_migrations(version,name,applied_at) values(13,'0013_future.sql',datetime('now'));"
+    $ otterd --jobs <ws> --data <data>
+    {"applied":13,"error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","event":"migration_failed","known":12,"level":"error","timestamp":"2026-10-02T17:02:26.038416Z"}
+    $ echo $?
+    1
+
+The `error` string matches the document character-for-character and the exit status is 1.
+The record adds `applied` and `known`, which the example does not show.
+
+Classification: **documentation defect** (an incomplete example, not a false instruction).
+
+
+=== 4. DOCUMENT CLAIMS vs OBSERVED BEHAVIOUR ===
+
+Every quote below is from the published document named; every observation is from a run in
+this directory.
+
+1. `docs/operations.md` §"Upgrades" — the `migration_applied` record's fields.
+   Quote: `{"level":"info","event":"migration_applied","version":3,"name":"0003_integration_identity.sql","timestamp":"2024-06-01T03:00:00Z"}`
+   Observed: `{"event":"migration_applied","level":"info","name":"0011_job_terminology.sql","timestamp":"2026-10-02T17:02:11.440203Z","version":11}`
+   Verdict: **agree, field for field.** The emitted record carries exactly `level`, `event`,
+   `version`, `name`, `timestamp`; only the key order differs from the example.
+   Evidence: 2026-10-02-v0.3.0-drill-upgrade.txt (re-run with `OTTER_DRILL_KEEP=1`; the kept
+   workspace's `serve.log` held the raw lines).
+
+2. `docs/operations.md` §"Upgrades" — "A restart with nothing pending logs none of them."
+   Observed: a workspace's first start logged 12 `migration_applied` records
+   (`grep -c` -> 12); after `otter stop` and a restart the count was still 12.
+   Verdict: **agree.**
+   Evidence: 2026-10-02-v0.3.0-docclaims-migrations-reload-rename.txt.
+
+3. `docs/operations.md` §"Upgrades" — the downgrade refusal message and the
+   `migration_failed` shape.
+   Quote (message): `"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup"`
+   Quote (shape): `{"level":"error","event":"migration_failed","error":"...","timestamp":"..."}`
+   Observed: the message matched exactly; the record also carried `"applied":13` and
+   `"known":12`; the process exited 1; the refusal left the database untouched and the same
+   binary served it once the newer row was removed.
+   Verdict: **message agree; shape disagree** (see F4). The separate `migration_failed`
+   example with `version`/`name` for a *failed apply* (line 1070) was **not** triggered —
+   injecting a broken migration means editing the embedded migration set — so that half is
+   **unverifiable** in this run.
+
+4. `docs/operations.md` §"Health checking" — the response example is the real shape.
+   Observed: the authenticated body carried `status`, `version`, `uptime_seconds`, `jobs`,
+   `queue_depth`, `queue`, `freshness`, `storage`, each with the documented members.
+   `queue.oldest_waiting_at`/`oldest_waiting_seconds`/`by_job`/`next_retry_at` were absent
+   while nothing was claimable, and never-succeeded `freshness` entries omitted
+   `last_success_at`/`age_seconds` — both of which `docs/api-reference.md` documents as the
+   intentional absence.
+   Verdict: **agree.**
+   Evidence: 2026-10-02-v0.3.0-health-shape.txt (full authenticated and unauthenticated
+   bodies), 2026-10-02-v0.3.0-finding-start-detach-flag-forwarding.txt, and the backlog run.
+
+5. `docs/operations.md` §"Health checking" — "An unauthenticated caller — and any caller
+   presenting a wrong token once `--api-token` is set — still receives only `status`,
+   `version` and `uptime_seconds`."
+   Observed: with the token actually configured (`OTTER_API_TOKEN=... otter start`, or
+   `otterd --api-token ...`), an unauthenticated caller received exactly
+   `['status','uptime_seconds','version']` and a correct token received the full payload —
+   **agree**. With `otter start --detach --api-token s3cret`, the daemon logged
+   `auth_required:false` and an unauthenticated caller received the full payload, and
+   `GET /v1/jobs` answered 200 without a token — **disagree**.
+   Verdict: **disagree as reached through the published `otter start` path** (F1); the
+   sentence is true only once the token is really configured. The document's own example
+   (`curl -fsS .../health`) is what an operator following it would run.
+   Evidence: 2026-10-02-v0.3.0-finding-start-detach-flag-forwarding.txt.
+
+6. `docs/operations.md` §"Reloading jobs" — the three things reload does not do.
+   Quote 1: "It does not release anything. A newly visible job has no active release, so
+   `otter run` answers `409` until `otter release` stages one."
+   Observed: after `otter reload` reported `added newjob`, `otter run newjob` answered
+   `otter: job newjob has no active release; run otter release newjob before submitting
+   runs: conflict (conflict, HTTP 409)`.
+   Verdict: **agree.**
+   Quote 2: "It does not re-read credentials."
+   Observed: the secret-rotation drill asserts exactly this and the sabotage inverts it.
+   Verdict: **agree.**
+   Quote 3: "It does not cancel work for a job that still exists."
+   Verdict: **read only** — not exercised in this run.
+   Evidence: 2026-10-02-v0.3.0-docclaims-migrations-reload-rename.txt,
+   2026-10-02-v0.3.0-drill-secret-rotation.txt.
+
+7. `docs/operations.md` §"Backlog behavior" — all five points, against a real cron job
+   (`trigger.cron: "* * * * *"`, entrypoint sleeps 65s).
+   Point 1 ("Every occurrence becomes its own run, unconditionally"): **verified** — one
+   `run_queued` per tick at 17:12:00 through 17:20:00, nine consecutive occurrences, nine
+   runs.
+   Point 2 ("With the default `concurrency: 1`, those runs serialize"): **verified** — at
+   13:19:08 `otter status` showed `running=1 queued=1`, `queue age: oldest waiting 9s
+   (submitted 2026-10-02 13:19:00)`, `backlog: 691d4ab8... 1`; the 13:16/13:17/13:18 runs
+   all started 5-16s after their tick, i.e. when the previous one ended.
+   Point 3 ("Downtime skips; slowness accumulates"): **verified** — the daemon was stopped
+   at 13:20:20 and restarted at 13:23:55; the `run_queued` sequence jumps from
+   `2026-10-02T17:20:00` to `2026-10-02T17:24:00`, so the 17:21, 17:22 and 17:23
+   occurrences were never replayed.
+   Point 4 ("Queued work runs the code that was active when it was submitted"): **read and
+   pinned by tests only** — `TestPendingBacklogKeepsItsDigestThroughAReleasePrune`,
+   `TestRunExecutesTheActiveReleaseNotTheLiveTree` and
+   `TestRetryExecutesTheParentsReleaseSnapshot` pass; I did not swap a release under a live
+   backlog.
+   Point 5 ("Raising `concurrency` produces genuinely concurrent executions"): **verified** —
+   after editing `concurrency: 2` and `otter reload` (which reported `changed tick`),
+   `otter status` showed `running=2`, and the 13:20 run started at its tick (17:20:00)
+   alongside the still-running 13:19 run rather than behind it.
+   Verdict: **agree on 1, 2, 3, 5; point 4 verified only by the named tests.**
+   Evidence: 2026-10-02-v0.3.0-backlog-behavior-live.txt.
+
+8. `docs/operations.md` §"Operating drills" — every prerequisite and command it names.
+   Observed: `make drill`, `make drill DRILL=<name>` and `sh scripts/drill.sh --list` all
+   behaved as written; the per-drill "Needs" column matched what each drill required; the
+   aggregate ran every drill; a drill that cannot run failed loudly rather than skipping.
+   `goreleaser` is named for the archive and is absent on this host, so the archive was
+   hand-built (section 1) — the document is not wrong, the environment lacked the tool.
+   One omission: the `fresh-archive` example names `otter_0.3.0_linux_amd64.tar.gz` only,
+   and does not say how to choose `<os>_<arch>` for the machine in front of you; a macOS
+   operator must derive it from `uname`.
+   Verdict: **agree, with that one omission and the absent `goreleaser`.**
+   Evidence: the drill and aggregate transcripts above; 2026-10-02-v0.3.0-host-only-not-run.txt.
+
+9. `docs/security.md` §"Filesystem permissions" — the modes and ownership it claims.
+   Observed locally (`otter init` + `otter start`): the workspace directory and
+   `.otter/data` are `drwx------` (0700); `otter.env.example` is `-rw-r--r--` (0644) and no
+   `otter.env` is created. That matches the local half of the section.
+   The deployed layout it also claims — data directory `otter:otter 0700`, environment files
+   `0600 root:root` inside a `0700 root` `/etc/otter/workspaces`, jobs root `root:otter
+   0750` — is a host claim. `scripts/assert-host-permissions.sh` is the executable half and
+   was **NOT RUN** (no host). The `deploy-failure` container left no inspectable host.
+   Verdict: **local claims agree; deployed ownership/modes unverified off-host.**
+
+10. `docs/releases/v0.3.0.md` — the two migrations it says ship are present.
+    Observed: `migrations/0011_job_terminology.sql` and `migrations/0012_job_schedules.sql`
+    exist; the upgrade drill applied exactly those two, in order, from a real `v0.2.0`
+    schema (10 -> 12).
+    Verdict: **agree.**
+    Evidence: 2026-10-02-v0.3.0-drill-upgrade.txt; `ls migrations/`.
+
+11. `docs/releases/v0.3.0.md` — the `integration` -> `job` rename table matches the binary.
+    HTTP and CLI JSON `integration_id` -> `job_id`: **agree** —
+    `otter runs --all --json` keys are `['attempt','capture_policy','created_at','error',
+    'exit_code','finished_at','id','job_generation','job_id','job_name','metadata',
+    'parent_run_id','python_mode','release_digest','sdk_version','started_at','status',
+    'trigger_type']`, and `otter trace`/`otter requests` carry `job_id`.
+    Child environment `OTTER_JOB_ID|NAME|DIR`: **agree that the new names are set.**
+    Child environment "`OTTER_INTEGRATION_*` -> `OTTER_JOB_*`": **disagree** — the old names
+    are still exported alongside the new ones (F2).
+    Daemon configuration `OTTER_INTEGRATIONS_DIR` -> `OTTER_JOBS_DIR`: **agree** (the old
+    variable and `--integrations` are no longer read; `internal/config/job_compat.go`).
+    Manifest file and fields unchanged: **agree** — `git diff v0.2.0 HEAD --
+    internal/config/manifest.go` changes only comments; no `yaml:`/`json:` tag changed.
+    Evidence: 2026-10-02-v0.3.0-docclaims-migrations-reload-rename.txt.
+
+12. `docs/runtime-contract.md` §5.1 — the retry release/environment binding is stated as a
+    guarantee and is pinned by the tests it names.
+    Observed: `TestRunExecutesTheActiveReleaseNotTheLiveTree`,
+    `TestRetryExecutesTheParentsReleaseSnapshot`,
+    `TestRetryResolvesTheParentsManagedEnvironment`,
+    `TestPendingBacklogKeepsItsDigestThroughAReleasePrune`,
+    `TestRecoveryPlansRetriesFromTheBoundRelease` and
+    `TestReleaseKeepPrunesToTheWindowAndProtectsPins` all exist and pass
+    (`ok github.com/tkoizumi/otter/internal/daemon`, `ok .../internal/cli`). Reading
+    `TestRetryExecutesTheParentsReleaseSnapshot` shows it asserts the binding from the
+    on-disk rows and by executing release A's code after release B is active.
+    Verdict: **agree that the guarantee is pinned by the named tests**; their red side was
+    not independently shown (no mutation of production code by this operator).
+    Evidence: 2026-10-02-v0.3.0-contract-retry-binding-tests.txt.
+
+13. `docs/operations.md` §"Operating drills" (and `docs/releases/v0.3.0.md`) — "Each drill
+    documents a `DRILL_SABOTAGE=<mode>`."
+    Verdict: **disagree** — `unit-caps` documents none (F3).
+
+
+=== 5. STEP 3 — SEEDED FAILURE DIAGNOSED FROM THE DOCS ALONE ===
+
+What was done (raw output in 2026-10-02-v0.3.0-step3-seeded-failure-diagnosis.txt): a
+throwaway workspace outside the checkout; `otter init`; `main.py` rewritten to `GET /cursor`
+(200) and `POST /records` (400) against a loopback stand-in — plain `urllib.request`, which
+`docs/http-capture.md` says is always instrumented — then `raise RuntimeError`; `otter
+validate` / `release` / `start --detach` / `run`; the run failed with exit 1 and a retry was
+scheduled. The failure was then diagnosed with only the published commands:
+
+    otter runs --all                                   (find the run)
+    otter trace --pretty <run-id>                      (timeline)
+    otter logs <run-id>                                (the exception)
+    otter requests --pretty <run-id>                   (the capture summary and list)
+    otter request --pretty <request-id>                (headers, bodies, call site)
+
+The trace showed the lifecycle, the `GET -> 200`, the `POST -> 400` with its reason
+"cursor rejected" on the line beneath it, and the `RuntimeError`; `otter requests` showed
+`capture: complete`, `requests: 2 (2 completed, 0 failed, 0 incomplete)`,
+`redacted: 2 values were removed before storage`, coverage `urllib, httpx`, and both
+exchanges; `otter request` showed the POST with
+`Authorization: REDACTED`, the request JSON, the response JSON with
+`access_token: "REDACTED"` and `(1 value(s) redacted before storage)`, and
+`call site: main.py:23 in <module>`. The diagnosis is complete from the published commands;
+the database was never read directly.
+
+Were the docs alone sufficient? **Yes.** No command was guessed; every one used is printed
+by `docs/operations.md` or `docs/http-capture.md`, and the output shapes match the examples
+(the human `otter requests`/`otter request` forms are the documented ones, and the
+footnote-once-when-uniform behaviour in `otter trace` is the one the guide describes). Two
+small notes, not blockers:
+
+* `otter trace` piped emits typed JSONL without `--json`. `docs/http-capture.md` lists
+  `--json` as the way to get JSONL, and only `otter requests`/`otter request` are documented
+  as auto-switching on a pipe; an operator wanting the pictured human form must add
+  `--pretty` (which the guide does document).
+* `otter runs <job> --all` is a usage error (`otter: --all lists every job; do not also name
+  one`). `docs/operations.md` shows `otter runs --all --limit 10` and `otter runs <job>
+  --limit 5` but not the combination, so this is discoverable rather than wrong.
+
+Nothing in this exercise required the author, and no missing or wrong instruction in this
+diagnosis path blocks the gate. What blocks it is F1 (a product defect that makes a
+published instruction false and security-relevant) and the documentation defects F2-F4.
+
+
+=== 6. WHAT THIS RECORD DOES NOT PROVE ===
+
+* **It is not a green gate.** F1 is a security-relevant false instruction shipped by the
+  release; the verdict is not satisfied.
+* **No host was used, so the host-only gate items did not run.** `OTTER_HOST`,
+  `DRILL_SOURCE_HOST`/`DRILL_TARGET_HOST`/`DRILL_SSH_KEY` were all absent and no host was
+  authorised. Therefore these are **NOT RUN** and remain unproven:
+  `scripts/assert-host-permissions.sh` (CA-09/CA-10 on a deployed host);
+  `scripts/drill/modes/backup-restore-clean-host.sh` (a restore onto a genuinely empty
+  second host — it refused for missing parameters, exit 2, as designed); and a
+  `scripts/provision.sh` deploy of a fresh host. The deployed filesystem ownership/modes are
+  unverified. Evidence: 2026-10-02-v0.3.0-host-only-not-run.txt.
+* **fresh-archive used a hand-built archive**, because `goreleaser` is absent. The exact
+  published archive layout (checksums, cask, install.sh) is not proven here; it rests on the
+  `release-config` CI job.
+* **`deploy-failure` and `unit-caps` ran on a privileged container, not a real host.** They
+  prove the container behaviour only.
+* **`unit-caps` has no drill-level mutation**, so its clean run is not shown red in this
+  record (F3). The pre-existing render-test mutation was not repeated.
+* **The retry-binding tests pass but were not mutated**, so the guarantee's red side is not
+  in this record.
+* **The real apply-failure `migration_failed` shape** (`version`/`name`) was not triggered;
+  only the downgrade variant was observed.
+* **`backup-restore`'s `drop-tools` mode** and `reload`'s "does not cancel queued work for a
+  job that still exists" were not exercised.
+* **The backup/restore drill is same-host, different data directory.** The clean-host
+  restore (a different machine) is the part that remains unproven, consistent with the drill
+  header's own statement.
+* This record was produced without editing the checkout under test; only
+  `docs/evidence/v0.3.0/` was added. It does not fix F1-F4, and the affected checks must be
+  re-run by the author after any fix (the roadmap's "record failures and repeat affected
+  drills after fixes").
+
+
+=== 7. CONTRIBUTION AND COUNTERSIGNATURE ===
+
+The release plan's exit gate asks for a named second operator. The operator was a fresh
+agent session that wrote none of the artifacts under test and ran everything from the
+repository's own published instructions.
+
+operator: independent agent session, 2026-10-02
+
+countersigned: ____________

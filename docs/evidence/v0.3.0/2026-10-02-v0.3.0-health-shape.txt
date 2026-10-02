@@ -1,0 +1,46 @@
+=== Otter v0.3.0 exit gate — /health: the documented shape, authenticated and not ===
+date:      2026-10-02 13:30:33 EDT
+host:      Darwin 24.6.0 (arm64)
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+
+--- raw output ---
+
+$ cd /tmp/otter-health-shape.S2yWGq ; otter init h-job ; OTTER_API_TOKEN=s3cret otter start --detach --listen 127.0.0.1:7851
+
+$ curl -s http://127.0.0.1:7851/health | python3 -m json.tool   # unauthenticated
+{
+    "status": "ok",
+    "version": "v0.2.0-147-g6163a56",
+    "uptime_seconds": 0.033642
+}
+
+$ curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:7851/health | python3 -m json.tool   # authenticated
+{
+    "status": "ok",
+    "version": "v0.2.0-147-g6163a56",
+    "uptime_seconds": 0.080407,
+    "jobs": {
+        "total": 1,
+        "valid": 1,
+        "invalid": 0
+    },
+    "queue_depth": 0,
+    "queue": {
+        "retrying": 0
+    },
+    "freshness": [
+        {
+            "job_id": "9dd85d02-318e-4590-950e-ec09dd917479",
+            "name": "h-job"
+        }
+    ],
+    "storage": {
+        "db_bytes": 196608,
+        "disk_free_bytes": 277573632000,
+        "disk_total_bytes": 994662584320
+    }
+}
+
+--- end raw output ---
+exit status: 0

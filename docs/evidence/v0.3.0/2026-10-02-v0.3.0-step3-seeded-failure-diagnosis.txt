@@ -1,0 +1,133 @@
+=== Otter v0.3.0 exit gate — Step 3: seeded failure diagnosed from published docs only ===
+date:      2026-10-02 13:08:24 EDT
+host:      Darwin 24.6.0 (arm64)
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+git HEAD:  6163a56
+describe:  v0.2.0-147-g6163a56
+workspace: /tmp/otter-diag.EaQhMR (outside the checkout, as CONTRIBUTING.md requires)
+runtime:   bin/otter (otter v0.2.0-147-g6163a56), external python
+run under diagnosis: 96d73b3d-a23b-4575-ad4b-ac845bd5a548
+request under inspection: 0168725179bb43d8b04f20523e3e2c68
+
+The job (my-job/main.py) does a GET /cursor -> 200, a POST /records -> 400,
+logs the rejection, and then raises RuntimeError. A stand-in upstream on
+127.0.0.1:60243 answers both. Only docs/operations.md and docs/http-capture.md
+were used to choose the commands below.
+
+--- raw output ---
+
+$ otter runs --all
+RUN ID                                JOB     TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
+a20f871b-376e-41e1-b29e-dbe885d703e0  my-job  manual   failed  3        2026-10-02T17:08:10Z  221ms
+9638cb6a-2e3a-4583-afdc-07d79bdec96e  my-job  manual   failed  2        2026-10-02T17:08:00Z  384ms
+96d73b3d-a23b-4575-ad4b-ac845bd5a548  my-job  manual   failed  1        2026-10-02T17:07:54Z  249ms
+
+$ otter trace --pretty 96d73b3d-a23b-4575-ad4b-ac845bd5a548
+job: my-job   status: failed   attempt: 1
+release: f260cbf87b03   trigger: manual   duration: 249ms
+error: process exited with code 1: RuntimeError: sync aborted: upstream rejected the batch
+retry context: otter run-status 96d73b3d-a23b-4575-ad4b-ac845bd5a548
+
+TIME          KIND       DETAIL
+17:07:54  ·   lifecycle  run queued (trigger manual)
+17:07:54  ·   lifecycle  run started (attempt 1 of 3, trigger manual)
+17:07:54  ✓   http       GET http://127.0.0.1:60243/cursor -> 200, 2ms  [1]
+17:07:54  ·   log        fetched cursor {"body":"{\"cursor\": \"cur-42\"}","level":"info","logger":"otter","status":200}
+17:07:54  !   http       POST http://127.0.0.1:60243/records -> 400, 1ms  [2]
+                         cursor rejected
+17:07:54  ·   log        upstream rejected the batch {"body":"{\"error\": \"cursor rejected\", \"access_token\": \"super-secret-value\"}","level":"warning","logger":"otter","status":400}
+17:07:54  ·   log        [stderr] Traceback (most recent call last):
+17:07:54  ·   log        [stderr]   File "<frozen runpy>", line 198, in _run_module_as_main
+17:07:54  ·   log        [stderr]   File "<frozen runpy>", line 88, in _run_code
+17:07:54  ·   log        [stderr]   File "/tmp/otter-diag.EaQhMR/.otter/data/sdk/python/otter/_launcher.py", line 37, in <module>
+17:07:54  ·   log        [stderr]     main()
+17:07:54  ·   log        [stderr]     ~~~~^^
+17:07:54  ·   log        [stderr]   File "/tmp/otter-diag.EaQhMR/.otter/data/sdk/python/otter/_launcher.py", line 20, in main
+17:07:54  ·   log        [stderr]     runpy.run_path(entrypoint, run_name="__main__")
+17:07:54  ·   log        [stderr]     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+17:07:54  ·   log        [stderr]   File "<frozen runpy>", line 287, in run_path
+17:07:54  ·   log        [stderr]   File "<frozen runpy>", line 98, in _run_module_code
+17:07:54  ·   log        [stderr]   File "<frozen runpy>", line 88, in _run_code
+17:07:54  ·   log        [stderr]   File "main.py", line 29, in <module>
+17:07:54  ·   log        [stderr]     raise RuntimeError("sync aborted: upstream rejected the batch")
+17:07:54  ·   log        [stderr] RuntimeError: sync aborted: upstream rejected the batch
+17:07:54  ×   lifecycle  run failed (attempt 1, 249ms), exit code 1: process exited with code 1: RuntimeError: sync aborted: upstream rejected the batch
+17:07:54  ·   lifecycle  retry 2 of 3 scheduled in 5s as run 9638cb6a-2e3a-4583-afdc-07d79bdec96e
+
+                         all 2 exchanges: completed, payloads full
+└1.  main.py:13
+                         otter request 96d73b3d-a23b-4575-ad4b-ac845bd5a548 a4b400ffb12a4352b77521104ae23327
+└2.  main.py:23
+                         otter request 96d73b3d-a23b-4575-ad4b-ac845bd5a548 0168725179bb43d8b04f20523e3e2c68
+
+$ otter logs 96d73b3d-a23b-4575-ad4b-ac845bd5a548   (stdout is a pipe, so JSONL, per operations.md)
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.701176Z","stream":"otter","text":"run queued (trigger manual)"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.701667Z","stream":"otter","text":"run started (attempt 1 of 3, trigger manual)"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.93126Z","stream":"otter","text":"fetched cursor","fields":{"body":"{\"cursor\": \"cur-42\"}","level":"info","logger":"otter","status":200}}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.932577Z","stream":"otter","text":"upstream rejected the batch","fields":{"body":"{\"error\": \"cursor rejected\", \"access_token\": \"super-secret-value\"}","level":"warning","logger":"otter","status":400}}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934138Z","stream":"stderr","text":"Traceback (most recent call last):"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934645Z","stream":"stderr","text":"  File \"\u003cfrozen runpy\u003e\", line 198, in _run_module_as_main"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934649Z","stream":"stderr","text":"  File \"\u003cfrozen runpy\u003e\", line 88, in _run_code"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934654Z","stream":"stderr","text":"  File \"/tmp/otter-diag.EaQhMR/.otter/data/sdk/python/otter/_launcher.py\", line 37, in \u003cmodule\u003e"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934655Z","stream":"stderr","text":"    main()"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934655Z","stream":"stderr","text":"    ~~~~^^"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934655Z","stream":"stderr","text":"  File \"/tmp/otter-diag.EaQhMR/.otter/data/sdk/python/otter/_launcher.py\", line 20, in main"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934656Z","stream":"stderr","text":"    runpy.run_path(entrypoint, run_name=\"__main__\")"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934656Z","stream":"stderr","text":"    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934656Z","stream":"stderr","text":"  File \"\u003cfrozen runpy\u003e\", line 287, in run_path"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934663Z","stream":"stderr","text":"  File \"\u003cfrozen runpy\u003e\", line 98, in _run_module_code"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934663Z","stream":"stderr","text":"  File \"\u003cfrozen runpy\u003e\", line 88, in _run_code"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934663Z","stream":"stderr","text":"  File \"main.py\", line 29, in \u003cmodule\u003e"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934663Z","stream":"stderr","text":"    raise RuntimeError(\"sync aborted: upstream rejected the batch\")"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.934664Z","stream":"stderr","text":"RuntimeError: sync aborted: upstream rejected the batch"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.951262Z","stream":"otter","text":"run failed (attempt 1, 249ms), exit code 1: process exited with code 1: RuntimeError: sync aborted: upstream rejected the batch"}
+{"run_id":"96d73b3d-a23b-4575-ad4b-ac845bd5a548","timestamp":"2026-10-02T17:07:54.951448Z","stream":"otter","text":"retry 2 of 3 scheduled in 5s as run 9638cb6a-2e3a-4583-afdc-07d79bdec96e"}
+
+$ otter requests --pretty 96d73b3d-a23b-4575-ad4b-ac845bd5a548
+capture: complete
+  requests: 2 (2 completed, 0 failed, 0 incomplete)
+  redacted: 2 values were removed before storage
+  coverage: urllib, httpx (other clients and raw sockets are not captured)
+REQUEST ID                        METHOD  STATUS  DURATION  PAYLOADS  URL
+a4b400ffb12a4352b77521104ae23327  GET     200     2ms       full      http://127.0.0.1:60243/cursor
+0168725179bb43d8b04f20523e3e2c68  POST    400     1ms       full      http://127.0.0.1:60243/records
+
+$ otter request --pretty 0168725179bb43d8b04f20523e3e2c68
+POST http://127.0.0.1:60243/records
+  request:   0168725179bb43d8b04f20523e3e2c68
+  phase:     completed
+  status:    400
+  duration:  1ms (headers 0s, body 0s)
+  occurred:  2026-10-02T17:07:54.931668Z
+  call site: main.py:23 in <module>
+  payloads:  full
+
+request headers
+  Content-type: application/json
+  Authorization: REDACTED
+
+request body
+  {
+    "cursor": "cur-42",
+    "items": [
+      1,
+      2,
+      3
+    ]
+  }
+
+response headers
+  Server: BaseHTTP/0.6 Python/3.13.5
+  Date: Fri, 02 Oct 2026 17:07:54 GMT
+  Content-Type: application/json
+  Content-Length: 66
+
+response body
+  {
+    "error": "cursor rejected",
+    "access_token": "REDACTED"
+  }
+  (1 value(s) redacted before storage)
+
+--- end raw output ---
+exit status: 0 (setup, run and every diagnostic command succeeded)
