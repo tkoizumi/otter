@@ -60,7 +60,7 @@ exit gate requires. This table remains their intake record.
 | OT-006 | Automatic retention for run logs and runs | feature | `runs.LogStore.DeleteOlderThan` exists (`runs/logs.go:280`) but is called only from a test | scheduled |
 | OT-004 | Expose queue age, per-job depth, and last-success freshness | feature | `/health` now carries `queue` (oldest claimable age, `by_job` depth, `retrying`, `next_retry_at`), `freshness` (per-job last success and age) and `storage` (`db_bytes`, disk free/total) for an authenticated caller, and `otter status` prints them. `GET /v1/jobs` carries `last_success_at`, so `otter jobs --schedule` renders freshness with no run listing per job. The unauthenticated liveness body is unchanged. Tests: `TestHealthSignalsReportQueueAgeDepthRetriesAndFreshness`, `TestHealthEndpoint`, `TestHealthHidesCountersFromUnauthenticatedCallers`, `TestOldestWaitingAndNextRetryAt`, `TestLastSuccessByJobIsTheNewestSuccessPerJob`, `TestStatusPrintsTheOperationalSignals`, `TestScheduleRendersTheDaemonsLastSuccess` | done |
 | OT-005 | Ship a `migration_applied` log line, or stop promising one | doc | `Migrate` now returns the migrations it applied (`internal/database/migrate.go`) and `otterd` logs one `migration_applied` per entry, or `migration_failed` with the version and name (`internal/daemon/migrations.go`). Tests: `TestMigrateIsIdempotentAndRecordsEveryMigration`, `TestMigrateNamesTheMigrationThatFailed`, `TestMigrationsLogEachAppliedMigrationOnce`. No `description` column was added: `schema_migrations.name` is the description, and `operations.md` documents the emitted `name` field | done |
-| OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | open |
+| OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | done |
 | OT-011 | Prove queued and retry attempts retain their bound release and environment | test | closed by P0-02: `TestRetryExecutesTheParentsReleaseSnapshot`, `TestRetryResolvesTheParentsManagedEnvironment`, `TestPendingBacklogKeepsItsDigestThroughAReleasePrune`, `TestRecoveryPlansRetriesFromTheBoundRelease` | done |
 
 The retention work was ordered by dependency: the documented SQL was wrong
@@ -108,6 +108,13 @@ paying operator would care.
 Detail for `OT-008`. Raised while answering "what happens if a run exceeds its
 next scheduled run?" The answer is worth writing down, because it runs opposite
 to intuition:
+
+**Documented.** `operations.md` §"Backlog behavior" carries all five points,
+beside the capacity section, with the troubleshooting entry pointing at it. The
+downtime half links to `runtime-contract.md` §"Missed cron windows are not
+replayed" (an explicit non-guarantee, linked rather than restated) and the
+release half to `architecture.md` §"What runs is the release, not the tree".
+No behavior changed.
 
 - Every cron occurrence becomes its own run, unconditionally. Nothing is
   skipped because a previous execution is still going.

@@ -473,7 +473,11 @@ Recurring blackout windows would be a scheduling feature, not this one.
 Every job executes an immutable release snapshot rather than its source
 tree, so a release is required before its first run and an edit is not live
 until it is released again (`otter release`, or automatically during
-`otter deploy`). Separately, jobs that set `python.mode: managed` run on
+`otter deploy`). The binding happens at **submission**, so a queued run keeps
+the snapshot it was submitted against: a deep backlog executes the code that was
+active when each run was enqueued, not the newest release (see
+[Backlog behavior](#backlog-behavior)). Separately, jobs that set
+`python.mode: managed` run on
 an interpreter and a dependency set that Otter prepared, not on the host's
 Python. Both are separate from execution and never part of a run. See
 [managed-python.md](managed-python.md).
@@ -1134,6 +1138,43 @@ add workers (if RAM allows) or reduce run duration. If `runs.running` is below
 the worker limit while work is queued, the per-job `concurrency` is the
 constraint.
 
+### Backlog behavior
+
+"What happens if a run outlasts its next scheduled run?" has an answer that runs
+opposite to intuition, so it is worth stating plainly. A job on a `*/5` schedule
+that takes 20 minutes does not skip the occurrences it misses.
+
+1. **Every occurrence becomes its own run, unconditionally.** A cron tick
+   enqueues a run carrying that occurrence's `scheduled_at`; nothing checks
+   whether a previous execution is still going, and admission has no depth bound.
+   There is no coalescing and no "skip if still running".
+2. **With the default `concurrency: 1`, those runs serialize.** A slow job
+   therefore builds a *catch-up backlog*: each occurrence waits for the one
+   before it, and nothing overlaps until you raise `concurrency`.
+3. **Downtime skips; slowness accumulates.** Occurrences that fall while the
+   daemon is stopped are never replayed — the scheduler does not catch up — but
+   occurrences that fall while it is running always queue, however far behind it
+   has fallen. [runtime-contract.md](runtime-contract.md) §"Missed cron windows
+   are not replayed" states the guarantee; this is its operational consequence. A
+   job that needs gap reconciliation must model it in durable state (a
+   `last_processed_at` checkpoint, say) and reconcile on its next run.
+4. **Queued work runs the code that was active when it was submitted.** A run
+   binds its release at submission — see [architecture.md](architecture.md)
+   §"What runs is the release, not the tree" — so a deep backlog can be executing
+   an older release than the one that is active now. Releasing after an upgrade
+   does not retroactively move the backlog onto the new snapshot; it drains at
+   whatever rate the job runs. See [Upgrades](#upgrades).
+5. **Raising `concurrency` produces genuinely concurrent executions of the same
+   job**, not a drained queue of stale ones. Otter holds no lock between runs of
+   one job beyond the `concurrency` limit, so two runs can be inside the same
+   downstream system at the same time if the job is not written for it.
+
+This is the admission behavior Otter ships, not a defect: a policy that coalesces
+or skips missed occurrences for a busy job is not promised today. `otter status`
+is how you watch it — `queue_depth` is the size, `queue.oldest_waiting_seconds`
+the age, and `queue.by_job` names the job that is behind (see
+[Health checking](#health-checking)).
+
 ## Health checking
 
 ```bash
@@ -1439,6 +1480,10 @@ non-terminal until a later restart recovers them successfully.
 4. If nothing runs at all, look for missing secrets or an invalid manifest
    (both fail fast, before Python starts) and for interpreter problems. The
    daemon log has one line per transition.
+5. If the queue only grows for **one cron job** while everything else keeps up,
+   that may be the schedule itself: a run that outlasts its interval always
+   queues the next occurrence. See [Backlog behavior](#backlog-behavior) before
+   reaching for more workers or a higher `concurrency`.
 
 ### Everything is fine but a run "does nothing"
 
