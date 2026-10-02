@@ -1,0 +1,47 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:13:05 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   make drill DRILL=disk-pressure
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: disk-pressure =====
+date:     2026-10-02 14:13:06 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+disk-pressure: receiver http://127.0.0.1:51012 (a publish is a POST / in its log)
+disk-pressure: fixture db=2MB releases=2MB environments=2MB cache=2MB, every cap 3MB, free-space floor 1MB
+disk-check: ok db=2/3MB releases=2/3MB environments=2/3MB cache=2/3MB free=264815/1MB: publishing DiskCheck=1 DiskFreeMB=264815
+disk-pressure: ok inside    all four stores under their caps
+disk-check: BREACH otter.db is 2MB, over the 1MB cap
+disk-check:   why it matters: it holds every retained run, log line and capture; once the filesystem fills, SQLite cannot write its WAL and runs start failing.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    otter.db at 2MB over a 1MB cap
+disk-check: BREACH .releases is 2MB, over the 1MB cap
+disk-check:   why it matters: it is the rollback path; a deploy that fills the disk mid-stage leaves a half-written release and no clean snapshot to return to.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    .releases at 2MB over a 1MB cap
+disk-check: BREACH environments + python is 2MB, over the 1MB cap
+disk-check:   why it matters: prepared environments and the managed interpreter are re-creatable but expensive, and environment GC is deferred, so this store grows on its own.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    environments plus python at 2MB over a 1MB cap
+disk-check: BREACH cache is 2MB, over the 1MB cap
+disk-check:   why it matters: the uv download cache grows monotonically and is not needed to run anything; unbounded, it takes the headroom the other three stores need.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    the uv cache at 2MB over a 1MB cap
+disk-check: BREACH free space is 264815MB, below the 999999999MB floor
+disk-check:   why it matters: with no free space the daemon cannot write the database, stage a release or fetch an interpreter, and it may not even be able to write the log that would explain it.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    a free-space floor of 999999999MB
+disk-check: ok db=2/3MB releases=2/3MB environments=2/3MB cache=2/3MB free=264815/1MB: publishing DiskCheck=1 DiskFreeMB=264815
+disk-pressure: ok inside    every measure restored inside its bound
+disk-check: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-disk-pressure.32LR2p/does-not-exist is not a directory: cannot measure any of the four stores; publishing nothing, so the alarm fires
+disk-check:   why it matters: a check that cannot see the stores must never report health; set OTTER_DATA_DIR to the runtime's data directory in /etc/otter/disk-check.env
+disk-pressure: ok silent    a data directory that does not exist
+disk-pressure: ok: publishes track the four stores and the free-space floor, and stop when one is crossed
+--- end raw output ---
+exit status: 0

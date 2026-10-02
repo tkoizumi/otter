@@ -1,0 +1,44 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:10:59 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   make drill DRILL=backup-restore
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: backup-restore =====
+date:     2026-10-02 14:11:00 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: local same-host mode: one machine, a different data directory
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.U59TxD/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         878e8ff5-6a41-49c5-89fa-31e9402cdbf3
+drill: release     c1806ded07bc71c9690e56ab51412dd2958866cdbdbafe921b84b4be4430363f
+drill: environment 0ba2ee7021fe88e118fa38e585e2dfad6c3eec0a31884ee473fe7fc093616ae4
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.U59TxD/ws/.otter/data/environments/0ba2ee7021fe88e118fa38e585e2dfad6c3eec0a31884ee473fe7fc093616ae4
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.U59TxD/ws/.otter/data
+drill: run 1       f25d485e-aa4b-4045-9f2b-e8ed3b1d1203 succeeded (state count=1)
+drill: run 2       00d45627-71f2-4aaa-abe9-8fcdf7189462 is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.U59TxD/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.U59TxD/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (878e8ff5-6a41-49c5-89fa-31e9402cdbf3)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run d4f8e0bc-8270-427e-b982-457f3f9ffa83 succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.U59TxD/restore-data/.releases/878e8ff5-6a41-49c5-89fa-31e9402cdbf3/c1806ded07bc71c9690e56ab51412dd2958866cdbdbafe921b84b4be4430363f/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 20s
+--- end raw output ---
+exit status: 0

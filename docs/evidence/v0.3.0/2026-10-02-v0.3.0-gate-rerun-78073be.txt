@@ -1,0 +1,375 @@
+=== Otter v0.3.0 exit gate — independent second-operator RE-RUN record ===
+
+date:       2026-10-02 14:10–14:23 EDT
+uname -a:   Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0:
+            Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+host:       Takas-MacBook-Pro.local, macOS 15.7.3, developer checkout
+checkout:   /Users/taka/Desktop/otter-workspace/otter
+git HEAD:   78073be   (git rev-parse --short HEAD)
+describe:   v0.2.0-151-g78073be   (git describe --tags)
+git status --short:
+    ?? docs/engineer-onboarding.docx
+    ?? docs/engineer-onboarding.md
+    (both were already untracked before this run began; nothing under test was dirty)
+binary:     bin/otter and bin/otterd, rebuilt in this run at the tool path below
+            from 78073be (`make build`; `--version` -> otter v0.2.0-151-g78073be)
+operator:   independent agent session, 2026-10-02 (re-run) — a fresh session that
+            wrote none of the v0.3.0 code, drills, tests or documents under test,
+            and read only what the repository publishes. It did not write the
+            first record (docs/evidence/v0.3.0/2026-10-02-v0.3.0-gate.txt) and did
+            not edit it.
+countersigned: ____________
+
+--- tool versions (Step 0) ---
+go:         go version go1.27.1 darwin/arm64
+make:       GNU Make 3.81
+sqlite3:    3.43.2 2023-10-10 (64-bit)
+docker:     client 20.10.12 / server 20.10.12 (linux/aarch64)
+python3:    Python 3.13.5
+goreleaser: absent (`goreleaser --version` -> not found) — the archive was hand-built
+tar:        bsdtar 3.5.3 - libarchive 3.7.4
+sh:         /bin/sh
+curl:       curl 8.7.1 (x86_64-apple-darwin24.0)
+jq:         jq-1.7.1-apple
+
+
+=== VERDICT: SATISFIED ===
+
+One line: at 78073be every one of the nine operating drills passed, all twelve
+documented sabotage modes went red at the assertion that names the removed
+behaviour, and all four findings from the 2026-10-02 record are genuinely fixed
+when checked from behaviour rather than from the diff. The two host-only items
+are scoped out by the owner's decision (section 6) and this record does not claim
+they ran.
+
+This is a NEW record. The first record
+(2026-10-02-v0.3.0-gate.txt, verdict NOT SATISFIED at 6163a56) is untouched:
+its files are byte-identical to their committed revisions, and every artifact
+produced by this re-run carries a `-78073be` suffix so the two runs cannot be
+confused. `git diff HEAD` is empty and `git status --short` shows no modified
+tracked file: the first record's files are byte-identical to their committed
+revisions.
+
+
+=== 1. EVERY DRILL — RE-RUN AT 78073be ===
+
+All runs on the host above, against 78073be (v0.2.0-151-g78073be). Every drill
+runs its runtime through `otter start --detach`, so every one is affected by F1;
+all nine passed, and the F1 re-check in section 3 exercises the flag path directly.
+
+| Drill | Result | Evidence file |
+| --- | --- | --- |
+| backup-restore | PASS, exit 0 | 2026-10-02-v0.3.0-drill-backup-restore-78073be.txt |
+| upgrade | PASS, exit 0 | 2026-10-02-v0.3.0-drill-upgrade-78073be.txt |
+| downgrade-refusal | PASS, exit 0 | 2026-10-02-v0.3.0-drill-downgrade-refusal-78073be.txt |
+| secret-rotation | PASS, exit 0 | 2026-10-02-v0.3.0-drill-secret-rotation-78073be.txt |
+| fresh-archive | PASS, exit 0 (hand-built archive; caveat below) | 2026-10-02-v0.3.0-drill-fresh-archive-78073be.txt |
+| deploy-failure | PASS, exit 0 | 2026-10-02-v0.3.0-drill-deploy-failure-78073be.txt |
+| unit-caps | PASS, exit 0 | 2026-10-02-v0.3.0-drill-unit-caps-78073be.txt |
+| disk-pressure | PASS, exit 0 | 2026-10-02-v0.3.0-drill-disk-pressure-78073be.txt |
+| liveness | PASS, exit 0 | 2026-10-02-v0.3.0-drill-liveness-78073be.txt |
+| `make drill` (aggregate, everything runnable) | PASS, exit 0, "drill: all drills passed" | 2026-10-02-v0.3.0-aggregate-make-drill-78073be.txt |
+| `make drill` (one drill cannot run) | FAILS LOUDLY, exit 2, "drill: FAILED: fresh-archive" | 2026-10-02-v0.3.0-aggregate-unrunnable-drill-78073be.txt |
+
+There were no FAIL results among the nine clean drills. Every transcript's header
+names HEAD 78073be / v0.2.0-151-g78073be (the drill header itself prints the
+`git describe` of the tree, and the built binary's `--version` agrees).
+
+Some assertions, verbatim:
+
+    drill: ok: hot backup restored onto a fresh data directory; the job runs again
+    drill: applied     one record for each of: 11:0011_job_terminology.sql 12:0012_job_schedules.sql
+    drill: ok: v0.2.0's schema upgraded to 12, visibly, and the runtime works
+    drill: ok: a newer schema is refused, the data survives, and rollback is a restore
+    deploy-failure: ok: a mid-deploy failure left the previous release active and serving
+    unit-caps: all cases PASS
+    drill: ok: otter_0.3.0_darwin_arm64.tar.gz installed outside the checkout and ran a job end to end
+    drill: ok: publishes track the four stores and the free-space floor, and stop when one is crossed
+    drill: ok: publishes track the runtime and stop when it dies
+
+fresh-archive caveat (recorded as the task requires): `goreleaser` is absent on
+this host, so the archive was hand-built and the record says so:
+
+    make build VERSION=v0.3.0
+    tar -czf dist/otter_0.3.0_darwin_arm64.tar.gz -C bin otter otterd
+    OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_darwin_arm64.tar.gz" make drill DRILL=fresh-archive
+
+That is `otter` and `otterd` at the archive root, named
+`otter_<version>_<os>_<arch>.tar.gz`, and the extracted binary reports
+`otter v0.3.0`. Because the archive did not come from
+`goreleaser release --snapshot --clean`, the release **layout** claim (checksums,
+cask, install.sh) is weaker here and rests on the `release-config` CI job, not on
+this run.
+
+`make drill` with a drill that cannot run: with no usable archive
+(`OTTER_ARCHIVE=/tmp/does-not-exist-otter.tar.gz`) the aggregate ran the other
+eight drills, did not skip the ninth, printed
+
+    drill: FAILED: fresh-archive
+    make: *** [drill] Error 1
+
+and exited 2. A drill that cannot run produces no green result and is named.
+
+
+=== 2. FALSIFIABILITY — every documented sabotage mode re-run, red at the named assertion ===
+
+All twelve documented `DRILL_SABOTAGE` modes were re-run at 78073be. Each exited
+non-zero (exit 2) and failed at the assertion that names the removed behaviour,
+not somewhere unrelated.
+
+| Drill | Sabotage | Red at (verbatim) | Evidence file (…-78073be.txt) |
+| --- | --- | --- | --- |
+| backup-restore | drop-releases | "the restored job cannot run" (daemon: "no such file or directory" for the release manifest) | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-releases-78073be.txt |
+| backup-restore | drop-environments | "the restored job cannot run" (daemon: "managed Python environment … is not prepared") | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-environments-78073be.txt |
+| backup-restore | drop-tools | "the restored job cannot run" | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-tools-78073be.txt |
+| backup-restore | drop-marker | "the restored source directory lost its .otter-id marker" | 2026-10-02-v0.3.0-sabotage-backup-restore-drop-marker-78073be.txt |
+| upgrade | skip-old-binary | "this build has no migration newer than schema 12; nothing to upgrade" (the pending-set gate) | 2026-10-02-v0.3.0-sabotage-upgrade-skip-old-binary-78073be.txt |
+| downgrade-refusal | hide-newer-row | "the daemon served a database migrated by a newer binary instead of refusing it" | 2026-10-02-v0.3.0-sabotage-downgrade-refusal-hide-newer-row-78073be.txt |
+| secret-rotation | reload-applies | "otter reload applied the rotated credential (saw 'second-token-value'); operations.md says reload does not re-read credentials -- update both" | 2026-10-02-v0.3.0-sabotage-secret-rotation-reload-applies-78073be.txt |
+| fresh-archive | stale-binary | "the runtime under test is not from the archive (/Users/taka/Desktop/otter-workspace/otter/bin/otter)" | 2026-10-02-v0.3.0-sabotage-fresh-archive-stale-binary-78073be.txt |
+| deploy-failure | activate-before-stage | "the active release is 5986600daf9c…, not the previous release (62f1e2192b79…)" | 2026-10-02-v0.3.0-sabotage-deploy-failure-activate-before-stage-78073be.txt |
+| deploy-failure | stop-previous-release | "the previous release is not running: the unit is inactive after the failed deploy" | 2026-10-02-v0.3.0-sabotage-deploy-failure-stop-previous-release-78073be.txt |
+| disk-pressure | ping-always | "otter.db at 2MB over a 1MB cap: the check published, so the alarm stays quiet" | 2026-10-02-v0.3.0-sabotage-disk-pressure-ping-always-78073be.txt |
+| liveness | ping-always | "the check succeeded although nothing was listening on http://127.0.0.1:54304" | 2026-10-02-v0.3.0-sabotage-liveness-ping-always-78073be.txt |
+| unit-caps | **none documented** | — | — (see below) |
+
+`unit-caps` has no drill-level mutation mode, said again explicitly: the file
+documents none, and
+
+    $ for f in scripts/drill/*.sh; do printf '%-24s %s\n' "$(basename $f)" "$(grep -c SABOTAGE $f)"; done
+    backup-restore.sh        18
+    deploy-failure.sh        14
+    disk-pressure.sh         5
+    downgrade-refusal.sh     6
+    fresh-archive.sh         6
+    liveness.sh              5
+    secret-rotation.sh       6
+    unit-caps.sh             0
+    upgrade.sh               6
+
+so the operator has no drill-level way to show `unit-caps` red. Its
+falsifiability lives in the `UnitFile` render-test mutation recorded in
+docs/evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt, which is a
+different mechanism, was not repeated here, and is tracked as `OT-030`
+(docs/open-work.md:143, `open`, v0.4.0). The `unit-caps` clean run above is still
+a real run with real cgroup observations. This is the same gap the first record
+reported, now correctly documented; it is an evidence gap, not a false green.
+
+The `backup-restore` header documents four modes and all four (including
+`drop-tools`, which the first record did not run) were run here. Every
+documented mode of every drill was therefore exercised.
+
+
+=== 3. THE FOUR FINDINGS — RE-CHECKED FROM BEHAVIOUR, NOT FROM THE DIFF ===
+
+--- F1 (was a release blocker): `otter start --detach` now forwards its flags ---
+
+Fixed. The reproduction from the first record, re-run verbatim at 78073be
+(full transcript: 2026-10-02-v0.3.0-finding-f1-rerun-78073be.txt):
+
+    $ otter start --detach --listen 127.0.0.1:7816 --api-token s3cret --workers 2 --log-format pretty
+    $ grep -h 'api_listening\|daemon_started' .otter/serve/serve.log | tail -2
+    2026-10-02T18:18:14.346Z INFO  daemon_started cron_triggers=0 … workers=2
+    2026-10-02T18:18:14.347Z INFO  api_listening auth_required=true listen=127.0.0.1:7816
+
+    $ head -c 200 .otter/serve/serve.log
+    2026-10-02T18:18:14.322Z INFO  migration_applied name=0001_init.sql version=1
+    …
+
+    $ curl -s http://127.0.0.1:7816/health               # unauthenticated
+    {"status":"ok","version":"v0.2.0-151-g78073be-dirty","uptime_seconds":0.121836}
+    $ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7816/v1/jobs
+    401
+    $ curl -s -H 'Authorization: Bearer s3cret' http://127.0.0.1:7816/health | … keys …
+    ['freshness', 'jobs', 'queue', 'queue_depth', 'status', 'storage', 'uptime_seconds', 'version']
+
+Every value the finding reported is inverted: `auth_required=true`,
+`workers=2`, pretty records (not JSON), the unauthenticated body is exactly
+status/uptime_seconds/version, and the authenticated body carries the full
+payload. The unauthenticated `/v1/jobs` request answers 401. The `--help`
+sentence ("The daemon's own flags are accepted and forwarded…") is now true.
+
+--- F2 (was a documentation defect): both environment name sets are still exported ---
+
+Fixed in the documents, and the behaviour is what the corrected documents now
+say. A released job that dumps its own `OTTER_*` environment (full transcript:
+2026-10-02-v0.3.0-docclaims-rename-rerun-78073be.txt):
+
+    env OTTER_INTEGRATION_DIR=…/.releases/…/newjob
+    env OTTER_INTEGRATION_ID=97246de1-e50a-48fc-9aa4-9c1f0a900e25
+    env OTTER_INTEGRATION_NAME=newjob
+    env OTTER_JOB_DIR=…/.releases/…/newjob
+    env OTTER_JOB_ID=97246de1-e50a-48fc-9aa4-9c1f0a900e25
+    env OTTER_JOB_NAME=newjob
+
+    $ count of OTTER_JOB_* lines / OTTER_INTEGRATION_* lines
+    3
+    3
+
+Both sets are exported. `docs/releases/v0.3.0.md` line 30-34 now states the old
+names survive deliberately ("The child environment did not lose the old names"),
+and the upgrade step at line 176-177 says jobs reading `OTTER_INTEGRATION_*` keep
+working. The first record's finding (the table claimed the old names were
+replaced) no longer matches the shipped text.
+
+--- F3 (was a documentation defect + evidence gap): the documents agree with `grep -c SABOTAGE` ---
+
+Fixed. The counts printed in section 2 (eight non-zero, `unit-caps.sh` zero) are
+what the documents now say:
+
+    operations.md:144:Eight of the nine drills document a `DRILL_SABOTAGE=<mode>` that removes the
+    operations.md:151:`unit-caps` is the exception: it has no drill-level mutation mode. Its
+    v0.3.0.md:122: … Eight of the nine document a `DRILL_SABOTAGE`
+    v0.3.0.md:124: falsifiable; `unit-caps` is the exception, falsified instead by the `UnitFile`
+
+Both documents name the `UnitFile` render-test mutation as `unit-caps`' mechanism
+and point at `OT-030`, which exists in `docs/open-work.md`. The claim is no longer
+false. The remaining gap (no drill-level mode for `unit-caps`) is named as a gap
+and tracked, not papered over — so F3's documentation half is fixed and its
+evidence half is honestly recorded rather than closed.
+
+--- F4 (was a documentation defect): the downgrade refusal really carries `applied` and `known` ---
+
+Fixed. The refusal record, captured from a foreground `otterd` against a database
+carrying a migration the build does not embed (full transcript:
+2026-10-02-v0.3.0-finding-f4-rerun-78073be.txt):
+
+    $ sqlite3 .otter/data/otter.db "insert into schema_migrations(version,name,applied_at) values(13,'0013_future.sql',datetime('now'));"
+    $ otterd --jobs <ws> --data <ws>/.otter/data
+    {"applied":13,"error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","event":"migration_failed","known":12,"level":"error","timestamp":"…"}
+    $ echo $?
+    1
+    $ … sorted keys of the record
+    ['applied', 'error', 'event', 'known', 'level', 'timestamp']
+
+`operations.md:1103` now shows exactly this record with `applied` and `known`, and
+the `error` string matches character-for-character. The downgrade-refusal drill
+independently asserted the refusal (section 1) and the sabotage inverted it
+(section 2).
+
+
+=== 4. DOCUMENT CLAIMS vs OBSERVED BEHAVIOUR (the Step-4 list, re-checked) ===
+
+Every observation is from a run recorded in this directory. The first record's
+claim numbering is kept.
+
+| # | Claim (document) | Verdict at 78073be | Evidence |
+| --- | --- | --- | --- |
+| 1 | `operations.md` §Upgrades: the `migration_applied` record's fields | **agree, field for field** — emitted record is exactly `event`, `level`, `name`, `timestamp`, `version` | docclaims-rerun-78073be.txt |
+| 2 | "A restart with nothing pending logs none of them" | **agree** — first start logged 12, a stop/start left the count at 12 | docclaims-rerun-78073be.txt |
+| 3 | downgrade refusal message and `migration_failed` shape | **message agree; shape agree** — message matches, record carries `applied`/`known`, exit 1, DB untouched (was "shape disagree") | finding-f4-rerun-78073be.txt, drill-downgrade-refusal-78073be.txt |
+| 4 | `operations.md` §Health checking: the response example is the real shape | **agree** — authenticated body carried `status`, `version`, `uptime_seconds`, `jobs`, `queue_depth`, `queue`, `freshness`, `storage` with the documented members | docclaims-rerun-78073be.txt |
+| 5 | "An unauthenticated caller … still receives only `status`, `version` and `uptime_seconds`" | **agree as reached through the published `otter start` path** (was "disagree" because of F1) — unauthenticated and wrong-token bodies were both exactly the three fields; the authenticated body was the full payload | finding-f1-rerun-78073be.txt, docclaims-rerun-78073be.txt |
+| 6 | `operations.md` §Reloading jobs: the three things reload does not do | quote 1 **agree** (`otter run` -> HTTP 409 for a newly visible job); quote 2 **agree** (pinned by the secret-rotation drill and its sabotage); quote 3 **read only** — not exercised | docclaims-rerun-78073be.txt, drill-secret-rotation-78073be.txt |
+| 7 | `operations.md` §Backlog behavior: all five points against a real cron job | **not re-run in this record** — see "what this record does not prove"; the first record's live run stands and F1-F4 did not touch the queue | (first record; no new capture) |
+| 8 | `operations.md` §Operating drills: every prerequisite and command | **agree**, with the same two notes as the first record: `goreleaser` is absent here (archive hand-built), and the `fresh-archive` example names only `linux_amd64`, so a macOS operator derives `<os>_<arch>` from `uname` | section 1 transcripts |
+| 9 | `security.md` §Filesystem permissions: modes and ownership | **local claims agree** — workspace `drwx------` (0700), `.otter/data` `drwx------` (0700), `otter.env.example` `-rw-r--r--` (0644), no `otter.env` created, `otter.db` `-rw-r--r--` inside the 0700 directory. The **deployed** ownership/modes remain unverified off-host (section 6) | observed modes, this record |
+| 10 | `v0.3.0.md`: the two migrations it says ship are present | **agree** — `migrations/0011_job_terminology.sql` and `0012_job_schedules.sql` exist and the upgrade drill applied exactly those two (10 -> 12) | drill-upgrade-78073be.txt, docclaims-rerun-78073be.txt |
+| 11 | `v0.3.0.md`: the rename table matches the binary | HTTP/CLI JSON `job_id` **agree** (`integration_id` count 0, keys include `job_id`); child env **agree** (`OTTER_JOB_*` set); "old names replaced" **agree with the corrected text** — the old names are also still exported (F2); daemon config `OTTER_INTEGRATIONS_DIR`/`--integrations` no longer read **agree** (first record, code path unchanged) | docclaims-rename-rerun-78073be.txt |
+| 12 | `runtime-contract.md` §5.1: the retry binding is a guarantee pinned by the named tests | **agree** — all six named tests exist and pass at 78073be: `TestRunExecutesTheActiveReleaseNotTheLiveTree`, `TestRetryExecutesTheParentsReleaseSnapshot`, `TestRetryResolvesTheParentsManagedEnvironment`, `TestPendingBacklogKeepsItsDigestThroughAReleasePrune`, `TestRecoveryPlansRetriesFromTheBoundRelease` (`ok internal/daemon`), `TestReleaseKeepPrunesToTheWindowAndProtectsPins` (`ok internal/cli`). Their red side was not independently shown (no production-code mutation) | test output, this record |
+| 13 | `operations.md`/`v0.3.0.md`: "Each drill documents a `DRILL_SABOTAGE`" | **agree with the corrected text** — both now say eight of the nine and name `unit-caps` the exception (was "disagree") | section 2, docclaims-rerun-78073be.txt |
+
+Run of claim 12, verbatim:
+
+    --- PASS: TestRunExecutesTheActiveReleaseNotTheLiveTree (1.00s)
+    --- PASS: TestRetryExecutesTheParentsReleaseSnapshot (4.92s)
+    --- PASS: TestRetryResolvesTheParentsManagedEnvironment (4.08s)
+    --- PASS: TestPendingBacklogKeepsItsDigestThroughAReleasePrune (3.98s)
+    --- PASS: TestRecoveryPlansRetriesFromTheBoundRelease (2.29s)
+    ok  	github.com/tkoizumi/otter/internal/daemon	17.087s
+    --- PASS: TestReleaseKeepPrunesToTheWindowAndProtectsPins (0.17s)
+    ok  	github.com/tkoizumi/otter/internal/cli	0.733s
+
+
+=== 5. FAILURES, VERBATIM ===
+
+**None.** No drill failed, no sabotage run returned zero, and no document claim
+that is in scope proved false. The finding re-checks (section 3) found the
+behaviour the corrected documents describe.
+
+Two process notes about this record, stated so it can be read honestly:
+
+* The first pass of the sabotage rerun was run from the wrong working directory
+  and produced `make: *** No rule to make target 'drill'. Stop.` with exit 2 —
+  a failure for the wrong reason. That output was discarded rather than recorded;
+  the sabotage mode was re-run from the checkout root and red at the named
+  assertion, and every `-78073be` sabotage file in this directory is from the
+  corrected run.
+* The first F2 attempt read `otter logs` before the child had written its
+  environment, so it briefly showed "(no matching lines)". The check was re-run
+  with a wait for the terminal state; `docclaims-rename-rerun-78073be.txt` is
+  that corrected run and shows 3/3. `docclaims-rerun-78073be.txt` also contains
+  one `grep: …finding-f4-rerun.txt: No such file or directory` line, from a
+  claim-3 cross-reference that used the un-suffixed filename; the F4 record it
+  meant is `finding-f4-rerun-78073be.txt` and the raw record is quoted in full in
+  section 3. Neither note changes a verdict.
+
+
+=== 6. SCOPE DECISION ADOPTED — two host-only items are OUT OF SCOPE ===
+
+The owner's decision for this release, recorded here explicitly rather than left
+implied: the **two-host clean restore** (`DRILL_CLEAN_HOST=1`, which refuses to
+fall back to the same-host drill) and **`scripts/assert-host-permissions.sh`** are
+**OUT OF SCOPE for v0.3.0**. They rest on the Phase 0 host records, which exist
+and were not produced by this run:
+
+* two-host clean restore — docs/evidence/phase-0/2026-09-30-p0-03-hw7-clean-host.txt
+* host permission assertion — docs/evidence/phase-0/2026-09-30-p0-07-hw8-assertion.txt
+
+This record does **not** mark them satisfied and does **not** imply they ran for
+this revision. No host was used in this re-run; `OTTER_HOST`,
+`DRILL_SOURCE_HOST`/`DRILL_TARGET_HOST`/`DRILL_SSH_KEY` were all absent. The
+same-host half was re-run locally as part of `backup-restore` (section 1), and the
+deployed filesystem ownership/modes remain unverified off-host.
+`docs/releases/v0.3.0.md` §Verification states this scope for a reader.
+
+`fresh-archive` likewise ran against the hand-built archive described in section
+1, so the archive **layout** claim rests on the `release-config` CI job.
+
+
+=== 7. WHAT THIS RECORD DOES NOT PROVE ===
+
+* **No host was used.** The two-host clean restore and
+  `scripts/assert-host-permissions.sh` did not run and are scoped out (section 6);
+  deployed ownership/modes are unverified here. The host-only gate items rest on
+  their Phase 0 records.
+* **The archive was hand-built** because `goreleaser` is absent. The published
+  archive layout (checksums, cask, install.sh) is not proven by this run.
+* **`deploy-failure` and `unit-caps` ran on a privileged Docker container, not a
+  real host.** They prove the container behaviour.
+* **`unit-caps` has no drill-level sabotage mode** (OT-030), so its clean run is
+  not shown red at the drill level in this record. The pre-existing render-test
+  mutation was not repeated, and the drill-level mode remains open work.
+* **The retry-binding tests pass but were not mutated.** Their red side is not in
+  this record, and no production code was edited to obtain one.
+* **The apply-failure `migration_failed` shape** (`version`/`name` for a failed
+  apply) was not triggered; only the downgrade variant was observed.
+* **`operations.md` §Backlog behavior (claim 7) was not re-run** in this record.
+  Its five points were verified live by the first record; F1-F4 did not touch the
+  queue, and re-running it would not have exercised any finding. This is a
+  deliberate omission, not a pass.
+* **Reload's "does not cancel work for a job that still exists"** was read, not
+  exercised.
+* **This record is not the tag.** It does not tag or push; the working tree
+  carries these files and nothing else was changed. It is evidence for the
+  release checklist's "tag only when the exit gate passed with a named second
+  operator", not the tag itself.
+* **No code, document, test or drill was edited by this run**; the only additions
+  are the `-78073be` files in this directory. The first record and its files are
+  byte-identical to their committed revisions (`git diff HEAD` is empty; `git
+  status --short` lists no modified tracked file, only untracked additions).
+
+
+=== 8. OPERATOR IDENTITY AND COUNTERSIGNATURE ===
+
+The exit gate asks for a second operator who completes the operating drills
+without author intervention. This re-run was performed by a fresh agent session
+that wrote none of the artifacts under test and ran everything from the
+repository's own published instructions. It is a new record, not an edit of
+2026-10-02-v0.3.0-gate.txt.
+
+operator: independent agent session — v0.3.0 exit-gate re-run, 2026-10-02,
+          at 78073be (v0.2.0-151-g78073be)
+verdict:  SATISFIED
+
+countersigned: ____________

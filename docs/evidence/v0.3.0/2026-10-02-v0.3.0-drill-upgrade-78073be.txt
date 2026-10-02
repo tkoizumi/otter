@@ -1,0 +1,30 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:11:20 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   make drill DRILL=upgrade
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: upgrade =====
+date:     2026-10-02 14:11:21 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: old         building v0.2.0 from source
+drill: old         otter v0.2.0
+drill: seed        init, release and migrate with the old binary
+drill: seed        database is at schema 10
+drill: start       this build against the previous release's database
+note: this workspace was created with otter v0.2.0; this is otter v0.2.0-151-g78073be-dirty
+note: state migrates forward only, so do not point an older runtime at a newer workspace
+drill: applied     one record for each of: 11:0011_job_terminology.sql 12:0012_job_schedules.sql
+drill: schema      10 -> 12
+drill: commands    otter status, jobs and runs all work
+drill: run         c60846bb-13b2-476e-bcdb-ef971d54093c succeeded after re-releasing
+drill: ok: v0.2.0's schema upgraded to 12, visibly, and the runtime works
+drill: elapsed 4s
+--- end raw output ---
+exit status: 0

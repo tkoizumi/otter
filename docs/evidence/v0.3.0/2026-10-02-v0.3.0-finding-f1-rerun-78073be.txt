@@ -1,0 +1,67 @@
+=== Otter v0.3.0 exit gate — RE-CHECK F1: detached start flag forwarding ===
+date:      2026-10-02 14:18:14 EDT
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+binary:    /Users/taka/Desktop/otter-workspace/otter/bin/otter (otter v0.2.0-151-g78073be-dirty)
+workspace: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f1-rerun.XInhyT
+--- raw output ---
+
+$ cd /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f1-rerun.XInhyT
+$ otter init f1-job
+created workspace  /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT
+job                f1-job
+runtime version    v0.2.0-151-g78073be-dirty
+wrote              .otter/version
+wrote              otter.env.example
+wrote              .gitignore
+wrote              f1-job/otter.yaml
+wrote              f1-job/main.py
+wrote              f1-job/logic.py
+wrote              f1-job/tests/test_logic.py
+
+next:
+  otter validate f1-job
+  otter release f1-job
+  otter start --detach
+  otter run f1-job
+  otter stop
+rc=0
+
+$ otter start --detach --listen 127.0.0.1:7816 --api-token s3cret --workers 2 --log-format pretty
+started     pid 49828
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT
+api         http://127.0.0.1:7816
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT/.otter/serve/serve.log
+background; otter stop to stop it
+rc=0
+
+$ grep -h 'api_listening\|daemon_started' .otter/serve/serve.log | tail -2
+2026-10-02T18:18:14.346Z INFO  daemon_started cron_triggers=0 data=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT/.otter/data database=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT/.otter/data/otter.db version=v0.2.0-151-g78073be-dirty workers=2
+2026-10-02T18:18:14.347Z INFO  api_listening auth_required=true listen=127.0.0.1:7816
+
+$ head -c 200 .otter/serve/serve.log   (pretty records, not JSON)
+2026-10-02T18:18:14.322Z INFO  migration_applied name=0001_init.sql version=1
+2026-10-02T18:18:14.322Z INFO  migration_applied name=0002_python_environment.sql version=2
+2026-10-02T18:18:14.322Z INFO   ...
+
+$ curl -s http://127.0.0.1:7816/health | python3 -c 'sorted keys'  (UNAUTHENTICATED)
+['status', 'uptime_seconds', 'version']
+
+$ curl -s http://127.0.0.1:7816/health   (raw body, unauthenticated)
+{"status":"ok","version":"v0.2.0-151-g78073be-dirty","uptime_seconds":0.121836}
+
+
+$ curl -s -H 'Authorization: Bearer s3cret' http://127.0.0.1:7816/health | python3 -c 'sorted keys'  (AUTHENTICATED)
+['freshness', 'jobs', 'queue', 'queue_depth', 'status', 'storage', 'uptime_seconds', 'version']
+
+$ curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7816/v1/jobs   (UNAUTHENTICATED, expect 401)
+401
+
+$ otter stop
+stopped      /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f1-rerun.XInhyT (pid 49828)
+rc=0
+
+--- end raw output ---
+exit status: 0 (re-check transcript; every command it prints ran)

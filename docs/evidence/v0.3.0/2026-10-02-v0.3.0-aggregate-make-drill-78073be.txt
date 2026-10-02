@@ -1,0 +1,672 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:13:10 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_darwin_arm64.tar.gz" make drill
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: backup-restore =====
+date:     2026-10-02 14:13:11 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: local same-host mode: one machine, a different data directory
+drill: workspace   /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.iBWOYa/ws
+drill: released job is managed Python, pinned to 3.13.5
+drill: staging release (environment preparation fails here by design)
+drill:   otter: release drill-job: not activating: install Python 3.13.5: exit status 1: uv: drill stub refuses 'python'
+drill: job         47da1221-7839-4611-abd2-e2701da081aa
+drill: release     f2ab1a8df2156e898e02919991c624fa4844f31ac4a4e6206b45beb1a4aa4a82
+drill: environment 0780804d57bcd81a0225131e7521b4fdc762eaad1d1db590b76797a74cda9af1
+drill: stub environment written under /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.iBWOYa/ws/.otter/data/environments/0780804d57bcd81a0225131e7521b4fdc762eaad1d1db590b76797a74cda9af1
+drill: releasing with the stub environment
+drill: initial runtime ready; data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.iBWOYa/ws/.otter/data
+drill: run 1       0280240a-c3e2-41de-9242-1b69064199b8 succeeded (state count=1)
+drill: run 2       86fa74ab-f252-4867-8ea5-d1f6cf562edc is running; taking the hot backup (daemon still writing)
+drill: backup      ok (database + nothing omitted); state count=1 in the snapshot
+drill: run 2       settled as succeeded
+drill: restore     repointed active release link into the restored data directory
+drill: restore     repointed an environment interpreter into the restored data directory
+drill: restore     data restored to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.iBWOYa/restore-data; original moved to /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.iBWOYa/data-origin
+drill: restored    fresh daemon is serving the restored data directory
+drill: identity    survived (47da1221-7839-4611-abd2-e2701da081aa)
+drill: history     run 1 and the in-flight run 2 are both present
+drill: state       count=1 survived
+drill: executing   a new run on the restored runtime
+drill: executed    run b0624de8-1b34-4874-9cee-cfe734f9059c succeeded from /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-backup-restore.iBWOYa/restore-data/.releases/47da1221-7839-4611-abd2-e2701da081aa/f2ab1a8df2156e898e02919991c624fa4844f31ac4a4e6206b45beb1a4aa4a82/drill-job
+drill: snapshots   release and environment present in the restored data directory
+drill: ok: hot backup restored onto a fresh data directory; the job runs again
+drill: elapsed 19s
+
+===== drill: deploy-failure =====
+date:     2026-10-02 14:13:30 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+deploy-failure: work        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.rSsVfz
+deploy-failure: image       otter-deploy-target
+deploy-failure: sabotage    none
+deploy-failure: building the deploy-target image
+deploy-failure: building the host CLI and the linux target binaries
+deploy-failure: starting the target container
+deploy-failure: target      systemd running, ssh on 127.0.0.1:51258
+deploy-failure: python pin  3.12.3 (the target's python3)
+deploy-failure: deploy 1    known-good release
+deploy-failure:   release:  releasing 1 job(s)
+deploy-failure:   install:  writing /etc/systemd/system/otterd-ws-4224fdf6.service and restarting otterd-ws-4224fdf6.service
+deploy-failure:   verify:   waiting for the health endpoint
+deploy-failure:   verify:   healthy: {"status":"ok","version":"dev","uptime_seconds":0.033088625,"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":0,"queue":{"retrying":0},"freshness":[{"job_id":"48e9392c-a440-490a-8aa1-a2e10afd8e53","name":"counter"}],"storage":{"db_bytes":196608,"disk_free_bytes":63664148480,"disk_total_bytes":151922814976}}
+deploy-failure:   done:     v0.2.0-151-g78073be-dirty deployed to root@127.0.0.1:51258 in 2s
+deploy-failure:   install:       /opt/otter
+deploy-failure: workspace   ws-4224fdf6 at 127.0.0.1:7337
+deploy-failure: release 1   c751886087af498195089c52e5026306d49ea05e72b4bc3aa6a8091022af0436
+deploy-failure: env 1       fb27d9d84144bb123df583d209d9bdec2090e6ce004c8c7150b7f80a98c43886
+deploy-failure: run 1       70de20ec-90e1-44b9-b948-d09bbf523a60 succeeded from release 1 (revision 1 executed)
+deploy-failure: unit        MainPID 261 before the candidate deploy
+deploy-failure: deploy 2    candidate release (expected to fail after staging)
+deploy-failure: inject      making preparation fail on the host
+deploy-failure: deploy 2    failed as injected
+deploy-failure:   counter: release 66a1796a5c05
+deploy-failure:   otter: release counter: not activating: install Python 3.12.3: exit status 1: minimal-uv: preparation is injected to fail (/etc/otter/drill-preparation-fail)
+deploy-failure:   otter: release jobs on root@127.0.0.1:51258: ssh root@127.0.0.1: exit status 1
+deploy-failure: staged      candidate 66a1796a5c050dcd5eabc62726d578b65758f99cf8241057f59cc9fca6212cb9 is on disk but not active
+deploy-failure: injected    candidate environment f64f8fc1b74fee8d87226ef08de2956c0ca583fabfd69fc9772f1a987d69449d was never published
+deploy-failure: unit        same process as before the failed deploy (MainPID 261)
+deploy-failure: run 2       fa1594b9-d834-4a3e-8412-a91aa7307c95 succeeded from release 1 (revision 1 executed; revision 2 was never served)
+deploy-failure: unit        still active after the failed deploy; /health answered
+deploy-failure: ok: a mid-deploy failure left the previous release active and serving
+deploy-failure: elapsed 22s
+
+===== drill: disk-pressure =====
+date:     2026-10-02 14:13:53 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+disk-pressure: receiver http://127.0.0.1:51647 (a publish is a POST / in its log)
+disk-pressure: fixture db=2MB releases=2MB environments=2MB cache=2MB, every cap 3MB, free-space floor 1MB
+disk-check: ok db=2/3MB releases=2/3MB environments=2/3MB cache=2/3MB free=264821/1MB: publishing DiskCheck=1 DiskFreeMB=264821
+disk-pressure: ok inside    all four stores under their caps
+disk-check: BREACH otter.db is 2MB, over the 1MB cap
+disk-check:   why it matters: it holds every retained run, log line and capture; once the filesystem fills, SQLite cannot write its WAL and runs start failing.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    otter.db at 2MB over a 1MB cap
+disk-check: BREACH .releases is 2MB, over the 1MB cap
+disk-check:   why it matters: it is the rollback path; a deploy that fills the disk mid-stage leaves a half-written release and no clean snapshot to return to.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    .releases at 2MB over a 1MB cap
+disk-check: BREACH environments + python is 2MB, over the 1MB cap
+disk-check:   why it matters: prepared environments and the managed interpreter are re-creatable but expensive, and environment GC is deferred, so this store grows on its own.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    environments plus python at 2MB over a 1MB cap
+disk-check: BREACH cache is 2MB, over the 1MB cap
+disk-check:   why it matters: the uv download cache grows monotonically and is not needed to run anything; unbounded, it takes the headroom the other three stores need.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    the uv cache at 2MB over a 1MB cap
+disk-check: BREACH free space is 264821MB, below the 999999999MB floor
+disk-check:   why it matters: with no free space the daemon cannot write the database, stage a release or fetch an interpreter, and it may not even be able to write the log that would explain it.
+disk-check: not publishing: the switch must stay silent so the alarm's missing-data treatment raises the alert
+disk-pressure: ok silent    a free-space floor of 999999999MB
+disk-check: ok db=2/3MB releases=2/3MB environments=2/3MB cache=2/3MB free=264821/1MB: publishing DiskCheck=1 DiskFreeMB=264821
+disk-pressure: ok inside    every measure restored inside its bound
+disk-check: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-disk-pressure.VMpij6/does-not-exist is not a directory: cannot measure any of the four stores; publishing nothing, so the alarm fires
+disk-check:   why it matters: a check that cannot see the stores must never report health; set OTTER_DATA_DIR to the runtime's data directory in /etc/otter/disk-check.env
+disk-pressure: ok silent    a data directory that does not exist
+disk-pressure: ok: publishes track the four stores and the free-space floor, and stop when one is crossed
+
+===== drill: downgrade-refusal =====
+date:     2026-10-02 14:13:54 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: init        scaffolding downgrade-job
+drill: start       bringing the runtime up
+drill: run         executing the job once
+drill: stop        the daemon must not hold the database while we edit it
+drill: newer       database now records migration 13, this build knows 12
+drill: start       expecting a refusal
+drill: refused     exit 1 and named both versions
+drill: intact      history=1 state=1 schema=13 unchanged
+drill: rollback    removing the newer row (the pre-upgrade backup's job in production)
+drill: recovered   the same binary serves the same data once the schema is understood
+drill: ok: a newer schema is refused, the data survives, and rollback is a restore
+drill: elapsed 1s
+
+===== drill: fresh-archive =====
+date:     2026-10-02 14:13:55 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: extract     otter_0.3.0_darwin_arm64.tar.gz
+drill: members     otter, otterd
+drill: version     otter v0.3.0
+drill: smoke       init -> validate -> release -> start -> run -> state -> stop
+smoke: init
+smoke: release
+smoke: start
+smoke: run
+smoke: ok (count=1)
+drill: ok: otter_0.3.0_darwin_arm64.tar.gz installed outside the checkout and ran a job end to end
+drill: elapsed 1s
+
+===== drill: liveness =====
+date:     2026-10-02 14:13:56 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+liveness: receiver http://127.0.0.1:51688 (a publish is a POST / in its log)
+heartbeat: http://127.0.0.1:51691/health did not answer; publishing nothing, so the alarm fires
+liveness: down      no runtime, no publish, non-zero exit
+liveness: up        real otterd on 51693, metric delivered
+heartbeat: http://127.0.0.1:51693/health did not answer; publishing nothing, so the alarm fires
+liveness: killed    publishes stopped, so the alarm fires
+liveness: ok: publishes track the runtime and stop when it dies
+
+===== drill: secret-rotation =====
+date:     2026-10-02 14:13:57 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: init        scaffolding rotate-job with a declared secret
+drill: config      writing ROTATE_TOKEN to otter.env
+drill: start       bringing the runtime up
+drill: run         the child saw the configured credential
+drill: rotate      writing the new value and reloading
+drill: reload      a run still sees the value the daemon started with
+drill: restart     stopping and starting the daemon
+drill: rotated     a run after the restart sees the new credential
+drill: remove      taking the credential out of otter.env
+drill: missing     the run failed naming ROTATE_TOKEN, before Python started
+drill: ok: rotation is applied by restart, reload does not re-read credentials, and a missing one fails loudly
+drill: elapsed 2s
+
+===== drill: unit-caps =====
+date:     2026-10-02 14:13:59 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+unit-caps: image      otter-systemd-caps
+unit-caps: target     linux/arm64
+unit-caps: swap       512M loop device inside the container
+unit-caps: common caps cpu-quota=200% tasks-max=512
+
+unit-caps: building the systemd image
+unit-caps: building the linux binaries
+
+================ unit-caps: case deployed-style ================
+unit-caps: caps       memory-max=25% memory-high=default memory-swap-max=0
+unit-caps: expect     kill; job manifest timeout 600s
+unit-caps: observe    the OOM kill for up to 60s
+unit-caps: rendering the unit the deployer would write
+# Generated by `otter deploy`. Edits are overwritten on the next deploy.
+[Unit]
+Description=Otter runtime for the drill workspace
+Documentation=https://github.com/tkoizumi/otter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=otter
+Group=otter
+WorkingDirectory=/opt/otter/workspaces/drill
+ExecStart=/opt/otter/workspaces/drill/bin/otterd --jobs /opt/otter/workspaces/drill/jobs --data /opt/otter/workspaces/drill/.otter/data --listen 127.0.0.1:7337 --log-format json
+EnvironmentFile=-/etc/otter/workspaces/drill.daemon.env
+EnvironmentFile=-/etc/otter/workspaces/drill.env
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+# A capped job killed by the OOM killer must not stop the daemon.
+OOMPolicy=continue
+
+# Resource caps for the whole workspace: otterd and every job it
+# runs share this cgroup, so these bound the sum, not one run.
+MemoryMax=25%
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=512
+
+# Sandbox: no privilege gain, read-only filesystem except the two
+# directories the runtime owns, no home directories, private /tmp.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/otter/workspaces/drill /opt/otter/workspaces/drill/.otter/data
+
+[Install]
+WantedBy=multi-user.target
+unit-caps: starting the systemd container
+unit-caps: systemd is running
+
+===== inside the container: case deployed-style =====
+kernel:  Linux 5.10.76-linuxkit
+systemd: systemd 255 (255.4-1ubuntu8.17)
+python:  Python 3.12.3
+
+--- swap device, the host's swapfile reproduced ---
+mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
+swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+Filename				Type		Size		Used		Priority
+/swap                                   file		1048572		277724		-2
+/dev/loop0                              partition	524284		0		-3
+               total        used        free      shared  buff/cache   available
+Mem:            3933        1115        1018         144        2135        2818
+Swap:           1535         271        1264
+runaway: release 15ec3e346c71
+runaway: activated 15ec3e346c71
+Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
+
+unit-caps: waiting for the health endpoint
+health: {"status":"ok","version":"dev","uptime_seconds":0.2026425}
+cgroup: /docker/3cfc677b5e704e6d008d89b6a2243d64b038aa5e6debc71cf29882b4f47e61ae/system.slice/otterd-drill.service
+memory.max:  1031090176 (from MemoryMax=25%)
+memory.high: max (the unit sets no MemoryHigh)
+memory.swap.max: 0 (set from MemorySwapMax=0)
+otterd MainPID before: 143
+
+unit-caps: triggering the runaway job
+run id: 9adc5b62-01de-457f-b99f-2b5e330dff9c
+
+--- cgroup memory.events ---
+low 0
+high 0
+max 57
+oom 1
+oom_kill 1
+--- cgroup memory.peak (bytes) ---
+(no memory.peak on this kernel)
+--- cgroup memory.max (bytes) ---
+1031090176
+--- cgroup memory.swap.max (bytes) ---
+0
+--- cgroup memory.swap.current (bytes) ---
+0
+--- cgroup memory.current (bytes) ---
+5033984
+
+--- unit state after the observation ---
+is-active: active
+otterd MainPID after:  143
+NRestarts:             0
+OOMPolicy:             continue
+--- processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 143 
+  (none: only otterd pid 143)
+--- run history ---
+RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
+9adc5b62-01de-457f-b99f-2b5e330dff9c  runaway  manual   failed  1        2026-10-02T18:14:07Z  2.386s
+--- host responsiveness ---
+is-system-running: running
+{"status":"ok","version":"dev","uptime_seconds":3.870418919}
+
+--- daemon journal, OOM lines ---
+Oct 02 18:14:09 3cfc677b5e70 systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS [deployed-style]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 143) survived, and the host answered.
+
+================ unit-caps: case hard-cap ================
+unit-caps: caps       memory-max=192M memory-high=off memory-swap-max=0
+unit-caps: expect     kill; job manifest timeout 600s
+unit-caps: observe    the OOM kill for up to 60s
+unit-caps: rendering the unit the deployer would write
+# Generated by `otter deploy`. Edits are overwritten on the next deploy.
+[Unit]
+Description=Otter runtime for the drill workspace
+Documentation=https://github.com/tkoizumi/otter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=otter
+Group=otter
+WorkingDirectory=/opt/otter/workspaces/drill
+ExecStart=/opt/otter/workspaces/drill/bin/otterd --jobs /opt/otter/workspaces/drill/jobs --data /opt/otter/workspaces/drill/.otter/data --listen 127.0.0.1:7337 --log-format json
+EnvironmentFile=-/etc/otter/workspaces/drill.daemon.env
+EnvironmentFile=-/etc/otter/workspaces/drill.env
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+# A capped job killed by the OOM killer must not stop the daemon.
+OOMPolicy=continue
+
+# Resource caps for the whole workspace: otterd and every job it
+# runs share this cgroup, so these bound the sum, not one run.
+MemoryMax=192M
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=512
+
+# Sandbox: no privilege gain, read-only filesystem except the two
+# directories the runtime owns, no home directories, private /tmp.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/otter/workspaces/drill /opt/otter/workspaces/drill/.otter/data
+
+[Install]
+WantedBy=multi-user.target
+unit-caps: starting the systemd container
+unit-caps: systemd is running
+
+===== inside the container: case hard-cap =====
+kernel:  Linux 5.10.76-linuxkit
+systemd: systemd 255 (255.4-1ubuntu8.17)
+python:  Python 3.12.3
+
+--- swap device, the host's swapfile reproduced ---
+mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
+swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+Filename				Type		Size		Used		Priority
+/swap                                   file		1048572		276932		-2
+/dev/loop0                              partition	524284		0		-3
+               total        used        free      shared  buff/cache   available
+Mem:            3933        1128        1050         144        2102        2804
+Swap:           1535         270        1265
+runaway: release 15ec3e346c71
+runaway: activated 15ec3e346c71
+Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
+
+unit-caps: waiting for the health endpoint
+health: {"status":"ok","version":"dev","uptime_seconds":0.204567042}
+cgroup: /docker/1badaf5821da7a5dfd8159a564937576769e63cb5665ff9d93758fcc89a98f82/system.slice/otterd-drill.service
+memory.max:  201326592 (set from MemoryMax=192M)
+memory.high: max (the unit sets no MemoryHigh)
+memory.swap.max: 0 (set from MemorySwapMax=0)
+otterd MainPID before: 144
+
+unit-caps: triggering the runaway job
+run id: 8cfdbe5b-0d1b-49a3-8aa6-f2135fc7e69f
+
+--- cgroup memory.events ---
+low 0
+high 0
+max 67
+oom 1
+oom_kill 1
+--- cgroup memory.peak (bytes) ---
+(no memory.peak on this kernel)
+--- cgroup memory.max (bytes) ---
+201326592
+--- cgroup memory.swap.max (bytes) ---
+0
+--- cgroup memory.swap.current (bytes) ---
+0
+--- cgroup memory.current (bytes) ---
+4718592
+
+--- unit state after the observation ---
+is-active: active
+otterd MainPID after:  144
+NRestarts:             0
+OOMPolicy:             continue
+--- processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 144 
+  (none: only otterd pid 144)
+--- run history ---
+RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
+8cfdbe5b-0d1b-49a3-8aa6-f2135fc7e69f  runaway  manual   failed  1        2026-10-02T18:14:16Z  533ms
+--- host responsiveness ---
+is-system-running: running
+{"status":"ok","version":"dev","uptime_seconds":1.958891751}
+
+--- daemon journal, OOM lines ---
+Oct 02 18:14:16 1badaf5821da systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS [hard-cap]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 144) survived, and the host answered.
+
+================ unit-caps: case swap-size ================
+unit-caps: caps       memory-max=192M memory-high=off memory-swap-max=64M
+unit-caps: expect     kill; job manifest timeout 600s
+unit-caps: observe    the OOM kill for up to 60s
+unit-caps: rendering the unit the deployer would write
+# Generated by `otter deploy`. Edits are overwritten on the next deploy.
+[Unit]
+Description=Otter runtime for the drill workspace
+Documentation=https://github.com/tkoizumi/otter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=otter
+Group=otter
+WorkingDirectory=/opt/otter/workspaces/drill
+ExecStart=/opt/otter/workspaces/drill/bin/otterd --jobs /opt/otter/workspaces/drill/jobs --data /opt/otter/workspaces/drill/.otter/data --listen 127.0.0.1:7337 --log-format json
+EnvironmentFile=-/etc/otter/workspaces/drill.daemon.env
+EnvironmentFile=-/etc/otter/workspaces/drill.env
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+# A capped job killed by the OOM killer must not stop the daemon.
+OOMPolicy=continue
+
+# Resource caps for the whole workspace: otterd and every job it
+# runs share this cgroup, so these bound the sum, not one run.
+MemoryMax=192M
+MemorySwapMax=64M
+CPUQuota=200%
+TasksMax=512
+
+# Sandbox: no privilege gain, read-only filesystem except the two
+# directories the runtime owns, no home directories, private /tmp.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/otter/workspaces/drill /opt/otter/workspaces/drill/.otter/data
+
+[Install]
+WantedBy=multi-user.target
+unit-caps: starting the systemd container
+unit-caps: systemd is running
+
+===== inside the container: case swap-size =====
+kernel:  Linux 5.10.76-linuxkit
+systemd: systemd 255 (255.4-1ubuntu8.17)
+python:  Python 3.12.3
+
+--- swap device, the host's swapfile reproduced ---
+mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
+swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+Filename				Type		Size		Used		Priority
+/swap                                   file		1048572		276932		-2
+/dev/loop0                              partition	524284		0		-3
+               total        used        free      shared  buff/cache   available
+Mem:            3933        1124        1050         144        2106        2808
+Swap:           1535         270        1265
+runaway: release 15ec3e346c71
+runaway: activated 15ec3e346c71
+Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
+
+unit-caps: waiting for the health endpoint
+health: {"status":"ok","version":"dev","uptime_seconds":0.204666042}
+cgroup: /docker/339f366a11cb0a9e7b11a0227618bd56e050f33b73a7d9ecde54fdf390043b06/system.slice/otterd-drill.service
+memory.max:  201326592 (set from MemoryMax=192M)
+memory.high: max (the unit sets no MemoryHigh)
+memory.swap.max: 67108864 (set from MemorySwapMax=64M)
+otterd MainPID before: 144
+
+unit-caps: triggering the runaway job
+run id: bfd93929-bf3f-4839-bb37-2c2747b0ad36
+
+--- cgroup memory.events ---
+low 0
+high 0
+max 390
+oom 1
+oom_kill 1
+--- cgroup memory.peak (bytes) ---
+(no memory.peak on this kernel)
+--- cgroup memory.max (bytes) ---
+201326592
+--- cgroup memory.swap.max (bytes) ---
+67108864
+--- cgroup memory.swap.current (bytes) ---
+3936256
+--- cgroup memory.current (bytes) ---
+2715648
+
+--- unit state after the observation ---
+is-active: active
+otterd MainPID after:  144
+NRestarts:             0
+OOMPolicy:             continue
+--- processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 144 
+  (none: only otterd pid 144)
+--- run history ---
+RUN ID                                JOB      TRIGGER  STATUS  ATTEMPT  STARTED               DURATION
+bfd93929-bf3f-4839-bb37-2c2747b0ad36  runaway  manual   failed  1        2026-10-02T18:14:24Z  804ms
+--- host responsiveness ---
+is-system-running: running
+{"status":"ok","version":"dev","uptime_seconds":2.164240668}
+
+--- daemon journal, OOM lines ---
+Oct 02 18:14:25 339f366a11cb systemd[1]: otterd-drill.service: A process of this unit has been killed by the OOM killer.
+unit-caps: PASS [swap-size]: the runaway job was OOM-killed (oom_kill=1), no runaway process survived, otterd (PID 144) survived, and the host answered.
+
+================ unit-caps: case soft-cap ================
+unit-caps: caps       memory-max=192M memory-high=128M memory-swap-max=0
+unit-caps: expect     soft-cap; job manifest timeout 30s
+unit-caps: observe    the soft cap for 60s
+unit-caps: rendering the unit the deployer would write
+# Generated by `otter deploy`. Edits are overwritten on the next deploy.
+[Unit]
+Description=Otter runtime for the drill workspace
+Documentation=https://github.com/tkoizumi/otter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=otter
+Group=otter
+WorkingDirectory=/opt/otter/workspaces/drill
+ExecStart=/opt/otter/workspaces/drill/bin/otterd --jobs /opt/otter/workspaces/drill/jobs --data /opt/otter/workspaces/drill/.otter/data --listen 127.0.0.1:7337 --log-format json
+EnvironmentFile=-/etc/otter/workspaces/drill.daemon.env
+EnvironmentFile=-/etc/otter/workspaces/drill.env
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+# A capped job killed by the OOM killer must not stop the daemon.
+OOMPolicy=continue
+
+# Resource caps for the whole workspace: otterd and every job it
+# runs share this cgroup, so these bound the sum, not one run.
+MemoryMax=192M
+MemoryHigh=128M
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=512
+
+# Sandbox: no privilege gain, read-only filesystem except the two
+# directories the runtime owns, no home directories, private /tmp.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/otter/workspaces/drill /opt/otter/workspaces/drill/.otter/data
+
+[Install]
+WantedBy=multi-user.target
+unit-caps: starting the systemd container
+unit-caps: systemd is running
+
+===== inside the container: case soft-cap =====
+kernel:  Linux 5.10.76-linuxkit
+systemd: systemd 255 (255.4-1ubuntu8.17)
+python:  Python 3.12.3
+
+--- swap device, the host's swapfile reproduced ---
+mkswap: /dev/loop0: insecure permissions 0666, fix with: chmod 0660 /dev/loop0
+swapon: /dev/loop0: insecure permissions 0666, 0660 suggested.
+Filename				Type		Size		Used		Priority
+/swap                                   file		1048572		277728		-2
+/dev/loop0                              partition	524284		0		-3
+               total        used        free      shared  buff/cache   available
+Mem:            3933        1126        1044         144        2110        2806
+Swap:           1535         271        1264
+runaway: release 655bd43cc262
+runaway: activated 655bd43cc262
+Created symlink /etc/systemd/system/multi-user.target.wants/otterd-drill.service → /etc/systemd/system/otterd-drill.service.
+
+unit-caps: waiting for the health endpoint
+health: {"status":"ok","version":"dev","uptime_seconds":0.201199792}
+cgroup: /docker/97d41d6d05479db752225f9de29bfa7ffd44b08448ae6ba77a7e00ec09e325d8/system.slice/otterd-drill.service
+memory.max:  201326592 (set from MemoryMax=192M)
+memory.high: 134217728 (set from MemoryHigh=128M)
+memory.swap.max: 0 (set from MemorySwapMax=0)
+otterd MainPID before: 142
+
+unit-caps: triggering the runaway job
+run id: 2e29af82-c04a-482a-b70d-3a80d1697477
+
+--- soft-cap sample after 10s (bytes) ---
+memory.current      138502144
+memory.high         134217728
+memory.max          201326592
+memory.swap.current 0
+oom_kill            0
+run ended after 37s of wall clock with status 'timed_out' (manifest timeout 30s)
+--- soft-cap processes left in the unit cgroup (want only otterd) ---
+cgroup.procs: 142 
+  (none: only otterd)
+
+--- cgroup memory.events ---
+low 0
+high 16797
+max 0
+oom 0
+oom_kill 0
+--- cgroup memory.peak (bytes) ---
+(no memory.peak on this kernel)
+--- cgroup memory.max (bytes) ---
+201326592
+--- cgroup memory.swap.max (bytes) ---
+0
+--- cgroup memory.swap.current (bytes) ---
+0
+--- cgroup memory.current (bytes) ---
+6488064
+
+--- unit state after the observation ---
+is-active: active
+otterd MainPID after:  142
+NRestarts:             0
+OOMPolicy:             continue
+--- run history ---
+RUN ID                                JOB      TRIGGER  STATUS     ATTEMPT  STARTED               DURATION
+2e29af82-c04a-482a-b70d-3a80d1697477  runaway  manual   timed_out  1        2026-10-02T18:14:32Z  35.763s
+--- host responsiveness ---
+is-system-running: running
+{"status":"ok","version":"dev","uptime_seconds":38.037461281}
+
+--- daemon journal, OOM lines ---
+unit-caps: PASS [soft-cap]: the soft cap parked the runaway below memory.max (oom_kill=0, memory.swap.current=0), no runaway process survived the timeout, otterd (PID 142) was not restarted, the host answered, and the run ended at its 30s manifest timeout rather than by OOM.
+
+unit-caps: all cases PASS
+
+===== drill: upgrade =====
+date:     2026-10-02 14:15:11 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: old         building v0.2.0 from source
+drill: old         otter v0.2.0
+drill: seed        init, release and migrate with the old binary
+drill: seed        database is at schema 10
+drill: start       this build against the previous release's database
+note: this workspace was created with otter v0.2.0; this is otter v0.2.0-151-g78073be-dirty
+note: state migrates forward only, so do not point an older runtime at a newer workspace
+drill: applied     one record for each of: 11:0011_job_terminology.sql 12:0012_job_schedules.sql
+drill: schema      10 -> 12
+drill: commands    otter status, jobs and runs all work
+drill: run         3e06b6d0-51e7-47bd-b8fc-6b667ae97256 succeeded after re-releasing
+drill: ok: v0.2.0's schema upgraded to 12, visibly, and the runtime works
+drill: elapsed 3s
+drill: all drills passed
+--- end raw output ---
+exit status: 0

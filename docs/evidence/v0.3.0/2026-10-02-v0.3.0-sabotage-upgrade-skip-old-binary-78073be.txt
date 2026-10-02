@@ -1,0 +1,27 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN sabotage ===
+date:      2026-10-02 14:20:41 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   DRILL_SABOTAGE=skip-old-binary make drill DRILL=upgrade
+expected:  non-zero, red at the assertion that names the removed behaviour
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be)
+
+===== drill: upgrade =====
+date:     2026-10-02 14:20:42 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be
+drill: sabotage: seeding with the current binary, so nothing will be pending
+drill: seed        init, release and migrate with the old binary
+drill: seed        database is at schema 12
+drill: FAILED: this build has no migration newer than schema 12; nothing to upgrade
+drill: failed; last daemon log lines:
+drill: workspace was /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-upgrade.lGFS3o
+drill: elapsed 0s
+drill: keeping /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-drill-upgrade.lGFS3o
+make: *** [drill] Error 1
+--- end raw output ---
+exit status: 2

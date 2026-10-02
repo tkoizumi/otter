@@ -1,0 +1,96 @@
+=== Otter v0.3.0 exit gate — RE-CHECK F2: both environment name sets survive ===
+date:      2026-10-02 14:19:28 EDT
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+binary:    /Users/taka/Desktop/otter-workspace/otter/bin/otter (otter v0.2.0-151-g78073be-dirty)
+workspace: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f2-rerun.sIiHED
+--- raw output ---
+
+$ cd /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f2-rerun.sIiHED
+$ otter init newjob
+created workspace  /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED
+job                newjob
+runtime version    v0.2.0-151-g78073be-dirty
+wrote              .otter/version
+wrote              otter.env.example
+wrote              .gitignore
+wrote              newjob/otter.yaml
+wrote              newjob/main.py
+wrote              newjob/logic.py
+wrote              newjob/tests/test_logic.py
+
+next:
+  otter validate newjob
+  otter release newjob
+  otter start --detach
+  otter run newjob
+  otter stop
+rc=0
+
+$ cat > newjob/main.py   (dump every OTTER_* variable)
+import os
+for k in sorted(os.environ):
+    if k.startswith("OTTER_"):
+        print(f"env {k}={os.environ[k]}")
+
+$ otter validate newjob && otter release newjob
+ok: newjob (/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/newjob/otter.yaml)
+
+1 job(s) valid
+newjob: release 362b74fa3fa8
+newjob: activated 362b74fa3fa8
+rc=0
+
+$ otter start --detach --listen 127.0.0.1:7818
+started     pid 50060
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED
+api         http://127.0.0.1:7818
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/.otter/serve/serve.log
+background; otter stop to stop it
+rc=0
+
+$ otter run newjob
+239d6c8b-cd11-4067-9c00-4e2a38b4698f
+rc=0
+run id: 239d6c8b-cd11-4067-9c00-4e2a38b4698f
+
+$ waited 1s for the child to print its environment
+$ otter runs --all --json | status/exit_code
+status: succeeded exit_code: 0
+
+$ otter logs 239d6c8b-cd11-4067-9c00-4e2a38b4698f   (the released job's own environment)
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.780526Z","stream":"otter","text":"run queued (trigger manual)"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.781637Z","stream":"otter","text":"run started (attempt 1 of 3, trigger manual)"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987368Z","stream":"stdout","text":"env OTTER_API_URL=http://127.0.0.1:7818"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987381Z","stream":"stdout","text":"env OTTER_CAPTURE_POLICY=full"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987395Z","stream":"stdout","text":"env OTTER_INTEGRATION_DIR=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/.otter/data/.releases/97246de1-e50a-48fc-9aa4-9c1f0a900e25/362b74fa3fa86a610d71a2f173697822ea476e806634d9b7405fd1f0187f4b54/newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987399Z","stream":"stdout","text":"env OTTER_INTEGRATION_ID=97246de1-e50a-48fc-9aa4-9c1f0a900e25"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987399Z","stream":"stdout","text":"env OTTER_INTEGRATION_NAME=newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_JOB_DIR=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/.otter/data/.releases/97246de1-e50a-48fc-9aa4-9c1f0a900e25/362b74fa3fa86a610d71a2f173697822ea476e806634d9b7405fd1f0187f4b54/newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_JOB_ID=97246de1-e50a-48fc-9aa4-9c1f0a900e25"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_JOB_NAME=newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_RUN_ID=239d6c8b-cd11-4067-9c00-4e2a38b4698f"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987409Z","stream":"stdout","text":"env OTTER_STATE_TOKEN=7e5509e497b4eb629ec57b8e1e4fe34ac0daed5279a345d7d9bf3481c53da086"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987412Z","stream":"stdout","text":"env OTTER_TRIGGER_TYPE=manual"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:29.011708Z","stream":"otter","text":"run succeeded (attempt 1, 230ms), exit code 0"}
+
+--- the six names the release notes say are exported ---
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987395Z","stream":"stdout","text":"env OTTER_INTEGRATION_DIR=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/.otter/data/.releases/97246de1-e50a-48fc-9aa4-9c1f0a900e25/362b74fa3fa86a610d71a2f173697822ea476e806634d9b7405fd1f0187f4b54/newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987399Z","stream":"stdout","text":"env OTTER_INTEGRATION_ID=97246de1-e50a-48fc-9aa4-9c1f0a900e25"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987399Z","stream":"stdout","text":"env OTTER_INTEGRATION_NAME=newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_JOB_DIR=/var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED/.otter/data/.releases/97246de1-e50a-48fc-9aa4-9c1f0a900e25/362b74fa3fa86a610d71a2f173697822ea476e806634d9b7405fd1f0187f4b54/newjob"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_JOB_ID=97246de1-e50a-48fc-9aa4-9c1f0a900e25"}
+{"run_id":"239d6c8b-cd11-4067-9c00-4e2a38b4698f","timestamp":"2026-10-02T18:19:28.987405Z","stream":"stdout","text":"env OTTER_JOB_NAME=newjob"}
+
+$ count of OTTER_JOB_* lines / OTTER_INTEGRATION_* lines
+3
+3
+
+$ otter stop
+stopped      /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f2-rerun.sIiHED (pid 50060)
+rc=0
+
+--- end raw output ---
+exit status: 0 (re-check transcript; every command it prints ran)

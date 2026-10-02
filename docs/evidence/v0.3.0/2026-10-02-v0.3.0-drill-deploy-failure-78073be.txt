@@ -1,0 +1,50 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:11:29 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   make drill DRILL=deploy-failure
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: deploy-failure =====
+date:     2026-10-02 14:11:30 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+deploy-failure: work        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-deploy-failure.pVEKxc
+deploy-failure: image       otter-deploy-target
+deploy-failure: sabotage    none
+deploy-failure: building the deploy-target image
+deploy-failure: building the host CLI and the linux target binaries
+deploy-failure: starting the target container
+deploy-failure: target      systemd running, ssh on 127.0.0.1:50470
+deploy-failure: python pin  3.12.3 (the target's python3)
+deploy-failure: deploy 1    known-good release
+deploy-failure:   release:  releasing 1 job(s)
+deploy-failure:   install:  writing /etc/systemd/system/otterd-ws-bd8db8f0.service and restarting otterd-ws-bd8db8f0.service
+deploy-failure:   verify:   waiting for the health endpoint
+deploy-failure:   verify:   healthy: {"status":"ok","version":"dev","uptime_seconds":0.115637792,"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":0,"queue":{"retrying":0},"freshness":[{"job_id":"c4436183-a84a-46bc-89a4-8e6ee8a74581","name":"counter"}],"storage":{"db_bytes":196608,"disk_free_bytes":63599808512,"disk_total_bytes":151922814976}}
+deploy-failure:   done:     v0.2.0-151-g78073be-dirty deployed to root@127.0.0.1:50470 in 3s
+deploy-failure:   install:       /opt/otter
+deploy-failure: workspace   ws-bd8db8f0 at 127.0.0.1:7337
+deploy-failure: release 1   dbb24df3d7bde5348635f2c2994e1e4f5dd44d10b011943da32e5aee8f54cea5
+deploy-failure: env 1       b289aa020e2e0687965911418987364723b682c4403883a924e4c8a519ddba72
+deploy-failure: run 1       a1ca4dbc-e6dc-4e93-bff6-49a278cf9ec5 succeeded from release 1 (revision 1 executed)
+deploy-failure: unit        MainPID 259 before the candidate deploy
+deploy-failure: deploy 2    candidate release (expected to fail after staging)
+deploy-failure: inject      making preparation fail on the host
+deploy-failure: deploy 2    failed as injected
+deploy-failure:   counter: release ea6f80557513
+deploy-failure:   otter: release counter: not activating: install Python 3.12.3: exit status 1: minimal-uv: preparation is injected to fail (/etc/otter/drill-preparation-fail)
+deploy-failure:   otter: release jobs on root@127.0.0.1:50470: ssh root@127.0.0.1: exit status 1
+deploy-failure: staged      candidate ea6f80557513fd1f576e46c475270c9a183e04042157f51532348b498804c082 is on disk but not active
+deploy-failure: injected    candidate environment e1e43b408d1ef0463191802a7717b80689b53b72f76dd4ec7328ad140750d3c7 was never published
+deploy-failure: unit        same process as before the failed deploy (MainPID 259)
+deploy-failure: run 2       6bc008f1-1b97-41c6-81d2-6054163c88a7 succeeded from release 1 (revision 1 executed; revision 2 was never served)
+deploy-failure: unit        still active after the failed deploy; /health answered
+deploy-failure: ok: a mid-deploy failure left the previous release active and serving
+deploy-failure: elapsed 23s
+--- end raw output ---
+exit status: 0

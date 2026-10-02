@@ -1,0 +1,24 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:13:07 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   make drill DRILL=liveness
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: liveness =====
+date:     2026-10-02 14:13:07 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+liveness: receiver http://127.0.0.1:51025 (a publish is a POST / in its log)
+heartbeat: http://127.0.0.1:51028/health did not answer; publishing nothing, so the alarm fires
+liveness: down      no runtime, no publish, non-zero exit
+liveness: up        real otterd on 51030, metric delivered
+heartbeat: http://127.0.0.1:51030/health did not answer; publishing nothing, so the alarm fires
+liveness: killed    publishes stopped, so the alarm fires
+liveness: ok: publishes track the runtime and stop when it dies
+--- end raw output ---
+exit status: 0

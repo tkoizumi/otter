@@ -1,0 +1,29 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:11:25 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   make drill DRILL=downgrade-refusal
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: downgrade-refusal =====
+date:     2026-10-02 14:11:25 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: init        scaffolding downgrade-job
+drill: start       bringing the runtime up
+drill: run         executing the job once
+drill: stop        the daemon must not hold the database while we edit it
+drill: newer       database now records migration 13, this build knows 12
+drill: start       expecting a refusal
+drill: refused     exit 1 and named both versions
+drill: intact      history=1 state=1 schema=13 unchanged
+drill: rollback    removing the newer row (the pre-upgrade backup's job in production)
+drill: recovered   the same binary serves the same data once the schema is understood
+drill: ok: a newer schema is refused, the data survives, and rollback is a restore
+drill: elapsed 2s
+--- end raw output ---
+exit status: 0

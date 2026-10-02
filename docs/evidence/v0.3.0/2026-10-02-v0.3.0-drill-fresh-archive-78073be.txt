@@ -1,0 +1,28 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN transcript ===
+date:      2026-10-02 14:13:08 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   env OTTER_ARCHIVE=/Users/taka/Desktop/otter-workspace/otter/dist/otter_0.3.0_darwin_arm64.tar.gz make drill DRILL=fresh-archive
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be-dirty" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be-dirty)
+
+===== drill: fresh-archive =====
+date:     2026-10-02 14:13:09 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be-dirty
+drill: extract     otter_0.3.0_darwin_arm64.tar.gz
+drill: members     otter, otterd
+drill: version     otter v0.3.0
+drill: smoke       init -> validate -> release -> start -> run -> state -> stop
+smoke: init
+smoke: release
+smoke: start
+smoke: run
+smoke: ok (count=1)
+drill: ok: otter_0.3.0_darwin_arm64.tar.gz installed outside the checkout and ran a job end to end
+drill: elapsed 1s
+--- end raw output ---
+exit status: 0

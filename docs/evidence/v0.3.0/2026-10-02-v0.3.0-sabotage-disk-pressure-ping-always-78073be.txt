@@ -1,0 +1,24 @@
+=== Otter v0.3.0 exit gate — independent operator RE-RUN sabotage ===
+date:      2026-10-02 14:22:06 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+command:   DRILL_SABOTAGE=ping-always make drill DRILL=disk-pressure
+expected:  non-zero, red at the assertion that names the removed behaviour
+--- raw output ---
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be" -o bin/otterd ./cmd/otterd
+go build  -trimpath -ldflags "-s -w -X main.version=v0.2.0-151-g78073be" -o bin/otter ./cmd/otter
+built bin/otterd and bin/otter (v0.2.0-151-g78073be)
+
+===== drill: disk-pressure =====
+date:     2026-10-02 14:22:07 EDT
+host:     Darwin 24.6.0 (arm64)
+checkout: v0.2.0-151-g78073be
+disk-pressure: receiver http://127.0.0.1:54294 (a publish is a POST / in its log)
+disk-pressure: fixture db=2MB releases=2MB environments=2MB cache=2MB, every cap 3MB, free-space floor 1MB
+disk-pressure: ok inside    all four stores under their caps
+disk-pressure: FAILED: otter.db at 2MB over a 1MB cap: the check published, so the alarm stays quiet: a database over its cap must stop the publishes, or the alarm stays quiet while SQLite runs out of disk
+disk-pressure: workspace kept at /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-disk-pressure.WOTXzU
+make: *** [drill] Error 1
+--- end raw output ---
+exit status: 2

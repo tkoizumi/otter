@@ -1,0 +1,185 @@
+=== Otter v0.3.0 exit gate — RE-CHECK of the Step-4 document claims ===
+date:      2026-10-02 14:18:15 EDT
+uname:     Darwin Takas-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:33:58 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_T6000 arm64
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+checkout:  /Users/taka/Desktop/otter-workspace/otter
+--- raw output ---
+
+### Claim 13 / F3 — grep -c SABOTAGE across scripts/drill/*.sh (documents must say 8 of 9)
+backup-restore.sh        18
+deploy-failure.sh        14
+disk-pressure.sh         5
+downgrade-refusal.sh     6
+fresh-archive.sh         6
+liveness.sh              5
+secret-rotation.sh       6
+unit-caps.sh             0
+upgrade.sh               6
+operations.md:  144:Eight of the nine drills document a `DRILL_SABOTAGE=<mode>` that removes the
+operations.md:  151:`unit-caps` is the exception: it has no drill-level mutation mode. Its
+release notes:  122:  `disk-pressure` and `liveness`. Eight of the nine document a `DRILL_SABOTAGE`
+release notes:  124:  falsifiable; `unit-caps` is the exception, falsified instead by the `UnitFile`
+
+### Claim 1 + 2 — migrations: one record per applied migration, none on a clean restart
+$ otter init docclaims-job
+created workspace  /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+job                docclaims-job
+runtime version    v0.2.0-151-g78073be-dirty
+wrote              .otter/version
+wrote              otter.env.example
+wrote              .gitignore
+wrote              docclaims-job/otter.yaml
+wrote              docclaims-job/main.py
+wrote              docclaims-job/logic.py
+wrote              docclaims-job/tests/test_logic.py
+
+next:
+  otter validate docclaims-job
+  otter release docclaims-job
+  otter start --detach
+  otter run docclaims-job
+  otter stop
+$ otter start --detach --listen 127.0.0.1:7823  (first start applies migrations)
+started     pid 49941
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+api         http://127.0.0.1:7823
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/serve/serve.log
+background; otter stop to stop it
+$ grep -c migration_applied .otter/serve/serve.log
+12
+$ grep migration_applied .otter/serve/serve.log
+{"event":"migration_applied","level":"info","name":"0001_init.sql","timestamp":"2026-10-02T18:18:15.627017Z","version":1}
+{"event":"migration_applied","level":"info","name":"0002_python_environment.sql","timestamp":"2026-10-02T18:18:15.627083Z","version":2}
+{"event":"migration_applied","level":"info","name":"0003_integration_identity.sql","timestamp":"2026-10-02T18:18:15.62709Z","version":3}
+{"event":"migration_applied","level":"info","name":"0004_http_capture.sql","timestamp":"2026-10-02T18:18:15.627095Z","version":4}
+{"event":"migration_applied","level":"info","name":"0005_run_capture_policy.sql","timestamp":"2026-10-02T18:18:15.627099Z","version":5}
+{"event":"migration_applied","level":"info","name":"0006_http_exchanges_request_id.sql","timestamp":"2026-10-02T18:18:15.627104Z","version":6}
+{"event":"migration_applied","level":"info","name":"0007_timeline_indexes.sql","timestamp":"2026-10-02T18:18:15.627108Z","version":7}
+{"event":"migration_applied","level":"info","name":"0008_run_logs_origin.sql","timestamp":"2026-10-02T18:18:15.627112Z","version":8}
+{"event":"migration_applied","level":"info","name":"0009_http_exchange_error_summary.sql","timestamp":"2026-10-02T18:18:15.627117Z","version":9}
+{"event":"migration_applied","level":"info","name":"0010_integration_pause.sql","timestamp":"2026-10-02T18:18:15.627121Z","version":10}
+{"event":"migration_applied","level":"info","name":"0011_job_terminology.sql","timestamp":"2026-10-02T18:18:15.627125Z","version":11}
+{"event":"migration_applied","level":"info","name":"0012_job_schedules.sql","timestamp":"2026-10-02T18:18:15.627129Z","version":12}
+$ otter stop && otter start --detach --listen 127.0.0.1:7823  (nothing pending)
+stopped      /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT (pid 49941)
+started     pid 49947
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+api         http://127.0.0.1:7823
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/serve/serve.log
+background; otter stop to stop it
+$ grep -c migration_applied .otter/serve/serve.log  (must be unchanged)
+12
+$ sqlite3 .otter/data/otter.db 'select version,name from schema_migrations order by version;'
+1|0001_init.sql
+2|0002_python_environment.sql
+3|0003_integration_identity.sql
+4|0004_http_capture.sql
+5|0005_run_capture_policy.sql
+6|0006_http_exchanges_request_id.sql
+7|0007_timeline_indexes.sql
+8|0008_run_logs_origin.sql
+9|0009_http_exchange_error_summary.sql
+10|0010_integration_pause.sql
+11|0011_job_terminology.sql
+12|0012_job_schedules.sql
+
+### Claim 4 — the health response example is the real shape (through the published start path)
+$ otter start --detach --listen 127.0.0.1:7823 --api-token tok
+started     pid 49966
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+api         http://127.0.0.1:7823
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/serve/serve.log
+background; otter stop to stop it
+$ curl -s -H 'Authorization: Bearer tok' http://127.0.0.1:7823/health | jq -S .
+{
+  "freshness": [
+    {
+      "job_id": "24841525-1bd5-4080-b627-d865d5c0a683",
+      "name": "docclaims-job"
+    }
+  ],
+  "jobs": {
+    "invalid": 0,
+    "total": 1,
+    "valid": 1
+  },
+  "queue": {
+    "retrying": 0
+  },
+  "queue_depth": 0,
+  "status": "ok",
+  "storage": {
+    "db_bytes": 196608,
+    "disk_free_bytes": 277594374144,
+    "disk_total_bytes": 994662584320
+  },
+  "uptime_seconds": 0.054016,
+  "version": "v0.2.0-151-g78073be-dirty"
+}
+
+$ curl -s http://127.0.0.1:7823/health   (UNAUTHENTICATED)
+{"status":"ok","version":"v0.2.0-151-g78073be-dirty","uptime_seconds":0.063984}
+
+$ curl -s -H 'Authorization: Bearer wrong' http://127.0.0.1:7823/health   (WRONG TOKEN)
+{"status":"ok","version":"v0.2.0-151-g78073be-dirty","uptime_seconds":0.073077}
+
+
+### Claim 6 — reload does not release, does not re-read credentials, does not cancel work
+(claim 6 quote 1: a newly visible job has no active release, otter run answers 409)
+$ otter start --detach --listen 127.0.0.1:7823
+started     pid 49976
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+api         http://127.0.0.1:7823
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT/.otter/serve/serve.log
+background; otter stop to stop it
+$ otter reload
+no changes   1 job(s)
+$ otter run docclaims-job   (expect 409, no active release)
+otter: job docclaims-job has no active release; run otter release docclaims-job before submitting runs: conflict (conflict, HTTP 409)
+rc=1
+$ otter stop
+stopped      /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT (pid 49976)
+
+### Claim 10 — the two migrations the release notes name are present
+0001_init.sql
+0002_python_environment.sql
+0003_integration_identity.sql
+0004_http_capture.sql
+0005_run_capture_policy.sql
+0006_http_exchanges_request_id.sql
+0007_timeline_indexes.sql
+0008_run_logs_origin.sql
+0009_http_exchange_error_summary.sql
+0010_integration_pause.sql
+0011_job_terminology.sql
+0012_job_schedules.sql
+embed.go
+
+### Claim 3 — the downgrade message character-for-character (raw record in the F4 re-check)
+$ grep -n 'downgrades are not supported' docs/operations.md
+1103:  {"applied":13,"error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","event":"migration_failed","known":12,"level":"error","timestamp":"2024-06-01T03:00:00Z"}
+$ grep -n 'downgrades are not supported' <F4 raw record>
+grep: /Users/taka/Desktop/otter-workspace/otter/docs/evidence/v0.3.0/2026-10-02-v0.3.0-finding-f4-rerun.txt: No such file or directory
+
+### Claim 11 — the rename table vs the binary (JSON keys)
+$ otter runs --all --json | python3 -c 'sorted keys'
+['attempt', 'capture_policy', 'created_at', 'error', 'exit_code', 'finished_at', 'id', 'job_generation', 'job_id', 'job_name', 'metadata', 'parent_run_id', 'python_mode', 'release_digest', 'sdk_version', 'started_at', 'status', 'trigger_type']
+$ otter runs --all --json | grep -c integration_id   (must be 0)
+0
+
+### Claim 12 — the retry-binding tests named by runtime-contract.md exist and pass
+
+$ otter stop
+stopped      /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-docclaims.cPotZT (pid 49991)
+
+--- end raw output ---
+exit status: 0 (re-check transcript; every command it prints ran)

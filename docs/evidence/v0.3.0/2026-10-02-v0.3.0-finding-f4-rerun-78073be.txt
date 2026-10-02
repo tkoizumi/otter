@@ -1,0 +1,72 @@
+=== Otter v0.3.0 exit gate — RE-CHECK F4: downgrade refusal carries applied/known ===
+date:      2026-10-02 14:18:15 EDT
+git HEAD:  78073be
+describe:  v0.2.0-151-g78073be
+binary:    /Users/taka/Desktop/otter-workspace/otter/bin/otter (otter v0.2.0-151-g78073be-dirty)
+workspace: /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f4-rerun.WjuK91
+--- raw output ---
+
+$ cd /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f4-rerun.WjuK91; otter init downgrade-job
+created workspace  /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f4-rerun.WjuK91
+job                downgrade-job
+runtime version    v0.2.0-151-g78073be-dirty
+wrote              .otter/version
+wrote              otter.env.example
+wrote              .gitignore
+wrote              downgrade-job/otter.yaml
+wrote              downgrade-job/main.py
+wrote              downgrade-job/logic.py
+wrote              downgrade-job/tests/test_logic.py
+
+next:
+  otter validate downgrade-job
+  otter release downgrade-job
+  otter start --detach
+  otter run downgrade-job
+  otter stop
+rc=0
+
+$ otter start --detach --listen 127.0.0.1:7821
+started     pid 49890
+project     /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f4-rerun.WjuK91
+api         http://127.0.0.1:7821
+jobs        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f4-rerun.WjuK91
+data        /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f4-rerun.WjuK91/.otter/data
+log         /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f4-rerun.WjuK91/.otter/serve/serve.log
+background; otter stop to stop it
+rc=0
+$ otter stop   (so nothing holds the database while the newer row is written)
+stopped      /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T/otter-f4-rerun.WjuK91 (pid 49890)
+rc=0
+
+$ sqlite3 .otter/data/otter.db "insert into schema_migrations(version,name,applied_at) values(13,'0013_future.sql',datetime('now'));"
+rc=0
+$ sqlite3 .otter/data/otter.db 'select version,name from schema_migrations order by version;'
+1|0001_init.sql
+2|0002_python_environment.sql
+3|0003_integration_identity.sql
+4|0004_http_capture.sql
+5|0005_run_capture_policy.sql
+6|0006_http_exchanges_request_id.sql
+7|0007_timeline_indexes.sql
+8|0008_run_logs_origin.sql
+9|0009_http_exchange_error_summary.sql
+10|0010_integration_pause.sql
+11|0011_job_terminology.sql
+12|0012_job_schedules.sql
+13|0013_future.sql
+
+$ otterd --jobs /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f4-rerun.WjuK91 --data /var/folders/jc/5v89mlc92bvg8pzlk9tyy4bw0000gn/T//otter-f4-rerun.WjuK91/.otter/data   (foreground: capture the refusal record verbatim)
+{"applied":13,"error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","event":"migration_failed","known":12,"level":"error","timestamp":"2026-10-02T18:18:15.424558Z"}
+{"error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","event":"startup_failed","level":"error","timestamp":"2026-10-02T18:18:15.424959Z"}
+rc=1
+
+$ obs=$(otterd ... 2>&1); echo "$obs" | grep -c '"applied":13' ; grep -c '"known":12'
+1
+1
+
+$ echo "$obs" | python3 -c 'sorted keys of the record'
+['applied', 'error', 'event', 'known', 'level', 'timestamp']
+
+--- end raw output ---
+exit status: 0 (re-check transcript; every command it prints ran)
