@@ -1,7 +1,11 @@
 # Dynamic schedules: design
 
-Status: proposed. Date: 2026-10-01. No capability in this document is shipped by
-writing it.
+Status: partly shipped. Date: 2026-10-01. Amended 2026-10-02: the first cut
+shipped in `v0.3.0` (migration `0012_job_schedules` — one row per job, the
+store-backed scheduler, and `PUT`/`DELETE /v1/jobs/{id}/schedule`). The rest —
+`schedule_id`-keyed endpoints, per-occurrence payloads, pause/resume, idempotency
+keys, `schedule_fires`, UTC pinning and the CLI family — is workstream `R2` in
+[v0.4.0-and-cloud-phase-b-plan.md](v0.4.0-and-cloud-phase-b-plan.md).
 
 ## Objective
 
@@ -436,5 +440,5 @@ behaviour, which is what makes phases 3–4 reviewable.
   §9.1 reconciles.
 - [product-roadmap.md](product-roadmap.md#recorded-decisions) — the dated decision
   that pulls `CL-22` and `CL-23` forward of the Phase B gate.
-- [p0-13-castor-import-implementation-plan.md](p0-13-castor-import-implementation-plan.md)
+- [p0-13-castor-import-implementation-plan.md](archive/p0-13-castor-import-implementation-plan.md)
   — the migration this capability would replace the interim scheduling shim with.

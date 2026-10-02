@@ -58,6 +58,15 @@ reduce job debugging effort. After Phase 3, reverse that order if pilot
 evidence shows host operations are the larger adoption blocker. Avoid launching
 both tracks at once with a small team.
 
+**Amended 2026-10-02 (records `CA-55`).** For the `v0.4.0` + Otter Cloud Phase B
+track the sequencing above is superseded: the control plane and a demo UI are
+built *in parallel* with the runtime, not after the Phase 3 gate. The runway is
+that Castor is a real second consumer, the runtime work those tracks need is the
+interface rather than a gate, and UI and projections absorb runtime churn cheaply
+while identity and credentials do not. The current sequence, its guardrails, and
+the reframed gates are in
+[v0.4.0-and-cloud-phase-b-plan.md](v0.4.0-and-cloud-phase-b-plan.md).
+
 ## v0.2.0 — Phase 1. Dependable execution
 
 Prioritize correctness over expanding the command surface.
