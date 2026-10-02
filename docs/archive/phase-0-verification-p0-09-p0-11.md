@@ -82,7 +82,7 @@ a deliberately failing run posts to that channel.
 real Slack channel: `notification_sent` with `job=…`, `status=failed`,
 `attempt=1` — one delivery, so the failure was not retried — and the host was
 restored byte-for-byte (env sha256 unchanged, `OTTER_NOTIFY_URL` gone, `/health`
-200). [Transcript](evidence/phase-0/2026-09-30-p0-09-host-hw4a.txt).
+200). [Transcript](../evidence/phase-0/2026-09-30-p0-09-host-hw4a.txt).
 
 **How to verify.**
 
@@ -122,8 +122,8 @@ and confirm an alert arrives with nobody watching a terminal.
 answers and publishes nothing when it does not; `heartbeat.timer` runs it every
 minute; the CloudWatch alarm has `TreatMissingData: breaching` **and a wall-clock
 evaluation window**; SNS mails the owner. Two host runs:
-[sliding window, kill → ALARM **11m10s**](evidence/phase-0/2026-09-30-p0-10-host-hw4b-liveness.txt),
-[wall-clock window, **5m34s**](evidence/phase-0/2026-09-30-p0-10-host-hw4b-liveness-walled.txt).
+[sliding window, kill → ALARM **11m10s**](../evidence/phase-0/2026-09-30-p0-10-host-hw4b-liveness.txt),
+[wall-clock window, **5m34s**](../evidence/phase-0/2026-09-30-p0-10-host-hw4b-liveness-walled.txt).
 
 **How to verify.**
 
@@ -182,18 +182,18 @@ fires at a test threshold, and retention demonstrably prunes.
 - **Retention prunes**: four passes over *copies* of a consistent live snapshot —
   a long-window control that pruned nothing, the run window alone, the log window
   alone, and the capture window alone — each isolating one store.
-  [Transcript](evidence/phase-0/2026-09-30-p0-11-host-hw6a.txt).
+  [Transcript](../evidence/phase-0/2026-09-30-p0-11-host-hw6a.txt).
 - **The fill's finding**: at 99% and even 100% full (10 MiB free) the runtime is
   unaffected; a job emitting 64 MiB then lost its output
   (`run_log_write_failed … database or disk is full (13)`, eleven times at error)
   **while the run reported `succeeded`**.
-  [Transcript](evidence/phase-0/2026-09-30-p0-11-host-hw6b-disk-fill.txt).
+  [Transcript](../evidence/phase-0/2026-09-30-p0-11-host-hw6b-disk-fill.txt).
 - **The alert fires**: three real breaches (a 1 MB cap on the live 62 MB
   environments store; a 999999 MB floor on the real disk; the default 2048 MB
   floor on a genuinely full 2 GiB EBS volume at 49 MB free) each silenced the
   check, the timer stopped publishing, the alarm went `ALARM` 5m28s later, SNS
   delivered, and a byte-exact restore cleared it.
-  [Transcript](evidence/phase-0/2026-09-30-p0-11-host-hw6b-alert.txt).
+  [Transcript](../evidence/phase-0/2026-09-30-p0-11-host-hw6b-alert.txt).
 
 **How to verify.**
 
@@ -265,7 +265,7 @@ do not downgrade the claim to prose.
 - [phase-0-status.md](phase-0-status.md) — the ledger these rows live in.
 - [phase-0-host-run-plan.md](phase-0-host-run-plan.md) — lane B, the serialised
   host lane and its rules.
-- [evidence/phase-0/README.md](evidence/phase-0/README.md) — the recording
+- [evidence/phase-0/README.md](../evidence/phase-0/README.md) — the recording
   convention.
-- [cloud-alpha-readiness.md](cloud-alpha-readiness.md) — `CA-19`, `CA-30`,
+- [cloud-alpha-readiness.md](../cloud-alpha-readiness.md) — `CA-19`, `CA-30`,
   `CA-31`, `CA-33` and the cutover blocker table.

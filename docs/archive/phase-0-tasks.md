@@ -1,7 +1,7 @@
 # Phase 0 task list — Castor dogfood
 
 Status: proposed. Date: 2026-09-29. Derived from
-[cloud-alpha-readiness.md](cloud-alpha-readiness.md) §17 Phase 0.
+[cloud-alpha-readiness.md](../cloud-alpha-readiness.md) §17 Phase 0.
 
 **Goal:** prove that one real Castor job can run safely and unattended on Otter
 without Cloud.
@@ -58,7 +58,7 @@ are the reason Phase 0 exists.
 
 **What.** The only real `SIGKILL` test today is in `internal/executor/proc_linux_test.go`,
 and it kills a stand-in parent with no daemon and no database
-([runtime-contract.md](runtime-contract.md) line 411). `FM-01` and `FM-02` are
+([runtime-contract.md](../runtime-contract.md) line 411). `FM-01` and `FM-02` are
 marked **Simulated**.
 
 **Deliverable.** A harness that:
@@ -85,7 +85,7 @@ defect. Budget for fixing what it finds, not just writing it.
 **What.** `planRetry` (`internal/daemon/workers.go`) copies `release_digest` and
 `release_source_dir` and resolves the parent's environment, but no test references
 `ReleaseSourceDir` at all, and the contract states this as an explicit
-non-guarantee ([runtime-contract.md](runtime-contract.md) lines 296–312).
+non-guarantee ([runtime-contract.md](../runtime-contract.md) lines 296–312).
 
 **Deliverable.**
 
@@ -102,9 +102,9 @@ non-guarantee to guarantee.
 ### P0-03 — Full-fidelity backup and restore — `CA-21`
 
 **What.** The documented backup copies `otter.db` only
-([operations.md](operations.md) lines 399–441). Releases live on disk under the
+([operations.md](../operations.md) lines 399–441). Releases live on disk under the
 data directory, and job identity is a `.otter-id` marker inside the **source**
-directory ([security.md](security.md) lines 468–479). A database-only backup
+directory ([security.md](../security.md) lines 468–479). A database-only backup
 restores history whose releases are missing.
 
 **Deliverable.**
@@ -122,11 +122,11 @@ synthetic CI workspace.
 
 ### P0-04 — Resource caps in the generated unit — `CA-08`
 
-**What.** `UnitFile` ([render.go](../internal/deploy/render.go) lines 27–63) emits
+**What.** `UnitFile` ([render.go](../../internal/deploy/render.go) lines 27–63) emits
 `User=`, `ExecStart=`, `Restart=always` and friends, and nothing else. There is no
 `MemoryMax`, `CPUQuota` or `TasksMax` anywhere in the deploy code, and the manifest
 bounds only `timeout` and `concurrency`
-([manifest-reference.md](manifest-reference.md) lines 84, 237).
+([manifest-reference.md](../manifest-reference.md) lines 84, 237).
 
 **Deliverable.** Emit host-level caps in the generated unit, sized for the Castor
 workload, and document how to size them.
@@ -165,12 +165,12 @@ release remains active and serving.
 ### P0-07 — Provision the Castor host — `CA-06`, `CA-09`, `CA-10`
 
 **What.** One VM, `otterd`, loopback API, SSH tunnel — the architecture in
-[security.md](security.md).
+[security.md](../security.md).
 
 **Deliverable.** One script from an empty Linux VM to a running daemon:
 
 - unprivileged `otter` service account with a `nologin` shell (`otter deploy`
-  already does this — [render.go](../internal/deploy/render.go) line 137);
+  already does this — [render.go](../../internal/deploy/render.go) line 137);
 - data directory `0700` owned by the service account; environment file `0600`
   **root**-owned, inside a `0700` root-owned directory. The daemon reads it
   through systemd's `EnvironmentFile=`, which runs as root before dropping to
@@ -183,7 +183,7 @@ release remains active and serving.
   corrected rather than the host.)*
 - systemd unit installed and enabled;
 - **no public API ingress.** `otter deploy` already refuses a wildcard bind
-  ([target.go](../internal/deploy/target.go) lines 415–422); verify it on the real
+  ([target.go](../../internal/deploy/target.go) lines 415–422); verify it on the real
   host;
 - restricted SSH.
 
@@ -197,7 +197,7 @@ permission assertion test passes, rather than the docs being read.
 ### P0-08 — Egress and managed Python — `CA-17`, `CA-18`
 
 **What.** Managed Python has **no offline bundle**: preparation fetches the
-interpreter and wheels ([managed-python.md](managed-python.md) line 482), and not
+interpreter and wheels ([managed-python.md](../managed-python.md) line 482), and not
 every patch version is downloadable everywhere (line 466).
 
 **Deliverable.** Confirm outbound egress to PyPI / `python-build-standalone` and to
@@ -214,7 +214,7 @@ any schedule is enabled.
 ### P0-09 — Failure notification — `CA-30`
 
 **What.** `OTTER_NOTIFY_URL` supports JSON, Slack, Discord and Teams. Only failures
-notify ([deploy.md](deploy.md) line 283).
+notify ([deploy.md](../deploy.md) line 283).
 
 **Deliverable.** Configure a channel a human actually reads.
 
@@ -223,7 +223,7 @@ notify ([deploy.md](deploy.md) line 283).
 ### P0-10 — Independent liveness detection — `CA-31`
 
 **What.** Delivery is "deliberately best-effort" with a bounded in-process retry and
-no durable outbox ([notify.go](../internal/notify/notify.go) line 9). If the daemon
+no durable outbox ([notify.go](../../internal/notify/notify.go) line 9). If the daemon
 is down, it cannot report its own death. Phase 0 has **no control plane**, so this
 must be external to the runtime.
 
@@ -239,10 +239,10 @@ terminal.
 **What.** Four things grow: `otter.db`, release snapshots, prepared environments and
 `cache/uv/`, and capture rows. Retention for runs and logs landed after `v0.2.0`, in
 the `v0.3.0` line of work, but it is **opt-in**
-([daemon.go](../internal/config/daemon.go) line 40): `--capture-retention`,
+([daemon.go](../../internal/config/daemon.go) line 40): `--capture-retention`,
 `--log-retention`, `--run-retention`. Releases prune on deploy with a keep window;
 environment GC is "deliberately deferred"
-([managed-python.md](managed-python.md) line 480).
+([managed-python.md](../managed-python.md) line 480).
 
 **Deliverable.** Enable all three retention windows for Castor — they default to
 retain-forever — and set alert thresholds covering all four stores. Include a
@@ -257,7 +257,7 @@ disk-fill drill: the failure mode is not "slow", it is "the daemon cannot write"
 ### P0-12 — Scope Castor's credentials — `CA-12`
 
 **What.** Manifests declare secret **names**; values are read from the daemon
-environment ([manifest-reference.md](manifest-reference.md) lines 272–283). A
+environment ([manifest-reference.md](../manifest-reference.md) lines 272–283). A
 missing secret fails the run **before** Python starts, and is not retried.
 
 **Deliverable.** Castor's credentials in the `0600` environment file; the manifest
@@ -273,7 +273,7 @@ cleanly and repeatedly.
 ### P0-13 — Select and harden the job — `CA-02`, `CA-40`–`CA-46`
 
 **What.** The job is where a duplicate write becomes a real business problem, and no
-runtime guarantee prevents it ([runtime-contract.md](runtime-contract.md) §5.2). The
+runtime guarantee prevents it ([runtime-contract.md](../runtime-contract.md) §5.2). The
 job is Castor's scheduled Shopify import. The revised design — the control-surface
 contract, the Castor-side queue change, and both manifests — is in
 [p0-13-castor-import-implementation-plan.md](p0-13-castor-import-implementation-plan.md).
@@ -370,12 +370,12 @@ Recorded so they do not leak in. None of these can make a Castor migration unsaf
   operator is the runtime's author. `CL-10` is deferred to Phase E so Castor is not
   pointed at an API that is about to be superseded.
 - **Risks R-03, R-04, R-07, R-11, R-14, R-15, R-20, R-21** — see
-  [cloud-alpha-readiness.md](cloud-alpha-readiness.md) §"Risk coverage by phase".
+  [cloud-alpha-readiness.md](../cloud-alpha-readiness.md) §"Risk coverage by phase".
 
 ## Related
 
-- [cloud-alpha-readiness.md](cloud-alpha-readiness.md) — the plan this executes.
-- [cloud-alpha-risks.md](cloud-alpha-risks.md) — the risks each task closes.
-- [runtime-contract.md](runtime-contract.md) — the evidence statuses P0-01 and
+- [cloud-alpha-readiness.md](../cloud-alpha-readiness.md) — the plan this executes.
+- [cloud-alpha-risks.md](../cloud-alpha-risks.md) — the risks each task closes.
+- [runtime-contract.md](../runtime-contract.md) — the evidence statuses P0-01 and
   P0-02 move.
-- [operations.md](operations.md) — the backup procedure P0-03 corrects.
+- [operations.md](../operations.md) — the backup procedure P0-03 corrects.

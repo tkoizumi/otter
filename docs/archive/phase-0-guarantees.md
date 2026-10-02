@@ -112,7 +112,7 @@ to work.
    daemon, and asserts.
 
 **Evidence.** HW-7, **passed twice** on two real hosts
-([record](evidence/phase-0/2026-09-30-p0-03-hw7-clean-host.txt)). Restore verified
+([record](../evidence/phase-0/2026-09-30-p0-03-hw7-clean-host.txt)). Restore verified
 3986 files against `MANIFEST.sha256` before writing; identity survived by marker
 hash; a new run executed from the restored release and environment; and the
 cross-host check — the source runtime does not know that run id — is what proves
@@ -155,7 +155,7 @@ useful thing in this document:
 neither is sufficient alone.
 
 **Evidence.** HW-3 on the real host
-([record](evidence/phase-0/2026-09-30-p0-04-hw3-unit-caps-fixed.txt)): `oom_kill 1`,
+([record](../evidence/phase-0/2026-09-30-p0-04-hw3-unit-caps-fixed.txt)): `oom_kill 1`,
 `memory.peak` exactly `memory.max`, `swap.current 0`, killed in **1.417 s** against
 a 600s timeout, `MainPID` unchanged, `NRestarts 0`, no survivor, `/health` 200.
 
@@ -238,7 +238,7 @@ with that, and both were found the moment it ran:
 host, plus the `otter-platform` stack fixes (swap before any risky step, a
 tolerated sshd reload, `/run/sshd` created before validation).
 
-**Evidence.** HW-8 ([record](evidence/phase-0/2026-09-30-p0-07-hw8-assertion.txt)):
+**Evidence.** HW-8 ([record](../evidence/phase-0/2026-09-30-p0-07-hw8-assertion.txt)):
 an external full-range scan finds **only 22/tcp**, and the permission assertion
 exits 0 on the real host having read the sandbox directives back from the
 **loaded** unit, the real `workspace.json`, the real file modes and the real

@@ -27,7 +27,7 @@ to Castor's job owner, not a deploy.
 | Provisioning | `cloud-init: done`, no errors; swap and `/var/log/otter-provision-report.txt` present |
 | Key | `.otter-keys/otter-castor.pem` — **re-fetched from SSM** for the new key pair `key-096f5d276bd8eea63`; the old key belongs to the destroyed host |
 | API token | `otter_examples/.otter/state.secret.json` — a new token per host, keyed by `<ip>/<workspace-id>` |
-| Identity record | `.otter-keys/host-identity.txt` (workspace-local, outside both repos) and [2026-09-30-p0-07-host-rebuilt-2.txt](evidence/phase-0/2026-09-30-p0-07-host-rebuilt-2.txt) |
+| Identity record | `.otter-keys/host-identity.txt` (workspace-local, outside both repos) and [2026-09-30-p0-07-host-rebuilt-2.txt](../evidence/phase-0/2026-09-30-p0-07-host-rebuilt-2.txt) |
 | Monitoring | checks installed and both alarms live: `CastorRuntime-liveness` and `CastorRuntime-disk`, `OK`, actions armed, wall-clock window, one confirmed email subscription. OT-022 still makes the installer's convergence probe report "not yet converged" on every run |
 | Drill target | **destroyed** |
 | Previous host | **DESTROYED 2026-09-30**, and verified: no instances, no Elastic IPs, no volumes. That teardown is why the private key above had to be re-fetched rather than reused |
@@ -68,7 +68,7 @@ free while the run still reported `succeeded`.
 
 **Verified independently** — P0-09, P0-10 and P0-11 re-derived on the live host
 and under mutation: [independent
-record](evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt).
+record](../evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt).
 Two findings. **D1 (material):** retention was **not in force** on the live host
 — it ran `run/log retention 0s`, i.e. retain forever, because the configuration
 lived on a host destroyed the same day and nothing re-applied it on a rebuild.
@@ -151,9 +151,9 @@ reproduces it, and the live host logs `run_retention=2160h0m0s
 log_retention=720h0m0s`. D2: the monitoring suites refuse an unsigned publish,
 assert the signature and the disk payload, assert which filesystem `df` was asked
 about, and run in `make test` and in a CI `monitoring` job. Records:
-[verification](evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt),
-[retention](evidence/phase-0/2026-10-01-p0-11-retention-config.txt),
-[fixtures](evidence/phase-0/2026-10-01-p0-09-p0-11-fixture-hardening.txt).
+[verification](../evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt),
+[retention](../evidence/phase-0/2026-10-01-p0-11-retention-config.txt),
+[fixtures](../evidence/phase-0/2026-10-01-p0-09-p0-11-fixture-hardening.txt).
 
 Do not start another verification round on `p0-08`. Its residual is three
 labelled conservative refusals, all with a terminating remedy, and it is not on

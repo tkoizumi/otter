@@ -419,6 +419,6 @@ agent throughput.
 - [phase-0-tasks.md](phase-0-tasks.md) — the task list this executes.
 - [v0.3.0-release-plan.md](v0.3.0-release-plan.md) — WS1–WS6, which already carry
   most of the in-repo work.
-- [cloud-alpha-readiness.md](cloud-alpha-readiness.md) §17 — Phase 0's gate.
-- [cloud-alpha-risks.md](cloud-alpha-risks.md) — `R-19`, `R-23`.
-- [operations.md](operations.md) — the procedures the drills must execute.
+- [cloud-alpha-readiness.md](../cloud-alpha-readiness.md) §17 — Phase 0's gate.
+- [cloud-alpha-risks.md](../cloud-alpha-risks.md) — `R-19`, `R-23`.
+- [operations.md](../operations.md) — the procedures the drills must execute.

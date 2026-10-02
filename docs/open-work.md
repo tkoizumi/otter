@@ -1,6 +1,6 @@
 # Open work
 
-Status: living document. Created: 2026-09-28. Last reviewed: 2026-09-28.
+Status: living document. Created: 2026-09-28. Last reviewed: 2026-10-02.
 
 Tasks raised in working sessions that are not yet captured by a release plan or
 fixed in code. This is the intake list, not a schedule: items move to a release
@@ -13,7 +13,7 @@ that constrains another comes first.
 ## How to use this
 
 - **One home per task.** If it is scheduled in
-  [v0.2.0-release-plan.md](v0.2.0-release-plan.md) or
+  [v0.2.0-release-plan.md](archive/v0.2.0-release-plan.md) or
   [product-roadmap.md](product-roadmap.md), it lives there and not here. This
   document holds what those do not cover yet.
 - **Verify before trusting.** Every item records how it was found. An item
@@ -35,7 +35,7 @@ Status values: `open`, `scheduled` (a release plan names it), `blocked`,
 ### v0.2.0 — next
 
 The bulk of `v0.2.0` is sequenced in
-[v0.2.0-release-plan.md](v0.2.0-release-plan.md). What appears here is only the
+[v0.2.0-release-plan.md](archive/v0.2.0-release-plan.md). What appears here is only the
 work for that version that the release plan does not yet cover.
 
 None open. `OT-009` (state the macOS orphan-child limitation) closed with the
@@ -50,7 +50,7 @@ only guarantees what a matrix scenario exercises.
 
 ### v0.3.0
 
-Scheduled in [v0.3.0-release-plan.md](v0.3.0-release-plan.md), which turned the
+Scheduled in [v0.3.0-release-plan.md](archive/v0.3.0-release-plan.md), which turned the
 items below into workstreams and added the operating-drill evidence the roadmap's
 exit gate requires.
 
@@ -81,7 +81,7 @@ and nothing in the group was safe to ship until `OT-002` was settled.
 pin set, and refuses rather than treating an unreadable registry as "nothing is
 pinned"; the deploy release step passes a keep window (default 3), so a deploy
 converges the release directory instead of leaving every snapshot on disk. See
-[v0.3.0-release-plan.md](v0.3.0-release-plan.md#ws2--release-retention-and-deploy-pruning).
+[v0.3.0-release-plan.md](archive/v0.3.0-release-plan.md#ws2--release-retention-and-deploy-pruning).
 
 #### Reproducible releases — closed
 
@@ -185,7 +185,7 @@ is designed in
   `otter track <ref>` read, and the cleanup and retention coupling that keeps the
   index from outliving its runs.
 - **Why it is not in `v0.3.0`.** That plan's stated goal is
-  [no migration ships](v0.3.0-release-plan.md); a queryable index is a new table,
+  [no migration ships](archive/v0.3.0-release-plan.md); a queryable index is a new table,
   and no `v0.3.0` exit-gate step fails without it. It is also not `v0.4.0`, which
   freezes the manifest, SDK, CLI JSON and HTTP API rather than adding surface.
   `v0.5.0` is the first release that can carry a new manifest key and command
@@ -206,7 +206,7 @@ confirmed.
 
 ## Not tracked here
 
-- Work already sequenced in [v0.2.0-release-plan.md](v0.2.0-release-plan.md).
+- Work already sequenced in [v0.2.0-release-plan.md](archive/v0.2.0-release-plan.md).
 - Phase-level outcomes and gates in [product-roadmap.md](product-roadmap.md).
 - Implementation designs in the per-feature
   `*-implementation-plan.md` documents.

@@ -25,7 +25,7 @@ scoped API) are pulled forward of the Phase B gate. The roadmap entry is
 | Track order | Self-hosted first; Cloud as a later wrapper over the same API | `CL-22` and `CL-23` belong to the Phase 2 "Operable runtime" track, where `v0.4.0` already promises the API stops moving. |
 | Schedule time zone | **Pin UTC everywhere** | A behaviour change: `scheduler.New` builds `robfig/cron` without `WithLocation`, so existing manifests currently mean the **host's local time**. The migration documents it; the design carries a per-row `timezone` column for the future. |
 | Manifest schedules | One `trigger.cron` per job for the first cut; an `id:`-keyed `schedules:` list later | Keeps reconciliation trivial and the first cut behaviour-identical — that is the parity gate. No schema dependency: `schedules.origin_ref` holds a constant now and an id later, with a one-line backfill. |
-| Castor job code | Out of scope for now | The `P0-13` interim shim — tick job, database-as-queue, status mirror — is **cancelled** ([plan](p0-13-castor-import-implementation-plan.md)). The durable Castor fixes (lease, single-active-run index, cancel, shared import core) still stand, because they improve the Lambda path too. |
+| Castor job code | Out of scope for now | The `P0-13` interim shim — tick job, database-as-queue, status mirror — is **cancelled** ([plan](archive/p0-13-castor-import-implementation-plan.md)). The durable Castor fixes (lease, single-active-run index, cancel, shared import core) still stand, because they improve the Lambda path too. |
 
 **Why the reachability answer matters.** Loopback was standing in for
 authorization, and treating the platform as privileged would have re-created the

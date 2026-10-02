@@ -413,7 +413,7 @@ This is documented as a limitation, not fixed, and is tracked as `OT-009`
 ## Appendix A — the WS4 fault matrix and its evidence
 
 WS4 names the scenarios the runtime's failure behavior is judged against, in
-[the `v0.2.0` release plan](v0.2.0-release-plan.md#new-capability-the-fault-matrix).
+[the `v0.2.0` release plan](archive/v0.2.0-release-plan.md#new-capability-the-fault-matrix).
 The plan fixes eight as the minimum; `FM-01`–`FM-08` are those, and `FM-09` is
 added here for the attempt state machine itself, which the other scenarios
 exercise but do not state as a scenario. The IDs are assigned by this contract so
@@ -471,6 +471,6 @@ and the contract version increments.
 | Every `otter.yaml` field, including `concurrency` and `retry` | [manifest-reference.md](manifest-reference.md) |
 | Every endpoint, credential and error code | [api-reference.md](api-reference.md) |
 | Operating guidance, capacity tuning and troubleshooting | [operations.md](operations.md) |
-| The work this contract is the evidence for | [v0.2.0-release-plan.md](v0.2.0-release-plan.md) |
+| The work this contract is the evidence for | [v0.2.0-release-plan.md](archive/v0.2.0-release-plan.md) |
 | Phase gates and the freeze release | [product-roadmap.md](product-roadmap.md) |
 | Known open defects and unscheduled work | [open-work.md](open-work.md) |

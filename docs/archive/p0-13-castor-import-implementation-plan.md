@@ -2,13 +2,13 @@
 
 Status: proposed; **partly superseded** 2026-10-01. The interim scheduling shim —
 the tick job, the database-as-queue restructure and the status mirror — is
-cancelled by [decisions.md](decisions.md) in favour of dynamic schedules on the
+cancelled by [decisions.md](../decisions.md) in favour of dynamic schedules on the
 runtime API. The durable Castor fixes (lease, single-active-run index, cancel,
 shared import core) and the job design remain valid when Castor work resumes.
 Nothing in this plan is shipped by writing this document.
 
 **For what actually shipped, read
-[p0-13-castor-import-migration-record.md](p0-13-castor-import-migration-record.md).**
+[p0-13-castor-import-migration-record.md](../p0-13-castor-import-migration-record.md).**
 That document is what is true where the two disagree.
 
 This revises P0-13 ("Select and harden the job") in
@@ -39,11 +39,11 @@ migrations of the same shape, not part of P0-13.
 - Castor calling the Otter runtime API. `CL-10` is deferred to Phase E
   ([phase-0-tasks.md](phase-0-tasks.md#L370)); Phase 0's contract is that "a
   scheduled import needs no Otter API; the integration surface is the data, not
-  the API" ([cloud-alpha-readiness.md](cloud-alpha-readiness.md#L806)). The
+  the API" ([cloud-alpha-readiness.md](../cloud-alpha-readiness.md#L806)). The
   daemon is loopback-only and asserted that way by P0-07.
 - A per-dataset or per-interval Otter cron. Schedules are manifest-only and
   change only by edit + `otter reload`
-  ([manifest-reference.md](manifest-reference.md#L128)), which a UI cannot drive.
+  ([manifest-reference.md](../manifest-reference.md#L128)), which a UI cannot drive.
 - An SQS trigger in Otter. Otter has cron, webhook and manual triggers; adding a
   queue adapter is runtime work this plan exists to avoid.
 - Migrating more than one import. P0-13 proves the pattern once.
@@ -75,7 +75,7 @@ Preserved behaviour, explicitly: the interval set `{5, 15, 30, 60, 360, 720,
 
 Castor already stores every unit of work twice: a durable `sync_runs` row and an
 SQS message. `import-api.ts` inserts the row, sends SQS, and on failure marks the
-row failed ([import-api.ts:139](../../castor-app/infra/lambda/import-api.ts#L139));
+row failed ([import-api.ts:139](../../../castor-app/infra/lambda/import-api.ts#L139));
 the sync-scheduler does the same
 ([sync-scheduler/handler.py:55](../../castor-app/infra/lambda/sync-scheduler/handler.py#L55)).
 **Postgres is already the ledger; SQS is only the delivery channel.**
@@ -168,7 +168,7 @@ unconditionally, which the unique index will reject.
 ### 5.4 Retire the scheduler Lambda
 
 Delete `SyncScheduler`, its EventBridge rule and its SQS grants. `schedulersEnabled`
-already gates the rule ([castor-infra-stack.ts:217](../../castor-app/infra/lib/castor-infra-stack.ts#L217)),
+already gates the rule ([castor-infra-stack.ts:217](../../../castor-app/infra/lib/castor-infra-stack.ts#L217)),
 so this is reversible during shadow. The tick job replaces both the rule and the
 handler.
 
@@ -178,7 +178,7 @@ The UI reads `sync_runs`. One **logical sync** is one `sync_runs` row, and it ma
 span several Otter runs. The job must therefore guarantee exactly one terminal
 state per row, including when an Otter run is killed, times out, or is retried —
 Otter retries are *new* runs with `parent_run_id` set
-([manifest-reference.md](manifest-reference.md#L204)). A row left `running`
+([manifest-reference.md](../manifest-reference.md#L204)). A row left `running`
 forever is both a UI lie and, with the claim query, a wedged dataset.
 
 ### 5.6 Cancel, if the UI should get it
@@ -309,7 +309,7 @@ which removes the existing wedge where a killed worker blocks a dataset forever.
 ### 6.4 Context state
 
 `ctx.state` is a per-job JSON key/value store with keys capped at 128 characters
-([state.go:29](../internal/state/state.go#L29)); dataset-scoped keys fit
+([state.go:29](../../internal/state/state.go#L29)); dataset-scoped keys fit
 comfortably.
 
 | Key | Value |
@@ -327,7 +327,7 @@ Keep writing `sync_runs.stats` so the UI still shows progress.
 **Watermark, optional and second.** A faithful port is "full scan with a
 resumable cursor, idempotent upsert". Bounding the rescan with an
 `updated_at:>=` GraphQL filter plus a small overlap — the pattern in
-[otter_connectors/checkpoint.py](../../otter_examples/shopify_integrations/lib/python/otter_connectors/checkpoint.py)
+[otter_connectors/checkpoint.py](../../../otter_examples/shopify_integrations/lib/python/otter_connectors/checkpoint.py)
 — reduces work and makes the watermark real. It changes the query and needs its
 own verification against the pinned Shopify API version, so land it second.
 
@@ -355,7 +355,7 @@ Two entanglements, one of which the runtime must not absorb.
   ([handler.py:1090](../../castor-app/infra/lambda/import-worker/handler.py#L1090)).
   Two options: grant the runtime's instance role `kms:Encrypt`/`kms:Decrypt` on
   that one key, conditioned on the encryption context, via
-  [castor-runtime-stack.ts](../../otter-platform/lib/castor-runtime-stack.ts); or
+  [castor-runtime-stack.ts](../../../otter-platform/lib/castor-runtime-stack.ts); or
   move token handling behind a Castor endpoint.
 
 **Recommendation: narrow KMS for Phase 0.** It is one IAM policy on a stack we
@@ -458,7 +458,7 @@ three scheduled rules stay. The worker can only be retired once PostgreSQL and
 Salesforce ingestion move too, which is explicitly outside this plan.
 
 **The primary beneficiary is Otter.** Phase 0 exists to "absorb the risk a paying
-client would otherwise absorb" ([cloud-alpha-readiness.md](cloud-alpha-readiness.md#L787)),
+client would otherwise absorb" ([cloud-alpha-readiness.md](../cloud-alpha-readiness.md#L787)),
 and every blocker is a runtime-correctness item rather than a Castor complaint.
 Castor's own gains are real but modest, and three of them need no migration at
 all:
@@ -491,9 +491,9 @@ legitimate choice for a dogfood migration, but it should be named as one.
 - [phase-0-tasks.md](phase-0-tasks.md#L273) — P0-13, the task this implements.
 - [phase-0-execution-plan.md](phase-0-execution-plan.md#L367) — W3, the
   human-bound wave this sits in.
-- [cloud-alpha-readiness.md](cloud-alpha-readiness.md#L787) — Phase 0's scope and
+- [cloud-alpha-readiness.md](../cloud-alpha-readiness.md#L787) — Phase 0's scope and
   the `CL-10` deferral.
-- [runtime-contract.md](runtime-contract.md#L168) — cron, delivery and duplicate
+- [runtime-contract.md](../runtime-contract.md#L168) — cron, delivery and duplicate
   semantics the job is designed against.
-- [otter-platform/README.md](../../otter-platform/README.md#L30) — host sizing and
+- [otter-platform/README.md](../../../otter-platform/README.md#L30) — host sizing and
   the `OTTER_WORKERS=1` requirement.

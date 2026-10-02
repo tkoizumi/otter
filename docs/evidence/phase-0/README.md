@@ -31,7 +31,7 @@ is not.
 - A restatement of what the code does, with no command behind it.
 - A passing unit test with no indication that it would fail if the behavior were
   removed. Every task's evidence names the verifier's mutation check for exactly
-  this reason (see [phase-0-execution-plan.md](../phase-0-execution-plan.md) §2).
+  this reason (see [phase-0-execution-plan.md](../../archive/phase-0-execution-plan.md) §2).
 - Credentials, tokens, or captured payloads from a real destination. Redact the
   command, keep the output.
 

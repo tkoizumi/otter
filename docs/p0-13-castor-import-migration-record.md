@@ -5,7 +5,7 @@ Status: shipped for the three Shopify resources below. Salesforce, Postgres and
 2026-10-02.
 
 This is the record of what actually runs, as against
-[p0-13-castor-import-implementation-plan.md](p0-13-castor-import-implementation-plan.md),
+[p0-13-castor-import-implementation-plan.md](archive/p0-13-castor-import-implementation-plan.md),
 which is the plan. Three of that plan's parts were cancelled before they were
 built (see "Against the plan"), so the plan no longer describes the shipped
 system. Where the two disagree, this document is what is true.
@@ -238,7 +238,7 @@ What was checked, and the number that was checked:
 
 ## 12. Against the plan
 
-[p0-13-castor-import-implementation-plan.md](p0-13-castor-import-implementation-plan.md)
+[p0-13-castor-import-implementation-plan.md](archive/p0-13-castor-import-implementation-plan.md)
 proposed an interim scheduling shim that was cancelled before it was built, in
 favour of dynamic schedules on the runtime API (see [decisions.md](decisions.md)):
 

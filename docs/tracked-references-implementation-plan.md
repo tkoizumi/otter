@@ -60,7 +60,7 @@ it belongs in `v0.3.0`, and the answer is a property of that release, not of thi
 feature.
 
 `v0.3.0` states as a goal that **no migration ships**, so that upgrade and
-downgrade stay a binary swap ([v0.3.0-release-plan.md](v0.3.0-release-plan.md)).
+downgrade stay a binary swap ([v0.3.0-release-plan.md](archive/v0.3.0-release-plan.md)).
 A queryable index is a new table; there is no version of this feature that
 answers the question without one, because the whole defect is that
 `runs.metadata` is unindexed. `v0.3.0` also does not need it: its exit gate is

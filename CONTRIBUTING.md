@@ -61,7 +61,7 @@ make cross     # cross-compile for Linux and macOS
   Phase 0 task is closed by. `make drill DRILL=<name>` runs one;
   `scripts/drill.sh --list` lists them. A drill that cannot run on this platform
   fails loudly instead of skipping, because a drill that did not run has produced
-  no evidence. See [docs/phase-0-tasks.md](docs/phase-0-tasks.md).
+  no evidence. See [docs/archive/phase-0-tasks.md](docs/archive/phase-0-tasks.md).
 
 Run a single package while iterating. Use `scripts/go`, not `go` directly:
 
@@ -150,6 +150,12 @@ Two things to keep in mind:
 `api-reference.md`, `managed-python.md`, `identity.md`, `security.md`,
 `operations.md` and `deploy.md` describe what an *installed* Otter does. If a
 change alters behaviour, the document is part of the change.
+
+Superseded plans, ledgers and historical work orders live in `docs/archive/`.
+They are records, not instructions: their internal links may point at code that
+has since been deleted, and they are not kept in step with behaviour. The forward
+plan for the runtime and Otter Cloud is
+[docs/v0.4.0-and-cloud-phase-b-plan.md](docs/v0.4.0-and-cloud-phase-b-plan.md).
 
 Job-authoring tutorials do not live here. Keep this repository's prose
 about the runtime and point at an installed workflow.

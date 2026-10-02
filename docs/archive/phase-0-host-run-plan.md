@@ -348,6 +348,6 @@ and the pin decision in HW-1.
 - [phase-0-execution-plan.md](phase-0-execution-plan.md) — §3 W2, the plan this elaborates.
 - [phase-0-tasks.md](phase-0-tasks.md) — the evidence bars each window must meet.
 - [phase-0-status.md](phase-0-status.md) — the ledger the window table extends.
-- [evidence/phase-0/README.md](evidence/phase-0/README.md) — the recording convention.
-- [otter-platform/README.md](../../otter-platform/README.md) — the stack that created
+- [evidence/phase-0/README.md](../evidence/phase-0/README.md) — the recording convention.
+- [otter-platform/README.md](../../../otter-platform/README.md) — the stack that created
   the host, its sizing rationale and the first-run sequence.

@@ -581,7 +581,7 @@ guarantee in `runtime-contract.md` §5.1 only when this passes.
 
 Make them `make drill` subcommands that assert their own outcome and exit non-zero
 with failing evidence, so a second operator can run them without interpreting
-prose ([v0.3.0-release-plan.md](v0.3.0-release-plan.md) WS6).
+prose ([v0.3.0-release-plan.md](archive/v0.3.0-release-plan.md) WS6).
 
 ## CA-56 — Validate crash recovery per client host — SHOULD
 
@@ -1137,7 +1137,7 @@ infrastructure or large-scale orchestration.
   this plan, reconciled with it on 2026-09-29.
 - [product-roadmap.md](product-roadmap.md) — Phase 3 gate and post-1.0 Phase 5;
   superseded for this track by `CA-55`.
-- [v0.3.0-release-plan.md](v0.3.0-release-plan.md) — WS6 covers `CA-20`–`CA-26`.
+- [v0.3.0-release-plan.md](archive/v0.3.0-release-plan.md) — WS6 covers `CA-20`–`CA-26`.
 - [runtime-contract.md](runtime-contract.md) — the guarantees behind §"What we can
   promise".
 - [security.md](security.md) — the runtime hardening checklist behind
