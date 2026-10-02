@@ -54,10 +54,15 @@ Scheduled in [v0.3.0-release-plan.md](v0.3.0-release-plan.md), which turns the
 items below into workstreams and adds the operating-drill evidence the roadmap's
 exit gate requires. This table remains their intake record.
 
+Every item this release closes is now `done`: `OT-001`–`OT-006`, `OT-008` and
+`OT-011`. The table is kept until the tag ships, at which point the row set
+disappears from here by the rule at the top of this document. `OT-007` stays
+scheduled for `v0.5.0` and `OT-010` for `v0.4.0` (below).
+
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| OT-001 | Fix documented retention SQL that filters on `runs.queued_at` | doc | `operations.md:507,529,549`; column is `created_at` (`migrations/0001_init.sql:28`) | open |
-| OT-006 | Automatic retention for run logs and runs | feature | `runs.LogStore.DeleteOlderThan` exists (`runs/logs.go:280`) but is called only from a test | scheduled |
+| OT-001 | Fix documented retention SQL that filters on `runs.queued_at` | doc | `operations.md` §Manual pruning now names `runs.created_at`, the column that exists; `queued_at` survives only in the plan documents that record the defect | done |
+| OT-006 | Automatic retention for run logs and runs | feature | `Daemon.runRetention` sweeps both windows from `daemon.Start` (`internal/daemon/retention.go`), wired to `--run-retention` / `--log-retention` and committed in `otter.deploy.yaml` so a rebuilt host cannot retain forever. Tests: `TestRetentionDisabledDeletesNothing`, `TestExpireRunsDeletesRunLogsAndCapture`, `TestExpireLogsKeepsRunRows`, `TestRetentionLogsOneLinePerSweep` | done |
 | OT-004 | Expose queue age, per-job depth, and last-success freshness | feature | `/health` now carries `queue` (oldest claimable age, `by_job` depth, `retrying`, `next_retry_at`), `freshness` (per-job last success and age) and `storage` (`db_bytes`, disk free/total) for an authenticated caller, and `otter status` prints them. `GET /v1/jobs` carries `last_success_at`, so `otter jobs --schedule` renders freshness with no run listing per job. The unauthenticated liveness body is unchanged. Tests: `TestHealthSignalsReportQueueAgeDepthRetriesAndFreshness`, `TestHealthEndpoint`, `TestHealthHidesCountersFromUnauthenticatedCallers`, `TestOldestWaitingAndNextRetryAt`, `TestLastSuccessByJobIsTheNewestSuccessPerJob`, `TestStatusPrintsTheOperationalSignals`, `TestScheduleRendersTheDaemonsLastSuccess` | done |
 | OT-005 | Ship a `migration_applied` log line, or stop promising one | doc | `Migrate` now returns the migrations it applied (`internal/database/migrate.go`) and `otterd` logs one `migration_applied` per entry, or `migration_failed` with the version and name (`internal/daemon/migrations.go`). Tests: `TestMigrateIsIdempotentAndRecordsEveryMigration`, `TestMigrateNamesTheMigrationThatFailed`, `TestMigrationsLogEachAppliedMigrationOnce`. No `description` column was added: `schema_migrations.name` is the description, and `operations.md` documents the emitted `name` field | done |
 | OT-008 | Document backlog behavior and its consequences | doc | [see below](#backlog-behavior-to-document) | done |

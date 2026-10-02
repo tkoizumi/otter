@@ -82,7 +82,8 @@ jobs:
   #
   # `make test-shell` runs every scripts/test-*.sh suite; `make test-monitoring`
   # runs the liveness and disk-pressure drills, which need a built otterd. The
-  # other drills need Docker or sshd and stay out of CI deliberately.
+  # remaining drills that need no Docker run in the `drills` job below; the two
+  # that need a privileged systemd container stay out of CI deliberately.
   monitoring:
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +97,31 @@ jobs:
           python-version: "3.13"
       - run: make test-shell
       - run: make test-monitoring
+
+  # The operating drills that need neither Docker nor a host. Each asserts an
+  # instruction docs/operations.md makes, and a drill that cannot run exits
+  # non-zero rather than skipping, so a missing prerequisite is a red job rather
+  # than a quiet pass.
+  #
+  # `upgrade` builds the previous release tag from source, which is why the
+  # checkout needs its tags (`fetch-depth: 0`) and a Go toolchain.
+  drills:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: make drill DRILL=backup-restore
+      - run: make drill DRILL=upgrade
+      - run: make drill DRILL=downgrade-refusal
+      - run: make drill DRILL=secret-rotation
 
   release-config:
     runs-on: ubuntu-latest
@@ -132,3 +158,11 @@ jobs:
           done
           tar tzf "$(ls dist/otter_*_darwin_arm64.tar.gz)" | sort
           test -f dist/checksums.txt
+      # Naming is not enough: the archive has to install and run a job on a host
+      # with no checkout. This is CA-24's fresh-host first success, driven
+      # entirely by the extracted binaries.
+      - name: The archive installs and runs a job outside the checkout
+        run: |
+          set -e
+          archive="$(ls "$PWD"/dist/otter_*_linux_amd64.tar.gz)"
+          OTTER_ARCHIVE="$archive" make drill DRILL=fresh-archive

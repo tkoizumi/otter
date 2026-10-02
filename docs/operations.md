@@ -100,6 +100,54 @@ workspace's own `workspace.json` — the record the deploy writes, whose keys ar
 paths an operator remembered. On a normally-deployed host the invocation above
 is therefore enough; no other flags are needed.
 
+### Operating drills
+
+The operating drills are the executable form of the instructions in this guide.
+Each one builds its own world, asserts the behavior the guide claims, and exits
+non-zero with the failing output when the behavior does not hold — so a drill
+transcript is evidence, not a procedure someone interpreted. A drill that cannot
+run on this machine fails loudly rather than skipping, because a drill that did
+not run has produced no evidence.
+
+```bash
+make drill                      # every drill
+make drill DRILL=upgrade        # one drill
+sh scripts/drill.sh --list      # the names
+```
+
+| Drill | What it proves | Needs |
+| --- | --- | --- |
+| `backup-restore` | A hot backup restores onto a different, empty data directory and the job runs again. | `sqlite3`, `python3` |
+| `upgrade` | The previous release's database upgrades to this build's schema — one `migration_applied` per migration — and the runtime works afterwards. | `git` with tags, `go`, `sqlite3` |
+| `downgrade-refusal` | A database a newer binary migrated is refused before anything runs, left untouched, and usable again once the newer row is gone. | `sqlite3` |
+| `secret-rotation` | A rotated credential is applied by a restart and not by `otter reload`; removing it fails a run before Python starts. | — |
+| `fresh-archive` | A release archive installs outside the checkout and runs a job end to end. | `OTTER_ARCHIVE` |
+| `deploy-failure` | A deploy that fails midway leaves the previous release active and serving. | Docker, privileged systemd container |
+| `unit-caps` | The generated unit's memory and CPU caps contain a runaway job on a real cgroup. | Docker, privileged systemd container |
+| `disk-pressure` | The disk check reports by silence, and a renamed metric is caught. | — |
+| `liveness` | The heartbeat stops publishing when the runtime stops answering. | — |
+
+CI runs every drill that needs neither Docker nor a host: `liveness` and
+`disk-pressure` in the `monitoring` job; `backup-restore`, `upgrade`,
+`downgrade-refusal` and `secret-rotation` in the `drills` job; and
+`fresh-archive` against the snapshot archives in the `release-config` job.
+`deploy-failure` and `unit-caps` need a privileged systemd container, so they are
+a pre-tag step on a machine with Docker.
+
+`fresh-archive` takes a published-shape archive rather than the local build:
+
+```bash
+goreleaser release --snapshot --clean    # dist/otter_<version>_<os>_<arch>.tar.gz
+OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_linux_amd64.tar.gz" make drill DRILL=fresh-archive
+```
+
+Each drill documents a `DRILL_SABOTAGE=<mode>` that removes the behavior under
+test, so a green run is demonstrably falsifiable rather than merely green: the
+sabotage run must fail at the assertion that names what was removed. For example
+`DRILL_SABOTAGE=skip-old-binary make drill DRILL=upgrade` seeds the workspace
+with the current binary, so nothing is pending and the drill goes red.
+
+
 `--approved-ports` is the list of ports the host may be listening on (default
 `22`): the script enumerates the host's own listening sockets with `ss -tln` and
 fails on anything else, or on a wildcard bind on an unapproved port. It does
@@ -959,7 +1007,7 @@ and `trigger.webhook` — and fixes a manifest that previously failed to validat
 the difference between "not there" and "there but broken": only the second is
 fixed by editing the file.
 
-Two things reload does not do:
+Three things reload does not do:
 
 - **It does not release anything.** A newly visible job has no active
   release, so `otter run` answers `409` until `otter release` stages one.
@@ -967,6 +1015,11 @@ Two things reload does not do:
   job from the directory does end its *queued* runs, because they can
   never execute; runs already executing are left to finish. The reload reports
   how many were cancelled.
+- **It does not re-read credentials.** `otter.env` is read by `otter start` when
+  it builds the daemon's environment; reload replaces what the daemon knows about
+  jobs, not its process environment. A rotated secret therefore takes a restart
+  ([Missing secret](#missing-secret)), and a run in flight at that restart does
+  not survive it.
 
 Restarting is still the right answer for changing the runtime itself — a new
 binary, a new embedded SDK, or daemon-level configuration. See
@@ -1035,8 +1088,19 @@ Behavior worth expecting:
   marks them `failed` with `otter daemon restarted during execution` and
   re-enqueues a retry when the policy allows. Design jobs to be
   idempotent, or stop the daemon when nothing long-running is in progress.
-- **Downgrades are not supported.** The old binary does not understand a newer
-  schema. Restore the pre-upgrade backup if you must roll back.
+- **Downgrades are refused, not attempted.** Migrations are append-only, so a
+  database whose newest applied migration a binary does not embed was migrated by
+  a newer one. Starting that binary fails before it serves anything:
+
+  ```json
+  {"level":"error","event":"migration_failed","error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","timestamp":"2024-06-01T03:00:00Z"}
+  ```
+
+  A guard cannot be retrofitted into a binary that predates it, so this is the
+  behavior from `v0.3.0` onward: before it, an older binary started and then
+  failed on the first query touching a schema it did not understand. Either way,
+  rolling back is a **restore** of the pre-upgrade backup, never an older binary
+  against the newer database (`scripts/drill.sh downgrade-refusal` asserts it).
 - **`sdk/python/` is refreshed** from the new binary at startup, so a newer SDK
   takes effect without any action. Jobs written against the old SDK keep
   working unless a changelog says otherwise.

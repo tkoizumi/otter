@@ -331,6 +331,13 @@ sudo find /srv/otter/jobs -type f -exec chmod 0640 {} +
   database `0600`; the assertion reports the mode it finds rather than failing a
   host that meets the stated requirement. The containment is against every
   account other than `otter`, which owns the directory by design.
+- **In a local workspace the credentials file is the operator's to protect.**
+  `otter init` writes `otter.env.example` — a commented template with no values,
+  mode `0644`, and ignored by git — and never creates `otter.env` itself. The
+  operator copies it and fills it in, and `otter start` reads
+  `<project>/otter.env` as the invoking user, so the deployed layout's
+  root-owned `0600` split does not apply. On a shared machine, the equivalent bar
+  is `chmod 600 otter.env` with a project directory other users cannot read.
 - **Jobs root read-only for the service user.** Otter never writes there.
   Making it `root:otter 0750` means the `otter` user cannot drop a new
   job into place, which turns "write to the jobs directory" into

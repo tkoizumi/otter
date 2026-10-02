@@ -33,12 +33,18 @@ func applyMigrations(ctx context.Context, log *logging.Logger, db *database.DB) 
 //
 // The version and name are logged as fields rather than left inside the error
 // text, so a log query can name the exact migration without string matching. A
-// failure that is not tied to one migration -- an unreadable embedded set, for
-// example -- is still reported, with the error alone.
+// failure that is not tied to one migration -- an unreadable embedded set, or a
+// database a newer binary migrated -- is still reported, with whatever the error
+// does identify.
 func logMigrationFailure(log *logging.Logger, err error) {
 	var failed *database.MigrationError
 	if errors.As(err, &failed) {
 		log.Error("migration_failed", err, "version", failed.Version, "name", failed.Name)
+		return
+	}
+	var tooNew *database.SchemaTooNewError
+	if errors.As(err, &tooNew) {
+		log.Error("migration_failed", err, "applied", tooNew.Applied, "known", tooNew.Known)
 		return
 	}
 	log.Error("migration_failed", err)

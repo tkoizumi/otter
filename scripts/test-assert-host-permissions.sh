@@ -643,7 +643,7 @@ expect "properties read without --value still assert" 0 \
 
 # --- the API and the listening sockets ---
 
-expect "API on a wildcard address fails" 1 "not loopback" -- "FIX_LISTEN=0.0.0.0:7337"
+expect "API on a wildcard address fails" 1 "neither loopback nor private" -- "FIX_LISTEN=0.0.0.0:7337"
 expect "a wildcard 0.0.0.0 listener fails" 1 \
 	"wildcard (0.0.0.0) listener exists on port 8999" \
 	-- "FIX_SS=LISTEN 0 4096 127.0.0.1:$api_port 0.0.0.0:*\nLISTEN 0 4096 0.0.0.0:8999 0.0.0.0:*"

@@ -46,6 +46,27 @@ func (e *MigrationError) Error() string {
 
 func (e *MigrationError) Unwrap() error { return e.Err }
 
+// SchemaTooNewError reports a database that a newer binary has migrated.
+//
+// Migrations are append-only, so a database whose newest applied version is
+// beyond this build's embedded set was migrated by a later binary. Running this
+// one against it is a downgrade, which is not supported: columns may have been
+// renamed or dropped, and a query that no longer means what it says is how a
+// downgrade corrupts data. The binary refuses to start instead, and the operator
+// restores the pre-upgrade backup.
+type SchemaTooNewError struct {
+	// Applied is the highest migration version recorded in the database.
+	Applied int
+	// Known is the highest migration version this binary embeds.
+	Known int
+}
+
+func (e *SchemaTooNewError) Error() string {
+	return fmt.Sprintf(
+		"database: schema is newer than this binary: the database has migration %d applied and this build knows up to %d; downgrades are not supported -- restore the pre-upgrade backup",
+		e.Applied, e.Known)
+}
+
 // Migrate applies every embedded migration that has not been applied yet, in
 // lexicographic filename order, and reports what it applied. Each migration
 // runs inside its own transaction so a failure leaves the database at a known
@@ -54,6 +75,9 @@ func (e *MigrationError) Unwrap() error { return e.Err }
 // The returned slice is empty when nothing was pending -- the common case for a
 // restart -- so a caller that logs one record per entry reports an upgrade and
 // stays quiet otherwise.
+//
+// A database migrated by a newer binary is refused with *SchemaTooNewError
+// before anything is applied.
 func Migrate(ctx context.Context, db *DB) ([]AppliedMigration, error) {
 	return migrate(ctx, db, migrations.FS)
 }
@@ -84,12 +108,34 @@ func migrate(ctx context.Context, db *DB, fsys fs.FS) ([]AppliedMigration, error
 	}
 	sort.Strings(names)
 
-	var out []AppliedMigration
+	// known is the newest migration this build embeds. Versions are parsed once
+	// here so the downgrade check and the apply loop agree on them.
+	known := 0
+	versions := make(map[string]int, len(names))
 	for _, name := range names {
 		version, err := parseVersion(name)
 		if err != nil {
-			return out, err
+			return nil, err
 		}
+		versions[name] = version
+		if version > known {
+			known = version
+		}
+	}
+
+	newest := 0
+	for version := range applied {
+		if version > newest {
+			newest = version
+		}
+	}
+	if newest > known {
+		return nil, &SchemaTooNewError{Applied: newest, Known: known}
+	}
+
+	var out []AppliedMigration
+	for _, name := range names {
+		version := versions[name]
 		if applied[version] {
 			continue
 		}

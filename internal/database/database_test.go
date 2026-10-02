@@ -234,6 +234,70 @@ func TestMigrateNamesTheMigrationThatFailed(t *testing.T) {
 	}
 }
 
+// A database migrated by a newer binary must be refused, and refused before
+// anything is applied: running an older build against renamed columns is how a
+// downgrade corrupts data, so the documented policy is "not supported, restore
+// the backup" rather than "try it and see".
+func TestMigrateRefusesANewerSchemaBeforeApplyingAnything(t *testing.T) {
+	db := openTempDB(t)
+	ctx := context.Background()
+
+	seed := fstest.MapFS{
+		"0001_init.sql": &fstest.MapFile{Data: []byte(`CREATE TABLE one (id INTEGER PRIMARY KEY);`)},
+	}
+	if _, err := migrate(ctx, db, seed); err != nil {
+		t.Fatalf("seed migration: %v", err)
+	}
+	// The newer binary's extra migration, as it appears in the database.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
+		99, "0099_from_the_future.sql", FormatTime(time.Now())); err != nil {
+		t.Fatalf("record the future migration: %v", err)
+	}
+
+	// This build embeds 0001 and a genuinely pending 0002. Neither may run.
+	binary := fstest.MapFS{
+		"0001_init.sql": &fstest.MapFile{Data: []byte(`CREATE TABLE one (id INTEGER PRIMARY KEY);`)},
+		"0002_next.sql": &fstest.MapFile{Data: []byte(`CREATE TABLE two (id INTEGER PRIMARY KEY);`)},
+	}
+	applied, err := migrate(ctx, db, binary)
+	if err == nil {
+		t.Fatal("migrate() accepted a database migrated by a newer binary")
+	}
+	var tooNew *SchemaTooNewError
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("error is %T, want *SchemaTooNewError: %v", err, err)
+	}
+	if tooNew.Applied != 99 || tooNew.Known != 2 {
+		t.Errorf("SchemaTooNewError = %+v, want applied 99 and known 2", tooNew)
+	}
+	if !strings.Contains(err.Error(), "downgrades are not supported") {
+		t.Errorf("the refusal does not state the policy: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("applied = %+v, want nothing applied before the refusal", applied)
+	}
+	if tableExists(t, db, "two") {
+		t.Fatal("a pending migration ran against a newer schema")
+	}
+
+	// The refusal was the version, not a broken database: with the newer
+	// binary's row gone, the same build migrates normally.
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 99`); err != nil {
+		t.Fatalf("remove the future migration: %v", err)
+	}
+	applied, err = migrate(ctx, db, binary)
+	if err != nil {
+		t.Fatalf("migrate() after the future row was removed: %v", err)
+	}
+	if len(applied) != 1 || applied[0].Version != 2 {
+		t.Fatalf("applied = %+v, want just 0002", applied)
+	}
+	if !tableExists(t, db, "two") {
+		t.Fatal("the pending migration did not run once the database was understood again")
+	}
+}
+
 func TestMigrateCreatesExpectedTables(t *testing.T) {
 	db := migrateTempDB(t)
 

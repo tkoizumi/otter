@@ -95,6 +95,29 @@ func TestMigrationFailureIsLoggedWithVersionAndName(t *testing.T) {
 	}
 }
 
+// A database a newer binary migrated is refused, and the record names both
+// versions so the operator can tell a downgrade from a broken migration.
+func TestSchemaTooNewIsLoggedWithBothVersions(t *testing.T) {
+	var buf bytes.Buffer
+	logMigrationFailure(logging.New(&buf, logging.FormatJSON, logging.LevelInfo),
+		&database.SchemaTooNewError{Applied: 13, Known: 12})
+
+	records := decodeRecords(t, &buf)
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want exactly one:\n%s", len(records), buf.String())
+	}
+	rec := records[0]
+	if rec["event"] != "migration_failed" || rec["level"] != "error" {
+		t.Errorf("record = %v, want an error-level migration_failed", rec)
+	}
+	if rec["applied"] != float64(13) || rec["known"] != float64(12) {
+		t.Errorf("record = %v, want applied 13 and known 12", rec)
+	}
+	if msg, _ := rec["error"].(string); !strings.Contains(msg, "newer than this binary") {
+		t.Errorf("error field %q does not explain the refusal", msg)
+	}
+}
+
 // A failure that is not tied to one migration -- an unreadable embedded set,
 // for example -- is still a failed upgrade and must still be reported.
 func TestMigrationFailureWithoutAMigrationStillLogs(t *testing.T) {
