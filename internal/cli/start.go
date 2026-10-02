@@ -392,7 +392,7 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 	}
 
 	if *detach {
-		return a.startDetached(opts, passthrough)
+		return a.startDetached(fs, opts, passthrough)
 	}
 
 	printStartBanner(a.Stdout, opts, "foreground; Ctrl-C to stop")
@@ -400,9 +400,21 @@ func (a *App) cmdStart(ctx context.Context, args []string) int {
 		daemonArgs(fs, opts.Jobs, opts.Data, opts.Listen, passthrough), a.Stdout, a.Stderr)
 }
 
+// startChildArgs is the argv the detached child re-execs with.
+//
+// It goes through daemonArgs -- the same function the foreground path uses --
+// because rebuilding argv from --jobs/--data/--listen alone dropped every other
+// flag the operator typed. That is not merely an inconvenience: `otter start
+// --detach --api-token <t>` silently brought the runtime up with its API
+// unauthenticated while `--help` promised the flag was forwarded.
+func startChildArgs(fs *flag.FlagSet, opts startOptions, passthrough []string) []string {
+	return append([]string{"start"},
+		daemonArgs(fs, opts.Jobs, opts.Data, opts.Listen, passthrough)...)
+}
+
 // startDetached forks the same command, waits for the API to answer and
 // returns, leaving the daemon running with its pid and log recorded.
-func (a *App) startDetached(opts startOptions, passthrough []string) int {
+func (a *App) startDetached(fs *flag.FlagSet, opts startOptions, passthrough []string) int {
 	executable, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: cannot find this executable: %v\n", err)
@@ -423,11 +435,7 @@ func (a *App) startDetached(opts startOptions, passthrough []string) int {
 	}
 	defer log.Close()
 
-	childArgs := []string{"start",
-		"--jobs", opts.Jobs,
-		"--data", opts.Data,
-		"--listen", opts.Listen}
-	childArgs = append(childArgs, passthrough...)
+	childArgs := startChildArgs(fs, opts, passthrough)
 	cmd := exec.Command(executable, childArgs...)
 	cmd.Env = append(os.Environ(),
 		detachEnvName+"=1",

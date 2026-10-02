@@ -10,6 +10,64 @@ import (
 	"github.com/tkoizumi/otter/internal/config"
 )
 
+// The detached child re-execs this command, so it must carry every flag the
+// operator typed. Rebuilding argv from --jobs/--data/--listen alone dropped the
+// rest, and the one that mattered most was --api-token: `otter start --detach
+// --api-token <t>` brought the runtime up with the API unauthenticated while
+// `--help` promised the flag was forwarded. This pins the whole handover.
+func TestStartChildArgsForwardEveryFlag(t *testing.T) {
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	fs.String("jobs", config.DefaultJobs, "")
+	fs.String("data", config.DefaultDataDir, "")
+	fs.String("listen", "", "")
+	fs.Bool("detach", false, "")
+	fs.Int("workers", 0, "")
+	fs.String("api-token", "", "")
+	fs.String("log-format", "", "")
+	if err := fs.Parse([]string{
+		"--detach",
+		"--api-token", "s3cret",
+		"--workers", "2",
+		"--log-format", "pretty",
+	}); err != nil {
+		t.Fatalf("parse start flags: %v", err)
+	}
+
+	opts := startOptions{Jobs: "/srv/jobs", Data: "/var/lib/otter", Listen: "127.0.0.1:7337"}
+	args := startChildArgs(fs, opts, nil)
+
+	if args[0] != "start" {
+		t.Fatalf("child argv = %v, want it to re-run the start command", args)
+	}
+	for _, arg := range args {
+		if arg == "--detach" || arg == "-detach" {
+			t.Fatalf("child argv re-detaches: %v", args)
+		}
+	}
+
+	cfg := config.DefaultDaemonConfig("test")
+	daemonFS := flag.NewFlagSet("otterd", flag.ContinueOnError)
+	cfg.RegisterFlags(daemonFS)
+	if err := daemonFS.Parse(args[1:]); err != nil {
+		t.Fatalf("daemon rejected forwarded args %v: %v", args, err)
+	}
+	if daemonFS.NArg() != 0 {
+		t.Fatalf("forwarded args left positional arguments: %v", daemonFS.Args())
+	}
+	if cfg.APIToken != "s3cret" {
+		t.Errorf("api-token = %q, want s3cret: a detached start must not drop it", cfg.APIToken)
+	}
+	if cfg.Workers != 2 {
+		t.Errorf("workers = %d, want 2", cfg.Workers)
+	}
+	if cfg.LogFormat != "pretty" {
+		t.Errorf("log-format = %q, want pretty", cfg.LogFormat)
+	}
+	if cfg.JobsDir != "/srv/jobs" || cfg.DataDir != "/var/lib/otter" || cfg.Listen != "127.0.0.1:7337" {
+		t.Errorf("derived args wrong: %+v", cfg)
+	}
+}
+
 // A bool daemon flag must be forwarded as --name=value: the flag package reads
 // a bare --name as true and would leave the rendered value as a positional
 // argument the daemon rejects.
