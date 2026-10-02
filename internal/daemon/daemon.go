@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/apitoken"
 	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/database"
 	"github.com/tkoizumi/otter/internal/datalock"
@@ -108,6 +109,11 @@ type Daemon struct {
 	logs  *runs.LogStore
 	queue *queue.Queue
 	state *state.Store
+
+	// apiTokens holds the named, scoped operator credentials. Unlike the pause
+	// and schedule tables it is read on every request rather than mirrored, so
+	// a revocation cannot go stale behind a cached copy.
+	apiTokens *apitoken.Store
 
 	// paused is the operator's per-job trigger pause. Pausing stops
 	// cron and webhook admission without retiring anything, so it is keyed by
@@ -233,6 +239,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		queue:      queue.New(db.DB),
 		state:      state.NewStore(db.DB),
 		paused:     pauseStore,
+		apiTokens:  apitoken.NewStore(db.DB),
 		inspection: inspectionStore,
 		timeline:   timeline.NewReader(db, runsStore, logsStore, inspectionStore),
 		sched:      scheduler.New(opts.Logger),

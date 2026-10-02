@@ -116,6 +116,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdPauseResume(ctx, g, commandArgs, false)
 	case "schedule":
 		return a.cmdSchedule(ctx, g, commandArgs)
+	case "token":
+		return a.cmdToken(ctx, g, commandArgs)
 	case "inspect":
 		return a.cmdInspect(ctx, g, commandArgs)
 	case "register":
@@ -1366,6 +1368,12 @@ Identity:
   delete <job>            purge its state, history, tokens and releases
   move <job> <dest>       preserve its identity across a directory rename
   identity migrate [--apply]      move a name-keyed workspace onto the identity registry
+
+Access:
+  token create --name N --scope read|control
+                                  mint a scoped credential for a gateway or a backend
+  token list                      show scoped credentials, revoked ones included
+  token revoke <id>               withdraw one; the next request with it is refused
 
 Runs:
   runs [<job>]            runs for that job; no argument means this directory

@@ -407,6 +407,29 @@ presenting the wrong token would be harder to diagnose than a 401.
 Reading the file is not a privilege escalation -- it is mode 0600, so only the
 daemon's owner can read it either way.
 
+### Giving a gateway its own credential
+
+The token in `/etc/otter/shared.env` is the admin token: full control plane,
+including code execution. A gateway, a control plane, or a client's backend that
+only needs to run and observe jobs should hold a scoped credential instead, so
+that a compromise of that system is not a compromise of the tenant.
+
+```sh
+otter token create --name cloud-gateway --scope control
+# otter_ctl_9f2c...   <- printed once; store it now
+otter token list        # active and revoked, with withdrawal dates
+otter token revoke 6f1c8a2e-...
+```
+
+`read` lists jobs and runs and reads their output, the timeline and capture
+metadata. `control` does that and can run, cancel, pause, resume and set or clear
+a schedule. Neither can read job state or capture payloads, change a job's
+identity, reload the daemon, or mint another token.
+
+Revocation takes effect on the next request the token makes -- there is no
+restart and no cache to wait out. Only a hash is stored, so a credential that is
+lost is revoked and replaced rather than recovered.
+
 ## Is it running on a schedule?
 
 A scheduled job fires without anyone watching, so the question "is this

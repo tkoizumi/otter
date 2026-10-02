@@ -184,6 +184,40 @@ func (c *Client) SetSchedule(ctx context.Context, ref, cron string) (*ScheduleVi
 	return &out, nil
 }
 
+// CreateAPIToken mints a named, scoped operator token. It is the only call
+// that returns the token itself; the daemon stores only a hash of it.
+func (c *Client) CreateAPIToken(ctx context.Context, name string, scope Scope) (*APITokenCreated, error) {
+	body, err := json.Marshal(CreateAPITokenRequest{Name: name, Scope: scope})
+	if err != nil {
+		return nil, err
+	}
+	var out APITokenCreated
+	if err := c.do(ctx, http.MethodPost, "/v1/tokens", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListAPITokens lists the named tokens, revoked ones included.
+func (c *Client) ListAPITokens(ctx context.Context) (*APITokenListResponse, error) {
+	var out APITokenListResponse
+	if err := c.get(ctx, "/v1/tokens", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RevokeAPIToken withdraws a token. The next request that presents it is
+// refused, with no restart.
+func (c *Client) RevokeAPIToken(ctx context.Context, id string) (*RevokeAPITokenResponse, error) {
+	var out RevokeAPITokenResponse
+	path := "/v1/tokens/" + url.PathEscape(id)
+	if err := c.do(ctx, http.MethodDelete, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // DeleteJob purges an identity's durable artifacts.
 func (c *Client) DeleteJob(ctx context.Context, ref string) (*DeletedView, error) {
 	var out DeletedView

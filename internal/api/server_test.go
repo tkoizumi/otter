@@ -31,6 +31,12 @@ type fakeBackend struct {
 	webhookFor map[string]string
 	runTokens  map[string]RunToken
 
+	// Named, scoped API tokens (CL-21). The fake keys them by the presented
+	// token, which is what ResolveAPIToken is handed.
+	apiTokens   map[string]APIToken
+	apiTokenLog []APITokenView
+	tokenSeq    int
+
 	runs      map[string]*runs.Run
 	runOrder  []string
 	nextRun   int
@@ -490,6 +496,62 @@ func (f *fakeBackend) WebhookTokenFor(jobID string) (string, bool) {
 	defer f.mu.Unlock()
 	token, ok := f.webhookFor[jobID]
 	return token, ok && token != ""
+}
+
+func (f *fakeBackend) CreateAPIToken(_ context.Context, name string, scope Scope) (APITokenCreated, error) {
+	if strings.TrimSpace(name) == "" {
+		return APITokenCreated{}, fmt.Errorf("%w: name is required", ErrInvalid)
+	}
+	if !scope.Valid() {
+		return APITokenCreated{}, fmt.Errorf("%w: scope must be read or control", ErrInvalid)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.apiTokens == nil {
+		f.apiTokens = map[string]APIToken{}
+	}
+	f.tokenSeq++
+	id := fmt.Sprintf("tok-%d", f.tokenSeq)
+	token := "otter_test_" + id
+	view := APITokenView{ID: id, Name: name, Scope: scope, CreatedAt: time.Now().UTC()}
+	f.apiTokens[token] = APIToken{ID: id, Name: name, Scope: scope}
+	f.apiTokenLog = append(f.apiTokenLog, view)
+	return APITokenCreated{APITokenView: view, Token: token}, nil
+}
+
+func (f *fakeBackend) ListAPITokens(context.Context) ([]APITokenView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]APITokenView, len(f.apiTokenLog))
+	copy(out, f.apiTokenLog)
+	return out, nil
+}
+
+func (f *fakeBackend) RevokeAPIToken(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	known := false
+	for token, authority := range f.apiTokens {
+		if authority.ID == id {
+			delete(f.apiTokens, token)
+			known = true
+		}
+	}
+	for i := range f.apiTokenLog {
+		if f.apiTokenLog[i].ID == id {
+			known = true
+			now := time.Now().UTC()
+			f.apiTokenLog[i].RevokedAt = &now
+		}
+	}
+	return known, nil
+}
+
+func (f *fakeBackend) ResolveAPIToken(token string) (APIToken, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	authority, ok := f.apiTokens[token]
+	return authority, ok
 }
 
 // ------------------------------------------------------------------ helpers

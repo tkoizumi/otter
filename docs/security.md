@@ -195,11 +195,22 @@ the `OTTER_API_TOKEN` environment variable, which systemd sets from a mode-`0600
 `EnvironmentFile`.
 
 What the daemon token can do is important: it is full control plane, including
-`POST /v1/jobs/{id}/runs`, which executes code. There is no read-only
-token and no per-job API authorization in the MVP. Scope tokens by
-running separate daemons per trust boundary (see above).
+`POST /v1/jobs/{id}/runs`, which executes code. Scope the **deployment** by
+running separate daemons per trust boundary (see above), and scope a
+**consumer** by minting it a narrower credential rather than handing it this one.
 
-Two narrower credentials exist for the two cases that are not operators:
+Three narrower credentials exist for the three cases that are not operators:
+
+- **Scoped API tokens** are named, revocable credentials with a `read` or
+  `control` scope. They are what a gateway or a control plane holds, so that a
+  compromise of the gateway is not a compromise of the tenant. Neither scope can
+  read job state, read capture payloads, change a job's identity, reload the
+  daemon, or manage tokens; `read` cannot command anything at all. Only a
+  SHA-256 of the token is stored, so a leaked database does not yield a working
+  credential, and revocation takes effect on the next request with no restart.
+  Mint one with `otter token create --name <name> --scope <read|control>`; the
+  token is printed once and is not recoverable. The route-by-route boundary is
+  in [api-reference.md](api-reference.md#scoped-api-tokens).
 
 - **Run state tokens** (`OTTER_STATE_TOKEN`) are minted per run and passed to the
   child process. They authorize state read/write and log writes for that run's
@@ -520,6 +531,9 @@ last step of a provisioning, and it can be run by hand at any time.
       the host.
 - [ ] `OTTER_API_TOKEN` is a long random value (`openssl rand -hex 32`), supplied
       through a mode-`0600` `EnvironmentFile`, never on the command line.
+- [ ] Any gateway or backend that commands this runtime holds a `read` or
+      `control` scoped token rather than the admin token, and credentials that
+      are no longer used have been revoked (`otter token list`).
 - [ ] **[asserted]** `/var/lib/otter` (per workspace:
       `/opt/otter/workspaces/<workspace>/.otter/data`) is `0700`, owned by the
       service user.

@@ -82,39 +82,48 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /health", s.handleHealth)
 
-	// Admin-only: these act on the whole runtime.
-	mux.Handle("GET /v1/jobs", s.admin(s.handleListJobs))
+	// Admin-only: identity changes, daemon configuration, capture payloads and
+	// the tokens themselves. None of these is reachable with a scoped token.
 	mux.Handle("GET /v1/jobs/resolve", s.admin(s.handleResolveJob))
 	mux.Handle("POST /v1/jobs", s.admin(s.handleRegisterJob))
 	mux.Handle("POST /v1/jobs/{id}/reset", s.admin(s.handleResetJob))
 	mux.Handle("POST /v1/jobs/{id}/move", s.admin(s.handleMoveJob))
-	mux.Handle("POST /v1/jobs/{id}/pause", s.admin(s.handlePauseJob))
-	mux.Handle("POST /v1/jobs/{id}/resume", s.admin(s.handleResumeJob))
-	mux.Handle("PUT /v1/jobs/{id}/schedule", s.admin(s.handleSetSchedule))
-	mux.Handle("DELETE /v1/jobs/{id}/schedule", s.admin(s.handleClearSchedule))
 	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
-	mux.Handle("POST /v1/jobs/{id}/runs", s.admin(s.handleSubmitRun))
-	mux.Handle("GET /v1/runs", s.admin(s.handleListRuns))
-	mux.Handle("POST /v1/runs/{id}/cancel", s.admin(s.handleCancelRun))
-
-	// Reachable with either the admin token or a per-run token; the handler
-	// narrows the scope further.
-	mux.Handle("GET /v1/jobs/{id}", s.principal(s.handleGetJob))
-	mux.Handle("GET /v1/runs/{id}", s.principal(s.handleGetRun))
-	mux.Handle("GET /v1/runs/{id}/logs", s.principal(s.handleGetLogs))
-	mux.Handle("POST /v1/runs/{id}/logs", s.principal(s.handleAppendLog))
-
-	// Capture ingestion is a child-reported diagnostic: a live run token may
-	// submit only its own run's events. Inspection reads are operator-only, so
-	// they follow the same admin rules as the other whole-runtime endpoints.
-	mux.Handle("POST /v1/runs/{id}/requests/events", s.principal(s.handleIngestCapture))
-	mux.Handle("GET /v1/runs/{id}/requests", s.admin(s.handleListCaptureRequests))
 	mux.Handle("GET /v1/runs/{id}/requests/{request_id}", s.admin(s.handleGetCaptureRequest))
 	mux.Handle("GET /v1/requests/{request_id}", s.admin(s.handleGetCaptureRequestByID))
-	// The merged timeline exposes the same metadata the log and request reads
-	// already do, so it follows them: operator-only, never a run token.
-	mux.Handle("GET /v1/runs/{id}/timeline", s.admin(s.handleTimeline))
+	mux.Handle("POST /v1/tokens", s.admin(s.handleCreateToken))
+	mux.Handle("GET /v1/tokens", s.admin(s.handleListTokens))
+	mux.Handle("DELETE /v1/tokens/{id}", s.admin(s.handleRevokeToken))
+
+	// The operator read surface: metadata, run output, the merged timeline and
+	// capture summaries, reachable with a read- or control-scoped token or the
+	// admin token. Capture *payloads* are not here; they stay admin-only above.
+	mux.Handle("GET /v1/jobs", s.scoped(s.handleListJobs))
+	mux.Handle("GET /v1/runs", s.scoped(s.handleListRuns))
+	mux.Handle("GET /v1/runs/{id}/timeline", s.scoped(s.handleTimeline))
+	mux.Handle("GET /v1/runs/{id}/requests", s.scoped(s.handleListCaptureRequests))
+
+	// Reads a per-run token may also make. The handler narrows it to its own
+	// job or run, which is why these admit it and the four above do not.
+	mux.Handle("GET /v1/jobs/{id}", s.reader(s.handleGetJob))
+	mux.Handle("GET /v1/runs/{id}", s.reader(s.handleGetRun))
+	mux.Handle("GET /v1/runs/{id}/logs", s.reader(s.handleGetLogs))
+
+	// Control: the command surface a gateway holds. Read is not enough, and a
+	// per-run token is not accepted here.
+	mux.Handle("POST /v1/jobs/{id}/pause", s.control(s.handlePauseJob))
+	mux.Handle("POST /v1/jobs/{id}/resume", s.control(s.handleResumeJob))
+	mux.Handle("PUT /v1/jobs/{id}/schedule", s.control(s.handleSetSchedule))
+	mux.Handle("DELETE /v1/jobs/{id}/schedule", s.control(s.handleClearSchedule))
+	mux.Handle("POST /v1/jobs/{id}/runs", s.control(s.handleSubmitRun))
+	mux.Handle("POST /v1/runs/{id}/cancel", s.control(s.handleCancelRun))
+
+	// Child-facing: the admin token or the run's own per-run token. A named API
+	// token is never accepted here, because these read and write the job's own
+	// business state.
+	mux.Handle("POST /v1/runs/{id}/logs", s.principal(s.handleAppendLog))
+	mux.Handle("POST /v1/runs/{id}/requests/events", s.principal(s.handleIngestCapture))
 	mux.Handle("GET /v1/jobs/{id}/state", s.principal(s.handleGetAllState))
 	mux.Handle("GET /v1/jobs/{id}/state/{key}", s.principal(s.handleGetState))
 	mux.Handle("PUT /v1/jobs/{id}/state/{key}", s.principal(s.handleSetState))
@@ -167,15 +176,44 @@ func (s *Server) Run(ctx context.Context) error {
 
 type principal struct {
 	Admin bool
+
+	// Scope and TokenName are set when a named API token authenticated. Scope
+	// is empty for the admin token and for a per-run token, which is how the
+	// gates below tell the three credential classes apart.
+	Scope     Scope
+	TokenName string
+
 	Token RunToken
 }
 
+// isOperator reports whether the caller holds authority over the whole runtime
+// rather than over a single job or run: the admin token, or a named API token.
+// What the caller may then do is decided by its scope at the route's gate, not
+// here.
+func (p principal) isOperator() bool {
+	return p.Admin || p.Scope != ""
+}
+
 func (p principal) allowsJob(id string) bool {
-	return p.Admin || (p.Token.JobID != "" && p.Token.JobID == id)
+	return p.isOperator() || (p.Token.JobID != "" && p.Token.JobID == id)
 }
 
 func (p principal) allowsRun(id string) bool {
-	return p.Admin || (p.Token.RunID != "" && p.Token.RunID == id)
+	return p.isOperator() || (p.Token.RunID != "" && p.Token.RunID == id)
+}
+
+// canRead reports whether the caller may read runtime metadata and run output:
+// the job and run listings, run detail, logs, the timeline and capture
+// summaries. It is false for a per-run token, which the reader gate admits
+// separately because the handler narrows it to its own run.
+func (p principal) canRead() bool {
+	return p.Admin || p.Scope == ScopeRead || p.Scope == ScopeControl
+}
+
+// canControl reports whether the caller may command the runtime: submit, cancel,
+// pause, resume and schedule.
+func (p principal) canControl() bool {
+	return p.Admin || p.Scope == ScopeControl
 }
 
 type principalCtxKey struct{}
@@ -187,34 +225,68 @@ func principalFrom(ctx context.Context) principal {
 	return principal{}
 }
 
-func (s *Server) admin(h http.HandlerFunc) http.Handler {
+// gate authenticates the caller and applies exactly one authorization rule.
+// Every route names its gate where it is registered, so the authority a
+// credential needs is visible in the route table rather than inferred from the
+// handler body.
+func (s *Server) gate(h http.HandlerFunc, allow func(principal) bool, refusal string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := s.authenticate(w, r)
 		if !ok {
 			return
 		}
-		if !p.Admin {
-			s.writeError(w, http.StatusForbidden, CodeForbidden,
-				"this endpoint requires the admin API token")
+		if !allow(p) {
+			s.writeError(w, http.StatusForbidden, CodeForbidden, refusal)
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), principalCtxKey{}, p)))
 	})
 }
 
+// admin admits only the static admin token.
+func (s *Server) admin(h http.HandlerFunc) http.Handler {
+	return s.gate(h, func(p principal) bool { return p.Admin },
+		"this endpoint requires the admin API token")
+}
+
+// control admits the admin token or a control-scoped API token. A read-scoped
+// token and a per-run token are both refused.
+func (s *Server) control(h http.HandlerFunc) http.Handler {
+	return s.gate(h, principal.canControl,
+		"this endpoint requires the admin API token or a control-scoped token")
+}
+
+// scoped is the operator read surface: the admin token, or a read- or
+// control-scoped API token. A per-run token is refused, because these endpoints
+// read across jobs and runs rather than narrowing to one.
+func (s *Server) scoped(h http.HandlerFunc) http.Handler {
+	return s.gate(h, principal.canRead,
+		"this endpoint requires a read or control API token")
+}
+
+// reader admits everything scoped does, plus a per-run token, which the handler
+// narrows to its own job or run.
+func (s *Server) reader(h http.HandlerFunc) http.Handler {
+	return s.gate(h, func(p principal) bool { return p.canRead() || p.Token.RunID != "" },
+		"this endpoint requires a read or control API token")
+}
+
+// principal is the child-facing gate: the admin token or the run's own token. A
+// named API token is deliberately excluded, because these endpoints read and
+// write the job's own business state.
 func (s *Server) principal(h http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, ok := s.authenticate(w, r)
-		if !ok {
-			return
-		}
-		h(w, r.WithContext(context.WithValue(r.Context(), principalCtxKey{}, p)))
-	})
+	return s.gate(h, func(p principal) bool { return p.Admin || p.Token.RunID != "" },
+		"this endpoint requires the admin API token or a per-run token")
 }
 
 // resolvePrincipal identifies the caller without writing a response, so that
 // endpoints such as /health can offer a richer answer to an authenticated
 // caller and a minimal one to everyone else.
+//
+// Three credential classes exist. The static admin token has full authority. A
+// per-run token is scoped to one run and one job, and is the only class a child
+// process ever holds. A named API token carries a Scope and is how a gateway
+// commands a runtime without holding authority over the tenant (CL-21).
 func (s *Server) resolvePrincipal(r *http.Request) (principal, bool) {
 	if token := bearerToken(r); token != "" {
 		if s.cfg.APIToken != "" && constantTimeEqual(token, s.cfg.APIToken) {
@@ -222,6 +294,9 @@ func (s *Server) resolvePrincipal(r *http.Request) (principal, bool) {
 		}
 		if scope, ok := s.backend.ResolveRunToken(token); ok {
 			return principal{Token: scope}, true
+		}
+		if named, ok := s.backend.ResolveAPIToken(token); ok {
+			return principal{Scope: named.Scope, TokenName: named.Name}, true
 		}
 		return principal{}, false
 	}
@@ -622,6 +697,12 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, CodeNotFound, fmt.Sprintf("job %q not found", id))
 		return
 	}
+	// The single-job view carries the job's webhook token, which is itself a
+	// credential: it triggers runs. Only the admin token may see it, so a
+	// read- or control-scoped caller gets the job without it (CL-21).
+	if !p.Admin {
+		view.Triggers.WebhookToken = ""
+	}
 	s.writeJSON(w, http.StatusOK, view)
 }
 
@@ -946,11 +1027,20 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	includeHTTP := true
+	// A capture exchange is business data, so HTTP entries default on only for
+	// the admin token and cannot be requested by anyone else (CL-21). A
+	// scoped caller still gets the whole log-derived timeline.
+	p := principalFrom(r.Context())
+	includeHTTP := p.Admin
 	if raw := query.Get("include_http"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			s.writeError(w, http.StatusBadRequest, CodeInvalid, "include_http must be true or false")
+			return
+		}
+		if value && !p.Admin {
+			s.writeError(w, http.StatusForbidden, CodeForbidden,
+				"include_http requires the admin API token")
 			return
 		}
 		includeHTTP = value
@@ -1167,6 +1257,55 @@ func truncateUTF8(s string, limit int) string {
 }
 
 // fail maps a backend error onto an HTTP response.
+// handleCreateToken mints a named, scoped API token. It is the only moment the
+// token itself is readable; the store keeps a hash and nothing else.
+func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req CreateAPITokenRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid,
+			`body must be a JSON object with "name" and "scope"`)
+		return
+	}
+	created, err := s.backend.CreateAPIToken(r.Context(), req.Name, req.Scope)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, created)
+}
+
+// handleListTokens lists the named tokens. Revoked ones are included so an
+// operator can see what was withdrawn and when.
+func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	tokens, err := s.backend.ListAPITokens(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, APITokenListResponse{Tokens: tokens})
+}
+
+// handleRevokeToken withdraws a token. The next request presenting it is
+// refused, which is what "revoked" means here: there is no cache to expire.
+func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	known, err := s.backend.RevokeAPIToken(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !known {
+		s.writeError(w, http.StatusNotFound, CodeNotFound, fmt.Sprintf("token %q not found", id))
+		return
+	}
+	s.writeJSON(w, http.StatusOK, RevokeAPITokenResponse{ID: id, Revoked: true})
+}
+
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound), errors.Is(err, runs.ErrNotFound), errors.Is(err, state.ErrNotFound),

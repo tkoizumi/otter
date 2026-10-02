@@ -47,11 +47,12 @@ auth() { [ -n "$OTTER_API_TOKEN" ] && printf 'Authorization: Bearer %s' "$OTTER_
 
 ## Authentication
 
-There are three credential types, with different audiences.
+There are four credential types, with different audiences.
 
 | Credential | Header | Used by | Scope |
 | --- | --- | --- | --- |
 | Daemon API token | `Authorization: Bearer <token>` | CLI, operators, automation | The whole control-plane API. |
+| Scoped API token | `Authorization: Bearer <token>` | A gateway, a control plane, a client's backend | `read` or `control`; see [Scoped API tokens](#scoped-api-tokens). |
 | Run state token | `Authorization: Bearer <run token>` | Child Python processes (the SDK) | The state, log and capture-ingestion endpoints for **that run's** job and run. |
 | Webhook token | `X-Otter-Token: <token>` or `?token=<token>` | External systems calling a hook | Only `POST /v1/hooks/{job}` for one job. |
 
@@ -99,6 +100,53 @@ from one job cannot drive another.
 | `GET /v1/requests/{request_id}` | any run | **no** (`403`) |
 | `GET/PUT/DELETE /v1/jobs/{id}/state[/{key}]` | any job | only its own job |
 | `POST /v1/hooks/{job}` | n/a — webhook token only | n/a |
+
+### Scoped API tokens
+
+The daemon API token is all-or-nothing. The same credential reads business
+state, reads capture payloads, registers and deletes jobs, and executes
+arbitrary code through `POST /v1/jobs/{id}/runs` — so a gateway that commands a
+runtime on a customer's behalf should not hold it. Mint it a narrower one.
+
+```bash
+otter token create --name cloud-gateway --scope control
+otter token list
+otter token revoke <id>
+```
+
+The token is printed **once**, at creation. The daemon stores only a SHA-256 of
+it, so a lost token is replaced rather than recovered. Revocation takes effect
+on the next request: there is no cache to expire and no restart.
+
+| Scope | Can |
+| --- | --- |
+| `read` | Read jobs, runs, run output, the merged timeline, and capture **summaries**. |
+| `control` | Everything `read` can, plus run, cancel, pause, resume, and set or clear a schedule. |
+
+Neither scope can read job state (`ctx.state`), read capture **payloads**,
+register, reset, move or delete a job, reload the daemon, or manage tokens.
+Those stay with the admin token. A scoped token also never receives a job's
+`webhook_token`, which is itself a credential that triggers runs.
+
+| Endpoint | `read` | `control` | Admin |
+| --- | --- | --- | --- |
+| `GET /v1/jobs`, `GET /v1/runs` | yes | yes | yes |
+| `GET /v1/jobs/{id}` | yes (no `webhook_token`) | yes (no `webhook_token`) | yes |
+| `GET /v1/runs/{id}`, `GET /v1/runs/{id}/logs` | yes | yes | yes |
+| `GET /v1/runs/{id}/timeline` | yes, without HTTP entries | yes, without HTTP entries | yes |
+| `GET /v1/runs/{id}/requests` (summaries) | yes | yes | yes |
+| `POST /v1/jobs/{id}/runs`, `POST /v1/runs/{id}/cancel` | **no** (`403`) | yes | yes |
+| `POST /v1/jobs/{id}/pause`, `POST /v1/jobs/{id}/resume` | **no** (`403`) | yes | yes |
+| `PUT`/`DELETE /v1/jobs/{id}/schedule` | **no** (`403`) | yes | yes |
+| `GET`/`PUT`/`DELETE /v1/jobs/{id}/state[/{key}]` | **no** (`403`) | **no** (`403`) | yes |
+| `GET /v1/runs/{id}/requests/{request_id}`, `GET /v1/requests/{request_id}` | **no** (`403`) | **no** (`403`) | yes |
+| `POST /v1/jobs`, `/reset`, `/move`, `DELETE /v1/jobs/{id}`, `POST /v1/reload` | **no** (`403`) | **no** (`403`) | yes |
+| `POST`/`GET`/`DELETE /v1/tokens` | **no** (`403`) | **no** (`403`) | yes |
+
+`GET /v1/runs/{id}/timeline` carries captured HTTP exchanges, which are business
+data, so HTTP entries are included by default only for the admin token. A scoped
+caller that passes `include_http=true` is refused with `403` rather than served a
+silently narrowed page.
 
 ### Webhook tokens
 
@@ -612,6 +660,60 @@ never reused.
 ```
 
 Errors: `400 invalid_request`, `404 not_found`.
+
+## Scoped tokens
+
+The three endpoints behind [Scoped API tokens](#scoped-api-tokens). All three
+require the admin token: a scoped credential must not be able to mint or revoke
+one.
+
+### `POST /v1/tokens`
+
+Mints a token. The response is the only time the token itself is ever returned.
+
+```json
+{"name": "cloud-gateway", "scope": "control"}
+```
+
+`201`:
+
+```json
+{
+  "id": "6f1c8a2e-...",
+  "name": "cloud-gateway",
+  "scope": "control",
+  "created_at": "2026-10-02T12:00:00Z",
+  "token": "otter_ctl_9f2c..."
+}
+```
+
+`400` when the name is blank, or the scope is neither `read` nor `control`.
+
+### `GET /v1/tokens`
+
+Lists every token, newest first. Revoked tokens are included, so an operator can
+see what used to have access and when it was withdrawn. No response reveals a
+token.
+
+```json
+{"tokens": [
+  {"id": "6f1c8a2e-...", "name": "cloud-gateway", "scope": "control",
+   "created_at": "2026-10-02T12:00:00Z"},
+  {"id": "0a3d1b77-...", "name": "old-gateway", "scope": "read",
+   "created_at": "2026-09-30T08:00:00Z", "revoked_at": "2026-10-02T10:00:00Z"}
+]}
+```
+
+### `DELETE /v1/tokens/{id}`
+
+Revokes a token. The next request that presents it is refused with `401`.
+
+```json
+{"id": "6f1c8a2e-...", "revoked": true}
+```
+
+Revoking an already-revoked token succeeds, because the operator asked for it to
+be unusable and it is. Revoking an unknown id is `404`.
 
 ## Runs
 

@@ -172,4 +172,21 @@ type Backend interface {
 
 	// WebhookTokenFor returns the webhook token of a job.
 	WebhookTokenFor(jobID string) (string, bool)
+
+	// CreateAPIToken mints a named, scoped operator token. The plaintext is
+	// returned once, here; only its hash is stored.
+	CreateAPIToken(ctx context.Context, name string, scope Scope) (APITokenCreated, error)
+
+	// ListAPITokens returns every named token, newest first, including revoked
+	// ones. It never reveals a token.
+	ListAPITokens(ctx context.Context) ([]APITokenView, error)
+
+	// RevokeAPIToken withdraws a token, reporting whether the id is known.
+	// Revoking an already-revoked token succeeds.
+	RevokeAPIToken(ctx context.Context, id string) (bool, error)
+
+	// ResolveAPIToken validates a presented named token. A revoked token
+	// resolves to false on the next call, which is what makes revocation
+	// immediate.
+	ResolveAPIToken(token string) (APIToken, bool)
 }
