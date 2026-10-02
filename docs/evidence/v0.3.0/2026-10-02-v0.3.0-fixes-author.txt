@@ -1,0 +1,121 @@
+# v0.3.0 gate findings — author fix and re-run
+
+    task:      v0.3.0 exit gate, findings F1-F4 from
+               docs/evidence/v0.3.0/2026-10-02-v0.3.0-gate.txt
+    when:      2026-10-02, 17:40-17:55 EDT
+    where:     Takas-MacBook-Pro.local, Darwin 24.6.0 arm64 (macOS 15.7.3),
+               developer checkout
+    checkout:  /Users/taka/Desktop/otter-workspace/otter
+    build:     v0.2.0-147-g6163a56-dirty at the time of the runs; the fix commits
+               are 7df43a9 (F1) and d066fc4 (F2-F4)
+    operator:  THE AUTHOR. This is not the gate.
+
+    This record closes the loop on the findings. It is explicitly an author run:
+    the gate's rule is a second operator, and the 2026-10-02 gate record stands
+    as written. A repeated run at the fixed revision, by the operator, is what
+    the tag requires; this file only shows the fixes and that the author's own
+    re-run is green.
+
+## What was changed
+
+| Finding | Fix |
+| --- | --- |
+| F1 (release blocker) | `startChildArgs` builds the detached child's argv through `daemonArgs`, the function the foreground path uses. Regression test `TestStartChildArgsForwardEveryFlag`. Commit 7df43a9. |
+| F2 | `docs/releases/v0.3.0.md` and `docs/v0.3.0-release-plan.md` now state that `OTTER_INTEGRATION_*` are still exported for immutable pre-rename releases, and that the breaking half is the JSON keys and the `OTTER_INTEGRATIONS_DIR` / `--integrations` daemon names. Commit d066fc4. |
+| F3 | Both documents now say eight of the nine drills document a sabotage mode, name the `UnitFile` render-test mutation as `unit-caps`' mechanism, and point at `OT-030` (open-work, v0.4.0) for a drill-level mode. Commit d066fc4. |
+| F4 | The downgrade `migration_failed` example in `operations.md` now carries `applied` and `known`. Commit d066fc4. |
+
+## F1 — the regression test fails on the old construction
+
+The test was run against the pre-fix body (argv rebuilt from `--jobs`/`--data`/
+`--listen` plus passthrough), then against the fix:
+
+    $ go test ./internal/cli/ -run TestStartChildArgs        # pre-fix body
+    --- FAIL: TestStartChildArgsForwardEveryFlag (0.00s)
+        start_test.go:58: api-token = "", want s3cret: a detached start must not drop it
+        start_test.go:61: workers = 8, want 2
+        start_test.go:64: log-format = "json", want pretty
+    FAIL
+
+    $ go test ./internal/cli/ -run TestStartChildArgs        # with the fix
+    ok  	github.com/tkoizumi/otter/internal/cli	0.251s
+
+## F1 — the operator's reproduction, re-run
+
+    $ otter init f1-job && otter release f1-job
+    $ otter start --detach --listen 127.0.0.1:7816 --api-token s3cret --workers 2 --log-format pretty
+    $ grep -h "api_listening\|daemon_started" .otter/serve/serve.log | tail -2
+    2026-10-02T17:44:50.779Z INFO  daemon_started cron_triggers=0 data=... version=v0.2.0-147-g6163a56-dirty workers=2
+    2026-10-02T17:44:50.779Z INFO  api_listening auth_required=true listen=127.0.0.1:7816
+
+    $ curl -s http://127.0.0.1:7816/health | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin).keys()))'
+    ['status', 'uptime_seconds', 'version']
+
+    $ curl -s -H 'Authorization: Bearer s3cret' http://127.0.0.1:7816/health | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin).keys()))'
+    ['freshness', 'jobs', 'queue', 'queue_depth', 'status', 'storage', 'uptime_seconds', 'version']
+
+    $ head -c 120 .otter/serve/serve.log
+    2026-10-02T17:44:50.775Z INFO  identity_bootstrap_complete mode=fresh
+
+`auth_required=true`, `workers=2`, pretty records and a minimal unauthenticated
+payload — every value in the finding inverted. The gate record's section 4
+`/health` claim, marked disagree because of this bug, now holds through the
+published `otter start` path.
+
+## Re-run: every drill
+
+    $ make test        # exit 0 — Go, SDK and 200 shell cases
+    $ make smoke       # exit 0
+    $ for d in backup-restore upgrade downgrade-refusal secret-rotation \
+               deploy-failure disk-pressure liveness unit-caps; do make drill DRILL=$d; done
+    PASS: backup-restore
+    PASS: upgrade
+    PASS: downgrade-refusal
+    PASS: secret-rotation
+    PASS: deploy-failure
+    PASS: disk-pressure
+    PASS: liveness
+    PASS: unit-caps      (unit-caps: all cases PASS)
+
+    $ make build VERSION=v0.3.0 && tar -czf dist/otter_0.3.0_darwin_arm64.tar.gz -C bin otter otterd
+    $ OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_darwin_arm64.tar.gz" make drill DRILL=fresh-archive
+    PASS: fresh-archive
+
+## Re-run: the sabotage modes
+
+Each is expected to exit non-zero at the assertion that names what was removed.
+
+    $ DRILL_SABOTAGE=skip-old-binary make drill DRILL=upgrade
+    drill: FAILED: this build has no migration newer than schema 12; nothing to upgrade
+
+    $ DRILL_SABOTAGE=hide-newer-row make drill DRILL=downgrade-refusal
+    drill: FAILED: the daemon served a database migrated by a newer binary instead of refusing it
+
+    $ DRILL_SABOTAGE=reload-applies make drill DRILL=secret-rotation
+    drill: FAILED: otter reload applied the rotated credential (saw 'second-token-value'); operations.md says reload does not re-read credentials -- update both
+
+    $ DRILL_SABOTAGE=stale-binary OTTER_ARCHIVE=dist/otter_0.3.0_darwin_arm64.tar.gz make drill DRILL=fresh-archive
+    drill: FAILED: the runtime under test is not from the archive (.../bin/otter)
+
+## Scope decisions recorded with the fixes
+
+Two gate items were NOT RUN by the operator for want of a host, and the owner
+scoped them out rather than leaving them implied:
+
+- the two-host clean restore (`DRILL_CLEAN_HOST=1`), proven on two real hosts in
+  Phase 0 — docs/evidence/phase-0/2026-09-30-p0-03-hw7-clean-host.txt;
+- `scripts/assert-host-permissions.sh`, proven on a real host in Phase 0 —
+  docs/evidence/phase-0/2026-09-30-p0-07-hw8-assertion.txt.
+
+`fresh-archive` ran against a hand-built archive (goreleaser is absent here), so
+the archive **layout** claim rests on the `release-config` CI job.
+`docs/releases/v0.3.0.md` §Verification states all of this for a reader.
+
+## What this record does not prove
+
+- It is not the gate. No independent operator has yet run the affected drills at
+  the fixed revision; the roadmap's "repeat affected drills after fixes" is still
+  owed, and the gate record must be a new independent record, not an edit of the
+  first.
+- The two host-only items above remain unproven for this revision.
+- `unit-caps` still has no drill-level sabotage mode (`OT-030`).
