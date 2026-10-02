@@ -40,7 +40,7 @@ func seedLegacyWorkspace(t *testing.T) (root, dir, dataDir string) {
 		t.Fatalf("open legacy database: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate legacy database: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -230,7 +230,7 @@ func TestIdentityMigrateQuarantinesAMismatchedRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := database.Migrate(ctx, seed); err != nil {
+	if _, err := database.Migrate(ctx, seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := seed.ExecContext(ctx,

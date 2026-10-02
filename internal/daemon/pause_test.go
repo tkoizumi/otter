@@ -226,7 +226,7 @@ func TestPausedJobStaysUnarmedAcrossARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open %s: %v", dataDir, err)
 	}
-	if err := database.Migrate(ctx, seed); err != nil {
+	if _, err := database.Migrate(ctx, seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := seed.ExecContext(ctx,

@@ -35,7 +35,7 @@ func newFixture(t *testing.T, withInspection bool) *fixture {
 		t.Fatalf("database.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("database.Migrate: %v", err)
 	}
 

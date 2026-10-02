@@ -993,9 +993,27 @@ journalctl -u otter -n 50 -f
 Expected on a version bump with schema changes:
 
 ```json
-{"level":"info","event":"migration_applied","version":3,"description":"add root_run_id to runs","timestamp":"2024-06-01T03:00:00Z"}
+{"level":"info","event":"migration_applied","version":3,"name":"0003_integration_identity.sql","timestamp":"2024-06-01T03:00:00Z"}
 {"level":"info","event":"recovery_marked_failed","run_id":"run_01HZY...","error":"otter daemon restarted during execution","timestamp":"2024-06-01T03:00:01Z"}
 ```
+
+`name` is the migration's filename, which is also its description: the schema
+stores no separate blurb, so the log line and `schema_migrations` agree by
+construction. One `migration_applied` is emitted at `info` per migration that
+start applied, in the order they were applied. A restart with nothing pending
+logs none of them, so "no migration lines" means the schema did not move, not
+that nobody looked.
+
+A migration that fails aborts startup, and is reported first, at `error`, with
+the same two fields before the process exits:
+
+```json
+{"level":"error","event":"migration_failed","version":3,"name":"0003_integration_identity.sql","error":"database: apply migration 0003_integration_identity.sql: ...","timestamp":"2024-06-01T03:00:00Z"}
+```
+
+A failed migration rolls back on its own; earlier migrations stay applied, so a
+repaired migration can be shipped and the next start continues from where this
+one stopped.
 
 After the restart:
 

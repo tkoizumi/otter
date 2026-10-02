@@ -32,7 +32,7 @@ func seedWorkspaceRegistry(t *testing.T, instances ...identity.Instance) string 
 		t.Fatalf("open registry: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate registry: %v", err)
 	}
 	now := time.Now().UTC()

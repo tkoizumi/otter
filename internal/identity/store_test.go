@@ -20,7 +20,7 @@ func newTestStore(t *testing.T) (*Store, context.Context) {
 			t.Errorf("database.Close: %v", err)
 		}
 	})
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("database.Migrate: %v", err)
 	}
 	return NewStore(db.DB), ctx

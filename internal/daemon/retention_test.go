@@ -28,7 +28,7 @@ func newRetentionDaemon(t *testing.T, tweak func(*config.DaemonConfig)) *Daemon 
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := database.Migrate(context.Background(), db); err != nil {
+	if _, err := database.Migrate(context.Background(), db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

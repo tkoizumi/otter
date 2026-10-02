@@ -600,7 +600,7 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	now := database.FormatTime(time.Now().UTC())
@@ -671,7 +671,7 @@ func seedNonTerminalRun(t *testing.T, dataDir, jobID, digest string) {
 		t.Fatalf("open registry: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate registry: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -1017,7 +1017,7 @@ func TestReleaseListAllHidesTombstonesWithoutReleases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	now := time.Now().UTC()

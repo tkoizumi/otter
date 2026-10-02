@@ -44,7 +44,7 @@ func TestOriginBackfillClassifiesLegacyRows(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

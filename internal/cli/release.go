@@ -684,7 +684,7 @@ func (a *App) pinnedReleases(ctx context.Context, dataDir, jobID string) (map[st
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		return nil, err
 	}
 
@@ -854,7 +854,7 @@ func registeredIdentities(ctx context.Context, dataDir string) (map[string]bool,
 	// The schema may not exist yet on a data directory that has never been
 	// opened by a runtime. Creating it is harmless and turns "no such table"
 	// into the honest answer: nothing is bootstrapped yet.
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		return nil, false, err
 	}
 

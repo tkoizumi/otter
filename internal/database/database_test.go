@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/tkoizumi/otter/migrations"
@@ -32,7 +33,7 @@ func openTempDB(t *testing.T) *DB {
 func migrateTempDB(t *testing.T) *DB {
 	t.Helper()
 	db := openTempDB(t)
-	if err := Migrate(context.Background(), db); err != nil {
+	if _, err := Migrate(context.Background(), db); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return db
@@ -131,11 +132,29 @@ func TestMigrateIsIdempotentAndRecordsEveryMigration(t *testing.T) {
 	db := openTempDB(t)
 	ctx := context.Background()
 
-	if err := Migrate(ctx, db); err != nil {
+	first, err := Migrate(ctx, db)
+	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if err := Migrate(ctx, db); err != nil {
+	// What Migrate reports is the whole point of WS3: the daemon logs one
+	// migration_applied per entry, so the report must be exactly the set it
+	// applied -- no more, no less.
+	wantApplied := embeddedMigrations(t)
+	if len(first) != len(wantApplied) {
+		t.Fatalf("first Migrate applied %d migrations, want %d: %+v", len(first), len(wantApplied), first)
+	}
+	for i := range wantApplied {
+		if first[i].Version != wantApplied[i].version || first[i].Name != wantApplied[i].name {
+			t.Fatalf("applied[%d] = %+v, want %+v", i, first[i], wantApplied[i])
+		}
+	}
+
+	second, err := Migrate(ctx, db)
+	if err != nil {
 		t.Fatalf("second Migrate should be a no-op: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("second Migrate applied %d migrations, want none (idempotence): %+v", len(second), second)
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT version, name FROM schema_migrations ORDER BY version`)
@@ -167,6 +186,51 @@ func TestMigrateIsIdempotentAndRecordsEveryMigration(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("row %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestMigrateNamesTheMigrationThatFailed(t *testing.T) {
+	db := openTempDB(t)
+	ctx := context.Background()
+
+	fsys := fstest.MapFS{
+		"0001_ok.sql":     &fstest.MapFile{Data: []byte(`CREATE TABLE ok (id INTEGER PRIMARY KEY);`)},
+		"0002_broken.sql": &fstest.MapFile{Data: []byte(`THIS IS NOT SQL`)},
+		"0003_never.sql":  &fstest.MapFile{Data: []byte(`CREATE TABLE never (id INTEGER PRIMARY KEY);`)},
+	}
+
+	applied, err := migrate(ctx, db, fsys)
+	if err == nil {
+		t.Fatal("migrate() with a broken migration succeeded")
+	}
+
+	// The daemon logs migration_failed with the version and name from this
+	// error, so the error has to carry them as data, not only in its text.
+	var failed *MigrationError
+	if !errors.As(err, &failed) {
+		t.Fatalf("error is %T, want *MigrationError: %v", err, err)
+	}
+	if failed.Version != 2 || failed.Name != "0002_broken.sql" {
+		t.Fatalf("failed migration = %+v, want version 2 / 0002_broken.sql", failed)
+	}
+	if len(applied) != 1 || applied[0].Version != 1 || applied[0].Name != "0001_ok.sql" {
+		t.Fatalf("applied = %+v, want only 0001_ok.sql", applied)
+	}
+
+	// The failure is contained: 0001 committed and is usable, 0002 and 0003
+	// did not, so a repaired 0002 can run on the next start.
+	if !tableExists(t, db, "ok") {
+		t.Fatal("the migration before the failure was not committed")
+	}
+	if tableExists(t, db, "never") {
+		t.Fatal("a migration after the failure was applied")
+	}
+	appliedAfter, err := migrate(ctx, db, fsys)
+	if err == nil {
+		t.Fatal("a retry of the broken set succeeded")
+	}
+	if len(appliedAfter) != 0 {
+		t.Fatalf("a retry re-applied %+v, want none", appliedAfter)
 	}
 }
 
@@ -387,7 +451,7 @@ func TestMigrateSkipsAlreadyAppliedMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Migrate(ctx, db); err != nil {
+	if _, err := Migrate(ctx, db); err != nil {
 		t.Fatalf("Migrate with an already-applied migration: %v", err)
 	}
 	if !tableExists(t, db, "runs") {
@@ -396,7 +460,7 @@ func TestMigrateSkipsAlreadyAppliedMigration(t *testing.T) {
 
 	// Repeating the upgrade must skip applied migrations, especially table
 	// renames whose old names no longer exist.
-	if err := Migrate(ctx, db); err != nil {
+	if _, err := Migrate(ctx, db); err != nil {
 		t.Fatalf("repeat Migrate: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,

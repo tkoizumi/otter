@@ -21,7 +21,7 @@ func newRetentionStore(t *testing.T) (*database.DB, *Store, *LogStore) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	if err := database.Migrate(context.Background(), db); err != nil {
+	if _, err := database.Migrate(context.Background(), db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return db, NewStore(db.DB), NewLogStore(db.DB)

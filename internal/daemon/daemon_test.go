@@ -119,7 +119,7 @@ func releaseAll(t *testing.T, root, dataDir string) {
 			t.Errorf("close %s: %v", dataDir, err)
 		}
 	}()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate %s: %v", dataDir, err)
 	}
 
@@ -199,7 +199,7 @@ func identityIDFor(t *testing.T, root, dataDir, label string) string {
 			t.Errorf("close %s: %v", dataDir, err)
 		}
 	}()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate %s: %v", dataDir, err)
 	}
 
@@ -984,7 +984,7 @@ print("job ran")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.Migrate(context.Background(), seed); err != nil {
+	if _, err := database.Migrate(context.Background(), seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	startedAt := time.Now().UTC().Add(-time.Minute)
@@ -1073,7 +1073,7 @@ retry:
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.Migrate(context.Background(), seed); err != nil {
+	if _, err := database.Migrate(context.Background(), seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := runs.NewStore(seed.DB)
@@ -1197,7 +1197,7 @@ func withDataDir(t *testing.T, dataDir string, fn func(ctx context.Context, db *
 			t.Errorf("close %s: %v", dataDir, err)
 		}
 	}()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate %s: %v", dataDir, err)
 	}
 	fn(ctx, db)
@@ -1332,7 +1332,7 @@ retry:
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.Migrate(context.Background(), seed); err != nil {
+	if _, err := database.Migrate(context.Background(), seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := runs.NewStore(seed.DB).Create(context.Background(), &runs.Run{

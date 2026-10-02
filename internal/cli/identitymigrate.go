@@ -110,7 +110,7 @@ func (a *App) cmdIdentityMigrate(ctx context.Context, args []string) int {
 		return 1
 	}
 	defer func() { _ = db.Close() }()
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 		return 1
 	}

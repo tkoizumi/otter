@@ -197,7 +197,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := database.Migrate(ctx, db); err != nil {
+	if err := applyMigrations(ctx, opts.Logger, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

@@ -20,7 +20,7 @@ func newTestStore(t *testing.T, limits Limits) *Store {
 		t.Fatalf("database.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("database.Migrate: %v", err)
 	}
 	if limits.MaxBodyBytes == 0 {
@@ -598,10 +598,10 @@ func TestMigrationIsRepeatable(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if err := database.Migrate(ctx, db); err != nil {
+	if _, err := database.Migrate(ctx, db); err != nil {
 		t.Fatalf("second Migrate must be a no-op: %v", err)
 	}
 

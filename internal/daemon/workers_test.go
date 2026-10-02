@@ -372,7 +372,7 @@ func TestFallbackJournalIsAppliedOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.Migrate(context.Background(), seed); err != nil {
+	if _, err := database.Migrate(context.Background(), seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := runs.NewStore(seed.DB)
@@ -467,7 +467,7 @@ func TestUnreadableFallbackJournalDoesNotReRunRunningRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.Migrate(context.Background(), seed); err != nil {
+	if _, err := database.Migrate(context.Background(), seed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := runs.NewStore(seed.DB).Create(context.Background(),
