@@ -35,9 +35,10 @@ type Backend interface {
 	Version() string
 	StartedAt() time.Time
 
-	// ListJobs returns every discovered job. Webhook tokens
-	// must be omitted here.
-	ListJobs() []JobView
+	// ListJobs returns every discovered job, each carrying its last successful
+	// completion so a caller can render freshness without a run listing per
+	// job. Webhook tokens must be omitted here.
+	ListJobs(ctx context.Context) []JobView
 
 	// GetJob returns one job, including its webhook token.
 	GetJob(id string) (JobView, bool)
@@ -150,6 +151,18 @@ type Backend interface {
 
 	// QueueDepth reports how many runs are waiting.
 	QueueDepth(ctx context.Context) (int, error)
+
+	// QueueStats reports queue age, per-job depth and retry activity for the
+	// authenticated health view.
+	QueueStats(ctx context.Context) (QueueStats, error)
+
+	// LastSuccessByJob reports each job's most recent successful completion,
+	// keyed by job id. A job absent from the map has never succeeded.
+	LastSuccessByJob(ctx context.Context) (map[string]time.Time, error)
+
+	// StorageStats reports the database size and the data directory's
+	// free and total bytes.
+	StorageStats(ctx context.Context) (StorageStats, error)
 
 	// RunCounts reports how many runs exist per status.
 	RunCounts(ctx context.Context) (map[string]int, error)

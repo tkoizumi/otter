@@ -235,6 +235,53 @@ func (q *Queue) DepthByJob(ctx context.Context) (map[string]int, error) {
 	return out, rows.Err()
 }
 
+// OldestWaiting reports the submission time of the oldest queued run that is
+// claimable now, and whether there is one.
+//
+// "Claimable now" is available_at <= now: a run parked for retry backoff is
+// deliberately not counted, because it is waiting on a clock rather than on
+// capacity. Retry activity is reported separately (see NextRetryAt), so a queue
+// blocked by its workers cannot be confused with one that is merely between
+// attempts.
+func (q *Queue) OldestWaiting(ctx context.Context, now time.Time) (time.Time, bool, error) {
+	var raw sql.NullString
+	if err := q.db.QueryRowContext(ctx,
+		`SELECT MIN(created_at) FROM run_queue WHERE available_at <= ?`,
+		database.FormatTime(now)).Scan(&raw); err != nil {
+		return time.Time{}, false, fmt.Errorf("queue: oldest waiting: %w", err)
+	}
+	if !raw.Valid || raw.String == "" {
+		return time.Time{}, false, nil
+	}
+	at, err := database.ParseTime(raw.String)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("queue: oldest waiting: %w", err)
+	}
+	return at, true, nil
+}
+
+// NextRetryAt reports when the next queued run whose run status is status
+// becomes claimable, and whether any run is. The daemon passes the retrying
+// status, so the answer is "when the next retry is due" rather than "when the
+// queue next moves".
+func (q *Queue) NextRetryAt(ctx context.Context, status string) (time.Time, bool, error) {
+	var raw sql.NullString
+	if err := q.db.QueryRowContext(ctx,
+		`SELECT MIN(q.available_at) FROM run_queue q
+		   JOIN runs r ON r.id = q.run_id
+		  WHERE r.status = ?`, status).Scan(&raw); err != nil {
+		return time.Time{}, false, fmt.Errorf("queue: next retry: %w", err)
+	}
+	if !raw.Valid || raw.String == "" {
+		return time.Time{}, false, nil
+	}
+	at, err := database.ParseTime(raw.String)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("queue: next retry: %w", err)
+	}
+	return at, true, nil
+}
+
 // List returns every queued run, oldest first. It is intended for
 // observability and tests rather than for hot paths.
 func (q *Queue) List(ctx context.Context) ([]Item, error) {

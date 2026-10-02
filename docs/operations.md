@@ -367,13 +367,15 @@ otter jobs --schedule
 ```
 
 ```
-JOB          CRON             NEXT RUN              IN         LAST RUN
+JOB                  CRON             NEXT RUN              IN         LAST SUCCESS
 --------------------------------------------------------------------------------------------
-shopify-to-salesforce */5 * * * *     2026-09-13 17:05:00   2m14s      succeeded at 17:00:04
+shopify-to-salesforce */5 * * * *     2026-09-13 17:05:00   2m14s      2026-09-13 17:00:04 (4m56s ago)
 ```
 
-A job that has never run reports `no runs yet`, which distinguishes
-"not yet due" from "silently not firing".
+A job that has never succeeded reports `never succeeded`, which distinguishes
+"not yet due" from "silently not firing". The column is the daemon's own last
+success, computed once for the whole listing, so it costs no run listing per
+job.
 
 **The daemon log** records every tick as it happens. `otter start` runs the
 daemon in the foreground, so cron lines appear in that terminal:
@@ -1121,7 +1123,7 @@ Sizing guidance:
 Check the current picture:
 
 ```bash
-otter status                                    # queue depth + per-status run counts
+otter status                                    # queue age and depth, run counts, freshness, storage
 otter runs --all --status running               # what is executing right now
 otter runs --all --status queued --limit 100    # what is waiting
 curl -s http://127.0.0.1:7337/health | python3 -m json.tool
@@ -1146,8 +1148,49 @@ otter runs --all --status failed --limit 5
 ```
 
 ```json
-{"status":"ok","version":"0.4.1","uptime_seconds":81234.5,"jobs":{"total":7,"valid":6,"invalid":1},"queue_depth":2,"runs":{"queued":2,"running":2,"succeeded":1043,"failed":17,"retrying":1,"cancelled":0,"timed_out":3}}
+{
+  "status": "ok",
+  "version": "v0.2.0",
+  "uptime_seconds": 81234.5,
+  "jobs": {"total": 7, "valid": 6, "invalid": 1},
+  "queue_depth": 2,
+  "runs": {"queued": 2, "running": 2, "succeeded": 1043, "failed": 17, "retrying": 1, "cancelled": 0, "timed_out": 3},
+  "queue": {
+    "oldest_waiting_at": "2026-10-01T04:02:11Z",
+    "oldest_waiting_seconds": 3725.4,
+    "by_job": {"shopify-to-salesforce": 2},
+    "retrying": 1,
+    "next_retry_at": "2026-10-01T05:14:00Z"
+  },
+  "freshness": [
+    {"job_id": "9f1c...", "name": "shopify-to-salesforce", "last_success_at": "2026-10-01T05:00:04Z", "age_seconds": 325.1},
+    {"job_id": "41ab...", "name": "nightly-report"}
+  ],
+  "storage": {"db_bytes": 812345678, "disk_free_bytes": 12884901888, "disk_total_bytes": 21474836480}
+}
 ```
+
+The counters answer "how many?". The three blocks after them answer the rest:
+
+- **`queue`** — `oldest_waiting_seconds` is the age of the oldest run that is
+  *claimable now* (`available_at <= now`). A run parked for retry backoff is
+  excluded from that age and reported separately, because it is waiting on a
+  clock rather than on capacity: `retrying` is the number of such runs and
+  `next_retry_at` is when the soonest of them becomes claimable. `by_job` is the
+  queue depth per job, so "which job is backing up?" has an answer.
+- **`freshness`** — one entry per job, from the newest succeeded run's
+  `finished_at`. `age_seconds` turns "the daemon is up" into "the schedule is
+  working". A job that has never succeeded has neither field; that absence is
+  the signal, not a bug in the response.
+- **`storage`** — `db_bytes` is `PRAGMA page_count * page_size` on the live
+  database (so it excludes the WAL file), and the disk figures are the data
+  directory's filesystem, read daemon-side. That is deliberate: a remote
+  operator can now watch the database grow and the disk fill through the API
+  instead of needing a shell on the host.
+
+An unauthenticated caller — and any caller presenting a wrong token once
+`--api-token` is set — still receives only `status`, `version` and
+`uptime_seconds`. These blocks are never disclosed to the network.
 
 Useful alerting rules:
 
@@ -1155,9 +1198,14 @@ Useful alerting rules:
 | --- | --- | --- |
 | Daemon up | `curl -fsS /health` fails twice in a row | The process or listener is gone; systemd should be restarting it. |
 | Invalid manifests | `jobs.invalid > 0` | Someone shipped a broken `otter.yaml`; it is logged and skipped. |
+| Queue age | `queue.oldest_waiting_seconds` over ~15 minutes | Work has been claimable and unclaimed for a quarter of an hour: capacity, not a slow job. |
+| Per-job backlog | `queue.by_job["<job>"]` rising | One job is monopolising the queue; its `concurrency` or its run duration needs attention. |
 | Backlog | `queue_depth` rising for more than an hour | Workers or per-job `concurrency` cannot keep up. |
+| Retry storm | `queue.retrying` climbing, or `queue.next_retry_at` perpetually in the future | A failing upstream is being retried faster than it recovers. |
+| Freshness | `freshness[].age_seconds` older than the job's own cron period, or `last_success_at` absent | The schedule stopped succeeding. No counter shows this: a job failing since yesterday still has a healthy `queue_depth`. |
 | Failures | `runs.failed` and `runs.timed_out` increasing | An upstream changed, or timeouts need tuning. |
-| Database growth | `otter.db` over ~2 GB | `run_logs` needs retention (see above). |
+| Database growth | `storage.db_bytes` over ~2 GB | `run_logs` needs retention (see above). This used to be a host-level check on `otter.db`; it is now readable remotely. |
+| Disk pressure | `storage.disk_free_bytes` below your floor | The daemon cannot write. Pair it with the host-level `scripts/disk-check.sh`, which watches the same filesystem. |
 
 Outside the host, run the same check through your monitoring agent:
 

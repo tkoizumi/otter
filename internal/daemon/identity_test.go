@@ -57,7 +57,7 @@ func TestTwoJobsMayShareALabel(t *testing.T) {
 	d := newDaemon(t, root, "", nil, nil)
 	ctx := context.Background()
 
-	views := d.ListJobs()
+	views := d.ListJobs(ctx)
 	if len(views) != 2 {
 		t.Fatalf("jobs = %+v, want two", views)
 	}
@@ -172,7 +172,7 @@ func TestDeletePurgesAndSuppressesWithoutRemovingSource(t *testing.T) {
 	if _, err := d.Reload(ctx); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	for _, v := range d.ListJobs() {
+	for _, v := range d.ListJobs(ctx) {
 		if v.Path == mustCanonicalPath(t, dir) {
 			t.Fatalf("reload re-registered a deleted path: %+v", v)
 		}

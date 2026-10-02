@@ -51,6 +51,12 @@ type JobView struct {
 	Error            string            `json:"error,omitempty"`
 	NextRunAt        *time.Time        `json:"next_run_at,omitempty"`
 
+	// LastSuccessAt is when this job last completed a run successfully. It is
+	// the freshness signal, and the schedule view renders it, so a cron job
+	// that quietly stopped succeeding is visible without a run listing per
+	// job. It is absent for a job that has never succeeded.
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+
 	// Capture is the HTTP capture policy a new run of this job would
 	// use: the job's declared policy, or the deployment default when the
 	// manifest does not declare one.
@@ -171,9 +177,9 @@ type RunView struct {
 
 // HealthResponse is returned by GET /health.
 //
-// Jobs, QueueDepth and Runs are present only for an authenticated
-// caller: an unauthenticated liveness probe receives status, version and
-// uptime alone.
+// Jobs, QueueDepth, Runs, Queue, Freshness and Storage are present only for an
+// authenticated caller: an unauthenticated liveness probe receives status,
+// version and uptime alone.
 type HealthResponse struct {
 	Status        string         `json:"status"`
 	Version       string         `json:"version"`
@@ -181,6 +187,13 @@ type HealthResponse struct {
 	Jobs          *HealthCounts  `json:"jobs,omitempty"`
 	QueueDepth    *int           `json:"queue_depth,omitempty"`
 	Runs          map[string]int `json:"runs,omitempty"`
+
+	// Queue, Freshness and Storage answer what the counts cannot: how long
+	// the oldest claimable run has waited, which job is backing up, whether
+	// each job is still succeeding, and whether the disk is filling.
+	Queue     *HealthQueue      `json:"queue,omitempty"`
+	Freshness []HealthFreshness `json:"freshness,omitempty"`
+	Storage   *HealthStorage    `json:"storage,omitempty"`
 }
 
 // HealthCounts summarises discovered jobs.
@@ -188,6 +201,66 @@ type HealthCounts struct {
 	Total   int `json:"total"`
 	Valid   int `json:"valid"`
 	Invalid int `json:"invalid"`
+}
+
+// HealthQueue is the queue's age and retry picture. The total depth stays in
+// queue_depth so an existing reader keeps working; this adds what one integer
+// cannot express.
+type HealthQueue struct {
+	// OldestWaitingAt is the submission time of the oldest run that is
+	// claimable now, and OldestWaitingSeconds its age. Both are absent when
+	// nothing is claimable.
+	OldestWaitingAt      *time.Time `json:"oldest_waiting_at,omitempty"`
+	OldestWaitingSeconds *float64   `json:"oldest_waiting_seconds,omitempty"`
+
+	// ByJob is the queue depth per job, so "which job is backing up?" has an
+	// answer.
+	ByJob map[string]int `json:"by_job,omitempty"`
+
+	// Retrying counts runs parked by retry backoff, and NextRetryAt is when
+	// the soonest of them becomes claimable. They are deliberately separate
+	// from the age above: a retry is waiting on a clock, not on capacity.
+	Retrying    int        `json:"retrying"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+}
+
+// HealthFreshness is one job's last success. LastSuccessAt and AgeSeconds are
+// absent when the job has never succeeded, which is itself the signal: a cron
+// job that has never succeeded is not a job that is working.
+type HealthFreshness struct {
+	JobID         string     `json:"job_id"`
+	Name          string     `json:"name,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	AgeSeconds    *float64   `json:"age_seconds,omitempty"`
+}
+
+// HealthStorage reports the database's size and the data directory's free
+// space. It is computed daemon-side so a remote operator sees it through the
+// API instead of needing a shell on the host.
+//
+// DBBytes is page_count * page_size, so it excludes the WAL file. The disk
+// fields are 0 when the platform cannot report them.
+type HealthStorage struct {
+	DBBytes        int64 `json:"db_bytes"`
+	DiskFreeBytes  int64 `json:"disk_free_bytes"`
+	DiskTotalBytes int64 `json:"disk_total_bytes"`
+}
+
+// QueueStats is the raw queue data the daemon reports to the API. The times
+// stay instants here; the API layer turns them into ages, because "now" belongs
+// to the response being written, not to the store that was read.
+type QueueStats struct {
+	ByJob           map[string]int
+	OldestWaitingAt *time.Time
+	Retrying        int
+	NextRetryAt     *time.Time
+}
+
+// StorageStats is the raw storage data the daemon reports to the API.
+type StorageStats struct {
+	DBBytes        int64
+	DiskFreeBytes  int64
+	DiskTotalBytes int64
 }
 
 // RunToken is the scope granted to a per-run token handed to a child process.

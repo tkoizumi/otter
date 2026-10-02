@@ -14,7 +14,6 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/database"
 	"github.com/tkoizumi/otter/internal/identity"
-	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // This file is the jobs listing, which answers two halves of one question.
@@ -307,18 +306,19 @@ func jobViewPath(v api.JobView) string {
 }
 
 // printSchedule answers the question "is this actually running on a schedule?":
-// what each job's cron is, when it next fires, and what happened last
-// time it did.
+// what each job's cron is, when it next fires, and whether it is still
+// succeeding.
 //
-// A cron job that has never run is the common case after a first
-// start, so "no runs yet" is reported rather than an empty column.
-func (a *App) printSchedule(ctx context.Context, g globals, list []api.JobView, includeInvalid bool) int {
-	client := g.client()
+// The last column is the daemon-computed last success that came with the
+// listing, so a stale schedule reads as a stale age rather than as an empty
+// column -- and rendering it costs no run listing per job. A job that has never
+// succeeded is the common case after a first start and says so.
+func (a *App) printSchedule(_ context.Context, _ globals, list []api.JobView, includeInvalid bool) int {
 	now := time.Now().UTC()
 
 	fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n",
-		"JOB", "CRON", "NEXT RUN", "IN", "LAST RUN")
-	fmt.Fprintln(a.Stdout, strings.Repeat("-", 92))
+		"JOB", "CRON", "NEXT RUN", "IN", "LAST SUCCESS")
+	fmt.Fprintln(a.Stdout, strings.Repeat("-", 100))
 
 	shown := 0
 	for _, it := range list {
@@ -350,14 +350,11 @@ func (a *App) printSchedule(ctx context.Context, g globals, list []api.JobView, 
 			in = it.NextRunAt.Sub(now).Round(time.Second).String()
 		}
 
-		last := "no runs yet"
-		// A small limit keeps this a status view rather than a history dump.
-		if recent, err := client.ListRuns(ctx, api.RunsQuery{JobID: it.ID, Limit: 1}); err == nil && len(recent) > 0 {
-			r := recent[0]
-			last = fmt.Sprintf("%s at %s", r.Status, r.CreatedAt.Local().Format("15:04:05"))
-			if r.Error != nil && *r.Error != "" && r.Status != runs.StatusSucceeded {
-				last += " (" + oneLine(*r.Error) + ")"
-			}
+		last := "never succeeded"
+		if it.LastSuccessAt != nil {
+			last = fmt.Sprintf("%s (%s ago)",
+				it.LastSuccessAt.Local().Format("2006-01-02 15:04:05"),
+				now.Sub(*it.LastSuccessAt).Round(time.Second))
 		}
 		fmt.Fprintf(a.Stdout, "%-20s %-16s %-21s %-10s %s\n",
 			jobViewName(it), cron, next, in, last)

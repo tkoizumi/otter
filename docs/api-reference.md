@@ -158,30 +158,60 @@ caller, since no token is configured — receives the full payload:
 ```json
 {
   "status": "ok",
-  "version": "0.4.1",
+  "version": "v0.2.0",
   "uptime_seconds": 81234.5,
   "jobs": {"total": 7, "valid": 6, "invalid": 1},
   "queue_depth": 2,
-  "runs": {"queued": 2, "running": 2, "succeeded": 1043, "failed": 17, "retrying": 1, "cancelled": 0, "timed_out": 3}
+  "runs": {"queued": 2, "running": 2, "succeeded": 1043, "failed": 17, "retrying": 1, "cancelled": 0, "timed_out": 3},
+  "queue": {
+    "oldest_waiting_at": "2026-10-01T04:02:11Z",
+    "oldest_waiting_seconds": 3725.4,
+    "by_job": {"shopify-to-erp": 2},
+    "retrying": 1,
+    "next_retry_at": "2026-10-01T05:14:00Z"
+  },
+  "freshness": [
+    {"job_id": "9f1c...", "name": "shopify-to-erp", "last_success_at": "2026-10-01T05:00:04Z", "age_seconds": 325.1},
+    {"job_id": "41ab...", "name": "nightly-report"}
+  ],
+  "storage": {"db_bytes": 812345678, "disk_free_bytes": 12884901888, "disk_total_bytes": 21474836480}
 }
 ```
 
 When an API token **is** configured and the request carries no token or a wrong
-one, the response is a minimal liveness payload with the operational counters
-omitted, so a token-protected deployment does not disclose job and run
-counts to the network:
+one, the response is a minimal liveness payload with every operational field
+omitted, so a token-protected deployment does not disclose job, run, queue,
+freshness or storage detail to the network:
 
 ```json
-{"status": "ok", "version": "0.4.1", "uptime_seconds": 81234.5}
+{"status": "ok", "version": "v0.2.0", "uptime_seconds": 81234.5}
 ```
 
 `jobs` reports how many manifests were discovered and how many of them
 are valid, `queue_depth` is the number of runs waiting to be claimed, and `runs`
-is a count per status. `status` is `ok` whenever the process is serving
+is a count per status.
+
+The remaining blocks answer what counts cannot, and are present only for an
+authenticated caller:
+
+| Field | Meaning |
+| --- | --- |
+| `queue.oldest_waiting_at`, `queue.oldest_waiting_seconds` | Submission time and age of the oldest run that is claimable *now* (`available_at <= now`). Absent when nothing is claimable. |
+| `queue.by_job` | Queue depth per job id. |
+| `queue.retrying` | Runs parked by retry backoff — waiting on a clock, not on capacity, which is why they are not part of the age above. |
+| `queue.next_retry_at` | When the soonest parked retry becomes claimable. |
+| `freshness[]` | One entry per job: `last_success_at` is the newest succeeded run's completion time and `age_seconds` its age. Both are absent for a job that has never succeeded, which is itself the signal. Sorted by `job_id`. |
+| `storage.db_bytes` | The live database's size, `PRAGMA page_count * page_size` (so it excludes the WAL file). |
+| `storage.disk_free_bytes`, `storage.disk_total_bytes` | The data directory's filesystem, read daemon-side so a remote caller can watch it. Both are `0` on a platform that cannot report filesystem space. |
+
+`status` is `ok` whenever the process is serving
 requests. A `200` means the process is up and SQLite is readable; there is no
 failure status from this endpoint by design, because a health check should
 distinguish "the daemon answered" from "the daemon is gone", and the daemon does
 not take the listener down until it has already stopped accepting work.
+
+A block whose read fails is dropped from the response and logged, rather than
+turning a liveness check into an error.
 
 `otter status` reads this endpoint. If the counters are missing it prints a
 hint that the daemon requires a token, which is how a typo in
@@ -230,7 +260,8 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs"
         "webhook_url": "http://127.0.0.1:7337/v1/hooks/shopify-to-erp"
       },
       "valid": true,
-      "next_run_at": "2024-06-01T12:35:00Z"
+      "next_run_at": "2024-06-01T12:35:00Z",
+      "last_success_at": "2024-06-01T12:30:04Z"
     },
     {
       "id": "broken-one",
@@ -261,6 +292,11 @@ Field notes:
   total including the first attempt (`attempts: 0` becomes `max_attempts: 1`).
 - Durations in `retry` are strings, since they come straight from the manifest.
 - `next_run_at` appears only for jobs with a cron trigger.
+- `last_success_at` is the completion time of the job's most recent succeeded
+  run, and is absent for a job that has never succeeded. It is computed once for
+  the whole listing, which is what lets `otter jobs --schedule` render freshness
+  without listing runs once per job. Only this listing carries it;
+  `GET /v1/jobs/{id}` does not.
 - `webhook_url` appears when the webhook trigger is enabled.
 - **`webhook_token` is never included in this listing** — only in the
   single-job response, so a list call cannot spill credentials.

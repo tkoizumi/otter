@@ -426,6 +426,52 @@ func TestListFiltersOrderingAndPaging(t *testing.T) {
 	}
 }
 
+// TestLastSuccessByJobIsTheNewestSuccessPerJob pins the freshness signal: a
+// job that has been failing since its last success must still report that
+// success, and a job that never succeeded must be absent rather than zero.
+func TestLastSuccessByJobIsTheNewestSuccessPerJob(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	older := time.Date(2026, time.October, 1, 3, 0, 0, 0, time.UTC)
+	newer := older.Add(2 * time.Hour)
+
+	seed := func(id, jobID string, status Status, finished time.Time) {
+		t.Helper()
+		run := sampleRun(id, StatusRunning, 1)
+		run.JobID = jobID
+		if err := store.Create(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Finish(ctx, id, Finish{Status: status, FinishedAt: finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seed("a-1", "job-a", StatusSucceeded, older)
+	seed("a-2", "job-a", StatusSucceeded, newer) // the newer success wins
+	seed("a-3", "job-a", StatusFailed, newer.Add(time.Hour))
+	seed("b-1", "job-b", StatusFailed, newer) // never succeeded
+	seed("c-1", "job-c", StatusSucceeded, older)
+
+	fresh, err := store.LastSuccessByJob(ctx)
+	if err != nil {
+		t.Fatalf("LastSuccessByJob() error = %v", err)
+	}
+	if len(fresh) != 2 {
+		t.Fatalf("LastSuccessByJob() = %v, want exactly job-a and job-c", fresh)
+	}
+	if got := fresh["job-a"]; !got.Equal(newer) {
+		t.Errorf("job-a last success = %s, want %s (the later success, not the later failure)", got, newer)
+	}
+	if got := fresh["job-c"]; !got.Equal(older) {
+		t.Errorf("job-c last success = %s, want %s", got, older)
+	}
+	if _, ok := fresh["job-b"]; ok {
+		t.Errorf("job-b has never succeeded and must be absent, got %s", fresh["job-b"])
+	}
+}
+
 func TestCountByStatusAndListByStatus(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()

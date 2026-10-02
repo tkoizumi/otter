@@ -537,6 +537,40 @@ func (s *Store) CountByStatus(ctx context.Context) (map[Status]int, error) {
 	return counts, rows.Err()
 }
 
+// LastSuccessByJob returns, for every job with at least one succeeded run, the
+// completion time of its most recent success. It is the daemon-side answer to
+// "did this job stop succeeding?" -- a question the per-status counts cannot
+// answer, because a job that has been failing for a day still shows the same
+// healthy totals.
+//
+// A job with no success is absent rather than present with a zero time, so a
+// caller can tell "never succeeded" from "succeeded at the epoch".
+func (s *Store) LastSuccessByJob(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT job_id, MAX(finished_at) FROM runs
+		  WHERE status = ? AND finished_at IS NOT NULL
+		  GROUP BY job_id`, string(StatusSucceeded))
+	if err != nil {
+		return nil, fmt.Errorf("runs: last success by job: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var (
+			jobID    string
+			finished database.NullableTime
+		)
+		if err := rows.Scan(&jobID, &finished); err != nil {
+			return nil, fmt.Errorf("runs: last success by job scan: %w", err)
+		}
+		if finished.Valid {
+			out[jobID] = finished.Time
+		}
+	}
+	return out, rows.Err()
+}
+
 // MarkRunning transitions a queued or retrying run into running. It returns
 // false when the run is no longer claimable, for example because it was
 // cancelled while waiting in the queue.

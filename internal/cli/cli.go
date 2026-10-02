@@ -357,6 +357,49 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 		health.Runs[string(runs.StatusFailed)],
 		health.Runs[string(runs.StatusTimedOut)],
 		health.Runs[string(runs.StatusCancelled)])
+
+	// The answers a count cannot give: how long the oldest claimable run has
+	// waited, which job is backing up, whether the schedule is still working,
+	// and whether the disk is filling. A daemon too old to report them simply
+	// omits these lines.
+	now := time.Now().UTC()
+	if q := health.Queue; q != nil {
+		if q.OldestWaitingAt == nil {
+			fmt.Fprintf(a.Stdout, "queue age:     nothing waiting\n")
+		} else {
+			// Prefer the daemon's own age; fall back to the instant, so a
+			// response that carries only one of the two still renders.
+			age := now.Sub(*q.OldestWaitingAt)
+			if q.OldestWaitingSeconds != nil {
+				age = time.Duration(*q.OldestWaitingSeconds * float64(time.Second))
+			}
+			fmt.Fprintf(a.Stdout, "queue age:     oldest waiting %s (submitted %s)\n",
+				age.Round(time.Second), q.OldestWaitingAt.Local().Format("2006-01-02 15:04:05"))
+		}
+		switch {
+		case q.Retrying == 0:
+			fmt.Fprintf(a.Stdout, "retries:       none\n")
+		case q.NextRetryAt == nil:
+			fmt.Fprintf(a.Stdout, "retries:       %d retrying\n", q.Retrying)
+		default:
+			next := q.NextRetryAt.Sub(now)
+			if next < 0 {
+				next = 0
+			}
+			fmt.Fprintf(a.Stdout, "retries:       %d retrying, next in %s\n",
+				q.Retrying, next.Round(time.Second))
+		}
+		if len(q.ByJob) > 0 {
+			fmt.Fprintf(a.Stdout, "backlog:       %s\n", backlogLine(q.ByJob))
+		}
+	}
+	if s := health.Storage; s != nil {
+		fmt.Fprintf(a.Stdout, "storage:       db %s, disk %s free of %s\n",
+			formatBytes(s.DBBytes), formatBytes(s.DiskFreeBytes), formatBytes(s.DiskTotalBytes))
+	}
+	if len(health.Freshness) > 0 {
+		fmt.Fprintf(a.Stdout, "last success:  %s\n", freshnessLine(health.Freshness, now))
+	}
 	return 0
 }
 

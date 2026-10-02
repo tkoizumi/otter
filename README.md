@@ -300,7 +300,7 @@ shape, and `otter state get <job> <key>` inspects one from the CLI.
 ## CLI
 
 ```bash
-otter status                            # daemon health, queue depth, run counts
+otter status                            # health: queue age and depth, run counts, freshness, storage
 otter jobs [--all]              # jobs with their id, status and path; --all adds invalid/retired
 otter reload                            # re-read jobs; no restart, running work continues
 otter pause [<job>|.]                   # suspend cron and webhook; manual runs still work

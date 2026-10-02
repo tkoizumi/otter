@@ -25,13 +25,38 @@ import (
 
 // ListJobs implements api.Backend. Webhook tokens are omitted here so
 // that listing jobs never spills credentials.
-func (d *Daemon) ListJobs() []api.JobView {
+//
+// Each view carries the job's last successful completion. It is read once for
+// the whole listing rather than per job, which is what lets `otter jobs
+// --schedule` render freshness without a run listing per job. A read that fails
+// degrades to "no freshness" rather than failing the listing.
+func (d *Daemon) ListJobs(ctx context.Context) []api.JobView {
+	fresh := d.lastSuccessByJob(ctx)
 	entries := d.reg.all()
 	out := make([]api.JobView, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, d.jobView(entry, false))
+		view := d.jobView(entry, false)
+		if at, ok := fresh[view.ID]; ok {
+			instant := at
+			view.LastSuccessAt = &instant
+		}
+		out = append(out, view)
 	}
 	return out
+}
+
+// lastSuccessByJob is the freshness half of ListJobs. A nil store (a partially
+// built daemon in a test) or a failed read yields no freshness, never a panic.
+func (d *Daemon) lastSuccessByJob(ctx context.Context) map[string]time.Time {
+	if d.runs == nil {
+		return nil
+	}
+	fresh, err := d.runs.LastSuccessByJob(ctx)
+	if err != nil {
+		d.log.Warn("job_freshness", "error", err.Error())
+		return nil
+	}
+	return fresh
 }
 
 // GetJob implements api.Backend. It accepts a reference -- an id, a
@@ -592,6 +617,89 @@ func (d *Daemon) RunCounts(ctx context.Context) (map[string]int, error) {
 		out[string(status)] = n
 	}
 	return out, nil
+}
+
+// QueueStats implements api.Backend. It answers what a depth count cannot: how
+// long the oldest claimable run has waited, which job is backing up, and when
+// the next retry is due.
+func (d *Daemon) QueueStats(ctx context.Context) (api.QueueStats, error) {
+	var out api.QueueStats
+	if d.queue != nil {
+		byJob, err := d.queue.DepthByJob(ctx)
+		if err != nil {
+			return out, err
+		}
+		out.ByJob = byJob
+
+		oldest, ok, err := d.queue.OldestWaiting(ctx, time.Now().UTC())
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			out.OldestWaitingAt = &oldest
+		}
+
+		next, ok, err := d.queue.NextRetryAt(ctx, string(runs.StatusRetrying))
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			out.NextRetryAt = &next
+		}
+	}
+	if d.runs != nil {
+		counts, err := d.runs.CountByStatus(ctx)
+		if err != nil {
+			return out, err
+		}
+		out.Retrying = counts[runs.StatusRetrying]
+	}
+	return out, nil
+}
+
+// LastSuccessByJob implements api.Backend. A job absent from the map has never
+// succeeded.
+func (d *Daemon) LastSuccessByJob(ctx context.Context) (map[string]time.Time, error) {
+	if d.runs == nil {
+		return map[string]time.Time{}, nil
+	}
+	return d.runs.LastSuccessByJob(ctx)
+}
+
+// StorageStats implements api.Backend. The database size is page_count *
+// page_size, so it excludes the WAL file. The disk numbers cover the filesystem
+// holding the data directory; a platform that cannot report them leaves those
+// fields zero rather than failing the whole health response.
+func (d *Daemon) StorageStats(ctx context.Context) (api.StorageStats, error) {
+	var out api.StorageStats
+	if d.db != nil {
+		pages, err := d.pragmaInt(ctx, "page_count")
+		if err != nil {
+			return out, err
+		}
+		pageSize, err := d.pragmaInt(ctx, "page_size")
+		if err != nil {
+			return out, err
+		}
+		out.DBBytes = pages * pageSize
+	}
+	if d.cfg.DataDir != "" {
+		if free, total, err := diskSpace(d.cfg.DataDir); err == nil {
+			out.DiskFreeBytes = free
+			out.DiskTotalBytes = total
+		}
+	}
+	return out, nil
+}
+
+// pragmaInt reads a single-integer PRAGMA. A PRAGMA name cannot be
+// parameterized, so every caller passes a constant, never input.
+func (d *Daemon) pragmaInt(ctx context.Context, name string) (int64, error) {
+	var v int64
+	if err := d.db.QueryRowContext(ctx, "PRAGMA "+name).Scan(&v); err != nil {
+		return 0, fmt.Errorf("daemon: read pragma %s: %w", name, err)
+	}
+	return v, nil
 }
 
 // Tokens ---------------------------------------------------------------------

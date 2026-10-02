@@ -41,6 +41,11 @@ type fakeBackend struct {
 	queueDepth int
 	runCounts  map[string]int
 
+	// Operational signals behind the authenticated health view.
+	queueStats QueueStats
+	freshness  map[string]time.Time
+	storage    StorageStats
+
 	// capture is the in-memory HTTP capture fake, defined in capture_test.go.
 	capture *fakeCapture
 
@@ -93,6 +98,7 @@ func newFakeBackend() *fakeBackend {
 		logs:       map[string][]runs.LogEntry{},
 		state:      map[string]map[string]json.RawMessage{},
 		runCounts:  map[string]int{},
+		freshness:  map[string]time.Time{},
 		capture:    newFakeCapture(),
 	}
 }
@@ -166,7 +172,7 @@ func (f *fakeBackend) Version() string { return f.version }
 
 func (f *fakeBackend) StartedAt() time.Time { return f.startedAt }
 
-func (f *fakeBackend) ListJobs() []JobView {
+func (f *fakeBackend) ListJobs(context.Context) []JobView {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]JobView, 0, len(f.jobs))
@@ -439,6 +445,28 @@ func (f *fakeBackend) AllState(_ context.Context, jobID string) (map[string]json
 }
 
 func (f *fakeBackend) QueueDepth(context.Context) (int, error) { return f.queueDepth, nil }
+
+func (f *fakeBackend) QueueStats(context.Context) (QueueStats, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.queueStats, nil
+}
+
+func (f *fakeBackend) LastSuccessByJob(context.Context) (map[string]time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]time.Time{}
+	for id, at := range f.freshness {
+		out[id] = at
+	}
+	return out, nil
+}
+
+func (f *fakeBackend) StorageStats(context.Context) (StorageStats, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.storage, nil
+}
 
 func (f *fakeBackend) RunCounts(context.Context) (map[string]int, error) {
 	f.mu.Lock()
@@ -733,6 +761,20 @@ func TestHealthEndpoint(t *testing.T) {
 	b.queueDepth = 3
 	b.runCounts = map[string]int{"queued": 1, "running": 2}
 
+	// The operational signals. Their instants are fixed so the ages below are
+	// checkable, not merely present.
+	oldest := time.Now().Add(-10 * time.Minute).UTC()
+	nextRetry := time.Now().Add(4 * time.Minute).UTC()
+	lastSuccess := time.Now().Add(-3 * time.Minute).UTC()
+	b.queueStats = QueueStats{
+		ByJob:           map[string]int{"ok": 2, "bad": 1},
+		OldestWaitingAt: &oldest,
+		Retrying:        1,
+		NextRetryAt:     &nextRetry,
+	}
+	b.freshness = map[string]time.Time{"ok": lastSuccess}
+	b.storage = StorageStats{DBBytes: 4096, DiskFreeBytes: 1 << 30, DiskTotalBytes: 2 << 30}
+
 	srv := newTestServer(t, ServerConfig{}, b)
 	defer srv.Close()
 
@@ -741,7 +783,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 	var raw map[string]json.RawMessage
 	r.decode(t, &raw)
-	for _, key := range []string{"status", "version", "uptime_seconds", "jobs", "queue_depth", "runs"} {
+	for _, key := range []string{"status", "version", "uptime_seconds", "jobs", "queue_depth", "runs", "queue", "freshness", "storage"} {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("health response is missing %q: %s", key, r.body)
 		}
@@ -779,14 +821,59 @@ func TestHealthEndpoint(t *testing.T) {
 	if health.Runs["running"] != 2 || health.Runs["queued"] != 1 {
 		t.Fatalf("runs = %+v", health.Runs)
 	}
+	if health.Queue == nil {
+		t.Fatal("an authenticated /health response must include the queue signals")
+	}
+	if health.Queue.OldestWaitingAt == nil || !health.Queue.OldestWaitingAt.Equal(oldest) {
+		t.Errorf("oldest_waiting_at = %v, want %s", health.Queue.OldestWaitingAt, oldest)
+	}
+	if health.Queue.OldestWaitingSeconds == nil {
+		t.Fatal("oldest_waiting_seconds is missing")
+	}
+	if age := *health.Queue.OldestWaitingSeconds; age < 599 || age > 601 {
+		t.Errorf("oldest_waiting_seconds = %v, want about 600", age)
+	}
+	if health.Queue.ByJob["ok"] != 2 || health.Queue.ByJob["bad"] != 1 {
+		t.Errorf("by_job = %v, want two for ok and one for bad", health.Queue.ByJob)
+	}
+	if health.Queue.Retrying != 1 {
+		t.Errorf("retrying = %d, want 1", health.Queue.Retrying)
+	}
+	if health.Queue.NextRetryAt == nil || !health.Queue.NextRetryAt.Equal(nextRetry) {
+		t.Errorf("next_retry_at = %v, want %s", health.Queue.NextRetryAt, nextRetry)
+	}
+	// Every job is named, and the ones without a success say so by omission.
+	if len(health.Freshness) != 2 {
+		t.Fatalf("freshness = %+v, want one entry per job", health.Freshness)
+	}
+	if health.Freshness[0].JobID != "bad" || health.Freshness[1].JobID != "ok" {
+		t.Errorf("freshness order = %v, want it sorted by job id", health.Freshness)
+	}
+	if health.Freshness[0].LastSuccessAt != nil || health.Freshness[0].AgeSeconds != nil {
+		t.Errorf("a job that never succeeded claims a success: %+v", health.Freshness[0])
+	}
+	if health.Freshness[1].LastSuccessAt == nil || !health.Freshness[1].LastSuccessAt.Equal(lastSuccess) {
+		t.Errorf("ok last_success_at = %v, want %s", health.Freshness[1].LastSuccessAt, lastSuccess)
+	}
+	if health.Storage == nil || health.Storage.DBBytes != 4096 {
+		t.Fatalf("storage = %+v, want db_bytes 4096", health.Storage)
+	}
+	if health.Storage.DiskTotalBytes != 2<<30 {
+		t.Errorf("disk_total_bytes = %d, want %d", health.Storage.DiskTotalBytes, int64(2<<30))
+	}
 }
 
 // TestHealthHidesCountersFromUnauthenticatedCallers covers the liveness probe:
 // it must still answer 200, but must not disclose operational detail when a
 // token is configured and none (or a wrong one) was presented.
+//
+// The field-count check is the point: the WS4 signals added to /health must not
+// put one new key on the wire for an unauthenticated caller.
 func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 	b := newFakeBackend()
 	b.addJob("int-A", true, "")
+	b.queueStats = QueueStats{Retrying: 1}
+	b.storage = StorageStats{DBBytes: 4096}
 	srv := newTestServer(t, ServerConfig{APIToken: "s3cret"}, b)
 	defer srv.Close()
 
@@ -797,13 +884,25 @@ func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 		if r.status != http.StatusOK {
 			t.Fatalf("status = %d, want 200 so liveness probes keep working", r.status)
 		}
+		var raw map[string]json.RawMessage
+		r.decode(t, &raw)
+		if len(raw) != 3 {
+			t.Fatalf("unauthenticated /health has %d fields, want exactly status, version and uptime_seconds: %s", len(raw), r.body)
+		}
+		for _, key := range []string{"status", "version", "uptime_seconds"} {
+			if _, ok := raw[key]; !ok {
+				t.Fatalf("unauthenticated /health is missing %q: %s", key, r.body)
+			}
+		}
+
 		var health HealthResponse
 		r.decode(t, &health)
 		if health.Status != "ok" || health.Version == "" {
 			t.Fatalf("liveness payload = %+v", health)
 		}
-		if health.Jobs != nil || health.QueueDepth != nil || len(health.Runs) != 0 {
-			t.Fatalf("unauthenticated /health leaked counters: %s", r.body)
+		if health.Jobs != nil || health.QueueDepth != nil || len(health.Runs) != 0 ||
+			health.Queue != nil || len(health.Freshness) != 0 || health.Storage != nil {
+			t.Fatalf("unauthenticated /health leaked operational detail: %s", r.body)
 		}
 	})
 

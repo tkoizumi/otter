@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tkoizumi/otter/internal/database"
+	"github.com/tkoizumi/otter/internal/runs"
 )
 
 // fakeCapacity is a deterministic test double for Capacity. A job
@@ -513,5 +514,78 @@ func TestClaimSaturatedJobDoesNotReserve(t *testing.T) {
 	}
 	if got := capacity.runningFor("a"); got != 1 {
 		t.Errorf("reserved slots while saturated = %d, want 1", got)
+	}
+}
+
+// TestOldestWaitingAndNextRetryAt pins the two queue-age answers the health
+// surface reports: how long the oldest claimable run has waited, and when the
+// next retry is due. A retry parked in the future must not inflate the first.
+func TestOldestWaitingAndNextRetryAt(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("database.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("database.Migrate() error = %v", err)
+	}
+	q := New(db.DB)
+
+	now := testBase
+	// A retrying run, parked five minutes into the future.
+	if err := runs.NewStore(db.DB).Create(ctx, &runs.Run{
+		ID: "run-retry", JobID: "job-b", TriggerType: runs.TriggerManual,
+		Status: runs.StatusRetrying, Attempt: 2, CreatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("seed retrying run: %v", err)
+	}
+	// Claimable work: submitted and due ten minutes ago. The retry is
+	// submitted later but due later still.
+	insertQueueRow(t, db, "run-old", "job-a", now.Add(-10*time.Minute), now.Add(-10*time.Minute))
+	insertQueueRow(t, db, "run-retry", "job-b", now.Add(5*time.Minute), now.Add(-time.Minute))
+	insertQueueRow(t, db, "run-new", "job-a", now, now.Add(-time.Minute))
+
+	oldest, ok, err := q.OldestWaiting(ctx, now)
+	if err != nil {
+		t.Fatalf("OldestWaiting() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("OldestWaiting() found nothing, want the run submitted ten minutes ago")
+	}
+	if want := now.Add(-10 * time.Minute); !oldest.Equal(want) {
+		t.Errorf("OldestWaiting() = %s, want %s", oldest, want)
+	}
+
+	next, ok, err := q.NextRetryAt(ctx, string(runs.StatusRetrying))
+	if err != nil {
+		t.Fatalf("NextRetryAt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("NextRetryAt() found nothing, want the parked retry")
+	}
+	if want := now.Add(5 * time.Minute); !next.Equal(want) {
+		t.Errorf("NextRetryAt() = %s, want %s", next, want)
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM run_queue`); err != nil {
+		t.Fatalf("clear queue: %v", err)
+	}
+	if _, ok, err := q.OldestWaiting(ctx, now); err != nil || ok {
+		t.Errorf("OldestWaiting() on an empty queue = (_, %v, %v), want (_, false, nil)", ok, err)
+	}
+	if _, ok, err := q.NextRetryAt(ctx, string(runs.StatusRetrying)); err != nil || ok {
+		t.Errorf("NextRetryAt() on an empty queue = (_, %v, %v), want (_, false, nil)", ok, err)
+	}
+}
+
+// insertQueueRow seeds a queue row with an explicit created_at, which Enqueue
+// cannot do: it always records the submission as "now".
+func insertQueueRow(t *testing.T, db *database.DB, runID, jobID string, availableAt, createdAt time.Time) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO run_queue (run_id, job_id, available_at, created_at) VALUES (?, ?, ?, ?)`,
+		runID, jobID, database.FormatTime(availableAt), database.FormatTime(createdAt)); err != nil {
+		t.Fatalf("insert queue row %s: %v", runID, err)
 	}
 }

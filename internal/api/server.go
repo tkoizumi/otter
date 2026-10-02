@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -352,6 +353,11 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 // work without credentials, but only an authenticated caller sees the
 // operational counters. That keeps a token-protected deployment from
 // disclosing job and run counts to the network.
+//
+// The richer signals -- queue age, per-job depth, retry activity, per-job
+// freshness and storage pressure -- are guarded by the same check and each
+// degrades on its own: a read that fails drops its block and is logged, rather
+// than turning a liveness check into an error.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := HealthResponse{
 		Status:        "ok",
@@ -364,7 +370,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	views := s.backend.ListJobs()
+	views := s.backend.ListJobs(r.Context())
 	counts := &HealthCounts{Total: len(views)}
 	for _, v := range views {
 		if v.Valid {
@@ -389,11 +395,53 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp.QueueDepth = &depth
 	resp.Runs = runCounts
 
+	now := time.Now().UTC()
+	if stats, err := s.backend.QueueStats(r.Context()); err != nil {
+		s.logger.Warn("health_queue_stats", "error", err.Error())
+	} else {
+		queue := &HealthQueue{ByJob: stats.ByJob, Retrying: stats.Retrying, NextRetryAt: stats.NextRetryAt}
+		if stats.OldestWaitingAt != nil {
+			age := now.Sub(*stats.OldestWaitingAt).Seconds()
+			queue.OldestWaitingAt = stats.OldestWaitingAt
+			queue.OldestWaitingSeconds = &age
+		}
+		resp.Queue = queue
+	}
+
+	if fresh, err := s.backend.LastSuccessByJob(r.Context()); err != nil {
+		s.logger.Warn("health_freshness", "error", err.Error())
+	} else {
+		resp.Freshness = make([]HealthFreshness, 0, len(views))
+		for _, v := range views {
+			entry := HealthFreshness{JobID: v.ID, Name: v.Name}
+			if at, ok := fresh[v.ID]; ok {
+				instant := at
+				age := now.Sub(at).Seconds()
+				entry.LastSuccessAt = &instant
+				entry.AgeSeconds = &age
+			}
+			resp.Freshness = append(resp.Freshness, entry)
+		}
+		// A stable order makes the response diffable and the documented
+		// example reproducible.
+		sort.Slice(resp.Freshness, func(i, j int) bool { return resp.Freshness[i].JobID < resp.Freshness[j].JobID })
+	}
+
+	if storage, err := s.backend.StorageStats(r.Context()); err != nil {
+		s.logger.Warn("health_storage", "error", err.Error())
+	} else {
+		resp.Storage = &HealthStorage{
+			DBBytes:        storage.DBBytes,
+			DiskFreeBytes:  storage.DiskFreeBytes,
+			DiskTotalBytes: storage.DiskTotalBytes,
+		}
+	}
+
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"jobs": s.backend.ListJobs()})
+	s.writeJSON(w, http.StatusOK, map[string]any{"jobs": s.backend.ListJobs(r.Context())})
 }
 
 // handleResolveJob resolves a label, path or id reference. It is the
