@@ -141,11 +141,18 @@ goreleaser release --snapshot --clean    # dist/otter_<version>_<os>_<arch>.tar.
 OTTER_ARCHIVE="$PWD/dist/otter_0.3.0_linux_amd64.tar.gz" make drill DRILL=fresh-archive
 ```
 
-Each drill documents a `DRILL_SABOTAGE=<mode>` that removes the behavior under
-test, so a green run is demonstrably falsifiable rather than merely green: the
-sabotage run must fail at the assertion that names what was removed. For example
-`DRILL_SABOTAGE=skip-old-binary make drill DRILL=upgrade` seeds the workspace
-with the current binary, so nothing is pending and the drill goes red.
+Eight of the nine drills document a `DRILL_SABOTAGE=<mode>` that removes the
+behavior under test, so a green run is demonstrably falsifiable rather than
+merely green: the sabotage run must fail at the assertion that names what was
+removed. For example `DRILL_SABOTAGE=skip-old-binary make drill DRILL=upgrade`
+seeds the workspace with the current binary, so nothing is pending and the drill
+goes red.
+
+`unit-caps` is the exception: it has no drill-level mutation mode. Its
+falsifiability is the `UnitFile` render-test mutation recorded in
+[evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt](evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt),
+and a drill-level mode is tracked as `OT-030` in [open-work.md](open-work.md).
+The v0.3.0 gate record states the same gap.
 
 
 `--approved-ports` is the list of ports the host may be listening on (default
@@ -1093,7 +1100,7 @@ Behavior worth expecting:
   a newer one. Starting that binary fails before it serves anything:
 
   ```json
-  {"level":"error","event":"migration_failed","error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","timestamp":"2024-06-01T03:00:00Z"}
+  {"applied":13,"error":"database: schema is newer than this binary: the database has migration 13 applied and this build knows up to 12; downgrades are not supported -- restore the pre-upgrade backup","event":"migration_failed","known":12,"level":"error","timestamp":"2024-06-01T03:00:00Z"}
   ```
 
   A guard cannot be retrofitted into a binary that predates it, so this is the
