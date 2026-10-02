@@ -7,6 +7,10 @@ runtime API. The durable Castor fixes (lease, single-active-run index, cancel,
 shared import core) and the job design remain valid when Castor work resumes.
 Nothing in this plan is shipped by writing this document.
 
+**For what actually shipped, read
+[p0-13-castor-import-migration-record.md](p0-13-castor-import-migration-record.md).**
+That document is what is true where the two disagree.
+
 This revises P0-13 ("Select and harden the job") in
 [phase-0-tasks.md](phase-0-tasks.md#L273) after Castor's codebase came under the
 same ownership as Otter's. It assumes "task 13" means P0-13, and that Castor may
