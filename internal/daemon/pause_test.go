@@ -39,7 +39,7 @@ func TestPauseUnarmsCronAndResumeRearms(t *testing.T) {
 	ctx := context.Background()
 	id := runtimeID(t, d, "ticker")
 
-	if _, ok := d.sched.Spec(id); !ok {
+	if _, ok := jobCronSpec(d, id); !ok {
 		t.Fatal("a cron job should start armed")
 	}
 
@@ -53,7 +53,7 @@ func TestPauseUnarmsCronAndResumeRearms(t *testing.T) {
 	if view.Since == nil {
 		t.Error("the pause view should say when the pause began")
 	}
-	if _, ok := d.sched.Spec(id); ok {
+	if _, ok := jobCronSpec(d, id); ok {
 		t.Error("a paused job should not be armed")
 	}
 
@@ -90,7 +90,7 @@ func TestPauseUnarmsCronAndResumeRearms(t *testing.T) {
 	if resumed.Paused || !resumed.Changed {
 		t.Errorf("resume view = %+v, want enabled and changed", resumed)
 	}
-	if _, ok := d.sched.Spec(id); !ok {
+	if _, ok := jobCronSpec(d, id); !ok {
 		t.Error("resume did not re-arm the cron trigger")
 	}
 	if got, _ := d.GetJob("ticker"); got.Triggers.Paused {
@@ -240,7 +240,7 @@ func TestPausedJobStaysUnarmedAcrossARestart(t *testing.T) {
 
 	d := newDaemon(t, root, dataDir, nil, nil)
 
-	if _, ok := d.sched.Spec(id); ok {
+	if _, ok := jobCronSpec(d, id); ok {
 		t.Error("a paused job was armed at startup")
 	}
 	view, ok := d.GetJob("ticker")
@@ -277,7 +277,7 @@ func TestPauseFollowsAMoveAndNotAReset(t *testing.T) {
 	if !moved.Triggers.Paused {
 		t.Error("the pause did not follow the identity across the move")
 	}
-	if _, ok := d.sched.Spec(id); ok {
+	if _, ok := jobCronSpec(d, id); ok {
 		t.Error("a moved job that is paused should stay unarmed")
 	}
 
@@ -295,7 +295,7 @@ func TestPauseFollowsAMoveAndNotAReset(t *testing.T) {
 	if after.Triggers.Paused {
 		t.Error("a fresh identity must start enabled, not inherit the old pause")
 	}
-	if _, ok := d.sched.Spec(reset.NewID); !ok {
+	if _, ok := jobCronSpec(d, reset.NewID); !ok {
 		t.Error("the fresh identity's cron trigger should be armed")
 	}
 }
@@ -347,7 +347,7 @@ func TestCronTickSkipsAPausedJob(t *testing.T) {
 
 	// Call the job the scheduler would have called, as if this tick had been
 	// queued before the pause.
-	d.cronTick(id, "@every 6h")
+	d.cronTick(jobScheduleID(t, d, id), time.Now().UTC())
 
 	list, err := d.ListRuns(ctx, runs.Filter{JobID: id})
 	if err != nil {

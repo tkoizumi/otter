@@ -79,7 +79,7 @@ capture: full
 | `python.mode` | string | no | `external` | `external` preserves host Python behavior. `managed` requires `.python-version`, `pyproject.toml`, and `uv.lock`; prepare it before running. |
 | `python.executable` | string | no | `python3` in external mode | Interpreter used to launch the entrypoint. Resolved on `PATH` or given as an absolute path. Cannot be set in managed mode. |
 | `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. The declared directories are captured into the job's release at the same relative depth, so the same relative paths keep working after activation. |
-| `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`). **Deprecated as a schedule and read only as a one-time import**: the schedule is runtime state, set with `otter schedule set` or `PUT /v1/jobs/{id}/schedule`. See [Cron](#cron). |
+| `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), interpreted in **UTC**. Reconciles into a `manifest`-owned schedule on every reload; the API refuses to change that row. Add independent schedules with `otter schedule add`. See [Cron](#cron). |
 | `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-job token. |
 | `timeout` | integer \| string | no | `300` | Maximum wall-clock time for one attempt. An integer means seconds; a string is a Go duration (`30s`, `5m`, `1h30m`). |
 | `concurrency` | integer | no | `1` | Maximum number of simultaneous runs of **this** job. Extra triggers queue. Must be `>= 1`. |
@@ -125,18 +125,26 @@ trigger:
 - Standard **5-field** cron: `minute hour day-of-month month day-of-week`. There
   is no seconds field. The usual descriptors (`@hourly`, `@daily`, `@weekly`,
   `@monthly`, `@yearly`, `@every 5m`) are accepted too.
-- **Deprecated.** A schedule is runtime state, and this field is only an import
-  source: it is read once, on first sight of a job, and ignored from then on.
-  Change a cadence with `otter schedule set` or
-  `PUT /v1/jobs/{id}/schedule`, which take effect immediately and survive a
-  reload. A value edited here after the first import has no effect, which is
-  deliberate — a file and an API that can both write a schedule eventually
-  disagree about it. `otter schedule clear` is not the same as deleting this
-  field: clearing stops the job firing on its own and will not be re-imported.
+- **Interpreted in UTC.** This changed in `v0.4.0`: before it, `trigger.cron`
+  meant the **host's local time**, so the same manifest named a different
+  instant after a host was rebuilt with a different clock. There is no
+  per-manifest time-zone key yet; a schedule that must fire at a local wall
+  time is created with `otter schedule add --timezone <IANA zone>` (or the API's
+  `timezone` field), or the expression carries a `CRON_TZ=<zone>` prefix. A
+  DST zone follows its own rules, so `0 2 * * *` may skip or repeat an hour
+  twice a year.
+- **Manifest-owned.** This field reconciles into a `manifest`-owned schedule on
+  every `otter reload`: changing it changes the cadence, removing it removes the
+  schedule. The API refuses to `PATCH` or `DELETE` that row (`409`) — the file
+  is its owner — while `otter schedule add` creates an independent, `api`-owned
+  schedule beside it that no reload touches. A job that carries a cadence
+  migrated from `v0.3.0` keeps the old "the store owns it" behaviour: a reload
+  does not reconcile a manifest over it.
 - **Missed occurrences are not replayed.** If the daemon is offline from 12:00
   to 12:20 with a `*/5` schedule, the four missed ticks are gone. Design
   jobs to reconcile from a checkpoint stored in `ctx.state` instead of
-  assuming one run per tick.
+  assuming one run per tick. `otter schedule add --missed-policy` records the
+  policy for a future implementation; only `skip` is implemented today.
 
 Useful expressions:
 

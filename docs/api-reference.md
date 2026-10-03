@@ -121,7 +121,7 @@ on the next request: there is no cache to expire and no restart.
 | Scope | Can |
 | --- | --- |
 | `read` | Read jobs, runs, run output, the merged timeline, and capture **summaries**. |
-| `control` | Everything `read` can, plus run, cancel, pause, resume, and set or clear a schedule. |
+| `control` | Everything `read` can, plus run, cancel, pause, resume, and create, change, pause, resume or delete a schedule. |
 
 Neither scope can read job state (`ctx.state`), read capture **payloads**,
 register, reset, move or delete a job, reload the daemon, or manage tokens.
@@ -137,7 +137,9 @@ Those stay with the admin token. A scoped token also never receives a job's
 | `GET /v1/runs/{id}/requests` (summaries) | yes | yes | yes |
 | `POST /v1/jobs/{id}/runs`, `POST /v1/runs/{id}/cancel` | **no** (`403`) | yes | yes |
 | `POST /v1/jobs/{id}/pause`, `POST /v1/jobs/{id}/resume` | **no** (`403`) | yes | yes |
-| `PUT`/`DELETE /v1/jobs/{id}/schedule` | **no** (`403`) | yes | yes |
+| `GET /v1/jobs/{id}/schedules`, `GET /v1/schedules/{schedule_id}` | yes | yes | yes |
+| `PUT`/`DELETE /v1/jobs/{id}/schedule` (deprecated) | **no** (`403`) | yes | yes |
+| `POST /v1/jobs/{id}/schedules`, `PATCH`/`DELETE /v1/schedules/{id}`, `POST /v1/schedules/{id}/pause\|resume` | **no** (`403`) | yes | yes |
 | `GET`/`PUT`/`DELETE /v1/jobs/{id}/state[/{key}]` | **no** (`403`) | **no** (`403`) | yes |
 | `GET /v1/runs/{id}/requests/{request_id}`, `GET /v1/requests/{request_id}` | **no** (`403`) | **no** (`403`) | yes |
 | `POST /v1/jobs`, `/reset`, `/move`, `DELETE /v1/jobs/{id}`, `POST /v1/reload` | **no** (`403`) | **no** (`403`) | yes |
@@ -596,13 +598,98 @@ Resuming a job that was not paused is a successful no-op with
 
 Errors: `404 not_found`, `409 conflict`.
 
-### `PUT /v1/jobs/{id}/schedule`
+### Schedules
 
-Replace a job's cadence. The schedule is **runtime state**, not manifest state:
-a cadence changes far more often than a job's code, and a value that both a file
-and an API can write eventually disagrees with itself. A manifest's
-`trigger.cron` is imported once, for jobs that predate this endpoint, and
-ignored from then on.
+A schedule is **runtime state**, not manifest state: a cadence changes far more
+often than a job's code, and a value that both a file and an API can write
+eventually disagrees with itself. Every schedule carries an `origin`:
+
+- `manifest` — reconciled from the job's `trigger.cron` on every reload. The
+  file owns the row: `PATCH` and `DELETE` refuse it with `409`.
+- `api` — created through this API. A reload never reads, changes or deletes it.
+
+A job may hold any number of schedules from either origin, and they fire
+independently. Every schedule's cron is interpreted in its own IANA `timezone`,
+which defaults to **UTC** — a manifest's `trigger.cron` used to mean the host's
+local time; it now means UTC (see
+[manifest-reference.md](manifest-reference.md#cron)).
+
+#### `GET /v1/jobs/{id}/schedules`
+
+List a job's schedules.
+
+```json
+{
+  "schedules": [
+    {
+      "id": "0195a7c2-3f10-...",
+      "job_id": "0195a7c2-...",
+      "name": "shopify-to-erp",
+      "cron": "*/15 * * * *",
+      "timezone": "UTC",
+      "payload": {"dataset": 42},
+      "missed_policy": "skip",
+      "origin": "manifest",
+      "next_run_at": "2026-10-01T12:45:00Z",
+      "changed": false
+    }
+  ]
+}
+```
+
+#### `POST /v1/jobs/{id}/schedules`
+
+Create an `api`-owned schedule.
+
+```json
+{"cron": "*/15 * * * *", "timezone": "Europe/London", "payload": {"dataset": 42}, "missed_policy": "skip"}
+```
+
+`cron` is required. `timezone` defaults to `UTC`. `payload` is an optional JSON
+object of at most 64 KiB; it becomes `ctx.trigger.body` for every run the
+schedule starts. `missed_policy` is recorded for forward compatibility; only
+`skip` is implemented today.
+
+Send an `Idempotency-Key` header to make the command retry-safe: a second
+`POST` with the same key returns the **existing** schedule with `changed: false`
+and status `200` rather than creating a second one. A first create returns
+`201`.
+
+Errors: `400 invalid_request` (missing or unparseable cron, unknown timezone,
+an oversized or non-object payload), `404 not_found`, `409 conflict`.
+
+#### `GET /v1/schedules/{schedule_id}`
+
+Return one schedule in the same shape as the list entry.
+
+#### `PATCH /v1/schedules/{schedule_id}`
+
+Change an `api`-owned schedule. Every field is optional; a field that is absent
+is left alone.
+
+```json
+{"cron": "@hourly", "timezone": "UTC", "payload": {}, "missed_policy": "skip"}
+```
+
+An empty `cron` is refused (`400`) — delete the schedule instead. A
+`manifest`-owned row is refused with `409`, naming the manifest as the owner.
+
+#### `DELETE /v1/schedules/{schedule_id}`
+
+Delete an `api`-owned schedule and its occurrence ledger. Returns `204` with no
+body. A `manifest`-owned row is refused with `409`.
+
+#### `POST /v1/schedules/{schedule_id}/pause` and `/resume`
+
+Hold one schedule back, or release it, without touching the job's other
+schedules and without pausing the job. Pausing is an operator control, so it is
+accepted on a `manifest`-owned row too; a reload preserves `paused_at`.
+
+#### `PUT /v1/jobs/{id}/schedule` — deprecated
+
+Replace a job's **single** cadence. This is the v0.3.0 surface. It refuses a job
+whose cadence is manifest-owned with `409`; new callers use
+`POST /v1/jobs/{id}/schedules` and the schedule-id endpoints above.
 
 ```json
 {"cron": "*/15 * * * *"}
@@ -612,39 +699,21 @@ The response reports the stored cadence and, when one is armed, the next fire
 time. `changed: false` means the value was already in force, so a deploy script
 can apply it unconditionally.
 
-```json
-{
-  "job_id": "0195a7c2-...",
-  "name": "shopify-to-erp",
-  "cron": "*/15 * * * *",
-  "next_run_at": "2026-10-01T12:45:00Z",
-  "changed": true
-}
-```
-
 An invalid expression is rejected **before** anything is written, so a failed
 change leaves the previous cadence in force and armed.
 
-Errors: `400 invalid_request` (malformed body or an unparseable expression),
-`404 not_found`, `409 conflict` (a retired or deleted identity).
+Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (a manifest-owned
+or retired identity).
 
-### `DELETE /v1/jobs/{id}/schedule`
+#### `DELETE /v1/jobs/{id}/schedule` — deprecated
 
-Clear a job's cadence. The job stops firing on its own; `POST /v1/jobs/{id}/runs`
-still works.
+Clear a job's single cadence. The job stops firing on its own;
+`POST /v1/jobs/{id}/runs` still works.
 
 Clearing is a first-class state rather than a return to the manifest default.
 The row survives with an empty `cron`, so a later `otter reload` cannot
-re-import `trigger.cron` and silently undo the decision.
-
-```json
-{
-  "job_id": "0195a7c2-...",
-  "name": "shopify-to-erp",
-  "cron": "",
-  "changed": true
-}
-```
+re-import `trigger.cron` and silently undo the decision. A manifest-owned
+cadence is refused with `409`.
 
 Errors: `404 not_found`, `409 conflict`.
 

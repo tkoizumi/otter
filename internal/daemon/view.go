@@ -106,7 +106,7 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 			MaxDelay:     m.Retry.MaxDelay.String(),
 		}
 		view.Triggers = api.TriggerView{
-			Cron:           d.effectiveCron(it.ID, m),
+			Cron:           d.jobCron(it.ID, m),
 			WebhookEnabled: m.WebhookEnabled(),
 		}
 		if m.WebhookEnabled() {
@@ -116,10 +116,18 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 		}
 	}
 
-	if d.sched != nil {
-		if next, ok := d.sched.Next(it.ID); ok {
-			at := next
-			view.NextRunAt = &at
+	// The next run is the soonest of every schedule the job holds, so a job
+	// with several cadences reports the one that will actually fire first.
+	if d.sched != nil && d.schedules != nil {
+		for _, rec := range d.schedules.ForJob(it.ID) {
+			next, ok := d.sched.Next(rec.ID)
+			if !ok {
+				continue
+			}
+			if view.NextRunAt == nil || next.Before(*view.NextRunAt) {
+				at := next
+				view.NextRunAt = &at
+			}
 		}
 	}
 
@@ -184,11 +192,29 @@ func (d *Daemon) resolveCapturePolicy(override inspection.Policy, manifest *conf
 // SubmitRun implements api.Backend with the default submission options: a
 // manual run still records metadata capture, like every other trigger.
 func (d *Daemon) SubmitRun(ctx context.Context, ref string, payload api.TriggerPayload) (string, error) {
-	return d.SubmitRunWithOptions(ctx, ref, payload, api.SubmitRunOptions{})
+	return d.submitRun(ctx, ref, payload, api.SubmitRunOptions{}, nil)
 }
 
 // SubmitRunWithOptions implements api.Backend.
 func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload api.TriggerPayload, opts api.SubmitRunOptions) (string, error) {
+	return d.submitRun(ctx, ref, payload, opts, nil)
+}
+
+// fireRequest ties a run to the schedule occurrence that produced it. When it is
+// present the occurrence ledger row is written in the same transaction as the
+// run, so exactly one run exists per occurrence and a duplicate wake-up loses to
+// the ledger's primary key.
+type fireRequest struct {
+	ScheduleID string
+	Occurrence time.Time
+}
+
+// errAlreadyFired aborts a submit whose occurrence is already in the ledger.
+var errAlreadyFired = errors.New("occurrence already fired")
+
+// submitRun is the one place a trigger becomes a run. A cron fire passes a
+// fireRequest; every other trigger passes nil.
+func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerPayload, opts api.SubmitRunOptions, fire *fireRequest) (string, error) {
 	if d.draining.Load() {
 		return "", fmt.Errorf("otter is shutting down and is not accepting new runs: %w", api.ErrConflict)
 	}
@@ -322,15 +348,36 @@ func (d *Daemon) SubmitRunWithOptions(ctx context.Context, ref string, payload a
 		SDKVersion:        sdk.Version,
 		CapturePolicy:     capturePolicy.String(),
 	}
+	if fire != nil {
+		run.ScheduleID = fire.ScheduleID
+	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The ledger row goes first. When the occurrence is already recorded
+		// the whole transaction aborts, so the duplicate produces neither a
+		// run nor a queue entry.
+		if fire != nil {
+			recorded, err := d.schedules.RecordFireTx(ctx, tx, fire.ScheduleID, fire.Occurrence, run.ID)
+			if err != nil {
+				return err
+			}
+			if !recorded {
+				return errAlreadyFired
+			}
+		}
 		if err := d.runs.CreateTx(ctx, tx, run); err != nil {
 			return err
 		}
 		return d.queue.EnqueueTx(ctx, tx, run.ID, jobID, now)
 	})
 	if err != nil {
+		if errors.Is(err, errAlreadyFired) {
+			return "", errAlreadyFired
+		}
 		return "", fmt.Errorf("queue run for %s: %w", jobID, err)
+	}
+	if fire != nil {
+		d.schedules.NoteFired(fire.ScheduleID, fire.Occurrence)
 	}
 
 	// The summary is written before workers are woken, so a child can never

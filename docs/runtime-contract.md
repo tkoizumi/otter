@@ -198,6 +198,40 @@ Two related consequences:
   `pinnedReleases`; `internal/release` `Retain`). A daemon-side submit racing a
   retention pass is a known gap (`OT-010`).
 
+### 3.1.1 One run per occurrence, and which clock decides
+
+*Guarantee.*
+
+Each schedule keeps an occurrence ledger (`schedule_fires`, keyed by
+`(schedule_id, occurrence_at)`). The ledger row is written in the **same
+transaction** that creates the run and its queue entry, so:
+
+- a crash after the run is accepted cannot double-fire — the ledger row
+  committed with it;
+- a duplicate wake-up (a reload racing a fire, or the same occurrence delivered
+  twice) loses to the ledger's primary key and produces **no second run**;
+- a crash before the run is accepted leaves neither a run nor a ledger row, so
+  the next occurrence is simply in the future.
+
+Retries are unaffected: a retry is a new `runs` row referencing
+`parent_run_id`, not a new occurrence, so it never touches the ledger.
+
+**A schedule's cron is interpreted in its own IANA `timezone`, and new schedules
+default to UTC.** This is a deliberate change from v0.3.0, where a manifest's
+`trigger.cron` was interpreted in the **host's local time**. Host-local time is
+not a contract anyone can hold: the same manifest meant a different instant
+after a host was rebuilt with a different clock, and a control plane writing
+`0 3 * * *` had no way to say whose 03:00 it meant. A manifest that wants its
+old local-time meaning must now say so explicitly, e.g.
+`trigger.cron: "0 3 * * *"` with the schedule's time zone set to the zone the
+host used to be in, or the equivalent `CRON_TZ=<zone>` form in the expression.
+DST follows the named zone: a `0 2 * * *` schedule may skip or repeat an hour
+twice a year, which is the cron norm rather than a special case.
+
+The ledger prunes with the runs window: an occurrence older than the run
+retention cutoff has already happened and can never fire again, so dropping it
+cannot make a restart replay anything.
+
 ### 3.2 Duplicate webhook delivery is not deduplicated
 
 *Explicit non-guarantee.*

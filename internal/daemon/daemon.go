@@ -519,37 +519,43 @@ func (d *Daemon) logJobs(items []*config.Job) {
 	}
 }
 
-// syncSchedules makes the cron runner match items: it reconciles the trigger of
-// every job that declares one and drops the triggers of jobs
-// that no longer do, are no longer valid, or are paused.
+// syncSchedules makes the cron runner match the schedule store.
 //
-// A paused job is deliberately absent from `want`, so the same pass
-// that forgets a removed job also leaves a paused one unarmed -- and
-// keeps it unarmed across a reload and a restart.
+// It has two steps. First, every manifest-declared trigger is reconciled into
+// the store as an origin = 'manifest' row -- except for a job that still carries
+// a v0.3.0 job-owned cadence, whose row keeps the old promise that the store
+// owns it and a manifest never overrides it (and, critically, is not duplicated
+// by a second manifest row firing the same trigger). Second, every stored
+// schedule whose job is present and accepting work is armed, and every trigger
+// without a live schedule is dropped.
 //
-// Replace leaves an unchanged expression's entry exactly as it is, so an
-// job that did not change keeps its next fire time across a reload.
+// Replace leaves an unchanged expression's entry exactly as it is, so a schedule
+// that did not change keeps its next fire time across a reload.
 func (d *Daemon) syncSchedules(items []*config.Job) {
-	want := map[string]string{}
+	want := map[string]schedule.Schedule{}
+	present := map[string]bool{}
+
 	for _, it := range items {
 		if !it.Valid || it.Manifest == nil {
 			continue
 		}
-		// A manifest's trigger.cron is imported once, on first sight. The store
-		// owns the cadence from then on, so a cadence changed through the API
-		// is never undone by a reload and the file can never contradict what
-		// the daemon does.
-		if spec := it.Manifest.Cron(); spec != "" {
-			if _, err := d.schedules.Seed(context.Background(), it.ID, spec); err != nil {
-				d.log.Error("schedule_seed_failed", err, "job", it.ID)
-			}
-		}
-		if d.paused.Paused(it.ID) {
+		present[it.ID] = true
+		if d.schedules.LegacyCadenceForJob(it.ID) {
 			continue
 		}
-		if spec := d.effectiveCron(it.ID, it.Manifest); spec != "" {
-			want[it.ID] = spec
+		if _, err := d.schedules.ReconcileManifest(context.Background(), it.ID, manifestSpecs(it.Manifest)); err != nil {
+			d.log.Error("schedule_reconcile_failed", err, "job", it.ID)
 		}
+	}
+
+	for _, rec := range d.schedules.All() {
+		if !present[rec.JobID] {
+			continue
+		}
+		if rec.Cron == "" || rec.Paused() || d.paused.Paused(rec.JobID) {
+			continue
+		}
+		want[rec.ID] = rec
 	}
 
 	ids := make([]string, 0, len(want))
@@ -559,9 +565,14 @@ func (d *Daemon) syncSchedules(items []*config.Job) {
 	sort.Strings(ids)
 
 	for _, id := range ids {
-		spec := want[id]
-		if err := d.sched.Replace(id, spec, d.cronJob(id, spec)); err != nil {
-			d.log.Error("cron_register_failed", err, "job", id, "cron", spec)
+		rec := want[id]
+		loc, err := rec.Location()
+		if err != nil {
+			d.log.Warn("schedule_timezone", "id", id, "timezone", rec.Timezone, "error", err.Error())
+			loc = time.UTC
+		}
+		if err := d.sched.Replace(id, rec.Cron, loc, d.cronJob(id)); err != nil {
+			d.log.Error("cron_register_failed", err, "schedule", id, "cron", rec.Cron)
 		}
 	}
 
@@ -572,36 +583,25 @@ func (d *Daemon) syncSchedules(items []*config.Job) {
 			continue
 		}
 		d.sched.Unregister(id)
-		// Pausing unregisters in the same breath, so a paused job is
-		// already gone by the time a reload looks. Reporting it here would
-		// claim the reload removed a schedule that the pause removed.
-		if d.paused.Paused(id) {
-			continue
-		}
-		d.log.Info("cron_unregistered", "job", id)
+		d.log.Info("cron_unregistered", "schedule", id)
 	}
 }
 
-// cronJob returns the job registered for a job's cron trigger. The
+// manifestSpecs translates a manifest into the schedules it declares. Today
+// that is at most the single trigger.cron; the list form is additive and
+// arrives here when the manifest grows it.
+func manifestSpecs(m *config.Manifest) []schedule.ManifestSpec {
+	spec := m.Cron()
+	if spec == "" {
+		return nil
+	}
+	return []schedule.ManifestSpec{{Ref: "trigger.cron", Cron: spec}}
+}
+
+// cronJob returns the job registered for a schedule's cron trigger. The
 // job does no work itself, so a slow job never blocks the cron runner.
-func (d *Daemon) cronJob(jobID, spec string) func() {
-	return func() { d.cronTick(jobID, spec) }
-}
-
-// effectiveCron resolves the cadence the daemon should actually use: the stored
-// schedule when the job has one, and the manifest's trigger.cron only as the
-// pre-migration fallback for a job that has no row yet.
-//
-// A stored but empty cron is deliberate. It is the result of clearing the
-// schedule, and it must not fall through to the manifest.
-func (d *Daemon) effectiveCron(jobID string, m *config.Manifest) string {
-	if rec, ok := d.schedules.Get(jobID); ok {
-		return rec.Cron
-	}
-	if m == nil {
-		return ""
-	}
-	return m.Cron()
+func (d *Daemon) cronJob(scheduleID string) func(occurrence time.Time) {
+	return func(occurrence time.Time) { d.cronTick(scheduleID, occurrence) }
 }
 
 // Reload re-reads the jobs directory and applies what it finds to the
@@ -805,28 +805,49 @@ func (d *Daemon) cancelRunsOfRemoved(ctx context.Context, removed []string) (int
 	return cancelled, nil
 }
 
-// cronTick enqueues a run for a cron trigger. The job does no work itself, so
-// a slow job never blocks the cron runner.
-func (d *Daemon) cronTick(jobID, spec string) {
-	// Stop is not the same instant as unregister. A tick already in flight when
-	// the operator paused would otherwise become a run, so the pause is
-	// re-checked here as the last word on admission.
-	if d.paused.Paused(jobID) {
-		d.log.Debug("cron_skipped", "job", jobID, "cron", spec, "reason", "paused")
+// cronTick enqueues a run for one occurrence of a schedule. The job does no
+// work itself, so a slow job never blocks the cron runner.
+//
+// Both pause levels are re-checked here as the last word on admission: a tick
+// already in flight when the operator paused the schedule or the job must not
+// become a run. The occurrence is written to the ledger in the same transaction
+// as the run, so a duplicate wake-up produces no second run.
+func (d *Daemon) cronTick(scheduleID string, occurrence time.Time) {
+	rec, ok := d.schedules.Get(scheduleID)
+	if !ok {
+		d.log.Debug("cron_skipped", "schedule", scheduleID, "reason", "schedule no longer exists")
+		return
+	}
+	if rec.Paused() {
+		d.log.Debug("cron_skipped", "schedule", scheduleID, "reason", "schedule is paused")
+		return
+	}
+	if d.paused.Paused(rec.JobID) {
+		d.log.Debug("cron_skipped", "schedule", scheduleID, "job", rec.JobID, "reason", "job is paused")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	scheduled := time.Now().UTC()
-	d.log.Info("cron_fired", "job", jobID, "cron", spec)
+	at := occurrence.UTC()
+	payload := api.TriggerPayload{Type: api.TriggerCron, ScheduledAt: &at}
+	if body := strings.TrimSpace(string(rec.Payload)); body != "" && body != "{}" {
+		payload.Body = rec.Payload
+	}
 
-	if _, err := d.SubmitRun(ctx, jobID, api.TriggerPayload{
-		Type:        api.TriggerCron,
-		ScheduledAt: &scheduled,
-	}); err != nil {
-		d.log.Error("cron_submit_failed", err, "job", jobID)
+	d.log.Info("cron_fired",
+		"schedule", scheduleID, "job", rec.JobID, "cron", rec.Cron,
+		"occurrence", at.Format(time.RFC3339))
+
+	if _, err := d.submitRun(ctx, "id:"+rec.JobID, payload, api.SubmitRunOptions{},
+		&fireRequest{ScheduleID: scheduleID, Occurrence: occurrence}); err != nil {
+		if errors.Is(err, errAlreadyFired) {
+			d.log.Debug("cron_duplicate", "schedule", scheduleID,
+				"occurrence", at.Format(time.RFC3339))
+			return
+		}
+		d.log.Error("cron_submit_failed", err, "schedule", scheduleID, "job", rec.JobID)
 	}
 }
 

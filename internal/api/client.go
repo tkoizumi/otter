@@ -184,6 +184,79 @@ func (c *Client) SetSchedule(ctx context.Context, ref, cron string) (*ScheduleVi
 	return &out, nil
 }
 
+// ListSchedules returns every schedule a job holds.
+func (c *Client) ListSchedules(ctx context.Context, ref string) ([]ScheduleView, error) {
+	var out ScheduleList
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/schedules"
+	if err := c.get(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Schedules, nil
+}
+
+// CreateSchedule adds an API-owned schedule to a job. An empty idempotencyKey
+// sends no key, which a retry would duplicate; the CLI always supplies one.
+func (c *Client) CreateSchedule(ctx context.Context, ref string, req ScheduleCreateRequest, idempotencyKey string) (*ScheduleView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var headers map[string]string
+	if idempotencyKey != "" {
+		headers = map[string]string{"Idempotency-Key": idempotencyKey}
+	}
+	var out ScheduleView
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/schedules"
+	if err := c.doWithHeaders(ctx, http.MethodPost, path, body, headers, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetSchedule returns one schedule by id.
+func (c *Client) GetSchedule(ctx context.Context, scheduleID string) (*ScheduleView, error) {
+	var out ScheduleView
+	path := "/v1/schedules/" + url.PathEscape(scheduleID)
+	if err := c.get(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateSchedule applies a partial change to an API-owned schedule.
+func (c *Client) UpdateSchedule(ctx context.Context, scheduleID string, req ScheduleUpdateRequest) (*ScheduleView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var out ScheduleView
+	path := "/v1/schedules/" + url.PathEscape(scheduleID)
+	if err := c.do(ctx, http.MethodPatch, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteSchedule removes an API-owned schedule.
+func (c *Client) DeleteSchedule(ctx context.Context, scheduleID string) error {
+	path := "/v1/schedules/" + url.PathEscape(scheduleID)
+	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// SetSchedulePaused holds one schedule back or releases it.
+func (c *Client) SetSchedulePaused(ctx context.Context, scheduleID string, paused bool) (*ScheduleView, error) {
+	action := "resume"
+	if paused {
+		action = "pause"
+	}
+	var out ScheduleView
+	path := "/v1/schedules/" + url.PathEscape(scheduleID) + "/" + action
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateAPIToken mints a named, scoped operator token. It is the only call
 // that returns the token itself; the daemon stores only a hash of it.
 func (c *Client) CreateAPIToken(ctx context.Context, name string, scope Scope) (*APITokenCreated, error) {
@@ -446,7 +519,13 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte, out any) error {
-	raw, err := c.raw(ctx, method, path, body)
+	return c.doWithHeaders(ctx, method, path, body, nil, out)
+}
+
+// doWithHeaders is do with extra request headers, which the schedule create
+// endpoint uses for its idempotency key.
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, body []byte, headers map[string]string, out any) error {
+	raw, err := c.rawWithHeaders(ctx, method, path, body, headers)
 	if err != nil {
 		return err
 	}
@@ -460,6 +539,10 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, out a
 }
 
 func (c *Client) raw(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	return c.rawWithHeaders(ctx, method, path, body, nil)
+}
+
+func (c *Client) rawWithHeaders(ctx context.Context, method, path string, body []byte, headers map[string]string) ([]byte, error) {
 	var reader io.Reader
 	if len(body) > 0 {
 		reader = bytes.NewReader(body)
@@ -472,6 +555,9 @@ func (c *Client) raw(ctx context.Context, method, path string, body []byte) ([]b
 	req.Header.Set("Accept", "application/json")
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)

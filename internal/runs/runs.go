@@ -111,6 +111,11 @@ type Run struct {
 	// capture, which is what lets a reader tell "not recorded" from "recorded
 	// nothing".
 	CapturePolicy string `json:"capture_policy,omitempty"`
+
+	// ScheduleID names the schedule whose occurrence started this run. It is
+	// empty for a manual, webhook or retried run, and it is what lets a reader
+	// correlate an occurrence with the run it produced.
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 // Duration returns how long the run has been running, or ran for.
@@ -137,7 +142,7 @@ const runColumns = `id, job_id, trigger_type, status, attempt, parent_run_id,
 	created_at, started_at, finished_at, exit_code, error, metadata,
 	python_mode, python_version, environment_digest, python_policy,
 	release_digest, release_source_dir, sdk_version,
-	job_name, job_generation, capture_policy`
+	job_name, job_generation, capture_policy, schedule_id`
 
 // defaultListLimit is the page size List substitutes when a caller supplies no
 // limit, and maxListLimit is the largest explicit limit it accepts. A limit
@@ -194,7 +199,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		metadata = ""
 	}
 
-	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	args := []any{
 		r.ID, r.JobID, r.TriggerType, string(r.Status), r.Attempt,
 		database.NullableString(deref(r.ParentRunID)),
@@ -205,7 +210,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		database.NullableString(deref(r.Error)),
 		metadata, r.PythonMode, r.PythonVersion, r.EnvironmentDigest, r.PythonPolicy,
 		r.ReleaseDigest, r.ReleaseSourceDir, r.SDKVersion,
-		r.JobName, r.JobGeneration, r.CapturePolicy,
+		r.JobName, r.JobGeneration, r.CapturePolicy, database.NullableString(r.ScheduleID),
 	}
 
 	var err error
@@ -727,6 +732,7 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 		jobName           string
 		jobGen            int64
 		capturePolicy     string
+		scheduleID        sql.NullString
 	)
 
 	dest := []any{
@@ -734,7 +740,7 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 		&parent, &created, &started, &finished, &exitCode, &errMsg, &meta,
 		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
 		&releaseDigest, &releaseSourceDir, &sdkVersion,
-		&jobName, &jobGen, &capturePolicy,
+		&jobName, &jobGen, &capturePolicy, &scheduleID,
 	}
 	if rowID != nil {
 		dest = append([]any{rowID}, dest...)
@@ -749,6 +755,7 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 	r.ReleaseDigest, r.ReleaseSourceDir = releaseDigest, releaseSourceDir
 	r.JobName, r.JobGeneration = jobName, jobGen
 	r.CapturePolicy = capturePolicy
+	r.ScheduleID = scheduleID.String
 	if parent.Valid {
 		v := parent.String
 		r.ParentRunID = &v

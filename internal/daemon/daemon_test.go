@@ -1595,11 +1595,11 @@ trigger:
 
 	d := newDaemon(t, root, "", nil, nil)
 
-	spec, ok := d.sched.Spec(runtimeID(t, d, "ticker"))
+	spec, ok := jobCronSpec(d, runtimeID(t, d, "ticker"))
 	if !ok || spec != "@every 1s" {
 		t.Fatalf("cron spec = %q (registered=%v), want @every 1s", spec, ok)
 	}
-	if _, ok := d.sched.Spec(runtimeID(t, d, "five-field")); !ok {
+	if _, ok := jobCronSpec(d, runtimeID(t, d, "five-field")); !ok {
 		t.Error("the five-field cron expression was not registered")
 	}
 	if d.sched.Count() != 2 {
@@ -1608,7 +1608,7 @@ trigger:
 
 	startDaemon(t, d)
 
-	if next, ok := d.sched.Next(runtimeID(t, d, "five-field")); !ok || next.IsZero() {
+	if next, ok := jobNextRun(d, runtimeID(t, d, "five-field")); !ok || next.IsZero() {
 		t.Error("a registered cron trigger should expose its next fire time")
 	}
 
@@ -2284,7 +2284,7 @@ trigger:
 	startDaemon(t, d)
 
 	ctx := context.Background()
-	nextBefore, ok := d.sched.Next(runtimeID(t, d, "existing"))
+	nextBefore, ok := jobNextRun(d, runtimeID(t, d, "existing"))
 	if !ok {
 		t.Fatal("the existing cron trigger has no next fire time")
 	}
@@ -2323,7 +2323,7 @@ trigger:
 
 	// The job that did not change kept its schedule, which is the
 	// property a restart cannot offer.
-	nextAfter, ok := d.sched.Next(runtimeID(t, d, "existing"))
+	nextAfter, ok := jobNextRun(d, runtimeID(t, d, "existing"))
 	if !ok {
 		t.Fatal("the existing cron trigger disappeared across a reload")
 	}
@@ -2428,7 +2428,7 @@ trigger:
 	}
 
 	// An invalid manifest must not keep its cron trigger.
-	if _, ok := d.sched.Spec(runtimeID(t, d, "broken")); ok {
+	if _, ok := jobCronSpec(d, runtimeID(t, d, "broken")); ok {
 		t.Error("an invalid job should not have a cron trigger")
 	}
 }
@@ -2630,7 +2630,7 @@ trigger:
 	if !ok || !view.Valid {
 		t.Fatalf("the fixed job is still not valid: ok=%v view=%+v", ok, view)
 	}
-	if spec, ok := d.sched.Spec(runtimeID(t, d, "fixed")); !ok || spec != "@every 4h" {
+	if spec, ok := jobCronSpec(d, runtimeID(t, d, "fixed")); !ok || spec != "@every 4h" {
 		t.Errorf("cron spec = %q (registered=%v), want @every 4h", spec, ok)
 	}
 }

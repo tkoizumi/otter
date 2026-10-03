@@ -111,22 +111,61 @@ type PauseView struct {
 
 // ScheduleRequest is the body of a schedule change. Cron is a standard
 // five-field expression; an empty value clears the schedule.
+//
+// It belongs to the deprecated single-cadence endpoint. New callers use
+// ScheduleCreateRequest and ScheduleUpdateRequest against /v1/schedules.
 type ScheduleRequest struct {
 	Cron string `json:"cron"`
 }
 
-// ScheduleView reports a job's cadence after a change.
+// ScheduleCreateRequest is the body of POST /v1/jobs/{id}/schedules.
 //
-// Cron is empty when the schedule was cleared. NextRunAt is absent when nothing
-// is armed -- a cleared schedule, or a paused job -- so a caller cannot mistake
-// a stored cadence for a trigger that will actually fire.
+// Cron is required. Timezone defaults to UTC; Payload defaults to an empty
+// object and must be a JSON object of at most 64 KiB. MissedPolicy defaults to
+// skip and is recorded for forward compatibility.
+type ScheduleCreateRequest struct {
+	Cron         string          `json:"cron"`
+	Timezone     string          `json:"timezone,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	MissedPolicy string          `json:"missed_policy,omitempty"`
+}
+
+// ScheduleUpdateRequest is the body of PATCH /v1/schedules/{schedule_id}. A nil
+// field is left alone; a caller cannot clear a schedule with an empty cron.
+type ScheduleUpdateRequest struct {
+	Cron         *string          `json:"cron,omitempty"`
+	Timezone     *string          `json:"timezone,omitempty"`
+	Payload      *json.RawMessage `json:"payload,omitempty"`
+	MissedPolicy *string          `json:"missed_policy,omitempty"`
+}
+
+// ScheduleList is the response of GET /v1/jobs/{id}/schedules.
+type ScheduleList struct {
+	Schedules []ScheduleView `json:"schedules"`
+}
+
+// ScheduleView reports one schedule.
+//
+// Origin names what owns the row: a manifest-owned schedule refuses PATCH and
+// DELETE with 409, while an api-owned one is the caller's to change. Cron is
+// empty only for a cadence cleared through the deprecated endpoint. NextRunAt is
+// absent when nothing is armed -- a cleared cron, a paused schedule, or a paused
+// job -- so a caller cannot mistake a stored cadence for a trigger that will
+// actually fire.
 type ScheduleView struct {
-	JobID     string     `json:"job_id"`
-	Name      string     `json:"name,omitempty"`
-	Cron      string     `json:"cron"`
-	NextRunAt *time.Time `json:"next_run_at,omitempty"`
-	Paused    bool       `json:"paused,omitempty"`
-	Changed   bool       `json:"changed"`
+	ID           string          `json:"id,omitempty"`
+	JobID        string          `json:"job_id"`
+	Name         string          `json:"name,omitempty"`
+	Cron         string          `json:"cron"`
+	Timezone     string          `json:"timezone,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	MissedPolicy string          `json:"missed_policy,omitempty"`
+	Origin       string          `json:"origin,omitempty"`
+	NextRunAt    *time.Time      `json:"next_run_at,omitempty"`
+	LastFiredAt  *time.Time      `json:"last_fired_at,omitempty"`
+	Paused       bool            `json:"paused,omitempty"`
+	PausedAt     *time.Time      `json:"paused_at,omitempty"`
+	Changed      bool            `json:"changed"`
 }
 
 // ResetView reports the identity change a reset performed. The old identity is

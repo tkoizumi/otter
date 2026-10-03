@@ -17,10 +17,10 @@ func testLogger() *logging.Logger {
 func TestReplaceAndInspect(t *testing.T) {
 	s := New(testLogger())
 
-	if err := s.Replace("shopify", "*/5 * * * *", func() {}); err != nil {
+	if err := s.Replace("shopify", "*/5 * * * *", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	if err := s.Replace("nightly", "0 2 * * *", func() {}); err != nil {
+	if err := s.Replace("nightly", "0 2 * * *", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
 
@@ -41,16 +41,16 @@ func TestReplaceAndInspect(t *testing.T) {
 func TestReplaceRejectsBadInput(t *testing.T) {
 	s := New(testLogger())
 
-	if err := s.Replace("a", "*/5 * * * *", func() {}); err != nil {
+	if err := s.Replace("a", "*/5 * * * *", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	if err := s.Replace("b", "not a cron", func() {}); err == nil {
+	if err := s.Replace("b", "not a cron", nil, func(time.Time) {}); err == nil {
 		t.Error("an invalid cron expression should fail")
 	}
-	if err := s.Replace("c", "", func() {}); err == nil {
+	if err := s.Replace("c", "", nil, func(time.Time) {}); err == nil {
 		t.Error("an empty cron expression should fail")
 	}
-	if err := s.Replace("d", "* * * * *", nil); err == nil {
+	if err := s.Replace("d", "* * * * *", nil, nil); err == nil {
 		t.Error("a nil job should fail")
 	}
 	if s.Count() != 1 {
@@ -65,7 +65,7 @@ func TestReplaceRejectsBadInput(t *testing.T) {
 func TestReplaceKeepsAnUnchangedEntry(t *testing.T) {
 	s := New(testLogger())
 
-	if err := s.Replace("ticker", "@every 1h", func() {}); err != nil {
+	if err := s.Replace("ticker", "@every 1h", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
 
@@ -81,7 +81,7 @@ func TestReplaceKeepsAnUnchangedEntry(t *testing.T) {
 		t.Fatal("the entry never reported a next fire time")
 	}
 
-	if err := s.Replace("ticker", "@every 1h", func() {}); err != nil {
+	if err := s.Replace("ticker", "@every 1h", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace with an identical expression: %v", err)
 	}
 
@@ -100,14 +100,14 @@ func TestReplaceKeepsAnUnchangedEntry(t *testing.T) {
 func TestReplaceSwapsAChangedEntryAndUnregisterRemovesIt(t *testing.T) {
 	s := New(testLogger())
 
-	if err := s.Replace("ticker", "@every 1h", func() {}); err != nil {
+	if err := s.Replace("ticker", "@every 1h", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
 	if spec, ok := s.Spec("ticker"); !ok || spec != "@every 1h" {
 		t.Fatalf("spec = %q (ok=%v), want @every 1h", spec, ok)
 	}
 
-	if err := s.Replace("ticker", "@every 2h", func() {}); err != nil {
+	if err := s.Replace("ticker", "@every 2h", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("replace with a new expression: %v", err)
 	}
 	if spec, ok := s.Spec("ticker"); !ok || spec != "@every 2h" {
@@ -133,7 +133,7 @@ func TestReplaceSwapsAChangedEntryAndUnregisterRemovesIt(t *testing.T) {
 func TestIDsReportsRegisteredTriggers(t *testing.T) {
 	s := New(testLogger())
 	for _, id := range []string{"a", "b"} {
-		if err := s.Replace(id, "@every 1h", func() {}); err != nil {
+		if err := s.Replace(id, "@every 1h", nil, func(time.Time) {}); err != nil {
 			t.Fatalf("replace %s: %v", id, err)
 		}
 	}
@@ -182,7 +182,7 @@ func TestJobFiresAndNextIsExposed(t *testing.T) {
 	s := New(testLogger())
 
 	fired := make(chan struct{}, 1)
-	if err := s.Replace("ticker", "@every 100ms", func() {
+	if err := s.Replace("ticker", "@every 100ms", nil, func(time.Time) {
 		select {
 		case fired <- struct{}{}:
 		default:
@@ -223,7 +223,7 @@ func TestJobFiresAndNextIsExposed(t *testing.T) {
 func TestEntriesReportsEveryTrigger(t *testing.T) {
 	s := New(testLogger())
 	for _, id := range []string{"a", "b"} {
-		if err := s.Replace(id, "@every 1h", func() {}); err != nil {
+		if err := s.Replace(id, "@every 1h", nil, func(time.Time) {}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 	}
@@ -259,13 +259,13 @@ func TestJobPanicIsRecoveredAndDoesNotStopTheScheduler(t *testing.T) {
 		after bool
 	)
 
-	panicking := s.wrap("boom", func() { panic("kaboom") })
+	panicking := s.wrap("boom", func(time.Time) { panic("kaboom") })
 	// Must not propagate the panic.
 	panicking()
 
 	// A later job still runs, which is how we observe that the runner and the
 	// process survived.
-	s.wrap("ok", func() {
+	s.wrap("ok", func(time.Time) {
 		mu.Lock()
 		after = true
 		mu.Unlock()
@@ -280,7 +280,7 @@ func TestJobPanicIsRecoveredAndDoesNotStopTheScheduler(t *testing.T) {
 
 func TestStopIsSafeWithoutStart(t *testing.T) {
 	s := New(testLogger())
-	if err := s.Replace("a", "@every 1h", func() {}); err != nil {
+	if err := s.Replace("a", "@every 1h", nil, func(time.Time) {}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -299,7 +299,7 @@ func TestConcurrentRegistrationIsSafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = s.Replace("same", "@every 1h", func() {})
+			_ = s.Replace("same", "@every 1h", nil, func(time.Time) {})
 		}()
 	}
 	wg.Wait()

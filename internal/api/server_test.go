@@ -69,6 +69,12 @@ type fakeBackend struct {
 	scheduleCalls []scheduleCall
 	scheduleErr   error
 
+	// schedByID is the in-memory schedule store behind the schedule-id
+	// endpoints. It is keyed by schedule id, like the real store.
+	schedByID map[string]ScheduleView
+	schedSeq  int
+	schedKeys map[string]string
+
 	reloads   int
 	reloadOut ReloadResult
 	reloadErr error
@@ -106,6 +112,8 @@ func newFakeBackend() *fakeBackend {
 		runCounts:  map[string]int{},
 		freshness:  map[string]time.Time{},
 		capture:    newFakeCapture(),
+		schedByID:  map[string]ScheduleView{},
+		schedKeys:  map[string]string{},
 	}
 }
 
@@ -299,6 +307,137 @@ func (f *fakeBackend) SetSchedule(_ context.Context, ref, cron string) (Schedule
 		Cron:    cron,
 		Changed: changed,
 	}, nil
+}
+
+// ListSchedules returns every fake schedule belonging to a job.
+func (f *fakeBackend) ListSchedules(_ context.Context, ref string) ([]ScheduleView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []ScheduleView{}
+	for _, view := range f.schedByID {
+		if view.JobID == ref {
+			out = append(out, view)
+		}
+	}
+	return out, nil
+}
+
+// CreateSchedule adds a fake schedule, honouring the idempotency key.
+func (f *fakeBackend) CreateSchedule(_ context.Context, ref string, req ScheduleCreateRequest, idempotencyKey string) (ScheduleView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.scheduleErr != nil {
+		return ScheduleView{}, f.scheduleErr
+	}
+	if idempotencyKey != "" {
+		if id, ok := f.schedKeys[idempotencyKey]; ok {
+			view := f.schedByID[id]
+			view.Changed = false
+			return view, nil
+		}
+	}
+	f.schedSeq++
+	id := "sched-" + itoa(f.schedSeq)
+	view := ScheduleView{
+		ID:           id,
+		JobID:        ref,
+		Cron:         req.Cron,
+		Timezone:     req.Timezone,
+		Payload:      req.Payload,
+		MissedPolicy: req.MissedPolicy,
+		Origin:       "api",
+		Changed:      true,
+	}
+	f.schedByID[id] = view
+	if idempotencyKey != "" {
+		f.schedKeys[idempotencyKey] = id
+	}
+	return view, nil
+}
+
+func (f *fakeBackend) GetSchedule(_ context.Context, scheduleID string) (ScheduleView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	view, ok := f.schedByID[scheduleID]
+	if !ok {
+		return ScheduleView{}, ErrNotFound
+	}
+	return view, nil
+}
+
+func (f *fakeBackend) UpdateSchedule(_ context.Context, scheduleID string, req ScheduleUpdateRequest) (ScheduleView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	view, ok := f.schedByID[scheduleID]
+	if !ok {
+		return ScheduleView{}, ErrNotFound
+	}
+	if view.Origin == "manifest" {
+		return ScheduleView{}, ErrConflict
+	}
+	changed := false
+	if req.Cron != nil && view.Cron != *req.Cron {
+		view.Cron = *req.Cron
+		changed = true
+	}
+	if req.Timezone != nil {
+		view.Timezone = *req.Timezone
+		changed = true
+	}
+	if req.Payload != nil {
+		view.Payload = *req.Payload
+		changed = true
+	}
+	if req.MissedPolicy != nil {
+		view.MissedPolicy = *req.MissedPolicy
+		changed = true
+	}
+	view.Changed = changed
+	f.schedByID[scheduleID] = view
+	return view, nil
+}
+
+func (f *fakeBackend) DeleteSchedule(_ context.Context, scheduleID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	view, ok := f.schedByID[scheduleID]
+	if !ok {
+		return ErrNotFound
+	}
+	if view.Origin == "manifest" {
+		return ErrConflict
+	}
+	delete(f.schedByID, scheduleID)
+	return nil
+}
+
+func (f *fakeBackend) SetSchedulePaused(_ context.Context, scheduleID string, paused bool) (ScheduleView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	view, ok := f.schedByID[scheduleID]
+	if !ok {
+		return ScheduleView{}, ErrNotFound
+	}
+	changed := view.Paused != paused
+	view.Paused = paused
+	view.Changed = changed
+	f.schedByID[scheduleID] = view
+	return view, nil
+}
+
+// itoa avoids importing strconv just for a fake id.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 func (f *fakeBackend) Reload(_ context.Context) (ReloadResult, error) {

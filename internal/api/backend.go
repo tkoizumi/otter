@@ -75,11 +75,33 @@ type Backend interface {
 	// directory. Manual runs are unaffected in both directions.
 	SetPaused(ctx context.Context, ref string, paused bool) (PauseView, error)
 
-	// SetSchedule replaces a job's cadence, or clears it when cron is empty.
-	// A cleared schedule is a deliberate "never fire on its own" and does not
-	// fall back to the manifest, so a reload cannot resurrect it. Manual runs
-	// are unaffected.
+	// SetSchedule replaces a job's single cadence, or clears it when cron is
+	// empty. It is the deprecated v0.3.0 surface, retained so existing clients
+	// keep working; new callers use the schedule-id endpoints below.
 	SetSchedule(ctx context.Context, ref, cron string) (ScheduleView, error)
+
+	// ListSchedules returns every schedule a job holds, whatever its origin.
+	ListSchedules(ctx context.Context, ref string) ([]ScheduleView, error)
+
+	// CreateSchedule adds an API-owned schedule to a job. When idempotencyKey
+	// is non-empty and already exists, the existing schedule is returned with
+	// Changed false rather than a second schedule being created.
+	CreateSchedule(ctx context.Context, ref string, req ScheduleCreateRequest, idempotencyKey string) (ScheduleView, error)
+
+	// GetSchedule returns one schedule by id.
+	GetSchedule(ctx context.Context, scheduleID string) (ScheduleView, error)
+
+	// UpdateSchedule changes an API-owned schedule. A manifest-owned row is
+	// refused with ErrConflict.
+	UpdateSchedule(ctx context.Context, scheduleID string, req ScheduleUpdateRequest) (ScheduleView, error)
+
+	// DeleteSchedule removes an API-owned schedule. A manifest-owned row is
+	// refused with ErrConflict.
+	DeleteSchedule(ctx context.Context, scheduleID string) error
+
+	// SetSchedulePaused pauses or resumes one schedule. Pausing is an operator
+	// control, so it is accepted on a manifest-owned row too.
+	SetSchedulePaused(ctx context.Context, scheduleID string, paused bool) (ScheduleView, error)
 
 	// Reload re-reads the jobs directory and applies what it finds to
 	// the running daemon, without stopping it. Executing runs and unchanged

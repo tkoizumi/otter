@@ -109,3 +109,117 @@ func TestScheduleEndpointMapsBackendErrors(t *testing.T) {
 		t.Errorf("error code = %q, want %q", code, CodeInvalid)
 	}
 }
+
+// The schedule-id surface round-trips: create, list, get, patch, pause, resume,
+// delete. It is the CL-22 API the CLI and the control plane are written
+// against.
+func TestScheduleIdEndpointsRoundTrip(t *testing.T) {
+	b := newFakeBackend()
+	b.addJob("int-A", true, "")
+
+	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
+	defer srv.Close()
+
+	create := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/schedules",
+		[]byte(`{"cron":"@daily","payload":{"dataset":7}}`), adminHeaders())
+	wantStatus(t, create, http.StatusCreated)
+	var view ScheduleView
+	create.decode(t, &view)
+	if view.ID == "" || view.Cron != "@daily" || !view.Changed {
+		t.Fatalf("created schedule = %+v", view)
+	}
+
+	// The same Idempotency-Key is a replay: the same schedule, no second row.
+	hdr := adminHeaders()
+	hdr["Idempotency-Key"] = "cmd-1"
+	first := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/schedules",
+		[]byte(`{"cron":"@daily"}`), hdr)
+	wantStatus(t, first, http.StatusCreated)
+	var firstView ScheduleView
+	first.decode(t, &firstView)
+
+	replay := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/schedules",
+		[]byte(`{"cron":"@daily"}`), hdr)
+	wantStatus(t, replay, http.StatusOK)
+	var replayView ScheduleView
+	replay.decode(t, &replayView)
+	if replayView.ID != firstView.ID || replayView.Changed {
+		t.Fatalf("idempotent replay = %+v, want the existing row unchanged", replayView)
+	}
+
+	list := do(t, http.MethodGet, srv.URL+"/v1/jobs/int-A/schedules", nil, adminHeaders())
+	wantStatus(t, list, http.StatusOK)
+	var listed ScheduleList
+	list.decode(t, &listed)
+	if len(listed.Schedules) != 2 {
+		t.Fatalf("listed schedules = %d, want 2", len(listed.Schedules))
+	}
+
+	got := do(t, http.MethodGet, srv.URL+"/v1/schedules/"+view.ID, nil, adminHeaders())
+	wantStatus(t, got, http.StatusOK)
+
+	patch := do(t, http.MethodPatch, srv.URL+"/v1/schedules/"+view.ID,
+		[]byte(`{"cron":"@hourly"}`), adminHeaders())
+	wantStatus(t, patch, http.StatusOK)
+	var patched ScheduleView
+	patch.decode(t, &patched)
+	if patched.Cron != "@hourly" || !patched.Changed {
+		t.Fatalf("patched schedule = %+v", patched)
+	}
+
+	paused := do(t, http.MethodPost, srv.URL+"/v1/schedules/"+view.ID+"/pause", nil, adminHeaders())
+	wantStatus(t, paused, http.StatusOK)
+	var pausedView ScheduleView
+	paused.decode(t, &pausedView)
+	if !pausedView.Paused {
+		t.Fatalf("pause view = %+v, want paused", pausedView)
+	}
+
+	resumed := do(t, http.MethodPost, srv.URL+"/v1/schedules/"+view.ID+"/resume", nil, adminHeaders())
+	wantStatus(t, resumed, http.StatusOK)
+
+	removed := do(t, http.MethodDelete, srv.URL+"/v1/schedules/"+view.ID, nil, adminHeaders())
+	wantStatus(t, removed, http.StatusNoContent)
+
+	gone := do(t, http.MethodGet, srv.URL+"/v1/schedules/"+view.ID, nil, adminHeaders())
+	wantStatus(t, gone, http.StatusNotFound)
+}
+
+// A manifest-owned row is refused with 409, so the API cannot fight a reload.
+func TestManifestOwnedScheduleRefusesMutation(t *testing.T) {
+	b := newFakeBackend()
+	b.addJob("int-A", true, "")
+	b.schedByID["sched-m"] = ScheduleView{ID: "sched-m", JobID: "int-A", Cron: "@daily", Origin: "manifest"}
+
+	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
+	defer srv.Close()
+
+	patch := do(t, http.MethodPatch, srv.URL+"/v1/schedules/sched-m",
+		[]byte(`{"cron":"@hourly"}`), adminHeaders())
+	wantStatus(t, patch, http.StatusConflict)
+
+	del := do(t, http.MethodDelete, srv.URL+"/v1/schedules/sched-m", nil, adminHeaders())
+	wantStatus(t, del, http.StatusConflict)
+}
+
+// The create body is validated at the edge: an empty cron never reaches the
+// backend, and a control-scoped token is required.
+func TestScheduleCreateValidatesAndScopes(t *testing.T) {
+	b := newFakeBackend()
+	b.addJob("int-A", true, "")
+	srv := newTestServer(t, ServerConfig{APIToken: "admin-secret"}, b)
+	defer srv.Close()
+
+	empty := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/schedules",
+		[]byte(`{"cron":"  "}`), adminHeaders())
+	wantStatus(t, empty, http.StatusBadRequest)
+
+	anonymous := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/schedules",
+		[]byte(`{"cron":"@daily"}`), nil)
+	wantStatus(t, anonymous, http.StatusUnauthorized)
+
+	read := mintToken(t, srv, "reader", ScopeRead)
+	forbidden := do(t, http.MethodPost, srv.URL+"/v1/jobs/int-A/schedules",
+		[]byte(`{"cron":"@daily"}`), bearer(read.Token))
+	wantStatus(t, forbidden, http.StatusForbidden)
+}

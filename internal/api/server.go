@@ -103,6 +103,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runs", s.scoped(s.handleListRuns))
 	mux.Handle("GET /v1/runs/{id}/timeline", s.scoped(s.handleTimeline))
 	mux.Handle("GET /v1/runs/{id}/requests", s.scoped(s.handleListCaptureRequests))
+	mux.Handle("GET /v1/jobs/{id}/schedules", s.scoped(s.handleListSchedules))
+	mux.Handle("GET /v1/schedules/{schedule_id}", s.scoped(s.handleGetSchedule))
 
 	// Reads a per-run token may also make. The handler narrows it to its own
 	// job or run, which is why these admit it and the four above do not.
@@ -116,6 +118,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/jobs/{id}/resume", s.control(s.handleResumeJob))
 	mux.Handle("PUT /v1/jobs/{id}/schedule", s.control(s.handleSetSchedule))
 	mux.Handle("DELETE /v1/jobs/{id}/schedule", s.control(s.handleClearSchedule))
+	mux.Handle("POST /v1/jobs/{id}/schedules", s.control(s.handleCreateSchedule))
+	mux.Handle("PATCH /v1/schedules/{schedule_id}", s.control(s.handleUpdateSchedule))
+	mux.Handle("DELETE /v1/schedules/{schedule_id}", s.control(s.handleDeleteSchedule))
+	mux.Handle("POST /v1/schedules/{schedule_id}/pause", s.control(s.handlePauseSchedule))
+	mux.Handle("POST /v1/schedules/{schedule_id}/resume", s.control(s.handleResumeSchedule))
 	mux.Handle("POST /v1/jobs/{id}/runs", s.control(s.handleSubmitRun))
 	mux.Handle("POST /v1/runs/{id}/cancel", s.control(s.handleCancelRun))
 
@@ -653,6 +660,122 @@ func (s *Server) handleSetSchedule(w http.ResponseWriter, r *http.Request) {
 // must not undo it.
 func (s *Server) handleClearSchedule(w http.ResponseWriter, r *http.Request) {
 	view, err := s.backend.SetSchedule(r.Context(), r.PathValue("id"), "")
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// idempotencyKey reads the caller's key for a mutating control command. The
+// header is optional; without it a retried command creates a second schedule,
+// which is why the CLI always sends one.
+func idempotencyKey(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+}
+
+// handleListSchedules returns every schedule a job holds, whatever owns it.
+func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
+	views, err := s.backend.ListSchedules(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if views == nil {
+		views = []ScheduleView{}
+	}
+	s.writeJSON(w, http.StatusOK, ScheduleList{Schedules: views})
+}
+
+// handleCreateSchedule adds a schedule to a job. A caller-supplied
+// Idempotency-Key makes a retry return the existing schedule with changed
+// false, so a duplicated "schedule this every 15 minutes" does not produce two.
+func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req ScheduleCreateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "body must be a JSON object with a cron field")
+		return
+	}
+	req.Cron = strings.TrimSpace(req.Cron)
+	if req.Cron == "" {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "cron is required")
+		return
+	}
+	view, err := s.backend.CreateSchedule(r.Context(), r.PathValue("id"), req, idempotencyKey(r))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	status := http.StatusCreated
+	if !view.Changed {
+		// An idempotent replay returns the existing resource rather than
+		// claiming a creation that did not happen.
+		status = http.StatusOK
+	}
+	s.writeJSON(w, status, view)
+}
+
+// handleGetSchedule returns one schedule by id.
+func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
+	view, err := s.backend.GetSchedule(r.Context(), r.PathValue("schedule_id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleUpdateSchedule applies a partial change to an API-owned schedule. A
+// manifest-owned row is refused with 409.
+func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req ScheduleUpdateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "body must be a JSON object")
+		return
+	}
+	if req.Cron != nil && strings.TrimSpace(*req.Cron) == "" {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "cron may not be empty; delete the schedule instead")
+		return
+	}
+	view, err := s.backend.UpdateSchedule(r.Context(), r.PathValue("schedule_id"), req)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleDeleteSchedule removes an API-owned schedule.
+func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.DeleteSchedule(r.Context(), r.PathValue("schedule_id")); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePauseSchedule holds one schedule back without touching the job.
+func (s *Server) handlePauseSchedule(w http.ResponseWriter, r *http.Request) {
+	s.setSchedulePaused(w, r, true)
+}
+
+// handleResumeSchedule releases a held-back schedule.
+func (s *Server) handleResumeSchedule(w http.ResponseWriter, r *http.Request) {
+	s.setSchedulePaused(w, r, false)
+}
+
+func (s *Server) setSchedulePaused(w http.ResponseWriter, r *http.Request, paused bool) {
+	view, err := s.backend.SetSchedulePaused(r.Context(), r.PathValue("schedule_id"), paused)
 	if err != nil {
 		s.fail(w, r, err)
 		return

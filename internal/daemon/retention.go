@@ -102,6 +102,19 @@ func (d *Daemon) expireRuns(ctx context.Context) {
 			"runs", retired,
 			"cutoff", cutoff.Format(time.RFC3339))
 	}
+
+	// The occurrence ledger rides the runs window. Anything older than the
+	// cutoff has already happened and can never fire again, so dropping it
+	// cannot make a restart replay an occurrence.
+	if d.schedules != nil {
+		pruned, err := d.schedules.PruneFires(ctx, cutoff)
+		if err != nil {
+			d.log.Warn("schedule_fires_retention_failed", "error", err.Error())
+		} else if pruned > 0 {
+			d.log.Info("schedule_fires_retained",
+				"fires", pruned, "cutoff", cutoff.Format(time.RFC3339))
+		}
+	}
 }
 
 // expireLogs prunes the logs of expired runs, in bounded batches, without

@@ -1,11 +1,21 @@
 # Dynamic schedules: design
 
-Status: partly shipped. Date: 2026-10-01. Amended 2026-10-02: the first cut
-shipped in `v0.3.0` (migration `0012_job_schedules` — one row per job, the
-store-backed scheduler, and `PUT`/`DELETE /v1/jobs/{id}/schedule`). The rest —
-`schedule_id`-keyed endpoints, per-occurrence payloads, pause/resume, idempotency
-keys, `schedule_fires`, UTC pinning and the CLI family — is workstream `R2` in
-[v0.4.0-and-cloud-phase-b-plan.md](v0.4.0-and-cloud-phase-b-plan.md).
+Status: shipped through phase 4. Date: 2026-10-01. Amended 2026-10-02: the
+first cut shipped in `v0.3.0` (migration `0012_job_schedules` — one row per job,
+the store-backed scheduler, and `PUT`/`DELETE /v1/jobs/{id}/schedule`).
+Amended again for `v0.4.0` workstream `R2`
+([v0.4.0-and-cloud-phase-b-plan.md](v0.4.0-and-cloud-phase-b-plan.md)):
+migration `0014_dynamic_schedules` replaces that table with an id-keyed
+`schedules` table plus the `schedule_fires` ledger; the manifest reconciles as
+`origin = 'manifest'` rows that refuse API mutation with `409`; there are
+per-occurrence payloads, `timezone` (UTC by default), create idempotency keys,
+exactly-one-run-per-occurrence, and the
+`otter schedule list|add|update|remove|pause|resume` CLI.
+
+What remains is phase 5, the job configuration layer (§8) — the
+`config_version` column exists so it can land without another migration — and
+the `coalesce`/`catch_up` missed-occurrence policies, which are recorded as data
+but not yet implemented (§11).
 
 ## Objective
 

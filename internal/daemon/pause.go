@@ -52,8 +52,11 @@ func (d *Daemon) SetPaused(ctx context.Context, ref string, paused bool) (api.Pa
 		if changed {
 			// Unregistering is what makes the next-run column stop reporting a
 			// fire time that will not happen. The tick itself re-checks the
-			// pause, so this is about honesty in the view, not safety.
-			d.sched.Unregister(jobID)
+			// pause, so this is about honesty in the view, not safety. Every
+			// schedule of the job is keyed separately, so every one goes.
+			for _, rec := range d.schedules.ForJob(jobID) {
+				d.sched.Unregister(rec.ID)
+			}
 			d.log.Info("job_paused", "job", label, "id", jobID)
 		}
 	} else {
@@ -76,21 +79,15 @@ func (d *Daemon) SetPaused(ctx context.Context, ref string, paused bool) (api.Pa
 	return view, nil
 }
 
-// armCron registers a job's cron trigger if it declares one. It is the
-// per-job counterpart of the reconciliation in syncSchedules, and it
-// exists because a resume must take effect immediately rather than at the next
-// reload.
+// armCron arms every stored schedule of a job. It is the per-job counterpart of
+// the reconciliation in syncSchedules, and it exists because a resume must take
+// effect immediately rather than at the next reload.
+//
+// A schedule the operator paused individually stays unarmed; armSchedule applies
+// both pause levels.
 func (d *Daemon) armCron(jobID string, m *config.Manifest) {
-	if m == nil {
-		// An invalid job has no usable trigger to arm. A later reload
-		// arms it once the manifest validates, because it is no longer paused.
-		return
-	}
-	spec := d.effectiveCron(jobID, m)
-	if spec == "" {
-		return
-	}
-	if err := d.sched.Replace(jobID, spec, d.cronJob(jobID, spec)); err != nil {
-		d.log.Error("cron_register_failed", err, "job", jobID, "cron", spec)
+	_ = m
+	for _, rec := range d.schedules.ForJob(jobID) {
+		d.armSchedule(rec)
 	}
 }
