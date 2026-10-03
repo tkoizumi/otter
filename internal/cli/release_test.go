@@ -617,7 +617,7 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 	insert("run-done", "succeeded", strings.Repeat("c", 64))
 
 	app := New("test", io.Discard, io.Discard)
-	pins, err := app.pinnedReleases(ctx, dataDir, "int-1")
+	pins, err := app.pinnedReleases(ctx, db, "int-1")
 	if err != nil {
 		t.Fatalf("pinnedReleases: %v", err)
 	}
@@ -630,7 +630,15 @@ func TestPinnedReleasesIncludesOnlyNonTerminalRuns(t *testing.T) {
 
 	// A data directory that has never held a runtime has no runs to pin. That
 	// is an honest empty set, not an unreadable registry, so it is not an error.
-	pins, err = app.pinnedReleases(ctx, filepath.Join(t.TempDir(), "fresh"), "int-1")
+	fresh, err := database.Open(ctx, filepath.Join(t.TempDir(), "fresh"))
+	if err != nil {
+		t.Fatalf("open fresh: %v", err)
+	}
+	defer func() { _ = fresh.Close() }()
+	if _, err := database.Migrate(ctx, fresh); err != nil {
+		t.Fatalf("migrate fresh: %v", err)
+	}
+	pins, err = app.pinnedReleases(ctx, fresh, "int-1")
 	if err != nil {
 		t.Fatalf("a fresh data directory was treated as unreadable: %v", err)
 	}
@@ -651,12 +659,10 @@ func TestPinnedReleasesRefusesAnUnreadableDatabase(t *testing.T) {
 	}
 
 	app := New("test", io.Discard, io.Discard)
-	pins, err := app.pinnedReleases(ctx, dataDir, "int-1")
+	manager := release.Manager{DataDir: dataDir}
+	removed, err := app.retainReleases(ctx, manager, "int-1", 1)
 	if err == nil {
-		t.Fatalf("an unreadable registry yielded a pin set: %+v", pins)
-	}
-	if pins != nil {
-		t.Fatalf("an unreadable registry returned pins: %+v", pins)
+		t.Fatalf("an unreadable registry yielded a prune: %+v", removed)
 	}
 }
 
@@ -1101,5 +1107,66 @@ func TestReleaseSkipsASuppressedPath(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "skip:") || !strings.Contains(stdout, "suppressed") {
 		t.Fatalf("the suppressed path was not reported as a skip:\n%s", stdout)
+	}
+}
+
+// OT-010: the pin query and the plan that moves releases aside run in one
+// immediate transaction, and the deletion happens after it commits. A queued run
+// bound to a release outside the keep window must survive, everything else in
+// that window must go, and the trash must be empty once the command returns.
+func TestRetainReleasesPinsAQueuedRunAndClearsTheTrash(t *testing.T) {
+	ctx := context.Background()
+	root, dir := releaseWorkspace(t, "one")
+	dataDir := filepath.Join(root, stateDirName, "data")
+	manager := release.Manager{DataDir: dataDir}
+
+	// Four releases so a keep=1 window has more than one candidate.
+	for i := 0; i < 4; i++ {
+		writeJobFixture(t, dir, "one", fmt.Sprintf("print(%d)\n", i))
+		if _, stderr, code := otterIn(t, root, "release", "one"); code != 0 {
+			t.Fatalf("release %d exited %d: %s", i, code, stderr)
+		}
+	}
+	id := idFor(t, dir)
+	before, err := manager.List(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) < 4 {
+		t.Fatalf("staged %d releases, want at least 4", len(before))
+	}
+	// List is newest first, so the oldest is the one a keep=1 window would
+	// remove first.
+	oldest := before[len(before)-1]
+	seedNonTerminalRun(t, dataDir, id, oldest.Digest)
+
+	app := New("test", io.Discard, io.Discard)
+	removed, err := app.retainReleases(ctx, manager, id, 1)
+	if err != nil {
+		t.Fatalf("retain: %v", err)
+	}
+	if len(removed) == 0 {
+		t.Fatal("retention removed nothing, so it proves nothing")
+	}
+	for _, digest := range removed {
+		if digest == oldest.Digest {
+			t.Fatalf("retention removed the release a queued run is bound to")
+		}
+	}
+	if _, err := manager.Metadata(id, oldest.Digest); err != nil {
+		t.Errorf("a pinned release is no longer resolvable: %v", err)
+	}
+
+	// The slow half ran before the command returned: nothing is left in trash.
+	releasesRoot, err := manager.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(releasesRoot, ".trash"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("retention left %d directories in the trash", len(entries))
 	}
 }

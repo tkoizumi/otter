@@ -144,7 +144,7 @@ capacity section. The release-binding point belongs with the release docs.
 
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| OT-010 | Daemon-side release pinning check before retention | gap | pinning lives only in the CLI path (`cli/release.go:645-685`); a submit can race retention | open |
+| OT-010 | Daemon-side release pinning check before retention | gap | pinning lives only in the CLI path (`cli/release.go:645-685`); a submit can race retention | done |
 | OT-030 | `unit-caps` has no drill-level sabotage mode | test | Found by the 2026-10-02 independent v0.3.0 gate run: `grep -c SABOTAGE scripts/drill/unit-caps.sh` is 0, so an operator cannot show the drill red at the drill level — falsifiability lives in the `UnitFile` render-test mutation (`docs/evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt`), which is a different mechanism. Every other drill documents a mode. The generator already takes `-memory-max` (and the drill `MEMORY_MAX`/`MEMORY_HIGH`/`MEMORY_SWAP_MAX`), so a `DRILL_SABOTAGE=off-memory-max` case that renders without the cap and asserts the containment check goes red is a small addition. `operations.md` §Operating drills and `docs/releases/v0.3.0.md` were corrected to say eight of nine, and point here | open |
 
 ### v0.5.0
@@ -184,6 +184,18 @@ it (and proves it can go red on a renamed namespace), and
 constants against the same file (verified to fail on a changed constant). A
 rename on either side now fails a test instead of leaving an alarm firing
 forever or never.
+
+**`OT-010` — closed (2026-10-03).** Retention and submission now serialize on
+the database write lock. `release.PlanRetain` renames a doomed release out of
+the live tree; the pin query and that rename run in one immediate transaction
+and the deletion (`Cleanup`) runs only after it commits, so the lock is held
+for a rename rather than a tree removal. The submit transaction re-checks that
+its bound release directory still exists, so a bind that raced the prune is
+refused with a conflict instead of queueing work against a vanished snapshot.
+Regressions: `TestPlanRetainRenamesAsideBeforeCleanup`,
+`TestRetainReleasesPinsAQueuedRunAndClearsTheTrash`, and
+`TestSubmitRefusesAReleasePrunedUnderTheWriteLock` (the last queues a run when
+the check is disabled).
 
 #### Tracked references
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -665,16 +666,55 @@ func mustReleaseDir(m release.Manager, id, digest string) string {
 // kind and does not pass through here: it removes directories with no
 // registered identity, which no run can be bound to, so it gates on the
 // identity registry instead of the pin set.
+//
+// The pin query and the plan that moves releases aside run inside one
+// immediate transaction, which is the database write lock. A submission that
+// binds a run is also an immediate transaction, so the two order rather than
+// interleave: a run committed first is in the pin set, and a submission that
+// commits after the plan finds the directory already renamed away and refuses
+// the run (see the daemon's submit path). That is OT-010. The slow deletion --
+// Cleanup -- happens only after the transaction commits, so the lock is held
+// for an atomic rename, not for a tree removal.
 func (a *App) retainReleases(ctx context.Context, manager release.Manager, jobID string, keep int) ([]string, error) {
-	pins, err := a.pinnedReleases(ctx, manager.DataDir, jobID)
+	const unreadable = "the run registry could not be read (%v), so the pin set is unknown; no release was removed"
+
+	db, err := database.Open(ctx, manager.DataDir)
 	if err != nil {
-		return nil, fmt.Errorf("the run registry could not be read (%v), so the pin set is unknown; no release was removed", err)
+		return nil, fmt.Errorf(unreadable, err)
 	}
-	return manager.Retain(jobID, keep, pins)
+	defer func() { _ = db.Close() }()
+	if _, err := database.Migrate(ctx, db); err != nil {
+		return nil, fmt.Errorf(unreadable, err)
+	}
+
+	var pending []release.PendingRemoval
+	err = db.Tx(ctx, func(tx *sql.Tx) error {
+		pins, err := a.pinnedReleases(ctx, tx, jobID)
+		if err != nil {
+			return fmt.Errorf(unreadable, err)
+		}
+		var planErr error
+		pending, planErr = manager.PlanRetain(jobID, keep, pins)
+		return planErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	removed, err := manager.Cleanup(pending)
+	if err != nil {
+		return removed, err
+	}
+	return removed, nil
 }
 
 // pinnedReleases returns the release digests that non-terminal runs are still
 // bound to, so retention can protect them.
+//
+// The caller supplies the queryer so the pin query can run inside the same
+// immediate transaction that plans the removal: reading the pin set and acting
+// on it must be one atomic step, or a submission committing between them is
+// invisible to the prune.
 //
 // A prune runs only with a readable pin set: a database that cannot be opened,
 // migrated or queried returns an error and the caller refuses to remove
@@ -682,18 +722,10 @@ func (a *App) retainReleases(ctx context.Context, manager release.Manager, jobID
 // pinned". A data directory that has never held a runtime is not unreadable --
 // no run can be bound there -- so the schema is created first, exactly as the
 // orphan-prune path does, and the honest answer is an empty pin set.
-func (a *App) pinnedReleases(ctx context.Context, dataDir, jobID string) (map[string]bool, error) {
-	db, err := database.Open(ctx, dataDir)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
-
-	if _, err := database.Migrate(ctx, db); err != nil {
-		return nil, err
-	}
-
-	rows, err := db.QueryContext(ctx,
+func (a *App) pinnedReleases(ctx context.Context, q interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}, jobID string) (map[string]bool, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT DISTINCT release_digest FROM runs
 		  WHERE job_id = ? AND release_digest <> ''
 		    AND status IN ('queued', 'running', 'retrying')`,

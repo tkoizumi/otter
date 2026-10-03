@@ -718,3 +718,102 @@ func TestInternalSymlinksArePreserved(t *testing.T) {
 		t.Errorf("symlink into a captured shared tree was dropped: %v", err)
 	}
 }
+
+// OT-010: the two halves of retention are separable so a caller can hold a
+// database lock only for the cheap part. PlanRetain renames a doomed release
+// aside -- atomic, and invisible to List -- and Cleanup deletes it after the
+// lock is released. A caller that skipped Cleanup would leak the trash, and a
+// caller that held its lock across Cleanup would block writers for a tree
+// removal, so both halves are asserted here.
+func TestPlanRetainRenamesAsideBeforeCleanup(t *testing.T) {
+	f := newFixture(t, "one")
+	var digests []string
+	for i := 0; i < 4; i++ {
+		write(t, filepath.Join(f.source, "main.py"), "print('v"+string(rune('a'+i))+"')\n")
+		digests = append(digests, f.stage(t, "env-1").Digest)
+	}
+	manager := f.manager()
+	if err := manager.Activate(f.name, digests[len(digests)-1]); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := manager.PlanRetain(f.name, 1, nil)
+	if err != nil {
+		t.Fatalf("plan retain: %v", err)
+	}
+	if len(pending) == 0 {
+		t.Fatal("PlanRetain planned nothing, so it proves nothing")
+	}
+
+	for _, p := range pending {
+		dir, err := manager.Dir(f.name, p.Digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("planned release %s is still in the live tree (err=%v)", p.Digest[:12], err)
+		}
+		if _, err := os.Stat(p.Path); err != nil {
+			t.Errorf("planned release %s is not in the trash: %v", p.Digest[:12], err)
+		}
+	}
+
+	// List no longer sees a planned release: it is out of the tree a runtime
+	// could bind to.
+	remaining, err := manager.List(f.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range remaining {
+		for _, p := range pending {
+			if rel.Digest == p.Digest {
+				t.Errorf("List still returns planned release %s", p.Digest[:12])
+			}
+		}
+	}
+
+	removed, err := manager.Cleanup(pending)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if len(removed) != len(pending) {
+		t.Fatalf("cleanup removed %d of %d planned releases", len(removed), len(pending))
+	}
+	for _, p := range pending {
+		if _, err := os.Stat(p.Path); !os.IsNotExist(err) {
+			t.Errorf("trash %s survived Cleanup (err=%v)", p.Path, err)
+		}
+	}
+}
+
+// A referenced digest is planned for protection, not for removal, even when it
+// is far outside the keep window.
+func TestPlanRetainProtectsAReferencedRelease(t *testing.T) {
+	f := newFixture(t, "one")
+	var digests []string
+	for i := 0; i < 4; i++ {
+		write(t, filepath.Join(f.source, "main.py"), "print('v"+string(rune('a'+i))+"')\n")
+		digests = append(digests, f.stage(t, "env-1").Digest)
+	}
+	manager := f.manager()
+	if err := manager.Activate(f.name, digests[len(digests)-1]); err != nil {
+		t.Fatal(err)
+	}
+
+	oldest := digests[0]
+	pending, err := manager.PlanRetain(f.name, 1, map[string]bool{oldest: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pending {
+		if p.Digest == oldest {
+			t.Fatalf("PlanRetain moved a referenced release")
+		}
+	}
+	if _, err := manager.Metadata(f.name, oldest); err != nil {
+		t.Errorf("a referenced release is no longer resolvable: %v", err)
+	}
+	if _, err := manager.Cleanup(pending); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -253,12 +253,31 @@ func (m Manager) List(job string) ([]Release, error) {
 	return out, nil
 }
 
-// Retain removes inactive releases beyond keep, protecting any digest the
-// caller says is still referenced by queued, running, or retrying work.
+// trashDirName holds releases a retention pass has renamed out of the way but
+// not yet deleted. It sits beside the job directories and is dot-prefixed, so
+// List never mistakes it for a release.
+const trashDirName = ".trash"
+
+// PendingRemoval is one release directory renamed out of the way but not yet
+// deleted.
+type PendingRemoval struct {
+	Digest string
+	// Path is the trash path the release now lives at.
+	Path string
+}
+
+// PlanRetain renames inactive releases beyond keep into a trash directory
+// beside the releases root and returns what moved.
 //
-// It never removes the active release, and it never removes the newest
-// inactive one, so a rollback always has somewhere to go.
-func (m Manager) Retain(job string, keep int, referenced map[string]bool) ([]string, error) {
+// The rename is atomic and cheap, which is the point: a caller that holds a
+// database write lock -- to serialize against a submission that could bind a
+// new run to one of these digests -- holds it for microseconds rather than for
+// the length of a tree deletion. The caller must pass the result to Cleanup
+// once the lock is released.
+//
+// It never removes the active release, and it never removes the newest inactive
+// one, so a rollback always has somewhere to go.
+func (m Manager) PlanRetain(job string, keep int, referenced map[string]bool) ([]PendingRemoval, error) {
 	if keep < 1 {
 		keep = 1
 	}
@@ -266,8 +285,13 @@ func (m Manager) Retain(job string, keep int, referenced map[string]bool) ([]str
 	if err != nil {
 		return nil, err
 	}
+	root, err := m.Root()
+	if err != nil {
+		return nil, err
+	}
+	trashRoot := filepath.Join(root, trashDirName)
 
-	var removed []string
+	var pending []PendingRemoval
 	kept := 0
 	for _, rel := range releases {
 		if rel.Active {
@@ -279,12 +303,56 @@ func (m Manager) Retain(job string, keep int, referenced map[string]bool) ([]str
 		}
 		dir, err := m.Dir(job, rel.Digest)
 		if err != nil {
-			return removed, err
+			return pending, err
 		}
-		if err := os.RemoveAll(dir); err != nil {
-			return removed, fmt.Errorf("remove release %s: %w", rel.Digest[:12], err)
+		if err := os.MkdirAll(trashRoot, 0o700); err != nil {
+			return pending, fmt.Errorf("release: create trash directory: %w", err)
 		}
-		removed = append(removed, rel.Digest)
+		dest := filepath.Join(trashRoot, job+"-"+rel.Digest)
+		if err := os.Rename(dir, dest); err != nil {
+			return pending, fmt.Errorf("release: stage %s for removal: %w", rel.Digest[:12], err)
+		}
+		pending = append(pending, PendingRemoval{Digest: rel.Digest, Path: dest})
+	}
+	return pending, nil
+}
+
+// Cleanup deletes the directories PlanRetain moved aside and reports which
+// digests are gone. It is separate from PlanRetain so the caller can release
+// whatever lock made the plan atomic before the slow part runs.
+//
+// A directory that cannot be removed is left in the trash rather than reported
+// as removed; it is inert there, and a later pass can sweep it.
+func (m Manager) Cleanup(pending []PendingRemoval) ([]string, error) {
+	removed := make([]string, 0, len(pending))
+	var firstErr error
+	for _, p := range pending {
+		if err := os.RemoveAll(p.Path); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("release: remove %s: %w", p.Digest[:12], err)
+			}
+			continue
+		}
+		removed = append(removed, p.Digest)
+	}
+	return removed, firstErr
+}
+
+// Retain removes inactive releases beyond keep, protecting any digest the
+// caller says is still referenced by queued, running, or retrying work.
+//
+// It is PlanRetain followed immediately by Cleanup. A caller that must
+// serialize against a concurrent submission uses the two halves separately, so
+// the database lock is not held across the deletion; see the retention path in
+// internal/cli.
+func (m Manager) Retain(job string, keep int, referenced map[string]bool) ([]string, error) {
+	pending, err := m.PlanRetain(job, keep, referenced)
+	if err != nil {
+		return nil, err
+	}
+	removed, err := m.Cleanup(pending)
+	if err != nil {
+		return removed, err
 	}
 	return removed, nil
 }

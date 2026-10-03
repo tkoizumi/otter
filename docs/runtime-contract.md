@@ -192,11 +192,20 @@ Two related consequences:
   occurrence was accepted, not the newest release. Submission-time binding is
   tested by `TestRunExecutesTheActiveReleaseNotTheLiveTree`; the retry half is
   not yet independently proven (`OT-011`).
-- **Releases still needed by pending work are protected from retention.** The
-  CLI retention pass collects the digests bound to every `queued`, `running` and
-  `retrying` attempt and protects them from deletion (`internal/cli/release.go`
-  `pinnedReleases`; `internal/release` `Retain`). A daemon-side submit racing a
-  retention pass is a known gap (`OT-010`).
+- **Releases still needed by pending work are protected from retention, and a
+  submission cannot slip past the pin set.** The CLI retention pass collects the
+  digests bound to every `queued`, `running` and `retrying` attempt
+  (`internal/cli/release.go` `pinnedReleases`) and plans their removal with
+  `release.PlanRetain`, which renames a doomed release out of the live tree. The
+  pin query and the rename run inside **one immediate transaction** — the
+  database write lock — and the deletion (`Cleanup`) happens only after it
+  commits. A submission binds its release in its **own** immediate transaction
+  and re-checks that the release directory still exists there
+  (`internal/daemon/view.go`, `submitRun`). The two order rather than
+  interleave: a run committed before the prune is in the pin set and protected,
+  and a submission that commits after it is refused with a conflict naming the
+  vanished release instead of queueing work against a snapshot that no longer
+  exists. This closes `OT-010`.
 
 ### 3.1.1 One run per occurrence, and which clock decides
 

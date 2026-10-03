@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -353,6 +354,18 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The bound release must still exist. Retention renames a doomed
+		// release aside inside its own immediate transaction, and this
+		// transaction is also immediate, so the two cannot interleave: a run
+		// committed before the prune is in the pin set, and a run committed
+		// after it sees the directory gone here and is refused rather than
+		// queued against a snapshot that no longer exists. This is the daemon
+		// half of OT-010; the CLI prune is the other half.
+		if _, statErr := os.Stat(run.ReleaseSourceDir); statErr != nil {
+			return fmt.Errorf("the release bound to this run (%s) is no longer on disk; "+
+				"it was pruned while the run was being submitted: %w",
+				shortDigest(run.ReleaseDigest), api.ErrConflict)
+		}
 		// The ledger row goes first. When the occurrence is already recorded
 		// the whole transaction aborts, so the duplicate produces neither a
 		// run nor a queue entry.
