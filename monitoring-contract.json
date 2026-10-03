@@ -1,0 +1,18 @@
+{
+  "_comment": "The CloudWatch metric contract between the Otter runtime's publishers and the alarm stack that watches them. This file is the single home for the four strings; the runtime's scripts and otter-platform's CDK must both agree with it. scripts/test-monitoring-contract.sh asserts the producers, and otter-platform/runtime/test/castor-runtime-stack.test.ts asserts the alarm constants. Change a value here, change it there, and a test on one side fails.",
+  "namespace": "Otter",
+  "dimension": "Host",
+  "metrics": {
+    "heartbeat": {
+      "name": "Heartbeat",
+      "publisher": "scripts/heartbeat.sh",
+      "meaning": "Published while the runtime answers; silence is the alarm."
+    },
+    "disk_check": {
+      "name": "DiskCheck",
+      "publisher": "scripts/disk-check.sh",
+      "fields": ["DiskCheck", "DiskFreeMB"],
+      "meaning": "Published while every storage measure is inside its threshold."
+    }
+  }
+}
