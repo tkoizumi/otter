@@ -81,6 +81,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", s.handleHealth)
+	// Version metadata is public for the same reason /health is: a client must
+	// be able to learn the shape before it authenticates to it.
+	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
 	// Admin-only: identity changes, daemon configuration, capture payloads and
 	// the tokens themselves. None of these is reachable with a scoped token.
@@ -442,6 +445,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 // than turning a liveness check into an error.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := HealthResponse{
+		SchemaVersion: SchemaVersion,
 		Status:        "ok",
 		Version:       s.backend.Version(),
 		UptimeSeconds: time.Since(s.backend.StartedAt()).Seconds(),
@@ -684,7 +688,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	if views == nil {
 		views = []ScheduleView{}
 	}
-	s.writeJSON(w, http.StatusOK, ScheduleList{Schedules: views})
+	s.writeJSON(w, http.StatusOK, ScheduleList{SchemaVersion: SchemaVersion, Schedules: views})
 }
 
 // handleCreateSchedule adds a schedule to a job. A caller-supplied
@@ -804,7 +808,16 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	result.SchemaVersion = SchemaVersion
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// handleVersion returns the machine-readable contract document: the schema
+// version, the runtime-contract version, the manifest schema, the embedded SDK
+// version and the supported platforms. It is public, like /health, because a
+// client needs to know what shape it is talking to before it holds a token.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, http.StatusOK, VersionDocumentFor(s.backend.Version()))
 }
 
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
@@ -1472,7 +1485,10 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, code, message string) {
-	body, err := json.Marshal(ErrorResponse{Error: ErrorBody{Code: code, Message: message}})
+	body, err := json.Marshal(ErrorResponse{
+		SchemaVersion: SchemaVersion,
+		Error:         ErrorBody{Code: code, Message: message},
+	})
 	if err != nil {
 		http.Error(w, message, status)
 		return

@@ -78,6 +78,17 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	return &out, nil
 }
 
+// Version returns the daemon's machine-readable contract document: the schema
+// version, the runtime-contract version, the manifest schema, the embedded SDK
+// version and the supported platforms.
+func (c *Client) Version(ctx context.Context) (*VersionDocument, error) {
+	var out VersionDocument
+	if err := c.get(ctx, "/v1/version", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListJobs returns every discovered job.
 func (c *Client) ListJobs(ctx context.Context) ([]JobView, error) {
 	var out struct {

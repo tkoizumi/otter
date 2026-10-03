@@ -100,7 +100,7 @@ func (a *App) scheduleList(ctx context.Context, g globals, args []string) int {
 		return a.fail(err)
 	}
 	if g.jsonOut {
-		return a.printJSON(api.ScheduleList{Schedules: views})
+		return a.printJSON(api.ScheduleList{SchemaVersion: api.SchemaVersion, Schedules: views})
 	}
 	if len(views) == 0 {
 		fmt.Fprintln(a.Stdout, "no schedules: this job never fires on its own")
@@ -151,7 +151,7 @@ func (a *App) scheduleShow(ctx context.Context, g globals, args []string) int {
 		return a.fail(err)
 	}
 	if g.jsonOut {
-		return a.printJSON(api.ScheduleList{Schedules: views})
+		return a.printJSON(api.ScheduleList{SchemaVersion: api.SchemaVersion, Schedules: views})
 	}
 	if len(views) == 0 {
 		fmt.Fprintln(a.Stdout, "no schedules: this job never fires on its own")

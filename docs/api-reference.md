@@ -165,6 +165,7 @@ Every error uses the same envelope:
 
 ```json
 {
+  "schema_version": 1,
   "error": {
     "code": "not_found",
     "message": "no route for GET /v1/nope"
@@ -188,6 +189,9 @@ Error `message` strings are for humans; branch on `code`. Note that the same
 jobs, runs and state keys), so use the status plus the endpoint to
 disambiguate.
 
+The error envelope is a frozen shape: [compatibility.md](compatibility.md)
+states what may change and how a new `code` is added.
+
 ## Health
 
 ### `GET /health`
@@ -207,6 +211,7 @@ caller, since no token is configured — receives the full payload:
 
 ```json
 {
+  "schema_version": 1,
   "status": "ok",
   "version": "v0.2.0",
   "uptime_seconds": 81234.5,
@@ -234,7 +239,7 @@ omitted, so a token-protected deployment does not disclose job, run, queue,
 freshness or storage detail to the network:
 
 ```json
-{"status": "ok", "version": "v0.2.0", "uptime_seconds": 81234.5}
+{"schema_version": 1, "status": "ok", "version": "v0.2.0", "uptime_seconds": 81234.5}
 ```
 
 `jobs` reports how many manifests were discovered and how many of them
@@ -268,6 +273,35 @@ hint that the daemon requires a token, which is how a typo in
 `OTTER_API_TOKEN` becomes visible instead of silent.
 
 The systemd examples in [operations.md](operations.md) poll this endpoint.
+
+### `GET /v1/version`
+
+The machine-readable contract document: the one request a script or a control
+plane makes to learn the schema version, the runtime-contract version, the
+manifest schema, the embedded Python SDK version and the supported platforms.
+Like `/health`, it is **public** — a client must be able to learn the shape
+before it authenticates to it.
+
+```bash
+curl -s "$OTTER_API_URL/v1/version"
+otter --api "$OTTER_API_URL" --json version
+```
+
+```json
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "product_version": "v0.4.0",
+  "manifest_schema": 1,
+  "sdk_version": "0.1.0",
+  "supported_platforms": ["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"]
+}
+```
+
+`schema_version` versions the JSON shapes themselves; it appears in every
+object-shaped machine document (`/health`, this document, the error envelope,
+`POST /v1/reload`, the schedule list). Its meaning, and what counts as a change
+to it, is [compatibility.md](compatibility.md).
 
 ## Jobs
 

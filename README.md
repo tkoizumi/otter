@@ -301,6 +301,7 @@ shape, and `otter state get <job> <key>` inspects one from the CLI.
 
 ```bash
 otter status                            # health: queue age and depth, run counts, freshness, storage
+otter --json version                    # the daemon's contract document: schema/contract/SDK/manifest versions
 otter jobs [--all]              # jobs with their id, status and path; --all adds invalid/retired
 otter reload                            # re-read jobs; no restart, running work continues
 otter pause [<job>|.]                   # suspend cron and webhook; manual runs still work
@@ -724,7 +725,8 @@ platform published as `otter_<version>_<os>_<arch>.tar.gz` by
 | Document | Contents |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Subsystems, schema, run lifecycle, design rationale. |
-| [docs/runtime-contract.md](docs/runtime-contract.md) | Versioned runtime contract: attempt state machine, accepted-request promise, concurrency, retries, platforms, and the fault matrix behind each claim. |
+| [docs/runtime-contract.md](docs/runtime-contract.md) | Versioned runtime contract: attempt state machine, accepted-request promise, concurrency, retries, platforms, honest limits, and the fault matrix behind each claim. |
+| [docs/compatibility.md](docs/compatibility.md) | What the `v0.4.0` interface freeze covers: manifest schema, Python SDK, CLI JSON, HTTP API; what a breaking change is, and how a deprecation is retired. |
 | [docs/manifest-reference.md](docs/manifest-reference.md) | Every `otter.yaml` field with defaults and validation rules. |
 | [docs/api-reference.md](docs/api-reference.md) | Every endpoint, credential type and error code. |
 | [docs/http-capture.md](docs/http-capture.md) | HTTP request inspection: capture levels, coverage, bodies, limits, retention, redaction. |

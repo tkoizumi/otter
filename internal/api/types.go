@@ -141,7 +141,9 @@ type ScheduleUpdateRequest struct {
 
 // ScheduleList is the response of GET /v1/jobs/{id}/schedules.
 type ScheduleList struct {
-	Schedules []ScheduleView `json:"schedules"`
+	// SchemaVersion versions the JSON shape itself; see compatibility.md.
+	SchemaVersion int            `json:"schema_version"`
+	Schedules     []ScheduleView `json:"schedules"`
 }
 
 // ScheduleView reports one schedule.
@@ -220,6 +222,8 @@ type RunView struct {
 // authenticated caller: an unauthenticated liveness probe receives status,
 // version and uptime alone.
 type HealthResponse struct {
+	// SchemaVersion versions the JSON shape itself; see compatibility.md.
+	SchemaVersion int            `json:"schema_version"`
 	Status        string         `json:"status"`
 	Version       string         `json:"version"`
 	UptimeSeconds float64        `json:"uptime_seconds"`
@@ -366,6 +370,9 @@ type CancelRunResponse struct {
 // manifest wants to see that one job changed, not merely that the
 // whole directory was re-read.
 type ReloadResult struct {
+	// SchemaVersion versions the JSON shape itself; see compatibility.md.
+	SchemaVersion int `json:"schema_version"`
+
 	Added   []string `json:"added"`
 	Removed []string `json:"removed"`
 	Changed []string `json:"changed"`
@@ -413,7 +420,9 @@ type TimelineResponse = timeline.Page
 
 // ErrorResponse is the body of every error the API returns.
 type ErrorResponse struct {
-	Error ErrorBody `json:"error"`
+	// SchemaVersion versions the JSON shape itself; see compatibility.md.
+	SchemaVersion int       `json:"schema_version"`
+	Error         ErrorBody `json:"error"`
 }
 
 // ErrorBody describes a failure.

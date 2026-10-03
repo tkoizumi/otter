@@ -116,6 +116,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cmdPauseResume(ctx, g, commandArgs, false)
 	case "schedule":
 		return a.cmdSchedule(ctx, g, commandArgs)
+	case "version":
+		return a.cmdVersion(ctx, g, commandArgs)
 	case "token":
 		return a.cmdToken(ctx, g, commandArgs)
 	case "inspect":

@@ -1087,10 +1087,13 @@ func TestHealthHidesCountersFromUnauthenticatedCallers(t *testing.T) {
 		}
 		var raw map[string]json.RawMessage
 		r.decode(t, &raw)
-		if len(raw) != 3 {
-			t.Fatalf("unauthenticated /health has %d fields, want exactly status, version and uptime_seconds: %s", len(raw), r.body)
+		// schema_version is part of the liveness payload by design: it versions
+		// the shape, discloses nothing about the workload, and a client needs it
+		// before it authenticates.
+		if len(raw) != 4 {
+			t.Fatalf("unauthenticated /health has %d fields, want exactly schema_version, status, version and uptime_seconds: %s", len(raw), r.body)
 		}
-		for _, key := range []string{"status", "version", "uptime_seconds"} {
+		for _, key := range []string{"schema_version", "status", "version", "uptime_seconds"} {
 			if _, ok := raw[key]; !ok {
 				t.Fatalf("unauthenticated /health is missing %q: %s", key, r.body)
 			}

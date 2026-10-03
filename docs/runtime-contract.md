@@ -29,6 +29,7 @@ what the runtime actually does.
 - [4. State-write concurrency](#4-state-write-concurrency)
 - [5. Retries and external effects](#5-retries-and-external-effects)
 - [6. Supported platforms](#6-supported-platforms)
+- [7. Honest limits](#7-honest-limits)
 - [Appendix A — the WS4 fault matrix and its evidence](#appendix-a--the-ws4-fault-matrix-and-its-evidence)
 - [Appendix B — where this fits](#appendix-b--where-this-fits)
 
@@ -60,7 +61,12 @@ Versioning rules:
 2. Contract version is independent of the product semver. Product `v0.2.x`
    patches may fix defects but may not change what this document promises.
 3. API shape, manifest fields, CLI JSON and error codes are pinned separately,
-   under the `v0.4.0` compatibility policy. This document pins *behavior*.
+   under the `v0.4.0` compatibility policy: [compatibility.md](compatibility.md)
+   states what a breaking change is for each interface and how a deprecation
+   retires. This document pins *behavior*; that one pins *shape*. The
+   machine-readable form is `GET /v1/version` (or `otter --json version`),
+   which reports `contract_version`, `schema_version`, the manifest schema, the
+   SDK version and the supported platforms together.
 4. A guarantee is only as strong as its scenario's evidence. Appendix A states
    whether each scenario is real, simulated, partial or not yet implemented.
 
@@ -452,6 +458,61 @@ live child from a recycled pid.
 This is documented as a limitation, not fixed, and is tracked as `OT-009`
 (closed) in [open-work.md](open-work.md) and in
 [architecture.md](architecture.md#child-lifetime-is-platform-specific).
+
+## 7. Honest limits
+
+Four limits a consumer of this contract must know. Each names where the
+mechanism lives; none is a promise, and none is fixable by a test alone.
+
+### 7.1 Concurrent updates are not coordinated
+
+Releasing is atomic: a release is staged, then activated by swapping a symlink,
+and a run binds the digest it will execute at submission. Activating a new
+release therefore never moves an accepted run onto different code
+([§2](#2-what-an-accepted-request-promises)).
+
+What is **not** coordinated is two update passes running at once. `otter deploy`
+and `otter release` are converges and are safe to re-run, but two invocations
+against the same workspace may interleave their staging and retention steps and
+report each other's work. SQLite serialises their database work and
+[retention is serialised against submission](#3-schedules-deliveries-and-duplicates)
+(`OT-010`), but the filesystem steps are not mutually excluded. **One writer at a
+time is the supported operation**; there is no distributed lock or leader
+election.
+
+### 7.2 A retry can duplicate an external effect
+
+*Explicit non-guarantee, stated in full in [§5](#5-retries-and-external-effects).*
+
+Otter guarantees at-least-once execution of an accepted attempt; it does not
+deduplicate the *effects* of that execution at the receiving system. A job whose
+side effect is not idempotent can apply it twice after a retry or a crash
+recovery. The job must carry its own idempotency key or checkpoint; §5.3 is the
+guidance. This is the same exposure every at-least-once runner has, written down
+rather than implied.
+
+### 7.3 A downgrade is refused, not supported
+
+Migrations are append-only. A database migrated by a **newer** binary is refused
+at startup (`SchemaTooNewError`) and the operator restores the pre-upgrade
+backup; columns may have been renamed or dropped, and a query that no longer
+means what it says is how a downgrade corrupts data
+([database/migrate.go](../internal/database/migrate.go)). There is no
+down-migration, and none is planned. Install the newer binary and restore the
+backup, or stay put.
+
+### 7.4 The transport is plain HTTP
+
+`otterd` is an HTTP server with no TLS listener, by design. TLS is terminated in
+front of it — a reverse proxy on the same host, or a private network that never
+leaves the operator's control. A non-loopback bind requires a bearer token, and
+since `v0.4.0` it also requires `otter deploy`'s explicit `--allow-remote-bind`
+and a warning; but the token travels in clear text, and there is no mutual TLS,
+no client certificate and no payload encryption between the client and the
+daemon. Do not put the API on an untrusted network without a proxy that
+terminates TLS: see
+[security.md](security.md#remote-access-tls-and-reverse-proxies) for the
+supported pattern.
 
 ## Appendix A — the WS4 fault matrix and its evidence
 
