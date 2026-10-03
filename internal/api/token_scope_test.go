@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/runs"
 	"github.com/tkoizumi/otter/internal/timeline"
 )
@@ -46,22 +47,67 @@ func bearer(token string) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + token}
 }
 
+// scopedFixtureBuild holds one server plus a token of each scope, so a test can
+// probe the same routes from every credential class.
+type scopedFixtureBuild struct {
+	srv     *httptest.Server
+	control string
+	read    string
+	capture string
+}
+
 // scopedFixture builds a server with one job, one run and one token of each
 // scope, plus the raw tokens.
 func scopedFixture(t *testing.T) (*httptest.Server, string, string) {
 	t.Helper()
+	built := scopedFixtureAll(t)
+	return built.srv, built.control, built.read
+}
+
+// scopedFixtureAll is scopedFixture plus the capture token, for the tests that
+// are about the capture boundary.
+func scopedFixtureAll(t *testing.T) scopedFixtureBuild {
+	t.Helper()
 	b := newFakeBackend()
 	b.addJob("job-A", true, "webhook-secret-for-job-A")
 	now := time.Now().UTC()
-	b.addRun(&runs.Run{ID: "run-A", JobID: "job-A", Status: runs.StatusSucceeded, Attempt: 1, CreatedAt: now})
 	b.timelinePage = &timeline.Page{Context: timeline.Context{RunID: "run-A", JobID: "job-A"}}
+	// A run with one captured exchange, so the payload routes have something to
+	// return to a capture credential and something to refuse to the others.
+	seedCapturedRun(t, b, "run-A", "job-A", inspection.PolicyFull)
+	b.runs["run-A"].Status = runs.StatusSucceeded
+	b.runs["run-A"].CreatedAt = now
 
 	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, b)
 	t.Cleanup(srv.Close)
 
+	// Ingest one exchange through the real route, as an SDK would, so the
+	// payload test reads a stored body rather than one assembled by the test.
+	body := captureBatch(inspection.PolicyFull, inspection.RequestEvent{
+		Kind:        inspection.EventCompleted,
+		RequestID:   "req-captured",
+		ProducerSeq: 1,
+		OccurredAt:  now,
+		Method:      "POST",
+		URL:         "https://api.example.com/v1/items",
+		CallSite:    "source.py:42 in push",
+		RequestBody: &inspection.BodyDescriptor{
+			State:         inspection.BodyCaptured,
+			ContentType:   "application/json",
+			BytesObserved: 24,
+			JSON:          []byte(`{"cursor":"cur-42"}`),
+			Redacted:      true,
+			RedactedCount: 1,
+		},
+	})
+	if res := do(t, http.MethodPost, srv.URL+"/v1/runs/run-A/requests/events", body, bearer(adminToken)); res.status != http.StatusAccepted {
+		t.Fatalf("seed captured exchange: status %d, body %s", res.status, res.body)
+	}
+
 	control := mintToken(t, srv, "cloud-gateway", ScopeControl)
 	read := mintToken(t, srv, "castor-backend", ScopeRead)
-	return srv, control.Token, read.Token
+	capture := mintToken(t, srv, "cloud-capture", ScopeCapture)
+	return scopedFixtureBuild{srv: srv, control: control.Token, read: read.Token, capture: capture.Token}
 }
 
 // TestControlTokenReachesTheGatewayAndNothingElse is the central CL-21 claim.
@@ -134,6 +180,115 @@ func TestControlTokenReachesTheGatewayAndNothingElse(t *testing.T) {
 					tc.method, tc.path, res.status, http.StatusForbidden, res.body)
 			}
 		})
+	}
+}
+
+// TestCaptureTokenReachesPayloadsAndTheGateway is the other half of the
+// boundary: a capture credential is a superset of control, it reads the stored
+// bodies, and the widening reaches nothing else.
+func TestCaptureTokenReachesPayloadsAndTheGateway(t *testing.T) {
+	built := scopedFixtureAll(t)
+	auth := bearer(built.capture)
+
+	// The gateway and read surfaces a control token has, it has too.
+	allowed := []string{
+		"/v1/jobs",
+		"/v1/jobs/job-A",
+		"/v1/runs",
+		"/v1/runs/run-A",
+		"/v1/runs/run-A/logs",
+		"/v1/runs/run-A/timeline",
+		"/v1/runs/run-A/requests",
+	}
+	for _, path := range allowed {
+		t.Run("allowed "+path, func(t *testing.T) {
+			res := do(t, http.MethodGet, built.srv.URL+path, nil, auth)
+			if res.status == http.StatusForbidden || res.status == http.StatusUnauthorized {
+				t.Fatalf("GET %s: capture token refused with %d\n%s", path, res.status, res.body)
+			}
+		})
+	}
+
+	// Both payload routes return the sanitized body, redaction count included.
+	for _, path := range []string{
+		"/v1/runs/run-A/requests/req-captured",
+		"/v1/requests/req-captured",
+	} {
+		t.Run("payload "+path, func(t *testing.T) {
+			res := do(t, http.MethodGet, built.srv.URL+path, nil, auth)
+			if res.status != http.StatusOK {
+				t.Fatalf("GET %s: capture token got %d, want %d\n%s",
+					path, res.status, http.StatusOK, res.body)
+			}
+			var detail CaptureRequestResponse
+			if err := json.Unmarshal(res.body, &detail); err != nil {
+				t.Fatalf("decode payload: %v\n%s", err, res.body)
+			}
+			if detail.Request == nil || detail.Request.RequestBody == nil {
+				t.Fatalf("payload carries no request body: %+v", detail.Request)
+			}
+			if got := string(detail.Request.RequestBody.JSON); got != `{"cursor":"cur-42"}` {
+				t.Errorf("request body = %s, want the sanitized JSON", got)
+			}
+			if !detail.Request.RequestBody.Redacted || detail.Request.RequestBody.RedactedCount != 1 {
+				t.Errorf("redaction = %v/%d, want true/1",
+					detail.Request.RequestBody.Redacted, detail.Request.RequestBody.RedactedCount)
+			}
+		})
+	}
+
+	// The widening stops where the plan says it stops: identity, state and the
+	// tokens themselves are still admin-only.
+	forbidden := []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"register a job", http.MethodPost, "/v1/jobs", []byte(`{"path":"/jobs/new"}`)},
+		{"delete a job", http.MethodDelete, "/v1/jobs/job-A", nil},
+		{"reload the daemon", http.MethodPost, "/v1/reload", nil},
+		{"read job state", http.MethodGet, "/v1/jobs/job-A/state", nil},
+		{"list tokens", http.MethodGet, "/v1/tokens", nil},
+		{"mint a token", http.MethodPost, "/v1/tokens", []byte(`{"name":"x","scope":"capture"}`)},
+	}
+	for _, tc := range forbidden {
+		t.Run("forbidden/"+tc.name, func(t *testing.T) {
+			res := do(t, tc.method, built.srv.URL+tc.path, tc.body, auth)
+			if res.status != http.StatusForbidden {
+				t.Fatalf("%s %s: capture token got %d, want %d\n%s",
+					tc.method, tc.path, res.status, http.StatusForbidden, res.body)
+			}
+		})
+	}
+}
+
+// TestPayloadRoutesRefuseControlAndRead is the "independently named authority"
+// half: a credential that commands the runtime, or merely observes it, is still
+// refused the client's bodies.
+func TestPayloadRoutesRefuseControlAndRead(t *testing.T) {
+	built := scopedFixtureAll(t)
+
+	payloadRoutes := []string{
+		"/v1/runs/run-A/requests/req-captured",
+		"/v1/requests/req-captured",
+	}
+	for name, token := range map[string]string{"control": built.control, "read": built.read} {
+		for _, path := range payloadRoutes {
+			t.Run(name+" "+path, func(t *testing.T) {
+				res := do(t, http.MethodGet, built.srv.URL+path, nil, bearer(token))
+				if res.status != http.StatusForbidden {
+					t.Fatalf("GET %s: %s token got %d, want %d\n%s",
+						path, name, res.status, http.StatusForbidden, res.body)
+				}
+			})
+		}
+	}
+
+	// The admin token still reaches them, or the routes would be unusable.
+	res := do(t, http.MethodGet, built.srv.URL+"/v1/requests/req-captured", nil, bearer(adminToken))
+	if res.status != http.StatusOK {
+		t.Fatalf("admin token got %d on the payload route, want %d\n%s", res.status, http.StatusOK, res.body)
 	}
 }
 
@@ -327,6 +482,7 @@ func TestAPITokenIssuanceValidation(t *testing.T) {
 		{"not json", `nonsense`, http.StatusBadRequest},
 		{"read is valid", `{"name":"x","scope":"read"}`, http.StatusCreated},
 		{"control is valid", `{"name":"y","scope":"control"}`, http.StatusCreated},
+		{"capture is valid", `{"name":"z","scope":"capture"}`, http.StatusCreated},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -341,7 +497,7 @@ func TestAPITokenIssuanceValidation(t *testing.T) {
 // token, and must not fall through to admin.
 func TestUnrelatedBearerIsRejected(t *testing.T) {
 	srv, _, _ := scopedFixture(t)
-	for _, token := range []string{"", "otter_ctl_", "otter_ro_deadbeef", "nonsense"} {
+	for _, token := range []string{"", "otter_ctl_", "otter_ro_deadbeef", "otter_cap_", "nonsense"} {
 		t.Run(token, func(t *testing.T) {
 			res := do(t, http.MethodGet, srv.URL+"/v1/jobs", nil, bearer(token))
 			if res.status != http.StatusUnauthorized {

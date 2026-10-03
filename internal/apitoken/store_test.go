@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/tkoizumi/otter/internal/api"
@@ -208,11 +209,50 @@ func TestResolveRejectsAForeignString(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	for _, token := range []string{"", "nonsense", "otter_ctl_", "otter_ro_not-a-real-token"} {
+	for _, token := range []string{"", "nonsense", "otter_ctl_", "otter_ro_not-a-real-token", "otter_cap_"} {
 		if _, ok, err := store.Resolve(ctx, token); err != nil {
 			t.Fatalf("resolve %q: %v", token, err)
 		} else if ok {
 			t.Fatalf("resolve %q returned a principal", token)
 		}
+	}
+}
+
+// TestCaptureScopeRoundTrips is the evidence that the third scope is issued,
+// stored and resolved rather than merely accepted by Valid(): each scope mints
+// its own recognizable prefix, and the prefix guard admits it.
+func TestCaptureScopeRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newStore(t)
+
+	cases := []struct {
+		scope  api.Scope
+		prefix string
+	}{
+		{api.ScopeRead, "otter_ro_"},
+		{api.ScopeControl, "otter_ctl_"},
+		{api.ScopeCapture, "otter_cap_"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.scope), func(t *testing.T) {
+			created, err := store.Create(ctx, "cloud-"+string(tc.scope), tc.scope)
+			if err != nil {
+				t.Fatalf("create %s: %v", tc.scope, err)
+			}
+			if !strings.HasPrefix(created.Token, tc.prefix) {
+				t.Errorf("%s token = %q, want the %q prefix", tc.scope, created.Token, tc.prefix)
+			}
+
+			authority, ok, err := store.Resolve(ctx, created.Token)
+			if err != nil {
+				t.Fatalf("resolve %s: %v", tc.scope, err)
+			}
+			if !ok {
+				t.Fatalf("a freshly minted %s token does not resolve", tc.scope)
+			}
+			if authority.Scope != tc.scope {
+				t.Errorf("resolved scope = %q, want %q", authority.Scope, tc.scope)
+			}
+		})
 	}
 }

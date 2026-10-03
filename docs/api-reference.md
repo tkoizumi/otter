@@ -122,30 +122,38 @@ on the next request: there is no cache to expire and no restart.
 | --- | --- |
 | `read` | Read jobs, runs, run output, the merged timeline, and capture **summaries**. |
 | `control` | Everything `read` can, plus run, cancel, pause, resume, and create, change, pause, resume or delete a schedule. |
+| `capture` | Everything `control` can, plus read captured request and response **bodies** (the sanitized payloads, never the headers). |
 
-Neither scope can read job state (`ctx.state`), read capture **payloads**,
-register, reset, move or delete a job, reload the daemon, or manage tokens.
-Those stay with the admin token. A scoped token also never receives a job's
-`webhook_token`, which is itself a credential that triggers runs.
+`capture` is a superset of `control` because a control plane needs both from one
+credential: the command surface that re-runs a job and the capture read that
+explains it. It is deliberately **not** implied by `control`: reading the
+client's traffic is a separate, explicitly named authority, so a credential
+minted last week does not silently gain it. Mint one with
+`otter token create --name cloud-capture --scope capture`.
 
-| Endpoint | `read` | `control` | Admin |
-| --- | --- | --- | --- |
-| `GET /v1/jobs`, `GET /v1/runs` | yes | yes | yes |
-| `GET /v1/jobs/{id}` | yes (no `webhook_token`) | yes (no `webhook_token`) | yes |
-| `GET /v1/runs/{id}`, `GET /v1/runs/{id}/logs` | yes | yes | yes |
-| `GET /v1/runs/{id}/timeline` | yes, without HTTP entries | yes, without HTTP entries | yes |
-| `GET /v1/runs/{id}/requests` (summaries) | yes | yes | yes |
-| `POST /v1/jobs/{id}/runs`, `POST /v1/runs/{id}/cancel` | **no** (`403`) | yes | yes |
-| `POST /v1/jobs/{id}/pause`, `POST /v1/jobs/{id}/resume` | **no** (`403`) | yes | yes |
-| `GET /v1/jobs/{id}/schedules`, `GET /v1/schedules/{schedule_id}` | yes | yes | yes |
-| `GET /v1/jobs/{id}/config` | yes | yes | yes |
-| `PUT /v1/jobs/{id}/config` | **no** (`403`) | **no** (`403`) | yes |
-| `PUT`/`DELETE /v1/jobs/{id}/schedule` (deprecated) | **no** (`403`) | yes | yes |
-| `POST /v1/jobs/{id}/schedules`, `PATCH`/`DELETE /v1/schedules/{id}`, `POST /v1/schedules/{id}/pause\|resume` | **no** (`403`) | yes | yes |
-| `GET`/`PUT`/`DELETE /v1/jobs/{id}/state[/{key}]` | **no** (`403`) | **no** (`403`) | yes |
-| `GET /v1/runs/{id}/requests/{request_id}`, `GET /v1/requests/{request_id}` | **no** (`403`) | **no** (`403`) | yes |
-| `POST /v1/jobs`, `/reset`, `/move`, `DELETE /v1/jobs/{id}`, `POST /v1/reload` | **no** (`403`) | **no** (`403`) | yes |
-| `POST`/`GET`/`DELETE /v1/tokens` | **no** (`403`) | **no** (`403`) | yes |
+No scope can read job state (`ctx.state`), register, reset, move or delete a
+job, reload the daemon, or manage tokens. Those stay with the admin token. A
+scoped token also never receives a job's `webhook_token`, which is itself a
+credential that triggers runs.
+
+| Endpoint | `read` | `control` | `capture` | Admin |
+| --- | --- | --- | --- | --- |
+| `GET /v1/jobs`, `GET /v1/runs` | yes | yes | yes | yes |
+| `GET /v1/jobs/{id}` | yes (no `webhook_token`) | yes (no `webhook_token`) | yes (no `webhook_token`) | yes |
+| `GET /v1/runs/{id}`, `GET /v1/runs/{id}/logs` | yes | yes | yes | yes |
+| `GET /v1/runs/{id}/timeline` | yes, without HTTP entries | yes, without HTTP entries | yes, without HTTP entries | yes |
+| `GET /v1/runs/{id}/requests` (summaries) | yes | yes | yes | yes |
+| `POST /v1/jobs/{id}/runs`, `POST /v1/runs/{id}/cancel` | **no** (`403`) | yes | yes | yes |
+| `POST /v1/jobs/{id}/pause`, `POST /v1/jobs/{id}/resume` | **no** (`403`) | yes | yes | yes |
+| `GET /v1/jobs/{id}/schedules`, `GET /v1/schedules/{schedule_id}` | yes | yes | yes | yes |
+| `GET /v1/jobs/{id}/config` | yes | yes | yes | yes |
+| `PUT /v1/jobs/{id}/config` | **no** (`403`) | **no** (`403`) | **no** (`403`) | yes |
+| `PUT`/`DELETE /v1/jobs/{id}/schedule` (deprecated) | **no** (`403`) | yes | yes | yes |
+| `POST /v1/jobs/{id}/schedules`, `PATCH`/`DELETE /v1/schedules/{id}`, `POST /v1/schedules/{id}/pause\|resume` | **no** (`403`) | yes | yes | yes |
+| `GET`/`PUT`/`DELETE /v1/jobs/{id}/state[/{key}]` | **no** (`403`) | **no** (`403`) | **no** (`403`) | yes |
+| `GET /v1/runs/{id}/requests/{request_id}`, `GET /v1/requests/{request_id}` | **no** (`403`) | **no** (`403`) | yes | yes |
+| `POST /v1/jobs`, `/reset`, `/move`, `DELETE /v1/jobs/{id}`, `POST /v1/reload` | **no** (`403`) | **no** (`403`) | **no** (`403`) | yes |
+| `POST`/`GET`/`DELETE /v1/tokens` | **no** (`403`) | **no** (`403`) | **no** (`403`) | yes |
 
 `GET /v1/runs/{id}/timeline` carries captured HTTP exchanges, which are business
 data, so HTTP entries are included by default only for the admin token. A scoped
@@ -846,7 +854,8 @@ Mints a token. The response is the only time the token itself is ever returned.
 }
 ```
 
-`400` when the name is blank, or the scope is neither `read` nor `control`.
+`400` when the name is blank, or the scope is neither `read`, `control` nor
+`capture`.
 
 ### `GET /v1/tokens`
 
@@ -1178,9 +1187,11 @@ Errors: `400 invalid_request` for a negative `after_id` or a non-positive
 
 ### `GET /v1/runs/{id}/requests/{request_id}`
 
-One exchange, including its sanitized headers and bodies. Operator (admin)
-authorization, like the list. A `request_id` that belongs to a different run is
-`404`, not a cross-run read.
+One exchange, including its sanitized headers and bodies. Operator
+authorization: the admin token, or a `capture`-scoped token. A `read` or
+`control` credential is refused, because reading the client's bodies is a
+separate authority from commanding the runtime. A `request_id` that belongs to a
+different run is `404`, not a cross-run read.
 
 | Parameter | In | Description |
 | --- | --- | --- |
@@ -1224,15 +1235,15 @@ reported as `"state": "omitted"` with a `reason`, never stored raw:
 `expired`. An empty body is `"state": "empty"`, which is distinct from an omitted
 one.
 
-Errors: `403 forbidden` (a run token), `404 not_found` (unknown run, or a
-`request_id` that belongs to another run).
+Errors: `403 forbidden` (a `read` or `control` token, or a run token), `404
+not_found` (unknown run, or a `request_id` that belongs to another run).
 
 ### `GET /v1/requests/{request_id}`
 
 One exchange addressed by request id alone, with the same body as the run-scoped
-read above. Operator (admin) authorization. The daemon resolves the owning run
-from the stored row; the id does not carry the run, and no prefix or other client
-convention is trusted.
+read above. The admin token or a `capture`-scoped token. The daemon resolves the
+owning run from the stored row; the id does not carry the run, and no prefix or
+other client convention is trusted.
 
 Because a request id is only unique within a run, an id that more than one run
 recorded is a conflict rather than an arbitrary match. The message names the
@@ -1249,8 +1260,9 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/requests/87603b35e60c4dae9f57040b15e24ab
 The response is identical in shape to `GET /v1/runs/{id}/requests/{request_id}`,
 including the `capture` summary for the resolved run.
 
-Errors: `403 forbidden` (a run token), `404 not_found` (unknown request id),
-`409 conflict` (the id is recorded by more than one run).
+Errors: `403 forbidden` (a `read` or `control` token, or a run token), `404
+not_found` (unknown request id), `409 conflict` (the id is recorded by more than
+one run).
 
 ### `GET /v1/runs/{id}/timeline`
 

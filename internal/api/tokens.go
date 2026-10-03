@@ -20,11 +20,24 @@ const (
 	// its schedule. It still cannot read job state or capture payloads,
 	// register or delete a job, or change the daemon's configuration.
 	ScopeControl Scope = "control"
+
+	// ScopeCapture is ScopeControl plus the captured request and response
+	// bodies: the two payload routes, and nothing else new.
+	//
+	// It is a superset of ScopeControl on purpose. A control plane needs both
+	// from one credential: the command surface that re-runs the job and the
+	// capture read that explains it. That also makes it the widest scope this
+	// build issues, and it is deliberately *not* implied by `control`: minting
+	// a capture credential is an explicit act, visible in `otter token list`,
+	// independently revocable per runtime, and recorded in decisions.md. It
+	// still cannot read job state, register or delete a job, reload the
+	// daemon, or manage tokens.
+	ScopeCapture Scope = "capture"
 )
 
 // Valid reports whether the scope is one this build issues.
 func (s Scope) Valid() bool {
-	return s == ScopeRead || s == ScopeControl
+	return s == ScopeRead || s == ScopeControl || s == ScopeCapture
 }
 
 // APIToken is the authority a presented token resolved to.

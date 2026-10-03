@@ -224,16 +224,22 @@ running separate daemons per trust boundary (see above), and scope a
 
 Three narrower credentials exist for the three cases that are not operators:
 
-- **Scoped API tokens** are named, revocable credentials with a `read` or
-  `control` scope. They are what a gateway or a control plane holds, so that a
-  compromise of the gateway is not a compromise of the tenant. Neither scope can
-  read job state, read capture payloads, change a job's identity, reload the
-  daemon, or manage tokens; `read` cannot command anything at all. Only a
-  SHA-256 of the token is stored, so a leaked database does not yield a working
-  credential, and revocation takes effect on the next request with no restart.
-  Mint one with `otter token create --name <name> --scope <read|control>`; the
-  token is printed once and is not recoverable. The route-by-route boundary is
-  in [api-reference.md](api-reference.md#scoped-api-tokens).
+- **Scoped API tokens** are named, revocable credentials with a `read`, `control`
+  or `capture` scope. They are what a gateway or a control plane holds, so that a
+  compromise of the gateway is not a compromise of the tenant. `read` cannot
+  command anything at all. `control` adds the command surface — run, cancel,
+  pause, resume, schedule. `capture` adds one more thing: reading the sanitized
+  captured request and response **bodies**. It is a superset of `control` because
+  a control plane needs the command that re-runs the job and the capture read
+  that explains it, and it is deliberately not implied by `control` so that a
+  credential minted before the scope existed does not silently gain access to the
+  client's traffic. No scope can read job state, change a job's identity, reload
+  the daemon, or manage tokens. Only a SHA-256 of the token is stored, so a
+  leaked database does not yield a working credential, and revocation takes
+  effect on the next request with no restart. Mint one with
+  `otter token create --name <name> --scope <read|control|capture>`; the token is
+  printed once and is not recoverable. The route-by-route boundary is in
+  [api-reference.md](api-reference.md#scoped-api-tokens).
 
 - **Run state tokens** (`OTTER_STATE_TOKEN`) are minted per run and passed to the
   child process. They authorize state read/write and log writes for that run's

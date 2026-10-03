@@ -36,3 +36,29 @@ a deployment choice.
 [dynamic-schedules-design.md](dynamic-schedules-design.md#14-open-questions): token
 scope granularity, TLS termination approach, `schedule_fires` retention, and
 whether schedule-level pause is exposed.
+
+## 2026-10-03 — A `capture` scope relaxes the R1 narrowing, by name
+
+**Committed path.** The runtime issues a third named scope, `capture`, and the
+Cloud inspector reads request and response **bodies** through it. Plan:
+`otter-platform/cloud/docs/request-bodies-implementation-plan.md`.
+
+| Decision | Answer | Consequence |
+| --- | --- | --- |
+| How Cloud reads bodies | **A `capture` scope: read + control + payloads**, minted by name | The widening is explicit, visible in `otter token list`, and independently revocable per runtime. It is a superset of `control` because a control plane needs the command surface and the capture read from one credential. |
+| Is `capture` implied by `control`? | **No** | A gateway token minted last week keeps its refusal. Widening `control` would have changed the meaning of every credential already issued. |
+| Give Cloud the admin token instead | **No** | Guardrail 1 stays: `OTTER_API_TOKEN` lives in the daemon's environment, not the database, and Cloud never holds one. |
+| Headers | **Not displayed, ever, in this plan** | The payload routes still return sanitized headers to a capture credential, but Cloud drops them at the client boundary; no header value reaches the browser. Payload privacy is enforced by two independent layers: redaction before storage on the runtime, and stripping in `http-client.ts`. |
+
+**Why this matters.** R1 deliberately narrowed the scoped credential so a
+gateway that commands a runtime could not thereby read the client's traffic.
+This entry relaxes that narrowing for an explicitly named scope, and only for a
+runtime whose operator mints one. The recorded trade is that a compromise of the
+control plane now includes the payloads of the runtimes it is trusted by; the
+mitigations are that the credential is per-runtime and revocable on the next
+request, and that a two-credential split (option D of the plan) remains the
+refinement if a client asks for it.
+
+**Still open**: whether the split into separate control and payload credentials
+is worth the machinery (option D of the plan), and whether the body pane should
+sit behind an explicit reveal for screens on shared displays.

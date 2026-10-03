@@ -15,9 +15,13 @@ import (
 // These exist so a control plane can command a runtime on a customer's behalf
 // without holding authority over the customer's data. A `read` token reads jobs,
 // runs, output and capture metadata. A `control` token does that and can run,
-// cancel, pause, resume and schedule. Neither can read job state or capture
-// payloads, register or delete a job, or change the daemon's configuration --
-// those stay with the admin token (CL-21).
+// cancel, pause, resume and schedule. A `capture` token does everything
+// `control` does and can additionally read captured request and response
+// bodies. None can read job state, register or delete a job, or change the
+// daemon's configuration -- those stay with the admin token (CL-21).
+//
+// `capture` is deliberately not implied by `control`: reading the client's
+// traffic is a separate, explicitly named authority (decisions.md, 2026-10-03).
 //
 // The token is printed once, at creation. The daemon stores only its hash, so a
 // token that is lost is replaced rather than recovered.
@@ -32,7 +36,7 @@ func (a *App) cmdToken(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("token", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	name := fs.String("name", "", "a label for the credential, so it can be identified later")
-	scope := fs.String("scope", "", "read or control")
+	scope := fs.String("scope", "", "read, control or capture")
 	fs.Usage = func() {
 		fmt.Fprint(a.Stderr, "Usage: otter token <create|list|revoke> [flags] [id]\n\n"+
 			"Manages the runtime's scoped operator credentials.\n\n"+
@@ -41,7 +45,8 @@ func (a *App) cmdToken(ctx context.Context, g globals, args []string) int {
 			"  otter token revoke <id>\n\n"+
 			"Scopes:\n"+
 			"  read     read jobs, runs, output, the timeline and capture metadata\n"+
-			"  control  read, plus run, cancel, pause, resume and schedule\n")
+			"  control  read, plus run, cancel, pause, resume and schedule\n"+
+			"  capture  control, plus captured request and response bodies\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -52,7 +57,7 @@ func (a *App) cmdToken(ctx context.Context, g globals, args []string) int {
 	switch verb {
 	case "create":
 		if len(rest) != 0 {
-			fmt.Fprint(a.Stderr, "otter: usage: otter token create --name <name> --scope <read|control>\n")
+			fmt.Fprint(a.Stderr, "otter: usage: otter token create --name <name> --scope <read|control|capture>\n")
 			return 2
 		}
 		created, err := client.CreateAPIToken(ctx, *name, api.Scope(strings.TrimSpace(*scope)))

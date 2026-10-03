@@ -85,23 +85,32 @@ func (s *Server) Handler() http.Handler {
 	// be able to learn the shape before it authenticates to it.
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
-	// Admin-only: identity changes, daemon configuration, capture payloads and
-	// the tokens themselves. None of these is reachable with a scoped token.
+	// Admin-only: identity changes, daemon configuration and the tokens
+	// themselves. None of these is reachable with a scoped token. Capture
+	// payloads are not here: a capture-scoped credential may read them (see
+	// below), and nothing else on this block.
 	mux.Handle("GET /v1/jobs/resolve", s.admin(s.handleResolveJob))
 	mux.Handle("POST /v1/jobs", s.admin(s.handleRegisterJob))
 	mux.Handle("POST /v1/jobs/{id}/reset", s.admin(s.handleResetJob))
 	mux.Handle("POST /v1/jobs/{id}/move", s.admin(s.handleMoveJob))
 	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
-	mux.Handle("GET /v1/runs/{id}/requests/{request_id}", s.admin(s.handleGetCaptureRequest))
-	mux.Handle("GET /v1/requests/{request_id}", s.admin(s.handleGetCaptureRequestByID))
 	mux.Handle("POST /v1/tokens", s.admin(s.handleCreateToken))
 	mux.Handle("GET /v1/tokens", s.admin(s.handleListTokens))
 	mux.Handle("DELETE /v1/tokens/{id}", s.admin(s.handleRevokeToken))
 
+	// Capture payloads: the two routes that return sanitized bodies. They are
+	// the one surface a control-scoped credential does not reach, and the
+	// reason a `capture` scope exists: an operator who wants a control plane
+	// to explain an exchange mints one explicitly, rather than widening every
+	// control credential already issued (decisions.md, 2026-10-03).
+	mux.Handle("GET /v1/runs/{id}/requests/{request_id}", s.capture(s.handleGetCaptureRequest))
+	mux.Handle("GET /v1/requests/{request_id}", s.capture(s.handleGetCaptureRequestByID))
+
 	// The operator read surface: metadata, run output, the merged timeline and
-	// capture summaries, reachable with a read- or control-scoped token or the
-	// admin token. Capture *payloads* are not here; they stay admin-only above.
+	// capture summaries, reachable with a read-, control- or capture-scoped
+	// token or the admin token. Capture *payloads* are not here; they need the
+	// capture scope above.
 	mux.Handle("GET /v1/jobs", s.scoped(s.handleListJobs))
 	mux.Handle("GET /v1/runs", s.scoped(s.handleListRuns))
 	mux.Handle("GET /v1/runs/{id}/timeline", s.scoped(s.handleTimeline))
@@ -221,15 +230,24 @@ func (p principal) allowsRun(id string) bool {
 // canRead reports whether the caller may read runtime metadata and run output:
 // the job and run listings, run detail, logs, the timeline and capture
 // summaries. It is false for a per-run token, which the reader gate admits
-// separately because the handler narrows it to its own run.
+// separately because the handler narrows it to its own run. A capture-scoped
+// token reads everything a control token does, and payloads besides.
 func (p principal) canRead() bool {
-	return p.Admin || p.Scope == ScopeRead || p.Scope == ScopeControl
+	return p.Admin || p.Scope == ScopeRead || p.Scope == ScopeControl || p.Scope == ScopeCapture
 }
 
 // canControl reports whether the caller may command the runtime: submit, cancel,
-// pause, resume and schedule.
+// pause, resume and schedule. `capture` is a superset of `control`, so it may.
 func (p principal) canControl() bool {
-	return p.Admin || p.Scope == ScopeControl
+	return p.Admin || p.Scope == ScopeControl || p.Scope == ScopeCapture
+}
+
+// canReadCapture reports whether the caller may read captured request and
+// response bodies. Only the admin token and an explicitly minted `capture`
+// credential may: `read` and `control` are refused, which is the boundary the
+// scope exists to draw.
+func (p principal) canReadCapture() bool {
+	return p.Admin || p.Scope == ScopeCapture
 }
 
 type principalCtxKey struct{}
@@ -272,19 +290,27 @@ func (s *Server) control(h http.HandlerFunc) http.Handler {
 		"this endpoint requires the admin API token or a control-scoped token")
 }
 
-// scoped is the operator read surface: the admin token, or a read- or
-// control-scoped API token. A per-run token is refused, because these endpoints
+// scoped is the operator read surface: the admin token, or a read-, control- or
+// capture-scoped API token. A per-run token is refused, because these endpoints
 // read across jobs and runs rather than narrowing to one.
 func (s *Server) scoped(h http.HandlerFunc) http.Handler {
 	return s.gate(h, principal.canRead,
-		"this endpoint requires a read or control API token")
+		"this endpoint requires a read, control or capture API token")
+}
+
+// capture admits the admin token or a capture-scoped API token. A `read` or
+// `control` credential is refused: reading the client's traffic is a separate,
+// explicitly named authority, not a side effect of commanding the runtime.
+func (s *Server) capture(h http.HandlerFunc) http.Handler {
+	return s.gate(h, principal.canReadCapture,
+		"this endpoint requires the admin API token or a capture-scoped token")
 }
 
 // reader admits everything scoped does, plus a per-run token, which the handler
 // narrows to its own job or run.
 func (s *Server) reader(h http.HandlerFunc) http.Handler {
 	return s.gate(h, func(p principal) bool { return p.canRead() || p.Token.RunID != "" },
-		"this endpoint requires a read or control API token")
+		"this endpoint requires a read, control or capture API token")
 }
 
 // principal is the child-facing gate: the admin token or the run's own token. A

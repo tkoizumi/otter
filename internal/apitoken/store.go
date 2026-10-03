@@ -36,6 +36,7 @@ import (
 const (
 	prefixRead    = "otter_ro_"
 	prefixControl = "otter_ctl_"
+	prefixCapture = "otter_cap_"
 )
 
 // Store is the durable api_tokens table.
@@ -57,8 +58,8 @@ func (s *Store) Create(ctx context.Context, name string, scope api.Scope) (api.A
 		return api.APITokenCreated{}, fmt.Errorf("%w: name is required", api.ErrInvalid)
 	}
 	if !scope.Valid() {
-		return api.APITokenCreated{}, fmt.Errorf("%w: scope must be %q or %q",
-			api.ErrInvalid, api.ScopeRead, api.ScopeControl)
+		return api.APITokenCreated{}, fmt.Errorf("%w: scope must be %q, %q or %q",
+			api.ErrInvalid, api.ScopeRead, api.ScopeControl, api.ScopeCapture)
 	}
 
 	token, err := mint(scope)
@@ -155,7 +156,8 @@ func (s *Store) Revoke(ctx context.Context, id string) (bool, error) {
 // into the boolean so a caller can distinguish "not a valid credential" from
 // "the lookup failed", and deny either way.
 func (s *Store) Resolve(ctx context.Context, token string) (api.APIToken, bool, error) {
-	if !strings.HasPrefix(token, prefixRead) && !strings.HasPrefix(token, prefixControl) {
+	if !strings.HasPrefix(token, prefixRead) && !strings.HasPrefix(token, prefixControl) &&
+		!strings.HasPrefix(token, prefixCapture) {
 		return api.APIToken{}, false, nil
 	}
 
@@ -180,8 +182,11 @@ func mint(scope api.Scope) (string, error) {
 		return "", fmt.Errorf("generate api token: %w", err)
 	}
 	prefix := prefixRead
-	if scope == api.ScopeControl {
+	switch scope {
+	case api.ScopeControl:
 		prefix = prefixControl
+	case api.ScopeCapture:
+		prefix = prefixCapture
 	}
 	return prefix + hex.EncodeToString(buf), nil
 }
