@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/config"
@@ -11,6 +13,30 @@ import (
 	"github.com/tkoizumi/otter/internal/datalock"
 	"github.com/tkoizumi/otter/internal/identity"
 )
+
+// errPathSuppressed reports a source path the runtime refuses to register: its
+// job was deleted and the directory deliberately left in place. It is separated
+// from "not registered" because the two call for opposite handling in a deploy
+// sweep: a new path must be registered and released, while a suppressed one will
+// never register and must be skipped and reported rather than failing the run.
+var errPathSuppressed = errors.New("path is suppressed")
+
+// suppressedPathError names the path and why the runtime refuses it.
+type suppressedPathError struct {
+	dir    string
+	reason string
+}
+
+func (e *suppressedPathError) Error() string {
+	reason := e.reason
+	if reason == "" {
+		reason = "the job was deleted"
+	}
+	return fmt.Sprintf("%s is suppressed (%s); the runtime will not register it. "+
+		"Run `otter register %s` to reuse the path, or remove the directory", e.dir, reason, e.dir)
+}
+
+func (e *suppressedPathError) Is(target error) bool { return target == errPathSuppressed }
 
 // This file bridges local, file-writing commands (release, prepare) to the
 // durable identity registry.
@@ -30,6 +56,13 @@ func (a *App) mapTargetIdentities(ctx context.Context, jobsRoot, dataDir string,
 	out := make([]jobTarget, 0, len(targets))
 	for _, target := range targets {
 		id, err := resolveIdentityForDir(ctx, client, jobsRoot, dataDir, target.Dir)
+		if errors.Is(err, errPathSuppressed) {
+			// A retire-but-keep-source deploy discovers the directory like any
+			// other, but the runtime will never register it. Skipping is the
+			// coherent outcome; failing the whole sweep is not.
+			fmt.Fprintf(a.Stdout, "skip: %v\n", err)
+			continue
+		}
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "otter: %v\n", err)
 			return nil, 1
@@ -59,15 +92,51 @@ func runningWorkspaceClient(ctx context.Context) *api.Client {
 }
 
 // resolveIdentityForDir maps a source directory to the identity that owns it.
+//
+// A suppressed path is reported as such rather than as missing. A running daemon
+// answers "not found" for one (it is not registered), so the local registry is
+// consulted to tell a refused path from a genuinely new one.
 func resolveIdentityForDir(ctx context.Context, client *api.Client, jobsRoot, dataDir, dir string) (string, error) {
 	if client != nil {
 		view, err := client.ResolveJob(ctx, dir)
-		if err != nil {
-			return "", err
+		if err == nil {
+			return view.ID, nil
 		}
-		return view.ID, nil
+		if suppressed, reason := suppressedPath(ctx, dataDir, dir); suppressed {
+			return "", &suppressedPathError{dir: dir, reason: reason}
+		}
+		return "", err
 	}
 	return reconcileAndResolve(ctx, jobsRoot, dataDir, dir)
+}
+
+// suppressedPath asks the durable registry, read-only, whether a source path was
+// suppressed by a job deletion. It is the second half of resolveIdentityForDir:
+// the positive answer comes from the runtime, and this tells the two negative
+// answers apart. A missing or unreadable database is reported as "not
+// suppressed" -- the caller's original error is the honest one then.
+func suppressedPath(ctx context.Context, dataDir, dir string) (bool, string) {
+	if dataDir == "" {
+		return false, ""
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, database.FileName)); err != nil {
+		return false, ""
+	}
+	canonical, err := identity.Canonical(dir)
+	if err != nil {
+		return false, ""
+	}
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		return false, ""
+	}
+	defer func() { _ = db.Close() }()
+
+	rec, found, err := identity.NewStore(db.DB).PathRecord(ctx, canonical)
+	if err != nil || !found {
+		return false, ""
+	}
+	return rec.Suppressed, rec.SuppressionReason
 }
 
 // reconcileAndResolve runs the observe-and-reconcile pass locally, under the
@@ -126,6 +195,9 @@ func reconcileAndResolve(ctx context.Context, jobsRoot, dataDir, dir string) (st
 	rec, found, err := store.PathRecord(ctx, canonical)
 	if err != nil {
 		return "", err
+	}
+	if found && rec.Suppressed {
+		return "", &suppressedPathError{dir: dir, reason: rec.SuppressionReason}
 	}
 	if !found || rec.OwnerID.IsZero() {
 		return "", fmt.Errorf("%s is not a registered job", dir)

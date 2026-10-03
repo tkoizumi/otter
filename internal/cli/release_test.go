@@ -1055,3 +1055,51 @@ func TestReleaseListAllHidesTombstonesWithoutReleases(t *testing.T) {
 		t.Fatalf("the tombstone is not reported by jobs --all:\n%s", stdout)
 	}
 }
+
+// OT-029: a retired job whose source is still in the repository is discovered by
+// a deploy sweep like any other, but the runtime will never register its path
+// again. Releasing it must skip and report, not fail the whole sweep -- the real
+// host reproduced exactly this, and a bare `otter deploy` died on it.
+func TestReleaseSkipsASuppressedPath(t *testing.T) {
+	root, dir := releaseWorkspace(t, "counter")
+	ctx := context.Background()
+
+	// The first release registers the identity and stages a release.
+	if _, stderr, code := otterIn(t, dir, "release"); code != 0 {
+		t.Fatalf("first release exited %d: %s", code, stderr)
+	}
+
+	// Suppress the path the way `otter delete` does, leaving the source in
+	// place: the state the live host was in.
+	dataDir := filepath.Join(root, stateDirName, "data")
+	db, err := database.Open(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := identity.NewStore(db.DB)
+	canonical, err := identity.Canonical(dir)
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	rec, found, err := store.PathRecord(ctx, canonical)
+	if err != nil || !found {
+		t.Fatalf("path record: found=%v err=%v", found, err)
+	}
+	if err := store.SuppressPath(ctx, rec.CanonicalPath, rec.OwnerID, "deleted by operator"); err != nil {
+		t.Fatalf("suppress: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	stdout, stderr, code := otterIn(t, root, "release", dir)
+	if code != 0 {
+		t.Fatalf("releasing a suppressed path exited %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "skip:") || !strings.Contains(stdout, "suppressed") {
+		t.Fatalf("the suppressed path was not reported as a skip:\n%s", stdout)
+	}
+}

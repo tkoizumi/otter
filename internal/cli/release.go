@@ -142,6 +142,11 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	if code != 0 {
 		return code
 	}
+	if len(targets) == 0 {
+		// Every target was a suppressed path, already reported as a skip. There
+		// is nothing to release, and that is not a failure.
+		return 0
+	}
 	if *list {
 		return a.printReleases(manager, targets[0].ID, targets[0].Label())
 	}
