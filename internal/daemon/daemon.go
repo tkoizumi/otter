@@ -27,6 +27,7 @@ import (
 	"github.com/tkoizumi/otter/internal/executor"
 	"github.com/tkoizumi/otter/internal/identity"
 	"github.com/tkoizumi/otter/internal/inspection"
+	"github.com/tkoizumi/otter/internal/jobconfig"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/notify"
 	"github.com/tkoizumi/otter/internal/pause"
@@ -132,6 +133,7 @@ type Daemon struct {
 
 	sched     *scheduler.Scheduler
 	schedules *schedule.Store
+	configs   *jobconfig.Store
 	exec      *executor.Executor
 	secrets   secrets.Provider
 	notifier  *notify.Notifier
@@ -244,6 +246,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		timeline:   timeline.NewReader(db, runsStore, logsStore, inspectionStore),
 		sched:      scheduler.New(opts.Logger),
 		schedules:  scheduleStore,
+		configs:    jobconfig.NewStore(db.DB),
 		secrets:    provider,
 		reg:        newRegistry(),
 		cap:        newCapacity(cfg.Workers),

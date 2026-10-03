@@ -258,7 +258,7 @@ func TestRunSetsOtterEnvironmentAndStripsDaemonSecrets(t *testing.T) {
 	m, _ := writeScript(t, `
 import json, os
 keys = ["OTTER_JOB_ID", "OTTER_JOB_NAME", "OTTER_RUN_ID", "OTTER_API_URL",
-        "OTTER_TRIGGER_TYPE", "OTTER_JOB_DIR", "OTTER_STATE_TOKEN",
+        "OTTER_TRIGGER_TYPE", "OTTER_JOB_DIR", "OTTER_STATE_TOKEN", "OTTER_CONFIG",
         "OTTER_API_TOKEN", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
         "MANIFEST_VAR", "SECRET_TOKEN", "EXPANDED", "OUTER_VAR", "PYTHONPATH"]
 print(json.dumps({k: os.environ.get(k) for k in keys}))
@@ -279,6 +279,7 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 		APIURL:      "http://127.0.0.1:7337",
 		StateToken:  "scoped-run-token",
 		ExtraEnv:    map[string]string{"SECRET_TOKEN": "s3cr3t"},
+		Config:      `{"dataset":42}`,
 		Timeout:     30 * time.Second,
 	}, sink)
 	if res.StartError != nil {
@@ -307,6 +308,7 @@ print(json.dumps({k: os.environ.get(k) for k in keys}))
 		"OTTER_API_URL":           "http://127.0.0.1:7337",
 		"OTTER_TRIGGER_TYPE":      "webhook",
 		"OTTER_STATE_TOKEN":       "scoped-run-token",
+		"OTTER_CONFIG":            `{"dataset":42}`,
 		"PYTHONUNBUFFERED":        "1",
 		"PYTHONDONTWRITEBYTECODE": "1",
 		"MANIFEST_VAR":            "manifest-value",

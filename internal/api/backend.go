@@ -103,6 +103,15 @@ type Backend interface {
 	// control, so it is accepted on a manifest-owned row too.
 	SetSchedulePaused(ctx context.Context, scheduleID string, paused bool) (ScheduleView, error)
 
+	// GetJobConfig returns a job's current configuration: the version a new run
+	// would pin, and its values. A job with none yields an empty object.
+	GetJobConfig(ctx context.Context, ref string) (JobConfigView, error)
+
+	// SetJobConfig writes a new immutable configuration version and points the
+	// job at it. Already-accepted runs keep the version they pinned. by is the
+	// audit label of the caller.
+	SetJobConfig(ctx context.Context, ref string, values json.RawMessage, by string) (JobConfigView, error)
+
 	// Reload re-reads the jobs directory and applies what it finds to
 	// the running daemon, without stopping it. Executing runs and unchanged
 	// cron schedules are left alone.

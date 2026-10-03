@@ -68,6 +68,12 @@ type Request struct {
 	// metadata or full. It is resolved once at submission and passed through
 	// unchanged, so a child cannot widen its own capture.
 	CapturePolicy string
+
+	// Config is the job configuration the run pinned, as a JSON object, or
+	// empty when the job had none. It reaches the child as OTTER_CONFIG and is
+	// what `ctx.config` is built from. It is not projected into named
+	// environment variables, so it cannot collide with a manifest's `env`.
+	Config string
 }
 
 // Result is the outcome of an execution.
@@ -340,6 +346,13 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 	}
 	if req.StateToken != "" {
 		inherited = append(inherited, "OTTER_STATE_TOKEN="+req.StateToken)
+	}
+	// The pinned configuration, verbatim. It is a JSON object and is not a
+	// secret; `ctx.config` parses it in the child. It is passed as one variable
+	// rather than expanded into named variables so a configuration key can
+	// never silently shadow a manifest `env` entry.
+	if req.Config != "" {
+		inherited = append(inherited, "OTTER_CONFIG="+req.Config)
 	}
 
 	// Manifest env may reference either the daemon environment or a resolved

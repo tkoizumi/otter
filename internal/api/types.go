@@ -146,6 +146,48 @@ type ScheduleList struct {
 	Schedules     []ScheduleView `json:"schedules"`
 }
 
+// JobConfigView is a job's configuration: the immutable version a new run would
+// pin, and its values.
+//
+// Values is always an object, `{}` when the job has none, so a reader never has
+// to tell "no configuration" from "null". ConfigVersion is empty in that case.
+// Configuration values are not secrets and must never hold one.
+type JobConfigView struct {
+	SchemaVersion int             `json:"schema_version"`
+	JobID         string          `json:"job_id"`
+	Name          string          `json:"name,omitempty"`
+	ConfigVersion string          `json:"config_version,omitempty"`
+	Values        json.RawMessage `json:"values"`
+	UpdatedAt     *time.Time      `json:"updated_at,omitempty"`
+	UpdatedBy     string          `json:"updated_by,omitempty"`
+	Changed       bool            `json:"changed"`
+}
+
+// JobConfigRequest is the body of PUT /v1/jobs/{id}/config. Values is the new
+// configuration object; setting the current values again is a no-op.
+type JobConfigRequest struct {
+	Values json.RawMessage `json:"values"`
+}
+
+// JobList is the response of GET /v1/jobs. A list response is an object, never
+// a bare array, so it can carry the schema version.
+type JobList struct {
+	SchemaVersion int       `json:"schema_version"`
+	Jobs          []JobView `json:"jobs"`
+}
+
+// RunList is the response of GET /v1/runs.
+type RunList struct {
+	SchemaVersion int         `json:"schema_version"`
+	Runs          []*runs.Run `json:"runs"`
+}
+
+// LogList is the response of GET /v1/runs/{id}/logs.
+type LogList struct {
+	SchemaVersion int             `json:"schema_version"`
+	Logs          []runs.LogEntry `json:"logs"`
+}
+
 // ScheduleView reports one schedule.
 //
 // Origin names what owns the row: a manifest-owned schedule refuses PATCH and
@@ -399,14 +441,16 @@ type AppendLogRequest struct {
 // The capture summary travels with the list because it is what tells a reader
 // whether an empty list means "no requests" or "nothing was recorded".
 type CaptureRequestsResponse struct {
-	Capture  *inspection.RunCapture       `json:"capture"`
-	Requests []inspection.ExchangeSummary `json:"requests"`
+	SchemaVersion int                          `json:"schema_version"`
+	Capture       *inspection.RunCapture       `json:"capture"`
+	Requests      []inspection.ExchangeSummary `json:"requests"`
 }
 
 // CaptureRequestResponse is the body of GET /v1/runs/{id}/requests/{request_id}.
 type CaptureRequestResponse struct {
-	Capture *inspection.RunCapture `json:"capture"`
-	Request *inspection.Exchange   `json:"request"`
+	SchemaVersion int                    `json:"schema_version"`
+	Capture       *inspection.RunCapture `json:"capture"`
+	Request       *inspection.Exchange   `json:"request"`
 }
 
 // TimelineResponse is the body of GET /v1/runs/{id}/timeline.

@@ -64,5 +64,6 @@ type RevokeAPITokenResponse struct {
 
 // APITokenListResponse is returned by GET /v1/tokens.
 type APITokenListResponse struct {
-	Tokens []APITokenView `json:"tokens"`
+	SchemaVersion int            `json:"schema_version"`
+	Tokens        []APITokenView `json:"tokens"`
 }

@@ -236,6 +236,16 @@ documented rather than special-cased.
 
 ## 8. Job configuration: the third layer
 
+**Shipped 2026-10-03** as `R2` phase 5. Migration `0015_job_configs` adds
+`job_configs` (immutable versions) and `job_config_current` (the mutable
+pointer); `runs.config_version` records the version a run resolved at
+submission; the daemon passes the pinned version to the child as `OTTER_CONFIG`
+and the SDK exposes it as `ctx.config`. Two pieces of the design are
+deliberately not in `v0.4.0`: configuration is not projected into named
+environment variables (no manifest opt-in yet), and superseded versions are
+retained rather than garbage-collected. Both are recorded in
+[runtime-contract.md §7.5](runtime-contract.md#75-configuration-is-not-a-secret-store).
+
 ### The problem
 
 `otter.yaml` `env` is part of the release, and that is correct: a manifest is

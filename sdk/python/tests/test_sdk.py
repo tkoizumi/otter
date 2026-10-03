@@ -724,3 +724,31 @@ class RunDecoratorTests(SDKTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigTests(SDKTestCase):
+    """`ctx.config` is the configuration the run pinned, as a dict."""
+
+    def test_absent_configuration_is_an_empty_dict(self):
+        self.assertEqual(self.ctx.config, {})
+
+    def test_pinned_configuration_is_parsed(self):
+        ctx = Context.from_environment(self.env(OTTER_CONFIG='{"dataset":42,"nested":{"a":[1]}}'))
+        self.assertEqual(ctx.config, {"dataset": 42, "nested": {"a": [1]}})
+
+    def test_an_explicit_config_overrides_nothing_but_is_kept(self):
+        ctx = Context(
+            run_id=RUN_ID,
+            job_id=JOB_ID,
+            api_url=self.daemon.url,
+            config={"dataset": 7},
+        )
+        self.assertEqual(ctx.config["dataset"], 7)
+
+    def test_invalid_json_raises_rather_than_running_unconfigured(self):
+        with self.assertRaises(OtterError):
+            Context.from_environment(self.env(OTTER_CONFIG="{not json"))
+
+    def test_a_non_object_configuration_raises(self):
+        with self.assertRaises(OtterError):
+            Context.from_environment(self.env(OTTER_CONFIG="[1,2]"))

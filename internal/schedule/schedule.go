@@ -69,8 +69,13 @@ const (
 func (o Origin) Valid() bool { return o == OriginManifest || o == OriginAPI }
 
 // MissedPolicy names what happens to occurrences missed while the daemon was
-// down. Only skip is implemented today; the column exists so the choice is data
-// rather than a later migration.
+// down.
+//
+// Only skip is implemented for v0.4.0. coalesce and catch_up are reserved
+// names: the column exists so the choice can become data without a migration,
+// but a write carrying one is refused rather than accepted and silently
+// ignored. Stored rows are still parsed for all three, so a value written by a
+// future build does not become unreadable.
 type MissedPolicy string
 
 const (
@@ -79,10 +84,15 @@ const (
 	MissedCatchUp  MissedPolicy = "catch_up"
 )
 
-// Valid reports whether p is a known policy.
+// Valid reports whether p is a known policy name.
 func (p MissedPolicy) Valid() bool {
 	return p == MissedSkip || p == MissedCoalesce || p == MissedCatchUp
 }
+
+// Supported reports whether p is implemented. Only skip is: the other two are
+// refused at the write boundary so a caller cannot select behaviour that does
+// not exist.
+func (p MissedPolicy) Supported() bool { return p == MissedSkip }
 
 // Sentinel errors. The daemon maps them onto HTTP status codes without leaking
 // HTTP concepts into this package.
@@ -311,6 +321,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Schedule, bool, err
 	if !policy.Valid() {
 		return Schedule{}, false, fmt.Errorf("%w: unknown missed_policy %q", ErrInvalid, policy)
 	}
+	if !policy.Supported() {
+		return Schedule{}, false, fmt.Errorf("%w: missed_policy %q is not supported yet; only %q is implemented",
+			ErrInvalid, policy, MissedSkip)
+	}
 	origin := in.Origin
 	if origin == "" {
 		origin = OriginAPI
@@ -431,6 +445,10 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Schedule
 	if in.MissedPolicy != nil {
 		if !in.MissedPolicy.Valid() {
 			return Schedule{}, false, fmt.Errorf("%w: unknown missed_policy %q", ErrInvalid, *in.MissedPolicy)
+		}
+		if !in.MissedPolicy.Supported() {
+			return Schedule{}, false, fmt.Errorf("%w: missed_policy %q is not supported yet; only %q is implemented",
+				ErrInvalid, *in.MissedPolicy, MissedSkip)
 		}
 		if rec.MissedPolicy != *in.MissedPolicy {
 			rec.MissedPolicy = *in.MissedPolicy

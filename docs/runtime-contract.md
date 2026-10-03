@@ -37,9 +37,10 @@ what the runtime actually does.
 
 | Field | Value |
 | --- | --- |
-| Contract version | **1** |
+| Contract version | **2** |
 | Introduced for | `v0.2.0` — Phase 1, "Dependable execution". |
-| Source revision | `ec01900` on `main`, the build this version describes. |
+| Amended in version 2 | `v0.4.0` — schedules are first-class and fire once per occurrence (§3.1.1), job configuration is a pinned input (§2, §7.5), and the honest limits gained §7. |
+| Source revision | `ec01900` on `main`, the build version 1 described. Version 2 describes the `v0.4.0` tree. |
 | Frozen at | `v1.0.0`. Before that, a **minor** release may amend this document; a patch release may not. |
 | Binary pair | `otter` and `otterd` **from the same build**. The two are released together from one archive; do not mix versions. |
 | Supported platforms | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` (static, `CGO_ENABLED=0`). Other Unix targets compile but carry no guarantee ([§6](#6-supported-platforms)). |
@@ -162,6 +163,15 @@ Guarantees of acceptance:
 - **Every accepted attempt reaches a terminal status.** It either finishes, or
   is terminalised at startup if it was interrupted, and a retryable failure
   produces a successor. *Scenario FM-01 / FM-02.*
+- **Every input a run depends on is pinned at submission.** The release digest,
+  the prepared-environment digest, and — since `v0.4.0` — the job
+  **configuration version** are recorded on the attempt, and execution resolves
+  them from the attempt, never from "whatever is current then". Changing a
+  job's configuration writes a new immutable version and leaves accepted work
+  alone; a retry inherits its parent's version.
+  `TestSubmitPinsJobConfigAndRetryKeepsIt`.
+  Configuration values are deployment inputs, not secrets: see
+  [§7.5](#75-configuration-is-not-a-secret-store).
 
 What acceptance does **not** promise:
 
@@ -461,7 +471,7 @@ This is documented as a limitation, not fixed, and is tracked as `OT-009`
 
 ## 7. Honest limits
 
-Four limits a consumer of this contract must know. Each names where the
+Five limits a consumer of this contract must know. Each names where the
 mechanism lives; none is a promise, and none is fixable by a test alone.
 
 ### 7.1 Concurrent updates are not coordinated
@@ -513,6 +523,27 @@ daemon. Do not put the API on an untrusted network without a proxy that
 terminates TLS: see
 [security.md](security.md#remote-access-tls-and-reverse-proxies) for the
 supported pattern.
+
+### 7.5 Configuration is not a secret store
+
+*Explicit non-guarantee.*
+
+Job configuration (`job_configs`, `ctx.config`) is **not** encrypted, not
+redacted, and not treated as sensitive: it is returned by
+`GET /v1/jobs/{id}/config` to any scoped reader and printed in
+`ctx.config`. A secret belongs in the deployment's secret store
+(`otter.env`, `otter.daemon.env`), never in configuration. Two smaller limits
+follow from the same design:
+
+- **No environment projection in `v0.4.0`.** A configuration key reaches the job
+  only through `ctx.config`; the daemon does not expand it into a named
+  environment variable, so a configuration entry cannot shadow a manifest `env`
+  entry. A manifest opt-in for projection may be added in a later minor.
+- **Versions are retained, not garbage-collected.** Writing configuration mints
+  an immutable version and does not delete superseded ones, because a queued,
+  retrying or backlogged run may still be pinned to one. They are removed only
+  when the job's identity is purged (`otter delete`). A job whose configuration
+  changes very frequently should expect the table to grow with it.
 
 ## Appendix A — the WS4 fault matrix and its evidence
 

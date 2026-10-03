@@ -170,6 +170,7 @@ func (d *Daemon) purgeInstance(ctx context.Context, inst identity.Instance) erro
 	if err := d.schedules.DeleteForJob(ctx, id); err != nil {
 		return err
 	}
+	d.purgeJobConfig(ctx, id)
 	if err := (release.Manager{DataDir: d.cfg.DataDir}).DeleteAll(id); err != nil {
 		return err
 	}

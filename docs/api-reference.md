@@ -138,6 +138,8 @@ Those stay with the admin token. A scoped token also never receives a job's
 | `POST /v1/jobs/{id}/runs`, `POST /v1/runs/{id}/cancel` | **no** (`403`) | yes | yes |
 | `POST /v1/jobs/{id}/pause`, `POST /v1/jobs/{id}/resume` | **no** (`403`) | yes | yes |
 | `GET /v1/jobs/{id}/schedules`, `GET /v1/schedules/{schedule_id}` | yes | yes | yes |
+| `GET /v1/jobs/{id}/config` | yes | yes | yes |
+| `PUT /v1/jobs/{id}/config` | **no** (`403`) | **no** (`403`) | yes |
 | `PUT`/`DELETE /v1/jobs/{id}/schedule` (deprecated) | **no** (`403`) | yes | yes |
 | `POST /v1/jobs/{id}/schedules`, `PATCH`/`DELETE /v1/schedules/{id}`, `POST /v1/schedules/{id}/pause\|resume` | **no** (`403`) | yes | yes |
 | `GET`/`PUT`/`DELETE /v1/jobs/{id}/state[/{key}]` | **no** (`403`) | **no** (`403`) | yes |
@@ -319,6 +321,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/jobs"
 
 ```json
 {
+  "schema_version": 1,
   "jobs": [
     {
       "id": "shopify-to-erp",
@@ -681,8 +684,9 @@ Create an `api`-owned schedule.
 
 `cron` is required. `timezone` defaults to `UTC`. `payload` is an optional JSON
 object of at most 64 KiB; it becomes `ctx.trigger.body` for every run the
-schedule starts. `missed_policy` is recorded for forward compatibility; only
-`skip` is implemented today.
+schedule starts. `missed_policy` must be `skip` (or absent) in `v0.4.0`:
+`coalesce` and `catch_up` are reserved names and are refused with `400` rather
+than accepted and silently ignored.
 
 Send an `Idempotency-Key` header to make the command retry-safe: a second
 `POST` with the same key returns the **existing** schedule with `changed: false`
@@ -718,6 +722,58 @@ body. A `manifest`-owned row is refused with `409`.
 Hold one schedule back, or release it, without touching the job's other
 schedules and without pausing the job. Pausing is an operator control, so it is
 accepted on a `manifest`-owned row too; a reload preserves `paused_at`.
+
+### Job configuration
+
+A job's configuration is the layer between the release (immutable code) and the
+run (one accepted input): a store name, a dataset id, a backfill date. It is
+**versioned**. Each write creates an immutable version and moves a pointer, and
+every run records the `config_version` it resolved at submission, so a queued,
+retrying or backlogged run keeps the values it was accepted with — exactly as it
+keeps its release. Configuration values are **not secrets** and must never hold
+one; a secret belongs in `otter.env`.
+
+The child reads them as `ctx.config` (a dict; `{}` when the job has none). The
+daemon passes the pinned version verbatim as `OTTER_CONFIG`; configuration is
+deliberately *not* projected into named environment variables in `v0.4.0`, so a
+configuration key can never silently shadow a manifest `env` entry.
+
+#### `GET /v1/jobs/{id}/config`
+
+```json
+{
+  "schema_version": 1,
+  "job_id": "0195a7c2-...",
+  "name": "shopify-to-erp",
+  "config_version": "c1f0...",
+  "values": {"dataset": 42},
+  "updated_at": "2026-10-03T12:00:00Z",
+  "updated_by": "admin"
+}
+```
+
+An unconfigured job returns `"values": {}` and no `config_version`.
+
+Errors: `404 not_found`.
+
+#### `PUT /v1/jobs/{id}/config`
+
+```json
+{"values": {"dataset": 42}}
+```
+
+`values` must be a JSON object of at most 64 KiB. An absent `values` key is an
+empty configuration, which is how a configuration is cleared. Setting the
+current values again is a no-op with `changed: false`, so a deploy script can
+apply configuration unconditionally. Already-accepted runs keep the version they
+pinned.
+
+**Admin-only in `v0.4.0`.** The `control` scope's published surface (`CL-21`)
+does not include configuration, and widening a credential silently would break
+its contract; see [compatibility.md](compatibility.md).
+
+Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (a retired
+identity).
 
 #### `PUT /v1/jobs/{id}/schedule` — deprecated
 
@@ -799,7 +855,7 @@ see what used to have access and when it was withdrawn. No response reveals a
 token.
 
 ```json
-{"tokens": [
+{"schema_version": 1, "tokens": [
   {"id": "6f1c8a2e-...", "name": "cloud-gateway", "scope": "control",
    "created_at": "2026-10-02T12:00:00Z"},
   {"id": "0a3d1b77-...", "name": "old-gateway", "scope": "read",
@@ -838,6 +894,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs?job_id=shopify-to-erp&status=failed
 
 ```json
 {
+  "schema_version": 1,
   "runs": [
     {
       "id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
@@ -944,6 +1001,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/logs
 
 ```json
 {
+  "schema_version": 1,
   "logs": [
     {"id": 1, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "stream": "otter",  "message": "starting python3 main.py (timeout 300s)", "timestamp": "2024-06-01T12:35:02Z"},
     {"id": 2, "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0", "stream": "stdout", "message": "Starting sync",                              "timestamp": "2024-06-01T12:35:02Z"},
@@ -1075,6 +1133,7 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs/run_01HZY7Q1W2E3R4T5Y6U7I8O9P0/requ
 
 ```json
 {
+  "schema_version": 1,
   "capture": {
     "run_id": "run_01HZY7Q1W2E3R4T5Y6U7I8O9P0",
     "state": "complete",

@@ -10,6 +10,7 @@ The daemon starts each job as a child process and exports:
 ``OTTER_STATE_TOKEN``        per-run bearer token
 ``OTTER_TRIGGER_TYPE``       ``manual`` | ``cron`` | ``webhook``
 ``OTTER_JOB_DIR``    absolute path of the job directory
+``OTTER_CONFIG``             the job configuration the run pinned, as JSON
 ===========================  =================================================
 
 The identity and the label are different values on purpose. State, runs and
@@ -27,6 +28,7 @@ Typical use::
     ctx.state.set("last_seen", "now")
 """
 
+import json
 import os
 from typing import Mapping, Optional
 
@@ -36,6 +38,25 @@ from .state import State
 from .trigger import Trigger
 
 __all__ = ["Context"]
+
+
+def _parse_config(raw: Optional[str]) -> dict:
+    """Parse OTTER_CONFIG into the dict a job reads as ``ctx.config``.
+
+    Missing means an empty configuration. A value that is present but not a JSON
+    object is a daemon bug rather than a job's problem, so it raises rather than
+    silently running with no configuration: a job that would have used a value
+    should fail loudly.
+    """
+    if not raw or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise OtterError("OTTER_CONFIG is not valid JSON: %s" % exc) from exc
+    if not isinstance(parsed, dict):
+        raise OtterError("OTTER_CONFIG must be a JSON object, got %s" % type(parsed).__name__)
+    return parsed
 
 
 class Context:
@@ -53,6 +74,9 @@ class Context:
         trigger: :class:`~otter.trigger.Trigger` describing how the run started.
         state: :class:`~otter.state.State` key/value store.
         log: :class:`~otter.log.Logger` structured logger.
+        config: The job configuration the run pinned at submission, as a dict.
+            It is ``{}`` when the job has none. Configuration values are
+            deployment inputs, not secrets: a secret belongs in ``otter.env``.
     """
 
     def __init__(
@@ -65,6 +89,7 @@ class Context:
         job_dir: str = "",
         name: str = "",
         client: Optional[Client] = None,
+        config: Optional[Mapping[str, object]] = None,
     ) -> None:
         if not api_url:
             raise OtterError("OTTER_API_URL is required to build an Otter Context")
@@ -75,6 +100,7 @@ class Context:
         self.name = name or job_id
         self.api_url = str(api_url).strip().rstrip("/")
         self.job_dir = job_dir or os.getcwd()
+        self.config = dict(config or {})
         self._token = token
         self._client = client if client is not None else Client(self.api_url, token=token)
         self.trigger = Trigger(self._client, run_id, trigger_type=trigger_type)
@@ -110,6 +136,7 @@ class Context:
             token=(env.get("OTTER_STATE_TOKEN") or "").strip() or None,
             trigger_type=(env.get("OTTER_TRIGGER_TYPE") or "").strip() or None,
             job_dir=(env.get("OTTER_JOB_DIR") or "").strip(),
+            config=_parse_config(env.get("OTTER_CONFIG")),
         )
 
     # Compatibility for code in saved releases. New code uses job_id/job_dir.

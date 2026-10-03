@@ -268,6 +268,30 @@ func (c *Client) SetSchedulePaused(ctx context.Context, scheduleID string, pause
 	return &out, nil
 }
 
+// GetJobConfig returns a job's current configuration.
+func (c *Client) GetJobConfig(ctx context.Context, ref string) (*JobConfigView, error) {
+	var out JobConfigView
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/config"
+	if err := c.get(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetJobConfig writes a new immutable configuration version for a job.
+func (c *Client) SetJobConfig(ctx context.Context, ref string, values json.RawMessage) (*JobConfigView, error) {
+	body, err := json.Marshal(JobConfigRequest{Values: values})
+	if err != nil {
+		return nil, err
+	}
+	var out JobConfigView
+	path := "/v1/jobs/" + url.PathEscape(ref) + "/config"
+	if err := c.do(ctx, http.MethodPut, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateAPIToken mints a named, scoped operator token. It is the only call
 // that returns the token itself; the daemon stores only a hash of it.
 func (c *Client) CreateAPIToken(ctx context.Context, name string, scope Scope) (*APITokenCreated, error) {

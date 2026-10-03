@@ -330,6 +330,22 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 		}
 		pythonVersion, environmentDigest, pythonPolicy = spec.Python, spec.Digest, spec.Policy
 	}
+
+	// Configuration is pinned the same way the release and environment are: the
+	// version in force at submission is recorded, and execution resolves that
+	// version -- not "whatever is current then" -- so a queued, retrying or
+	// backlogged attempt keeps the values it was accepted with.
+	configVersion := ""
+	if d.configs != nil {
+		current, ok, cfgErr := d.configs.Current(ctx, jobID)
+		if cfgErr != nil {
+			return "", fmt.Errorf("resolve job configuration for %s: %w", jobID, cfgErr)
+		}
+		if ok {
+			configVersion = current.ID
+		}
+	}
+
 	run := &runs.Run{
 		ID:                uuid.NewString(),
 		JobID:             jobID,
@@ -348,6 +364,7 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 		ReleaseSourceDir:  releaseSourceDir,
 		SDKVersion:        sdk.Version,
 		CapturePolicy:     capturePolicy.String(),
+		ConfigVersion:     configVersion,
 	}
 	if fire != nil {
 		run.ScheduleID = fire.ScheduleID

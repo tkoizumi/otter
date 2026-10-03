@@ -75,6 +75,10 @@ type fakeBackend struct {
 	schedSeq  int
 	schedKeys map[string]string
 
+	// jobConfigs is the in-memory configuration store, keyed by job reference.
+	jobConfigs map[string]JobConfigView
+	configSeq  int
+
 	reloads   int
 	reloadOut ReloadResult
 	reloadErr error
@@ -114,6 +118,7 @@ func newFakeBackend() *fakeBackend {
 		capture:    newFakeCapture(),
 		schedByID:  map[string]ScheduleView{},
 		schedKeys:  map[string]string{},
+		jobConfigs: map[string]JobConfigView{},
 	}
 }
 
@@ -422,6 +427,46 @@ func (f *fakeBackend) SetSchedulePaused(_ context.Context, scheduleID string, pa
 	view.Paused = paused
 	view.Changed = changed
 	f.schedByID[scheduleID] = view
+	return view, nil
+}
+
+// GetJobConfig mirrors the real backend: a job with no configuration yields an
+// empty object and no version.
+func (f *fakeBackend) GetJobConfig(_ context.Context, ref string) (JobConfigView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.jobs[ref]; !ok {
+		return JobConfigView{}, ErrNotFound
+	}
+	view, ok := f.jobConfigs[ref]
+	if !ok {
+		return JobConfigView{JobID: ref, Values: json.RawMessage("{}")}, nil
+	}
+	return view, nil
+}
+
+// SetJobConfig writes a new version and moves the pointer, reporting changed
+// only when the values differ.
+func (f *fakeBackend) SetJobConfig(_ context.Context, ref string, values json.RawMessage, by string) (JobConfigView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.jobs[ref]; !ok {
+		return JobConfigView{}, ErrNotFound
+	}
+	previous, ok := f.jobConfigs[ref]
+	changed := !ok || string(previous.Values) != string(values)
+	if len(values) == 0 {
+		values = json.RawMessage("{}")
+	}
+	f.configSeq++
+	view := JobConfigView{
+		JobID:         ref,
+		ConfigVersion: "cfg-" + itoa(f.configSeq),
+		Values:        values,
+		UpdatedBy:     by,
+		Changed:       changed,
+	}
+	f.jobConfigs[ref] = view
 	return view, nil
 }
 

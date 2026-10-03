@@ -108,6 +108,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runs/{id}/requests", s.scoped(s.handleListCaptureRequests))
 	mux.Handle("GET /v1/jobs/{id}/schedules", s.scoped(s.handleListSchedules))
 	mux.Handle("GET /v1/schedules/{schedule_id}", s.scoped(s.handleGetSchedule))
+	// Configuration is job metadata and is not secret, so reading it needs only
+	// a scoped token. Writing it is admin-only for v0.4.0: the control scope's
+	// published surface (CL-21) does not include configuration, and widening it
+	// silently would break that credential's contract.
+	mux.Handle("GET /v1/jobs/{id}/config", s.scoped(s.handleGetJobConfig))
 
 	// Reads a per-run token may also make. The handler narrows it to its own
 	// job or run, which is why these admit it and the four above do not.
@@ -126,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /v1/schedules/{schedule_id}", s.control(s.handleDeleteSchedule))
 	mux.Handle("POST /v1/schedules/{schedule_id}/pause", s.control(s.handlePauseSchedule))
 	mux.Handle("POST /v1/schedules/{schedule_id}/resume", s.control(s.handleResumeSchedule))
+	mux.Handle("PUT /v1/jobs/{id}/config", s.admin(s.handleSetJobConfig))
 	mux.Handle("POST /v1/jobs/{id}/runs", s.control(s.handleSubmitRun))
 	mux.Handle("POST /v1/runs/{id}/cancel", s.control(s.handleCancelRun))
 
@@ -527,7 +533,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	s.writeJSON(w, http.StatusOK, map[string]any{"jobs": s.backend.ListJobs(r.Context())})
+	jobs := s.backend.ListJobs(r.Context())
+	if jobs == nil {
+		jobs = []JobView{}
+	}
+	s.writeJSON(w, http.StatusOK, JobList{SchemaVersion: SchemaVersion, Jobs: jobs})
 }
 
 // handleResolveJob resolves a label, path or id reference. It is the
@@ -787,6 +797,45 @@ func (s *Server) setSchedulePaused(w http.ResponseWriter, r *http.Request, pause
 	s.writeJSON(w, http.StatusOK, view)
 }
 
+// handleGetJobConfig returns a job's current configuration. Values is always an
+// object, `{}` when the job has none.
+func (s *Server) handleGetJobConfig(w http.ResponseWriter, r *http.Request) {
+	view, err := s.backend.GetJobConfig(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	view.SchemaVersion = SchemaVersion
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleSetJobConfig writes a new immutable configuration version. Already
+// accepted runs keep the version they pinned, so this changes future work only.
+func (s *Server) handleSetJobConfig(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+		return
+	}
+	var req JobConfigRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, CodeInvalid, "body must be a JSON object with a values field")
+		return
+	}
+	if len(req.Values) == 0 {
+		// An absent values key is an empty configuration, not a malformed one:
+		// it is what "clear the configuration" means.
+		req.Values = json.RawMessage("{}")
+	}
+	view, err := s.backend.SetJobConfig(r.Context(), r.PathValue("id"), req.Values, "admin")
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	view.SchemaVersion = SchemaVersion
+	s.writeJSON(w, http.StatusOK, view)
+}
+
 // handleDeleteJob purges an identity's durable artifacts. It is a
 // distinct operation from removing the directory: the source files are left
 // alone and the path is suppressed so a scan cannot silently re-register it.
@@ -920,7 +969,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []*runs.Run{}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"runs": list})
+	s.writeJSON(w, http.StatusOK, RunList{SchemaVersion: SchemaVersion, Runs: list})
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
@@ -975,7 +1024,7 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []runs.LogEntry{}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"logs": entries})
+	s.writeJSON(w, http.StatusOK, LogList{SchemaVersion: SchemaVersion, Logs: entries})
 }
 
 func (s *Server) handleAppendLog(w http.ResponseWriter, r *http.Request) {
@@ -1099,7 +1148,7 @@ func (s *Server) handleListCaptureRequests(w http.ResponseWriter, r *http.Reques
 	if requests == nil {
 		requests = []inspection.ExchangeSummary{}
 	}
-	s.writeJSON(w, http.StatusOK, CaptureRequestsResponse{Capture: summary, Requests: requests})
+	s.writeJSON(w, http.StatusOK, CaptureRequestsResponse{SchemaVersion: SchemaVersion, Capture: summary, Requests: requests})
 }
 
 // handleGetCaptureRequest returns one exchange with its sanitized payloads.
@@ -1117,7 +1166,7 @@ func (s *Server) handleGetCaptureRequest(w http.ResponseWriter, r *http.Request)
 		s.fail(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{Capture: summary, Request: exchange})
+	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{SchemaVersion: SchemaVersion, Capture: summary, Request: exchange})
 }
 
 // handleGetCaptureRequestByID returns one exchange addressed by request id
@@ -1139,7 +1188,7 @@ func (s *Server) handleGetCaptureRequestByID(w http.ResponseWriter, r *http.Requ
 		s.fail(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{Capture: summary, Request: exchange})
+	s.writeJSON(w, http.StatusOK, CaptureRequestResponse{SchemaVersion: SchemaVersion, Capture: summary, Request: exchange})
 }
 
 // handleTimeline returns one page of a finished run's merged timeline.
@@ -1423,7 +1472,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, APITokenListResponse{Tokens: tokens})
+	s.writeJSON(w, http.StatusOK, APITokenListResponse{SchemaVersion: SchemaVersion, Tokens: tokens})
 }
 
 // handleRevokeToken withdraws a token. The next request presenting it is

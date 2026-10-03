@@ -100,7 +100,10 @@ func (a *App) cmdJobs(ctx context.Context, g globals, args []string) int {
 	rows := visibleJobs(mergeJobs(registry, live), *all)
 
 	if g.jsonOut {
-		return a.printJSON(rows)
+		// The same versioned envelope the HTTP list endpoint returns: a list
+		// response is an object, never a bare array, so it can carry the schema
+		// version.
+		return a.printJSON(api.JobList{SchemaVersion: api.SchemaVersion, Jobs: rows})
 	}
 
 	a.printJobsTable(rows)

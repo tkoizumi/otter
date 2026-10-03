@@ -316,3 +316,25 @@ func TestStoreReloadsFromDisk(t *testing.T) {
 		t.Fatalf("idempotent create after restart: changed=%v err=%v", changed, err)
 	}
 }
+
+// Only skip is implemented. coalesce and catch_up are reserved names and are
+// refused at the write boundary rather than accepted and silently ignored, so a
+// caller cannot select behaviour that does not exist.
+func TestUnsupportedMissedPoliciesAreRefused(t *testing.T) {
+	s, _, ctx := newTestStore(t)
+
+	for _, policy := range []MissedPolicy{MissedCoalesce, MissedCatchUp} {
+		if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: policy}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Create with missed_policy %q = %v, want ErrInvalid", policy, err)
+		}
+	}
+
+	rec, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedSkip})
+	if err != nil {
+		t.Fatalf("Create with skip: %v", err)
+	}
+	coalesce := MissedCoalesce
+	if _, _, err := s.Update(ctx, rec.ID, UpdateInput{MissedPolicy: &coalesce}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Update to coalesce = %v, want ErrInvalid", err)
+	}
+}

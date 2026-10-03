@@ -912,7 +912,7 @@ func (a *App) cmdRuns(ctx context.Context, g globals, args []string) int {
 	}
 
 	if g.jsonOut {
-		return a.printJSON(list)
+		return a.printJSON(api.RunList{SchemaVersion: api.SchemaVersion, Runs: list})
 	}
 	if len(list) == 0 {
 		if scope == "" {

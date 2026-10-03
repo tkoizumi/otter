@@ -85,10 +85,13 @@ is the unit: do not mix versions. Within a **major**:
   consumer must ignore fields it does not know.
 - **Breaking** (major only): removing a field, renaming one, changing a type, or
   changing what a value means. Object documents carry `schema_version`; its
-  value changes exactly when a breaking change lands. Commands that print a
-  list (`otter jobs --json`, `otter runs --json`) print the payload array, as
-  the HTTP list endpoints do; `otter --json version` is where the version is
-  read.
+  value changes exactly when a breaking change lands.
+- **List commands print the same versioned envelope the HTTP API returns**:
+  `{"schema_version": 1, "jobs": [...]}` for `otter jobs --json`,
+  `{"schema_version": 1, "runs": [...]}` for `otter runs --json`, and likewise
+  for logs, tokens and capture requests. A list response has been an object
+  since `v0.4.0`; before that it was a bare array, which could not carry a
+  version.
 
 ### HTTP API
 
@@ -102,12 +105,16 @@ is the unit: do not mix versions. Within a **major**:
 - Routers are unversioned in the URL (`/v1/...`); the version is negotiated
   through `schema_version` rather than a path segment, so an additive change
   does not require a second route tree.
-- **Object documents carry `schema_version`; list endpoints return the payload
-  array itself** (`GET /v1/jobs`, `GET /v1/runs`). A consumer that needs the
-  version reads one object document — `GET /v1/version` or `GET /health` — once,
-  rather than paying a version field on every element. Wrapping the list
-  responses is a breaking change and is therefore deferred to a major release
-  if it is ever wanted; until then the array shape is the frozen shape.
+- **Every list response is an object with `schema_version` and an
+  endpoint-specific key**: `jobs`, `runs`, `logs`, `tokens`, `requests`,
+  `schedules`. A bare array could not carry a version, which is why the wrapped
+  shape is frozen now, before the `v0.4.0` compatibility promise takes effect.
+- **Job configuration** (`GET`/`PUT /v1/jobs/{id}/config`) is part of the API
+  and follows the same rules. Writing it is **admin-only** in `v0.4.0`: the
+  `control` scope's published surface (`CL-21`) does not include configuration,
+  and widening a credential silently would break its contract. A future minor
+  may add it to `control`; that would be additive to the scope's capability but
+  a deliberate, documented change.
 
 ## Deprecation
 

@@ -270,6 +270,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		Timeout:        m.TimeoutDuration(),
 		TerminateGrace: 5 * time.Second,
 		CapturePolicy:  run.CapturePolicy,
+		Config:         d.pinnedConfig(run),
 	}, sink)
 	sink.Flush()
 
@@ -722,6 +723,11 @@ func (d *Daemon) planRetry(previous *runs.Run, m *config.Manifest) *retryPlan {
 		ReleaseDigest:     previous.ReleaseDigest,
 		ReleaseSourceDir:  previous.ReleaseSourceDir,
 		SDKVersion:        previous.SDKVersion,
+		// The schedule an occurrence belongs to and the configuration version it
+		// was accepted with both belong to the submission, so a retry keeps them:
+		// the retry is the same occurrence and must read the same values.
+		ScheduleID:    previous.ScheduleID,
+		ConfigVersion: previous.ConfigVersion,
 		// The capture policy belongs to the submission, not the attempt: a retry
 		// records exactly what the operator asked for, and owns its own requests.
 		CapturePolicy: previous.CapturePolicy,

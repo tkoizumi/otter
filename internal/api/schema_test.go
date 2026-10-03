@@ -74,6 +74,36 @@ func TestFrozenJSONShapesStillCarryTheirKeys(t *testing.T) {
 			}},
 			want: []string{"id", "job_id", "status", "attempt", "created_at", "trigger_type"},
 		},
+		{
+			name: "job list",
+			doc:  JobList{SchemaVersion: SchemaVersion, Jobs: []JobView{}},
+			want: []string{"schema_version", "jobs"},
+		},
+		{
+			name: "run list",
+			doc:  RunList{SchemaVersion: SchemaVersion, Runs: []*runs.Run{}},
+			want: []string{"schema_version", "runs"},
+		},
+		{
+			name: "log list",
+			doc:  LogList{SchemaVersion: SchemaVersion, Logs: []runs.LogEntry{}},
+			want: []string{"schema_version", "logs"},
+		},
+		{
+			name: "token list",
+			doc:  APITokenListResponse{SchemaVersion: SchemaVersion, Tokens: []APITokenView{}},
+			want: []string{"schema_version", "tokens"},
+		},
+		{
+			name: "capture requests",
+			doc:  CaptureRequestsResponse{SchemaVersion: SchemaVersion},
+			want: []string{"schema_version", "capture", "requests"},
+		},
+		{
+			name: "job config",
+			doc:  JobConfigView{SchemaVersion: SchemaVersion, JobID: "job-1", Values: json.RawMessage("{}")},
+			want: []string{"schema_version", "job_id", "values"},
+		},
 	}
 
 	for _, tc := range cases {

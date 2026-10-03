@@ -17,7 +17,10 @@ const SchemaVersion = 1
 // ContractVersion is the version of docs/runtime-contract.md, the document that
 // states what the runtime promises and does not promise. It is incremented by
 // the rules at the top of that document, independently of the product version.
-const ContractVersion = 1
+//
+// Version 2 is the v0.4.0 contract: first-class schedules that fire once per
+// occurrence, pinned job configuration, and the honest-limits section.
+const ContractVersion = 2
 
 // ManifestSchemaVersion is the only `version:` value a manifest may carry. A
 // contract test pins it to config.SupportedVersion, so the API package does not
