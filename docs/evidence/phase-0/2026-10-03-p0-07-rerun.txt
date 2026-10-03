@@ -1,0 +1,86 @@
+===== Phase 0 evidence: P0-07 assertion re-run on the live Castor host =====
+task:      P0-07 (host permissions) assertion, RE-RUN after
+           scripts/assert-host-permissions.sh changed for CL-23 (R3 of
+           docs/v0.4.0-and-cloud-phase-b-plan.md). This is a new record; the
+           2026-09-30 P0-07 files are left exactly as they were.
+claim:     the assertion asserts the host's *configured* posture (loopback, or
+           a deliberate non-loopback bind with a token) rather than hardcoding
+           loopback, and it passes on the live host, whose configured posture
+           is loopback.
+date:      2026-10-03 16:57:58 UTC
+where:     live Castor runtime host; AWS account 426714791664, us-east-1a
+host:      i-0ba293ef4c5926b04 (t4g.micro, arm64); public 52.202.163.124;
+           private ip-10-42-0-131; Ubuntu 24.04.5 LTS; kernel 7.0.0-1013-aws
+workspace: /opt/otter/workspaces/otter-examples-e0309b8c
+unit:      otterd-otter-examples-e0309b8c.service
+build:     otter @ 764f700
+script:    scripts/assert-host-permissions.sh
+           sha256 0c5c196136541b5f012e48332722ac568af123380c74f48b5e49cb574bc22afe
+note:      Read-only. The script was copied to /tmp on the host and run under
+           passwordless sudo. Nothing on the host was modified. The script's new
+           "posture:" line and its token check for a non-loopback API are
+           exercised here on the loopback posture; the non-loopback posture is
+           covered by scripts/test-assert-host-permissions.sh (50 cases).
+
+$ ssh -i .otter-keys/otter-castor.pem ubuntu@52.202.163.124 \
+    'sudo -n sh /tmp/otter-assert-20261003.sh \
+       --workspace-dir /opt/otter/workspaces/otter-examples-e0309b8c \
+       --approved-ports 22'
+
+
+===== assert-host-permissions =====
+date:     2026-10-03 16:57:58 UTC
+host:     Linux 7.0.0-1013-aws (aarch64)
+checkout: unknown
+unit:     otterd-otter-examples-e0309b8c
+user:     otter
+data:     /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data
+env dir:  /etc/otter/workspaces
+env file: otter-examples-e0309b8c
+approved: 22
+posture:  loopback or private
+min swap: 256 MiB
+report:   /var/log/otter-provision-report.txt
+ok:   service account otter exists
+ok:   service account shell is /usr/sbin/nologin
+ok:   service account uid 999 is in the system range
+ok:   data directory mode is 0700
+ok:   data directory owner is otter:otter
+ok:   otter.db mode is 644; owner-only is tighter but the 0700 directory contains it
+note: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db is mode 644; a tighter umask on the daemon would make it 0600
+ok:   otter.db-wal mode is 644; owner-only is tighter but the 0700 directory contains it
+note: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db-wal is mode 644; a tighter umask on the daemon would make it 0600
+ok:   otter.db-shm mode is 644; owner-only is tighter but the 0700 directory contains it
+note: /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data/otter.db-shm is mode 644; a tighter umask on the daemon would make it 0600
+ok:   environment directory mode is 0700
+ok:   environment directory owner is root:root
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.env mode is 0600
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.env owner is root:root
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.daemon.env mode is 0600
+ok:   /etc/otter/workspaces/otter-examples-e0309b8c.daemon.env owner is root:root
+ok:   unit file /etc/systemd/system/otterd-otter-examples-e0309b8c.service exists
+ok:   unit is enabled (enabled)
+ok:   unit is active
+ok:   unit runs as otter
+ok:   unit NoNewPrivileges=yes
+ok:   unit ProtectSystem=strict
+ok:   unit ProtectHome=yes
+ok:   unit PrivateTmp=yes
+ok:   unit ReadWritePaths=/opt/otter/workspaces/otter-examples-e0309b8c /opt/otter/workspaces/otter-examples-e0309b8c/.otter/data
+ok:   ReadWritePaths includes the data directory
+ok:   daemon --listen is 127.0.0.1:7337
+ok:   listen address 127.0.0.1:7337 is loopback
+ok:   the API is listening on 127.0.0.1:7337
+ok:   wildcard listener on approved port 22
+ok:   wildcard listener on approved port 22
+ok:   port 22 is approved (bound to 0.0.0.0)
+ok:   port 22 is approved (bound to ::)
+ok:   sshd passwordauthentication=no
+ok:   sshd permitrootlogin=no
+ok:   active swap is 2047 MiB (floor 256 MiB, from /proc/swaps)
+ok:   vm.swappiness=10
+ok:   provisioning report /var/log/otter-provision-report.txt is present
+assert-host-permissions: all assertions passed
+
+$ echo $?
+0
