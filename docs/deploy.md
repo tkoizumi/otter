@@ -608,13 +608,21 @@ substituting the recorded loopback one:
 otter deploy --host droplet --listen 10.42.0.131:7337
 ```
 
-A wildcard (`0.0.0.0`, `::`, `:7337`, `*`) and a public address are both refused
-before the host is touched. The wildcard is the deployment CA-10 exists to
-avoid; a named public address reaches the same place, so the check is on the
-address's scope rather than on its shape. With a private bind there is no
-loopback socket, so a tunnel must target the bound address
-(`ssh -N -L 7337:10.42.0.131:7337 droplet`) — the deploy prints that command for
-you.
+A wildcard (`0.0.0.0`, `::`, `:7337`, `*`) and a public address are refused
+before the host is touched unless you ask for one with `--allow-remote-bind`.
+The wildcard is the deployment CA-10 exists to avoid, but it is the operator's
+call, not the tool's: with the opt-in the deploy prints a warning, requires the
+API token to be configured, and accepts the address. Terminate TLS in front of
+it before it faces an untrusted network
+([security.md](security.md#remote-access-tls-and-reverse-proxies)). With a
+private bind there is no loopback socket, so a tunnel must target the bound
+address (`ssh -N -L 7337:10.42.0.131:7337 droplet`) — the deploy prints that
+command for you.
+
+```sh
+# Deliberate wildcard bind on a private network behind a TLS proxy
+otter deploy --host droplet --listen 0.0.0.0:7337 --allow-remote-bind
+```
 
 ```sh
 export OTTER_API_URL=http://127.0.0.1:7337   # name the daemon; without it `otter jobs` reads this workspace's registry
@@ -624,10 +632,9 @@ otter runs --all --limit 10
 otter logs $(otter run customer_sync) --follow
 ```
 
-`--listen` can move the daemon off loopback if you genuinely need it, but a
-wildcard address (`:7337`, `0.0.0.0:7337`) is refused outright: a static bearer
-token on a public port that can execute arbitrary Python is not a deployment
-this tool will set up for you.
+The default stays loopback. A reachable API is a decision with a warning and an
+explicit flag, not the path of least resistance: a static bearer token on a port
+that can execute arbitrary Python should not be set up by accident.
 
 ## Configuration
 

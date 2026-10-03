@@ -153,19 +153,30 @@ file, one Python child per run.
 The default `--listen 127.0.0.1:7337` is the safe configuration: only processes
 on the host can reach the API, so no token is required.
 
-`otter deploy` refuses to use any other address unless a token is configured, and
-it refuses a wildcard bind (`0.0.0.0`, `::`, `:port`) outright — an API reachable
-from the internet with a static bearer token is the deployment the tool exists to
-prevent. The host-side half of that claim is asserted after every deploy:
-`scripts/assert-host-permissions.sh` reads `--listen` out of the loaded unit,
-requires it to be loopback, and fails on any wildcard listener whose port is not
-in `--approved-ports`. On the Castor host the only approved inbound port is 22,
-so the control plane is reached through an SSH tunnel and nothing else.
+`otter deploy` requires a token for any non-loopback address and refuses a
+wildcard or public bind (`0.0.0.0`, `::`, `:port`, a public IP) **unless the
+operator asks for one** with `--allow-remote-bind`; the deploy then prints a
+warning naming what the address exposes. An API reachable from the internet with
+a static bearer token is the deployment to discourage, not one to forbid: a
+runtime on a private network behind TLS is a normal deployment (`CL-23`), and the
+operator owns the network decision. What `CL-04` requires is that routine
+operations need no inbound **public** access — private-network inbound with a
+scoped credential satisfies that.
 
-| Binding | Token required | Meaning |
-| --- | --- | --- |
-| Loopback (`127.0.0.1`, `::1`) | No | Local-only control plane. |
-| Any non-loopback address | **Yes** | `OTTER_API_TOKEN` must be set or the daemon refuses to start. |
+The host-side half of the claim is asserted after every deploy:
+`scripts/assert-host-permissions.sh` reads `--listen` out of the loaded unit and
+checks it against the posture the deploy was configured for — loopback, or a
+non-loopback address with a token and (when the deploy names one) an expected
+bind or CIDR. On the Castor host the configured posture is loopback and the only
+approved inbound port is 22, so the control plane is reached through an SSH
+tunnel and nothing else.
+
+| Binding | Token required | Opt-in required | Meaning |
+| --- | --- | --- | --- |
+| Loopback (`127.0.0.1`, `::1`) | No | No | Local-only control plane. |
+| Private address (`10.0.0.5`, `localhost`) | **Yes** | No | Reachable on the private network; warn. |
+| Wildcard (`0.0.0.0`, `::`, `:port`) | **Yes** | **Yes** (`--allow-remote-bind`) | Every interface; warn, and terminate TLS in front. |
+| Public address | **Yes** | **Yes** (`--allow-remote-bind`) | Reachable from an untrusted network; warn, and terminate TLS in front. |
 
 ```bash
 # Safe default
@@ -178,6 +189,18 @@ otterd --listen 0.0.0.0:7337 --jobs /srv/otter/jobs --data /var/lib/otter
 # Without the token, the daemon refuses to start:
 # FATA refusing to start: --listen 0.0.0.0:7337 is not a loopback address and
 #      OTTER_API_TOKEN is not set; set OTTER_API_TOKEN or bind to 127.0.0.1
+```
+
+Deploying a wildcard or public bind additionally needs the explicit opt-in, and
+the deploy says what it is exposing:
+
+```bash
+# Deliberate wildcard bind on a private network, TLS terminated in front
+otter deploy --host ops@10.0.0.5 --listen 0.0.0.0:7337 --allow-remote-bind
+# warning: 0.0.0.0:7337 is reachable beyond loopback (every interface); the
+#          bearer token and the host's firewall are all that stand in front of
+#          it. Terminate TLS at a reverse proxy before it is reachable from an
+#          untrusted network, or bind 127.0.0.1:7337 and use an SSH tunnel
 ```
 
 The token is a **bearer** credential: it must be compared in constant time and
@@ -380,7 +403,7 @@ otter --api http://127.0.0.1:7337 status
 otter.internal.example.com {
     reverse_proxy 127.0.0.1:7337
     # Hooks may stay public; the control plane should not be.
-    @control path /v1/jobs* /v1/runs*
+    @control path /v1/jobs* /v1/runs* /v1/schedules* /v1/tokens*
     respond @control "forbidden" 403
     @hooks path /v1/hooks/*
     reverse_proxy @hooks 127.0.0.1:7337

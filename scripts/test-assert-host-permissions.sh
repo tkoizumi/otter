@@ -336,6 +336,12 @@ LISTEN 0 4096 [::1]:$api_port [::]:*}
 	else
 		: >"$env_dir/castor-24856da9.env"
 		: >"$env_dir/castor-24856da9.daemon.env"
+		# A non-loopback API must carry a token. The fixture can put one in
+		# place so the remote-bind posture case has something to assert; the
+		# value is never printed by the subject.
+		if [ -n "${FIX_ENV_TOKEN:-}" ]; then
+			printf 'OTTER_API_TOKEN=%s\n' "$FIX_ENV_TOKEN" >"$env_dir/castor-24856da9.env"
+		fi
 	fi
 	# The env files are real files so the subject's existence test passes; their
 	# recorded modes and owners, which the stat shim serves, are the fixture's.
@@ -440,6 +446,7 @@ run() {
 	# fixture directory ahead of `sh` would make the shell itself unfindable.
 	PATH="$work/bin:$PATH" OTTER_SERVICE_USER=$service_user \
 		OTTER_ENV_DIR=$env_dir OTTER_SYSTEMD_UNIT_DIR=$work/etc/systemd/system \
+		OTTER_ALLOW_REMOTE_BIND=${FIX_ALLOW_REMOTE_BIND:-0} \
 		OTTER_PROC_ROOT=$work/proc \
 		OTTER_PROVISION_REPORT=$work/provision-report.txt \
 		OTTER_SSHD_BIN=${FIX_SSHD_BIN:-$work/bin/sshd} \
@@ -559,6 +566,7 @@ unset_mutations() {
 		FIX_QUIET_SYSTEMCTL FIX_SWAP_KIB FIX_MISSING_REPORT \
 		FIX_MISSING_DATA_DIR FIX_MISSING_UNIT FIX_MISSING_ENV_DIR FIX_SS_ABSENT FIX_SS_EMPTY FIX_SSHD_EMPTY \
 		FIX_SSHD_BIN FIX_ENV_DIR_MODE FIX_ENV_DIR_OWNER FIX_RW_ABSENT \
+		FIX_ENV_TOKEN FIX_ALLOW_REMOTE_BIND \
 		FIX_SSHD_ABSENT FIX_SWAPPINESS || true
 }
 
@@ -643,7 +651,19 @@ expect "properties read without --value still assert" 0 \
 
 # --- the API and the listening sockets ---
 
-expect "API on a wildcard address fails" 1 "neither loopback nor private" -- "FIX_LISTEN=0.0.0.0:7337"
+expect "API on a wildcard address fails without the opt-in" 1 \
+	"is a wildcard bind; pass --allow-remote-bind" -- "FIX_LISTEN=0.0.0.0:7337"
+# The configured posture: a wildcard bind the operator asked for is asserted,
+# not failed, and the token that must guard it is checked.
+expect "a configured wildcard bind passes with the opt-in and a token" 0 \
+	"is a configured wildcard bind" "OTTER_API_TOKEN is configured" \
+	-- "FIX_LISTEN=0.0.0.0:7337" "FIX_ALLOW_REMOTE_BIND=1" "FIX_ENV_TOKEN=secret-value" \
+	"FIX_SS=LISTEN 0 4096 0.0.0.0:$api_port 0.0.0.0:*\nLISTEN 0 4096 0.0.0.0:22 0.0.0.0:*"
+# The opt-in alone is not enough: a reachable API without a token is a fault.
+expect "a configured wildcard bind without a token fails" 1 \
+	"no OTTER_API_TOKEN is configured" \
+	-- "FIX_LISTEN=0.0.0.0:7337" "FIX_ALLOW_REMOTE_BIND=1" \
+	"FIX_SS=LISTEN 0 4096 0.0.0.0:$api_port 0.0.0.0:*\nLISTEN 0 4096 0.0.0.0:22 0.0.0.0:*"
 expect "a wildcard 0.0.0.0 listener fails" 1 \
 	"wildcard (0.0.0.0) listener exists on port 8999" \
 	-- "FIX_SS=LISTEN 0 4096 127.0.0.1:$api_port 0.0.0.0:*\nLISTEN 0 4096 0.0.0.0:8999 0.0.0.0:*"

@@ -101,6 +101,12 @@ Examples:
 	}
 	cfg.Version = a.Version
 
+	// A reachable API is a deployment decision, not an accident: say what it
+	// exposes before anything is built or copied.
+	if warning := cfg.Target.BindWarning(); warning != "" {
+		fmt.Fprintf(a.Stderr, "warning: %s\n", warning)
+	}
+
 	runner := deploy.NewSSH(cfg.Target, a.Stdout, a.Stderr)
 	defer runner.Close()
 

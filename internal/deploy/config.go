@@ -347,7 +347,11 @@ type deployFile struct {
 	ServiceUser string `yaml:"service_user"`
 	DataDir     string `yaml:"data_dir"`
 	Listen      string `yaml:"listen"`
-	EnvFile     string `yaml:"env_file"`
+	// AllowRemoteBind opts in to a wildcard or public listen address. It is
+	// committed when set, because the host's workspace record is the authority
+	// on the address and a rebuild must reproduce the opt-in that made it legal.
+	AllowRemoteBind bool   `yaml:"allow_remote_bind"`
+	EnvFile         string `yaml:"env_file"`
 	// Workspace and Slug name the workspace this project owns on the host. They
 	// are committed so every checkout, machine and directory of the same
 	// project deploys into the same workspace instead of creating a new one.
@@ -414,9 +418,11 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.Target.ServiceName, "service", "", "systemd unit name (default "+DefaultServicePrefix+"-<workspace>)")
 	fs.StringVar(&f.Target.RunAsUser, "service-user", "", "service account owning the unit and data (default otter)")
 	fs.StringVar(&f.Target.DataDir, "data-dir", "", "remote data directory holding otter.db (default <workspace>/.otter/data)")
-	fs.StringVar(&f.Target.Listen, "listen", "", "remote API listen address: a loopback or "+
-		"private host:port (default the first free port from "+DefaultListenAddr+"); wildcard and "+
-		"public addresses are refused")
+	fs.StringVar(&f.Target.Listen, "listen", "", "remote API listen address (default the first free "+
+		"port from "+DefaultListenAddr+"); a wildcard or public address needs --allow-remote-bind")
+	fs.BoolVar(&f.Target.AllowRemoteBind, "allow-remote-bind", false,
+		"permit a wildcard or public --listen address; the API is then reachable beyond loopback "+
+			"and only the bearer token and the firewall protect it")
 	fs.StringVar(&f.Workspace, "workspace", "", "workspace on the host to deploy into (default: this project's own)")
 	fs.StringVar(&f.Target.Platform, "platform", "", "remote GOOS/GOARCH; detected over SSH when empty")
 	fs.BoolVar(&f.Target.RotateAPIToken, "rotate-token", false, "generate and install a fresh API token")
@@ -679,6 +685,10 @@ func loadConfigFile(path string) (*fileConfig, error) {
 			RunAsUser:    df.ServiceUser,
 			DataDir:      df.DataDir,
 			Listen:       df.Listen,
+			// The opt-in is committed beside the address it legalizes, so a
+			// rebuild re-derives the same decision rather than refusing the
+			// recorded address.
+			AllowRemoteBind: df.AllowRemoteBind,
 		},
 		EnvFile:   df.EnvFile,
 		Workspace: fileWorkspace{ID: df.Workspace, Slug: df.Slug},
@@ -805,6 +815,9 @@ func mergeTarget(base, over Target) Target {
 	}
 	if over.Listen != "" {
 		base.Listen = over.Listen
+	}
+	if over.AllowRemoteBind {
+		base.AllowRemoteBind = true
 	}
 	if over.Platform != "" {
 		base.Platform = over.Platform

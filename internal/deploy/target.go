@@ -89,6 +89,11 @@ type Target struct {
 	DataDir string `json:"data_dir"`
 	// Listen is the daemon listen address on the remote host.
 	Listen string `json:"listen"`
+	// AllowRemoteBind permits an API listen address that is reachable beyond
+	// the host's private network -- a wildcard or a public address. It is the
+	// explicit opt-in CL-23 requires before the deploy stops refusing one, and
+	// it does not change the loopback default.
+	AllowRemoteBind bool `json:"allow_remote_bind,omitempty"`
 
 	// WorkspaceID is the durable identity of the workspace this deploy owns on
 	// the host. It is what makes a deploy from another machine, checkout or
@@ -384,7 +389,7 @@ func (t *Target) Validate() error {
 	// in use are known. Refusing it here would make every new workspace on a
 	// busy host impossible to create.
 	if strings.TrimSpace(t.Listen) != "" {
-		if err := validateListen(t.Listen); err != nil {
+		if err := validateListen(t.Listen, t.AllowRemoteBind); err != nil {
 			return err
 		}
 	}
@@ -397,7 +402,7 @@ func (t *Target) Validate() error {
 	return nil
 }
 
-func validateListen(listen string) error {
+func validateListen(listen string, allowRemote bool) error {
 	if strings.TrimSpace(listen) == "" {
 		return fmt.Errorf("--listen must not be empty")
 	}
@@ -417,28 +422,31 @@ func validateListen(listen string) error {
 		}
 	}
 	// An API reachable from the internet with a static bearer token is exactly
-	// the deployment this feature exists to avoid. An empty host means ":7337",
-	// which binds every interface.
+	// the deployment that should be discouraged. It is not forbidden: CL-23's
+	// deployment is a private network behind TLS, and a wildcard bind is a
+	// legitimate way to serve several interfaces on one host. So it takes an
+	// explicit opt-in, and the caller warns. An empty host means ":7337", which
+	// binds every interface.
 	switch host {
 	case "", "0.0.0.0", "::", "[::]", "*":
+		if allowRemote {
+			return nil
+		}
 		return fmt.Errorf("refusing a wildcard listen address %q: bind to %s and reach "+
-			"the API through an SSH tunnel", listen, DefaultListenAddr)
+			"the API through an SSH tunnel, or pass --allow-remote-bind", listen, DefaultListenAddr)
 	}
-	// A named address is supported. It is not the wildcard case: the operator
-	// has picked which interface the API is on, and the network still governs
-	// who can reach it. It must be loopback or private -- naming a public
-	// address is the deployment CA-10 exists to refuse.
-	if err := validateListenScope(host); err != nil {
-		return err
-	}
-	return nil
+	// A named address is supported. It must be loopback or private unless the
+	// operator opted in -- naming a public address is the deployment CA-10
+	// exists to discourage.
+	return validateListenScope(host, allowRemote)
 }
 
-// validateListenScope accepts a loopback or private listen host and refuses a
-// public one. Refusing the wildcard is not enough on its own: an operator
-// naming the host's own public address would reach the same place, so the
-// check is on the address's scope rather than on its shape.
-func validateListenScope(host string) error {
+// validateListenScope accepts a loopback or private listen host, refuses a
+// public one unless the operator opted in, and names the scope in the refusal.
+// Refusing the wildcard is not enough on its own: an operator naming the host's
+// own public address would reach the same place, so the check is on the
+// address's scope rather than on its shape.
+func validateListenScope(host string, allowRemote bool) error {
 	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
@@ -450,8 +458,50 @@ func validateListenScope(host string) error {
 	if ip.IsLoopback() || ip.IsPrivate() {
 		return nil
 	}
+	if allowRemote {
+		return nil
+	}
 	return fmt.Errorf("refusing a public listen address %q: bind a loopback or private "+
-		"address, or reach the API through an SSH tunnel", host)
+		"address, reach the API through an SSH tunnel, or pass --allow-remote-bind", host)
+}
+
+// BindWarning returns the warning a reachable listen address deserves, or "" for
+// a loopback address that needs none. A private address warns without an opt-in
+// because it was already supported; a wildcard or public one cannot even be
+// configured without --allow-remote-bind.
+func (t Target) BindWarning() string {
+	if strings.TrimSpace(t.Listen) == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(t.Listen)
+	if err != nil {
+		return ""
+	}
+	if strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("%s is reachable beyond loopback (%s); the bearer token and the "+
+		"host's firewall are all that stand in front of it. Terminate TLS at a reverse "+
+		"proxy before it is reachable from an untrusted network, or bind %s and use an "+
+		"SSH tunnel", t.Listen, bindScope(ip), DefaultListenAddr)
+}
+
+// bindScope names where an address can be reached from, for a warning.
+func bindScope(ip net.IP) string {
+	switch {
+	case ip == nil:
+		return "resolved by the host"
+	case ip.IsUnspecified():
+		return "every interface"
+	case ip.IsPrivate():
+		return "the private network"
+	default:
+		return "the public network"
+	}
 }
 
 // ParsePlatform splits and validates a "goos/goarch" platform string.

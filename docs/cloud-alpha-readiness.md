@@ -265,18 +265,21 @@ and `otter reload` leaves an API-created schedule untouched.
 
 ## CL-23 — Make the runtime API a supported remote surface — MUST
 
-*Runtime work, not control-plane work.* The API is loopback-only by convention,
-not by necessity, and the artifacts that govern it disagree: the daemon permits a
-non-loopback bind when a token is set, `otter deploy` refuses a wildcard address
-and plans the API as loopback with `ssh -L`, and `assert-host-permissions.sh`
-fails any non-loopback listen address.
+*Runtime work, not control-plane work.* The API is loopback by convention, not
+by necessity, and the artifacts that govern it started out disagreeing: the
+daemon permits a non-loopback bind when a token is set, `otter deploy` refused a
+wildcard address, and `assert-host-permissions.sh` failed any non-loopback
+listen address. `v0.4.0` reconciles them: the deploy accepts a wildcard or
+public bind behind `--allow-remote-bind` and a warning, the host assertion
+asserts the *configured* posture (`--allow-remote-bind`, plus the
+`OTTER_API_TOKEN` a non-loopback API must carry) rather than hardcoding
+loopback, and [security.md](security.md) states the posture instead of a blanket
+prohibition.
 
-Loopback is standing in for authorization. The credential that guards the API is a
-single static admin token with full control-plane authority — including
+Loopback was standing in for authorization. The credential that guarded the API
+was a single static admin token with full control-plane authority — including
 `POST /v1/jobs/{id}/runs`, which executes arbitrary code — and no read-only or
-per-job variant ([security.md](security.md)). An operator who needs the API from
-another host, another container, or a client's backend has no supported path but a
-tunnel.
+per-job variant; `CL-21` fixed that with named, scoped, revocable tokens.
 
 An operator running Otter on their own host owns that decision. The runtime makes
 the safe configuration the default and the reachable configuration possible,

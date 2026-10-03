@@ -1054,3 +1054,44 @@ func TestDeployRetentionSurface(t *testing.T) {
 		}
 	})
 }
+
+// CL-23: a wildcard or public bind is refused by default and accepted behind an
+// explicit opt-in, which then warns. A private address was always accepted but
+// now says what it exposes.
+func TestAllowRemoteBindOptsIn(t *testing.T) {
+	for _, listen := range []string{"0.0.0.0:7337", ":7337", "203.0.113.10:7337"} {
+		target := DefaultTarget()
+		target.Host = "droplet"
+		target.Listen = listen
+		if err := target.Validate(); err == nil {
+			t.Errorf("%s: Validate succeeded without the opt-in", listen)
+		}
+		target.AllowRemoteBind = true
+		if err := target.Validate(); err != nil {
+			t.Errorf("%s: Validate with the opt-in = %v, want nil", listen, err)
+		}
+		if warning := target.BindWarning(); warning == "" {
+			t.Errorf("%s: no warning for a reachable bind", listen)
+		}
+	}
+
+	loop := DefaultTarget()
+	loop.Host = "droplet"
+	loop.Listen = "127.0.0.1:7337"
+	if err := loop.Validate(); err != nil {
+		t.Fatalf("loopback bind = %v, want nil", err)
+	}
+	if warning := loop.BindWarning(); warning != "" {
+		t.Errorf("loopback warned: %q", warning)
+	}
+
+	private := DefaultTarget()
+	private.Host = "droplet"
+	private.Listen = "10.0.0.5:7337"
+	if err := private.Validate(); err != nil {
+		t.Fatalf("private bind = %v, want nil", err)
+	}
+	if warning := private.BindWarning(); warning == "" {
+		t.Error("a private bind warned about nothing")
+	}
+}

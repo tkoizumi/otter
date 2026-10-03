@@ -68,6 +68,12 @@ env_dir=${OTTER_ENV_DIR:-}
 env_file=${OTTER_ENV_FILE:-}
 listen=${OTTER_LISTEN:-}
 approved_ports=${OTTER_APPROVED_PORTS:-22}
+# allow_remote_bind asserts the *configured* posture: when the deploy was made
+# with --allow-remote-bind, a wildcard or public listen address is the intended
+# configuration and this script checks it as such (with the token that must
+# accompany it) rather than failing a deliberate decision. Unset means the
+# loopback-or-private posture.
+allow_remote_bind=${OTTER_ALLOW_REMOTE_BIND:-0}
 # Minimum active swap, in MiB. The 1 GiB Castor host carries a 2 GiB swapfile;
 # the floor is set to catch "no swap at all", which is the failure the CDW
 # user-data produced (set -e aborted the script before its swap block), not to
@@ -103,6 +109,9 @@ Exit status is 0 only when every assertion holds.
   --listen ADDR         loopback or private host:port the API must hold
   --approved-ports LIST comma-separated ports (default 22). A listener on any
                         other port fails unless it is on loopback.
+  --allow-remote-bind   assert a deliberately reachable listen address (wildcard
+                        or public) instead of failing it; the matching
+                        OTTER_API_TOKEN must then be configured.
   --min-swap-mib N      minimum active swap in MiB (default 256; 0 disables)
   --provision-report F  cloud-init provisioning report to require (default
                         /var/log/otter-provision-report.txt; empty disables)
@@ -150,6 +159,10 @@ while [ $# -gt 0 ]; do
 	--approved-ports)
 		approved_ports=$2
 		shift 2
+		;;
+	--allow-remote-bind)
+		allow_remote_bind=1
+		shift
 		;;
 	--min-swap-mib)
 		min_swap_mib=$2
@@ -245,6 +258,11 @@ printf 'data:     %s\n' "$data_dir"
 printf 'env dir:  %s\n' "$env_dir"
 printf 'env file: %s\n' "$env_file"
 printf 'approved: %s\n' "$approved_ports"
+if [ "$allow_remote_bind" = 1 ]; then
+	printf 'posture:  remote bind allowed (--allow-remote-bind)\n'
+else
+	printf 'posture:  loopback or private\n'
+fi
 printf 'min swap: %s MiB\n' "$min_swap_mib"
 printf 'report:   %s\n' "${provision_report:-<not checked>}"
 
@@ -494,12 +512,44 @@ else
 		;;
 	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | fd* | fc*)
 		# A private address is supported: the operator chose which interface the
-		# API is on, and the network still governs who can reach it. A wildcard
-		# or public address is refused by the deploy and re-checked below.
+		# API is on, and the network still governs who can reach it.
 		ok "listen address $api_addr is private"
 		;;
+	"" | 0.0.0.0 | "::" | "*")
+		if [ "$allow_remote_bind" = 1 ]; then
+			ok "listen address ${api_addr:-:*} is a configured wildcard bind (--allow-remote-bind)"
+		else
+			fail "listen address $api_addr is a wildcard bind; pass --allow-remote-bind to assert it as the configured posture, or bind 127.0.0.1"
+		fi
+		;;
 	*)
-		fail "listen address $api_addr is neither loopback nor private; the API must not be reachable off the network"
+		if [ "$allow_remote_bind" = 1 ]; then
+			ok "listen address $api_addr is a configured public bind (--allow-remote-bind)"
+		else
+			fail "listen address $api_addr is neither loopback nor private; pass --allow-remote-bind to assert it as the configured posture, or bind 127.0.0.1"
+		fi
+		;;
+	esac
+
+	# A non-loopback API is guarded by OTTER_API_TOKEN. The daemon refuses to
+	# start without it, so the assertion is that the deployed configuration
+	# actually carries one -- checked by presence, never printed.
+	case $api_host in
+	127.* | localhost | ::1) ;;
+	*)
+		token_seen=0
+		for suffix in .env .daemon.env; do
+			file=$env_dir/$env_file$suffix
+			[ -f "$file" ] || continue
+			if grep -Eq '^[[:space:]]*(export[[:space:]]+)?OTTER_API_TOKEN=[^[:space:]]' "$file"; then
+				token_seen=1
+			fi
+		done
+		if [ "$token_seen" = 1 ]; then
+			ok "OTTER_API_TOKEN is configured for the non-loopback API"
+		else
+			fail "the API binds ${api_addr:-every interface} but no OTTER_API_TOKEN is configured in $env_dir/$env_file(.daemon).env; the daemon refuses a non-loopback bind without one"
+		fi
 		;;
 	esac
 fi
@@ -562,6 +612,10 @@ else
 	# through an SSH tunnel.
 	if grep -q "^0\.0\.0\.0 " "$listeners"; then
 		for port in $(grep '^0\.0\.0\.0 ' "$listeners" | awk '{print $2}'); do
+			if [ "$allow_remote_bind" = 1 ] && [ "$api_host" = "0.0.0.0" ] && [ "$port" = "$api_port" ]; then
+				ok "wildcard listener on port $port is the configured API bind"
+				continue
+			fi
 			case " $(printf '%s' "$approved_ports" | tr ',' ' ') " in
 			*" $port "*) ok "wildcard listener on approved port $port" ;;
 			*) fail "a wildcard (0.0.0.0) listener exists on port $port, which is not in --approved-ports ($approved_ports)" ;;
@@ -572,6 +626,10 @@ else
 	fi
 	if grep -q "^:: " "$listeners"; then
 		for port in $(grep '^:: ' "$listeners" | awk '{print $2}'); do
+			if [ "$allow_remote_bind" = 1 ] && [ "$api_host" = "::" ] && [ "$port" = "$api_port" ]; then
+				ok "wildcard listener on port $port is the configured API bind"
+				continue
+			fi
 			case " $(printf '%s' "$approved_ports" | tr ',' ' ') " in
 			*" $port "*) ok "wildcard listener on approved port $port" ;;
 			*) fail "a wildcard (::) listener exists on port $port, which is not in --approved-ports ($approved_ports)" ;;
