@@ -52,7 +52,7 @@ There are four credential types, with different audiences.
 | Credential | Header | Used by | Scope |
 | --- | --- | --- | --- |
 | Daemon API token | `Authorization: Bearer <token>` | CLI, operators, automation | The whole control-plane API. |
-| Scoped API token | `Authorization: Bearer <token>` | A gateway, a control plane, a client's backend | `read` or `control`; see [Scoped API tokens](#scoped-api-tokens). |
+| Scoped API token | `Authorization: Bearer <token>` | A gateway, a control plane, a client's backend | `read`, `control` or `capture`; see [Scoped API tokens](#scoped-api-tokens). |
 | Run state token | `Authorization: Bearer <run token>` | Child Python processes (the SDK) | The state, log and capture-ingestion endpoints for **that run's** job and run. |
 | Webhook token | `X-Otter-Token: <token>` or `?token=<token>` | External systems calling a hook | Only `POST /v1/hooks/{job}` for one job. |
 
