@@ -170,6 +170,9 @@ Exit evidence: the supported-load envelope is published, overload behaves as
 documented, and the performance targets name the hardware and workload they were
 measured on.
 
+Work order: [v0.5.0-release-plan.md](v0.5.0-release-plan.md), which takes
+`OT-007` — the missed-occurrence policy — as its spine.
+
 ## v0.6.0 — Phase 3. Runtime validation and release gate
 
 Use a small set of real jobs in separately owned job projects.
