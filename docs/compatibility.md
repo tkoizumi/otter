@@ -33,7 +33,7 @@ curl -s http://127.0.0.1:7337/v1/version
 ```json
 {
   "schema_version": 1,
-  "contract_version": 1,
+  "contract_version": 2,
   "product_version": "0.4.0",
   "manifest_schema": 1,
   "sdk_version": "0.1.0",
@@ -166,7 +166,7 @@ that document, so the two cannot drift.
 ## Freeze point
 
 The four interfaces above are frozen at `v0.4.0` and are expected to remain
-stable to `v1.0.0`. `contract_version` is **1** and `schema_version` is **1**.
+stable to `v1.0.0`. `contract_version` is **2** and `schema_version` is **1**.
 Before `v1.0.0`, a minor release may still amend the runtime contract; it may
 not silently change a frozen shape. From `v1.0.0`, contract version increments
 follow the runtime-contract rules and a breaking interface change is a major
