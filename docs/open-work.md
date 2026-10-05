@@ -121,8 +121,9 @@ to intuition:
 
 **Documented.** `operations.md` §"Backlog behavior" carries all five points,
 beside the capacity section, with the troubleshooting entry pointing at it. The
-downtime half links to `runtime-contract.md` §"Missed cron windows are not
-replayed" (an explicit non-guarantee, linked rather than restated) and the
+downtime half links to `runtime-contract.md` §"Missed occurrences are
+policy-dependent" (under the default `skip`, an explicit non-guarantee, linked
+rather than restated) and the
 release half to `architecture.md` §"What runs is the release, not the tree".
 No behavior changed.
 

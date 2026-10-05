@@ -300,7 +300,7 @@ otter --api "$OTTER_API_URL" --json version
 ```json
 {
   "schema_version": 1,
-  "contract_version": 2,
+  "contract_version": 3,
   "product_version": "v0.4.0",
   "manifest_schema": 1,
   "sdk_version": "0.1.0",

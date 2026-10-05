@@ -1248,8 +1248,8 @@ that takes 20 minutes does not skip the occurrences it misses.
 3. **Downtime skips; slowness accumulates.** Occurrences that fall while the
    daemon is stopped are never replayed — the scheduler does not catch up — but
    occurrences that fall while it is running always queue, however far behind it
-   has fallen. [runtime-contract.md](runtime-contract.md) §"Missed cron windows
-   are not replayed" states the guarantee; this is its operational consequence. A
+   has fallen. [runtime-contract.md](runtime-contract.md) §"Missed occurrences
+   are policy-dependent" states the policy; this is its operational consequence. A
    job that needs gap reconciliation must model it in durable state (a
    `last_processed_at` checkpoint, say) and reconcile on its next run.
 4. **Queued work runs the code that was active when it was submitted.** A run

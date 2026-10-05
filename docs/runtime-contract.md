@@ -18,7 +18,10 @@ Two rules shape everything below:
 
 This is a description of implemented behavior, not a design aspiration. When the
 code and this document disagree, this document is wrong and is corrected to match
-what the runtime actually does.
+what the runtime actually does. Version 3 is the deliberate exception: it states
+the `v0.5.0` semantics in the same release that implements them, and the
+implementation-status note under [Contract version](#contract-version-and-build-scope)
+records what the interim tree does.
 
 ## Contents
 
@@ -37,10 +40,11 @@ what the runtime actually does.
 
 | Field | Value |
 | --- | --- |
-| Contract version | **2** |
+| Contract version | **3** |
 | Introduced for | `v0.2.0` — Phase 1, "Dependable execution". |
 | Amended in version 2 | `v0.4.0` — schedules are first-class and fire once per occurrence (§3.1.1), job configuration is a pinned input (§2, §7.5), and the honest limits gained §7. |
-| Source revision | `ec01900` on `main`, the build version 1 described. Version 2 describes the `v0.4.0` tree. |
+| Amended in version 3 | `v0.5.0` — the missed-occurrence policy is per-schedule and covers uptime as well as downtime (§3.1), autonomous admission is bounded per job with an explicit `429 overloaded` refusal (§2), and `trigger.missed_policy`, `trigger.max_catch_up` and `max_queue_depth` become manifest inputs. |
+| Source revision | The `v0.5.0` development working tree, with the version-3 amendment uncommitted; no released commit describes version 3 yet. Version 2 describes the `v0.4.0` tree (`ec01900` on `main`, build version 1). |
 | Frozen at | `v1.0.0`. Before that, a **minor** release may amend this document; a patch release may not. |
 | Binary pair | `otter` and `otterd` **from the same build**. The two are released together from one archive; do not mix versions. |
 | Supported platforms | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` (static, `CGO_ENABLED=0`). Other Unix targets compile but carry no guarantee ([§6](#6-supported-platforms)). |
@@ -70,6 +74,17 @@ Versioning rules:
    SDK version and the supported platforms together.
 4. A guarantee is only as strong as its scenario's evidence. Appendix A states
    whether each scenario is real, simulated, partial or not yet implemented.
+
+> **Implementation status of version 3.** Version 3 states the `v0.5.0`
+> semantics decided on 2026-10-05
+> ([decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded)).
+> The runtime behaviour those clauses describe — `coalesce`, bounded `catch_up`,
+> and the `max_queue_depth` refusal — lands in `v0.5.0` WS2, in the same release
+> as this contract. On the tree as it stands before WS2, the write boundary still
+> accepts only `missed_policy: skip` and admission is unbounded. The clauses are
+> written once, as the shipped `v0.5.0` contract, so a reader of the released
+> artifact reads the semantics that artifact implements; this note is what keeps
+> the interim tree from reading as a false claim.
 
 > **Reading the tables.** *Guarantee* rows are promises backed by at least one
 > named scenario. *Explicit non-guarantee* rows are behaviors the runtime does
@@ -143,7 +158,7 @@ submission returns successfully. The submitting endpoints are:
 | --- | --- |
 | Manual / CLI | `POST /v1/jobs/{id}/runs` |
 | Webhook | `POST /v1/hooks/{job}` |
-| Cron | the in-process scheduler, one run per occurrence |
+| Cron | the in-process scheduler, one run per occurrence under the schedule's `missed_policy` |
 
 Guarantees of acceptance:
 
@@ -173,41 +188,88 @@ Guarantees of acceptance:
   Configuration values are deployment inputs, not secrets: see
   [§7.5](#75-configuration-is-not-a-secret-store).
 
+**Admission is policy-dependent and bounded (`v0.5.0` semantics; see the
+implementation-status note above).** Two inputs besides pause decide whether an
+autonomous trigger becomes a run:
+
+- **A schedule's `missed_policy` decides which occurrences become runs.** `skip`
+  (the default) admits each occurrence while the daemon runs and replays nothing
+  after a stop; `coalesce` keeps at most one occurrence pending, folding a new
+  tick into a queued or running run; `catch_up` replays missed occurrences
+  oldest-first up to the per-schedule `max_catch_up`. The full downtime/uptime
+  matrix is [§3.1](#31-missed-occurrences-are-policy-dependent).
+- **`max_queue_depth` (optional, read from the live manifest) bounds autonomous
+  admission per job.** When the job's pending count — `queued` plus `running` —
+  is at or above the bound, a cron or webhook trigger is **refused, not queued**:
+  the API returns `429 Too Many Requests` with the `overloaded` error code, the
+  refusal is counted and timestamped for `/health` and `otter status`, and it is
+  logged as `admission_refused` with the job, trigger type, depth and bound. A
+  manual `POST /v1/jobs/{id}/runs` (or `otter run`) is never refused by this
+  bound; it is an operator decision. Because the bound is read from the live
+  manifest, a reload can raise or remove it without a release. The bound's
+  regression test lands with WS2.
+
 What acceptance does **not** promise:
 
 - when execution starts (the queue is FIFO among *eligible* work, and a
   saturated job or worker pool defers it);
 - that the attempt succeeds;
 - that the attempt runs only once (see [§5](#5-retries-and-external-effects));
-- that two submissions are collapsed into one ([§3](#3-schedules-deliveries-and-duplicates)).
+- that two submissions are collapsed into one, except where a schedule's
+  `missed_policy` says so ([§3](#3-schedules-deliveries-and-duplicates)).
 
 ## 3. Schedules, deliveries and duplicates
 
-### 3.1 Missed cron windows are not replayed
+### 3.1 Missed occurrences are policy-dependent
 
-*Explicit non-guarantee.*
+*Policy-dependent; with no policy set, the older non-guarantee is the behaviour.*
 
-The scheduler fires while the daemon is running, and each occurrence enqueues
-one run carrying its `scheduled_at` in the run metadata. Occurrences that fall
-during downtime are **not** replayed at startup. The scheduler's own package
-documents this as deliberate; there is no catch-up pass.
+The scheduler fires while the daemon is running, and each occurrence the policy
+admits enqueues one run carrying its `scheduled_at` in the run metadata. What
+happens to an occurrence the runtime cannot act on immediately is the schedule's
+`missed_policy`, decided 2026-10-05
+([decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded)).
+Each policy has one meaning for **downtime** (an occurrence that fell while the
+daemon was stopped) and for **uptime** (an occurrence that falls while the
+previous run is still queued or running):
 
-A job that needs catch-up semantics must model it as durable state —
-for example a `last_processed_at` checkpoint written from `ctx.state` — and
-reconcile the gap on its next run.
+| `missed_policy` | Downtime | Uptime (previous run still going) |
+| --- | --- | --- |
+| `skip` (default) | Occurrences are gone; nothing is replayed at startup. | Every occurrence enqueues; the backlog is unbounded. |
+| `coalesce` | One run fires on the next wake-up, standing for every missed occurrence. | At most one occurrence may be pending per schedule: a new tick folds into the pending run instead of adding a second. |
+| `catch_up` | Each missed occurrence fires as its own run, oldest first, capped per schedule by `max_catch_up` (default `100`); occurrences beyond the cap are skipped and the count is reported. | Unchanged from `skip`: each occurrence enqueues. |
 
-Two related consequences:
+`skip` is the default, so a schedule that says nothing keeps the previous
+behaviour. `coalesce` and `catch_up` are per-schedule choices, and uptime backlog
+is additionally bounded per job by `max_queue_depth`
+([§2](#2-what-an-accepted-request-promises)). Every outcome that is not a run is
+visible rather than silent: a folded occurrence advances `last_fired_at` in the
+transaction that records the fold and the surviving run carries the count and
+window it stands for; a cap-skipped occurrence is counted and logged; a refused
+trigger is counted, timestamped and reported.
 
-- **Downtime skips; slowness accumulates.** Occurrences during uptime always
-  enqueue, even if a previous run is still going, so a long run on a short
-  schedule builds a backlog rather than skipping work. With the default
-  `concurrency: 1` that backlog serializes. This is tracked for a future
-  decision as `OT-007` / `OT-008` in [open-work.md](open-work.md).
+A job that needs catch-up semantics without the policy can still model it as
+durable state — for example a `last_processed_at` checkpoint written from
+`ctx.state` — and reconcile the gap on its next run.
+
+Three related consequences:
+
+- **`skip` skips downtime and accumulates uptime; `coalesce` bounds both;
+  `catch_up` replays downtime and accumulates uptime.** Under `skip`,
+  occurrences during uptime always enqueue, even if a previous run is still
+  going, so a long run on a short schedule builds a backlog rather than skipping
+  work. With the default `concurrency: 1` that backlog serializes. Under
+  `coalesce` at most one occurrence is pending at a time, so the schedule's own
+  backlog does not grow; under `catch_up` uptime is unchanged from `skip`, and
+  `max_queue_depth` is the bound. This matrix decides `OT-007`.
 - **A backlog runs its bound release.** Each attempt records the release digest
   at submission, so a deep backlog executes the code that was active when each
   occurrence was accepted, not the newest release. Submission-time binding is
-  tested by `TestRunExecutesTheActiveReleaseNotTheLiveTree`; the retry half is
-  not yet independently proven (`OT-011`).
+  tested by `TestRunExecutesTheActiveReleaseNotTheLiveTree`, and the retry half is
+  a guarantee too ([§5.1](#51-what-is-retried-and-what-is-not)), pinned by
+  `TestRetryExecutesTheParentsReleaseSnapshot` and
+  `TestRetryResolvesTheParentsManagedEnvironment`; the policy half is pinned by
+  `TestRecoveryPlansRetriesFromTheBoundRelease`. This closes `OT-011`.
 - **Releases still needed by pending work are protected from retention, and a
   submission cannot slip past the pin set.** The CLI retention pass collects the
   digests bound to every `queued`, `running` and `retrying` attempt

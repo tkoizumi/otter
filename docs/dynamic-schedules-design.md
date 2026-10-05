@@ -14,8 +14,8 @@ exactly-one-run-per-occurrence, and the
 
 What remains is phase 5, the job configuration layer (§8) — the
 `config_version` column exists so it can land without another migration — and
-the `coalesce`/`catch_up` missed-occurrence policies, which are recorded as data
-but not yet implemented (§11).
+the runtime half of the `coalesce`/`catch_up` missed-occurrence policies, whose
+semantics are decided (§11) and whose implementation is `v0.5.0` WS2.
 
 ## Objective
 
@@ -161,9 +161,11 @@ origin; they fire independently.
 
 **Persist the past, derive the future.** Store `last_fired_at`; never treat a
 persisted future `next_fire_at` as authoritative. On start and on reload, compute
-each next occurrence from `now` and the expression. Nothing in the past is
-fired, which preserves today's "missed windows are not replayed" contract *by
-construction* rather than by discipline.
+each next occurrence from `now` and the expression. Under the default `skip`
+policy nothing in the past is fired, which preserves the older "missed windows
+are not replayed" contract *by construction* rather than by discipline;
+`catch_up` deliberately reads back to `last_fired_at` and replays the gap up to
+its cap (§11).
 
 **Fire is one transaction.** On an occurrence, `SubmitRun` already records the
 run and its queue row atomically. The schedule path adds the `schedule_fires`
@@ -391,23 +393,40 @@ Concrete work, in the order that unblocks the schedule API:
 | Backup / restore (`P0-03`) | Schedules ride in `otter.db`; restoring onto a host with different manifests reconciles only manifest rows |
 | Releases | A schedule fires against the job's active release at fire time; the run pins the digest as usual |
 | Retention | `schedule_fires` grows one row per occurrence. Prune on the runs window, but keep at least the current occurrence boundary so restart dedup still works |
-| Overrun (`OT-007`) | Unchanged at first: every occurrence enqueues. §11 makes it a per-schedule choice |
+| Overrun (`OT-007`) | A per-schedule choice: `skip` enqueues every occurrence, `coalesce` keeps at most one pending, `catch_up` replays the missed gap up to its cap (§11) |
 
 ## 11. Missed-occurrence policy
 
 `OT-007` stops being an internal note the moment a user creates a schedule. The
-policy becomes per-schedule data:
+policy becomes per-schedule data, and each of the three names has one meaning
+for **downtime** (an occurrence that fell while the daemon was stopped) and for
+**uptime** (an occurrence that falls while the previous run is still queued or
+running). Decided 2026-10-05
+([decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded)):
 
-| `missed_policy` | Behaviour |
-| --- | --- |
-| `skip` (default) | Today's behaviour: occurrences during downtime are gone |
-| `coalesce` | Fire once on the next wake-up if any occurrence was missed |
-| `catch_up` | Fire each missed occurrence, bounded by a per-schedule maximum |
+| `missed_policy` | Downtime (daemon was stopped) | Uptime (previous run still going) |
+| --- | --- | --- |
+| `skip` (default) | Occurrences are gone; nothing is replayed at startup. | Every occurrence enqueues: today's behaviour, unbounded. |
+| `coalesce` | One run fires on the next wake-up, standing for every missed occurrence. | At most one occurrence may be pending per schedule: a new tick folds into the pending run instead of adding a second. |
+| `catch_up` | Each missed occurrence fires as its own run, oldest first, capped per schedule at `max_catch_up` (default `MaxCatchUp = 100`); occurrences beyond the cap are skipped and the count is reported. | Unchanged from `skip`: each occurrence enqueues. |
 
-Computed at load from `last_fired_at` versus `now`. `catch_up` needs a bound or
-it becomes a thundering herd after a long outage — and it interacts with the
-backlog behaviour the runtime already documents, so it should ship with an
-explicit queue-depth observation, not just a flag.
+Computed at load from `last_fired_at` versus `now`. `catch_up` needs its bound or
+it becomes a thundering herd after a long outage: the per-schedule maximum is
+`max_catch_up`, default `MaxCatchUp = 100`, and truncation is counted and logged
+rather than silently applied. The policy interacts with the backlog behaviour
+the runtime already documents, so it ships with an explicit queue-depth
+observation, not just a flag: the per-job `max_queue_depth`, read from the live
+manifest, bounds autonomous admission, and a manual run is always accepted. Read
+together, the matrix has an answer for every combination: `coalesce` bounds a
+schedule's own backlog, `max_queue_depth` bounds a job's backlog however it was
+triggered, and `catch_up` is the only policy that deliberately creates work on
+wake-up — which is why it is bounded separately and counted when it truncates.
+
+The `coalesce`/`catch_up` runtime behaviour lands in `v0.5.0` WS2
+([v0.5.0-release-plan.md](v0.5.0-release-plan.md#ws2--implement-the-policy-and-bound-admission)),
+and `max_catch_up` is per-schedule data added by migration `0016`. Until that
+behaviour ships the write boundary still accepts only `skip`; this section states
+the decided semantics, not yet the tree's behaviour.
 
 ## 12. Security
 

@@ -62,3 +62,39 @@ refinement if a client asks for it.
 **Still open**: whether the split into separate control and payload credentials
 is worth the machinery (option D of the plan), and whether the body pane should
 sit behind an explicit reveal for screens on shared displays.
+
+## 2026-10-05 — Missed occurrences: `coalesce` bounds uptime, `catch_up` is bounded, admission is bounded
+
+**Committed path.** The `missed_policy` semantics for `OT-007` are decided for
+both halves of the gap — occurrences that fall during **downtime** and
+occurrences that fall while a previous run is still queued or running
+(**uptime**). The default is unchanged: `skip` with unbounded admission. The
+behaviour lands in `v0.5.0` WS2, in the same release as this record
+([v0.5.0-release-plan.md](v0.5.0-release-plan.md#ws2--implement-the-policy-and-bound-admission)).
+
+| Decision | Answer | Alternative (override if) | Consequence |
+| --- | --- | --- | --- |
+| `coalesce` during uptime | **`coalesce` bounds uptime as well as downtime.** At most one occurrence may be pending per schedule: a new tick while a run is queued or running folds into the pending run instead of adding a second. For a downtime gap, one run fires on the next wake-up standing for every missed occurrence. | `coalesce` should stay the design's narrower reading and collapse only the downtime gap. | `coalesce` becomes the per-schedule answer to the backlog that generates the tickets, instead of buying nothing for the case that generates them. The surviving run records the count and window of the occurrences it absorbed. |
+| `catch_up` bound | **Bounded per schedule, default `MaxCatchUp = 100`, oldest first.** Occurrences beyond the cap are skipped and the count is reported, not silently dropped. | A single global bound is enough. | A long outage cannot become a thundering herd. The per-schedule maximum is data (`max_catch_up`, migration `0016`); truncation is counted and logged once with the window. |
+| Manifest keys | **`trigger.missed_policy` and `trigger.max_catch_up` are optional, reconciled on reload like `cron` and `payload`.** Their absence means `skip` and the daemon default. | You will migrate manifest schedules to API-owned first. | Every real schedule is manifest-owned and refuses API mutation with `409`, so an API-only policy would be unusable for it. The manifest is the only usable home for a manifest job. |
+| `max_queue_depth` | **Optional at the job's top level, read from the live manifest, and governing autonomous admission (cron and webhook) only.** A manual `otter run` is always accepted. | The bound belongs to the daemon, not the job. | It is an operational pressure valve like capture policy, so a reload can relieve it without a release. Refusal is `429` + `overloaded` (override if `503` is reused, or a different code is chosen), counted, timestamped and reported. |
+| Default | **`skip` and unbounded admission stay the default.** | You want a safe-by-default bound and will announce the behaviour change. | Absence keeps today's meaning, which is what the compatibility policy requires of an additive minor ([compatibility.md](compatibility.md#manifest-schema)). |
+
+**Why this matters.** `OT-007` conflated two gaps that share one name: a
+downtime gap that was never replayed, and an uptime backlog that had no bound at
+all. Deciding `coalesce` for downtime only would have left the backlog that
+generates the tickets untouched; deciding `catch_up` without a per-schedule cap
+would have turned one outage into a herd. The two answers compose with
+`max_queue_depth`: `coalesce` bounds a schedule's own backlog, the depth bound
+bounds a job's backlog however it was triggered, and `catch_up` is the only
+policy that deliberately creates work on wake-up, which is why it is bounded
+separately. Every "not a run" outcome is visible — a collapse records its count
+and window on the surviving run, a cap-skip records how many were skipped, and a
+depth refusal is counted, timestamped and reported — and the occurrence ledger
+stays the single source of "this occurrence is done".
+
+**Still open**: the WS2 implementation and migration `0016`; the WS3
+observability fields (`refused_total`, `coalesced_total`,
+`catch_up_skipped_total`); the manifest reference text for the three keys (WS6);
+and whether a daemon-wide queue ceiling is ever needed at all (named out of scope
+in WS2).

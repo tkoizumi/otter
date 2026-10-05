@@ -20,7 +20,11 @@ const SchemaVersion = 1
 //
 // Version 2 is the v0.4.0 contract: first-class schedules that fire once per
 // occurrence, pinned job configuration, and the honest-limits section.
-const ContractVersion = 2
+// Version 3 is the v0.5.0 contract: the missed-occurrence policy is
+// per-schedule and defined for uptime as well as downtime, autonomous admission
+// is bounded per job with an explicit `429 overloaded` refusal, and the manifest
+// gains `trigger.missed_policy`, `trigger.max_catch_up` and `max_queue_depth`.
+const ContractVersion = 3
 
 // ManifestSchemaVersion is the only `version:` value a manifest may carry. A
 // contract test pins it to config.SupportedVersion, so the API package does not
