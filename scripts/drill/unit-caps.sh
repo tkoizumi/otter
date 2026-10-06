@@ -35,6 +35,16 @@
 #       cannot reclaim the allocator's pages, so a hold-everything job parks
 #       above memory.high and creeps toward memory.max.
 #
+# Falsifiability (DRILL_SABOTAGE=off-memory-max): render the unit with the cap
+# switched off -- MemoryMax=infinity -- so the unit still names a cap while the
+# cgroup is unbounded. The drill must go red on the configuration assertion that
+# compares memory.max against what the drill asked for, because a renderer that
+# drops or neuters the cap is exactly the failure this drill exists to catch,
+# and a clean run otherwise proves only that systemd accepts a unit file. The
+# sabotage changes the value, not the flag: passing no flag at all would be
+# caught by the "unit sets no MemoryMax" branch, which tests the renderer's
+# argument handling rather than the cap's effect.
+#
 # The three "kill" cases assert all four clauses of the claim: the runaway is
 # OOM-killed, no process but otterd is left in the unit's cgroup, otterd is not
 # restarted, and /health answers within 5s. A case reports every clause it fails,
@@ -92,6 +102,15 @@ if ! docker info >/dev/null 2>&1; then
 	exit 1
 fi
 
+SABOTAGE=${DRILL_SABOTAGE:-}
+case "$SABOTAGE" in
+"" | off-memory-max) ;;
+*)
+	echo "unit-caps: unknown DRILL_SABOTAGE=$SABOTAGE (known: off-memory-max)" >&2
+	exit 2
+	;;
+esac
+
 image=${OTTER_SYSTEMD_IMAGE:-otter-systemd-caps}
 name=otter-unit-caps-$$
 work=$(mktemp -d "${TMPDIR:-/tmp}/otter-unit-caps.XXXXXX")
@@ -144,6 +163,9 @@ run_case() {
 	echo
 	echo "================ unit-caps: case $case_name ================"
 	echo "unit-caps: caps       memory-max=$memory_max memory-high=$memory_high memory-swap-max=$memory_swap_max"
+	if [ "$SABOTAGE" = "off-memory-max" ]; then
+		echo "unit-caps: SABOTAGE   rendering MemoryMax=infinity; the cap assertion must go red"
+	fi
 	echo "unit-caps: expect     $case_expect; job manifest timeout ${case_job_timeout}s"
 	if [ "$case_expect" = soft-cap ]; then
 		echo "unit-caps: observe    the soft cap for ${kill_window}s"
@@ -156,8 +178,14 @@ run_case() {
 	# `otter deploy` writes. That is the only way the drill exercises the
 	# constant; every other case passes an explicit value.
 	echo "unit-caps: rendering the unit the deployer would write"
+	render_max=$memory_max
+	# The sabotage keeps the flag and changes its value, so the drill still
+	# exercises "a cap was requested" while the cgroup ends up unbounded.
+	if [ "$SABOTAGE" = "off-memory-max" ]; then
+		render_max=infinity
+	fi
 	set -- -remote-dir /opt/otter -workspace drill -service otterd-drill -user otter \
-		-listen 127.0.0.1:7337 -memory-max "$memory_max"
+		-listen 127.0.0.1:7337 -memory-max "$render_max"
 	if [ "$memory_high" != default ]; then
 		set -- "$@" -memory-high "$memory_high"
 	fi
