@@ -191,6 +191,7 @@ Every error uses the same envelope:
 | `404` | `not_found` | Unknown path, unknown job or run, unset state key, or a hook for a job without a webhook trigger. |
 | `405` | *(empty body)* | Known path, unsupported method — the router answers this itself. |
 | `409` | `conflict` | Cancel on a run that is already terminal, or capture ingestion for a run with no capture configuration. |
+| `429` | `overloaded` | An autonomous trigger (cron or webhook) arrived for a job whose `max_queue_depth` is reached. The response carries `Retry-After`; a manual `POST /v1/jobs/{id}/runs` is never refused this way. |
 | `500` | `internal_error` | Unexpected server error; details are in the daemon log. |
 | `503` | `unavailable` | The daemon is shutting down and is not accepting new work, an autonomous trigger arrived for a paused job, or a bounded timeline read did not finish in time (see `GET /v1/runs/{id}/timeline`). |
 
@@ -239,7 +240,8 @@ caller, since no token is configured — receives the full payload:
     {"job_id": "9f1c...", "name": "shopify-to-erp", "last_success_at": "2026-10-01T05:00:04Z", "age_seconds": 325.1},
     {"job_id": "41ab...", "name": "nightly-report"}
   ],
-  "storage": {"db_bytes": 812345678, "disk_free_bytes": 12884901888, "disk_total_bytes": 21474836480}
+  "storage": {"db_bytes": 812345678, "disk_free_bytes": 12884901888, "disk_total_bytes": 21474836480},
+  "admission_refusals": {"9f1c...": {"refused_total": 3, "last_refused_at": "2026-10-01T05:00:00Z"}}
 }
 ```
 
@@ -268,6 +270,7 @@ authenticated caller:
 | `freshness[]` | One entry per job: `last_success_at` is the newest succeeded run's completion time and `age_seconds` its age. Both are absent for a job that has never succeeded, which is itself the signal. Sorted by `job_id`. |
 | `storage.db_bytes` | The live database's size, `PRAGMA page_count * page_size` (so it excludes the WAL file). |
 | `storage.disk_free_bytes`, `storage.disk_total_bytes` | The data directory's filesystem, read daemon-side so a remote caller can watch it. Both are `0` on a platform that cannot report filesystem space. |
+| `admission_refusals` | Present only for jobs whose `max_queue_depth` refused an autonomous trigger. One entry per such job: `refused_total` is how many triggers were refused since the daemon started, `last_refused_at` when the most recent one happened. In-process, so it is empty after a restart — it answers "is this job being held back right now", not "how often, ever". |
 
 `status` is `ok` whenever the process is serving
 requests. A `200` means the process is up and SQLite is readable; there is no

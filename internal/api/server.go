@@ -514,6 +514,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Runs = runCounts
 
 	now := time.Now().UTC()
+	if refusals, err := s.backend.AdmissionRefusals(r.Context()); err != nil {
+		s.logger.Warn("health_admission_refusals", "error", err.Error())
+	} else if len(refusals) > 0 {
+		resp.AdmissionRefusals = refusals
+	}
+
 	if stats, err := s.backend.QueueStats(r.Context()); err != nil {
 		s.logger.Warn("health_queue_stats", "error", err.Error())
 	} else {
@@ -1537,6 +1543,13 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		// authorized, but this job is not taking work right now. No
 		// Retry-After is offered because a pause has no known end.
 		s.writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
+	case errors.Is(err, ErrOverloaded):
+		// The job's own queue bound is reached. 429 is the backpressure answer
+		// and unlike a pause there is a known relief: the queue drains. A
+		// manual run never reaches this branch, because an operator asking for
+		// one run is not the backlog the bound exists to cap.
+		w.Header().Set("Retry-After", "30")
+		s.writeError(w, http.StatusTooManyRequests, CodeOverloaded, err.Error())
 	case errors.Is(err, ErrForbidden):
 		s.writeError(w, http.StatusForbidden, CodeForbidden, err.Error())
 	case errors.Is(err, timeline.ErrReadDeadline):

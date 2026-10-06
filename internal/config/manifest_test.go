@@ -603,3 +603,69 @@ func TestManifestCapture(t *testing.T) {
 		t.Error("an invalid capture policy was accepted")
 	}
 }
+
+// TestManifestTriggerPolicyKeys proves the three policy keys are optional and
+// presence-aware: omitting them keeps skip and the daemon's catch-up default,
+// while an explicit value is carried through to the manifest. The distinction
+// matters because "absent" must stay today's meaning for the additive-minor
+// compatibility rule.
+func TestManifestTriggerPolicyKeys(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, "main.py"))
+	base := "version: 1\nname: example\nentrypoint: main.py\ntrigger:\n  cron: \"0 * * * *\"\n"
+
+	// Absent: skip, and no catch-up bound of its own.
+	m, err := Load(writeManifest(t, dir, base))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if m.Trigger.MissedPolicy != "" || m.Trigger.MaxCatchUp != 0 {
+		t.Errorf("omitted policy keys = %q/%d, want empty/0", m.Trigger.MissedPolicy, m.Trigger.MaxCatchUp)
+	}
+	if m.MaxQueueDepth != 0 {
+		t.Errorf("omitted max_queue_depth = %d, want 0 (unbounded)", m.MaxQueueDepth)
+	}
+
+	// Explicit: carried through and validated.
+	full := base + "  missed_policy: catch_up\n  max_catch_up: 25\nmax_queue_depth: 4\n"
+	m, err = Load(writeManifest(t, dir, full))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if m.Trigger.MissedPolicy != "catch_up" || m.Trigger.MaxCatchUp != 25 {
+		t.Errorf("policy keys = %q/%d, want catch_up/25", m.Trigger.MissedPolicy, m.Trigger.MaxCatchUp)
+	}
+	if m.MaxQueueDepth != 4 {
+		t.Errorf("max_queue_depth = %d, want 4", m.MaxQueueDepth)
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("a valid policy manifest was refused: %v", err)
+	}
+}
+
+// TestManifestTriggerPolicyRefusals covers the values that must not load. Each
+// is refused rather than ignored, so a manifest cannot ask for behaviour the
+// runtime will not deliver.
+func TestManifestTriggerPolicyRefusals(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, "main.py"))
+	base := "version: 1\nname: example\nentrypoint: main.py\n"
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"unknown policy", base + "trigger:\n  cron: \"0 * * * *\"\n  missed_policy: replay_everything\n"},
+		{"policy without cron", base + "trigger:\n  missed_policy: catch_up\n"},
+		{"bound without catch_up", base + "trigger:\n  cron: \"0 * * * *\"\n  missed_policy: coalesce\n  max_catch_up: 5\n"},
+		{"negative bound", base + "trigger:\n  cron: \"0 * * * *\"\n  missed_policy: catch_up\n  max_catch_up: -1\n"},
+		{"bound above the ceiling", fmt.Sprintf("%strigger:\n  cron: \"0 * * * *\"\n  missed_policy: catch_up\n  max_catch_up: %d\n", base, MaxCatchUpCeiling+1)},
+		{"negative depth", base + "max_queue_depth: -1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := LoadAndValidate(writeManifest(t, dir, tc.body)); err == nil {
+				t.Errorf("%s was accepted", tc.name)
+			}
+		})
+	}
+}

@@ -25,6 +25,14 @@ var (
 	// rather than "the request contradicts the job's state". A manual
 	// run is never refused with this error.
 	ErrPaused = errors.New("paused")
+
+	// ErrOverloaded refuses an autonomous trigger because the job's own
+	// max_queue_depth is already reached. Like ErrPaused it describes a
+	// temporary condition, but the answer differs: the queue drains on its own,
+	// so this maps to 429 with a retry hint rather than 503. A manual run is
+	// never refused with this error -- an operator asking for one run is not
+	// the backlog the bound exists to cap.
+	ErrOverloaded = errors.New("overloaded")
 )
 
 // Backend is everything the HTTP API needs from the daemon. Keeping it as an
@@ -186,6 +194,11 @@ type Backend interface {
 	// QueueStats reports queue age, per-job depth and retry activity for the
 	// authenticated health view.
 	QueueStats(ctx context.Context) (QueueStats, error)
+
+	// AdmissionRefusals reports, per job, how many autonomous triggers a job's
+	// max_queue_depth refused and when the most recent refusal happened. The
+	// counters are in-process, so they are empty after a restart.
+	AdmissionRefusals(ctx context.Context) (map[string]AdmissionRefusal, error)
 
 	// LastSuccessByJob reports each job's most recent successful completion,
 	// keyed by job id. A job absent from the map has never succeeded.

@@ -12,6 +12,8 @@ to walk: `.git`, `.hg`, `.svn`, `.cache`, `.venv`, `venv`, `node_modules`,
 - [Full manifest](#full-manifest)
 - [Field reference](#field-reference)
 - [Triggers](#triggers)
+  - [Missed occurrences](#missed-occurrences)
+  - [Admission](#admission)
 - [Retries](#retries)
 - [Timeouts and concurrency](#timeouts-and-concurrency)
 - [Environment variables](#environment-variables)
@@ -81,6 +83,9 @@ capture: full
 | `python.path` | list of strings | no | `[]` | Extra directories prepended to the child's `PYTHONPATH`. The declared directories are captured into the job's release at the same relative depth, so the same relative paths keep working after activation. |
 | `trigger.cron` | string | no | unset | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), interpreted in **UTC**. Reconciles into a `manifest`-owned schedule on every reload; the API refuses to change that row. Add independent schedules with `otter schedule add`. See [Cron](#cron). |
 | `trigger.webhook.enabled` | boolean | no | `false` | When `true`, exposes `POST /v1/hooks/{name}` guarded by a per-job token. |
+| `trigger.missed_policy` | string | no | `skip` | What happens to occurrences the runtime could not act on when they came due. `skip` replays nothing after a stop and admits each occurrence while running (the default, and unchanged). `coalesce` keeps at most one occurrence pending per schedule: a later tick folds into the waiting run, and a downtime gap fires one run standing for the window. `catch_up` replays missed occurrences oldest-first, each as its own run. Requires `trigger.cron`. See [Missed occurrences](#missed-occurrences). |
+| `trigger.max_catch_up` | integer | no | `100` | How many occurrences one `catch_up` trigger may replay on a single wake-up. Occurrences beyond the bound are skipped and counted, not silently dropped. Only meaningful with `trigger.missed_policy: catch_up`; specifying it otherwise is refused. Must be between `1` and `10000`. |
+| `max_queue_depth` | integer | no | unset (unbounded) | Maximum number of this job's runs that may be accepted and unfinished — queued, running or retrying — before an **autonomous** trigger is refused. A cron or webhook trigger at the bound gets `429 overloaded` with `Retry-After`; a manual `otter run` is always accepted. Read from the live manifest, so a reload can raise or remove it without a release. Must be `>= 1`. See [Admission](#admission). |
 | `timeout` | integer \| string | no | `300` | Maximum wall-clock time for one attempt. An integer means seconds; a string is a Go duration (`30s`, `5m`, `1h30m`). |
 | `concurrency` | integer | no | `1` | Maximum number of simultaneous runs of **this** job. Extra triggers queue. Must be `>= 1`. |
 | `retry.attempts` | integer | no | `0` | **Total** number of attempts, including the first. Must be `>= 0`. |
@@ -177,6 +182,58 @@ TOKEN=$(curl -s -H "Authorization: Bearer $OTTER_API_TOKEN" \
 curl -s -X POST -H "X-Otter-Token: $TOKEN" -H 'Content-Type: application/json' \
   -d '{"order_id": 4242}' http://127.0.0.1:7337/v1/hooks/my-hook
 ```
+
+### Missed occurrences
+
+`trigger.missed_policy` decides what happens to occurrences the runtime could
+not act on when they came due — the daemon was stopped, or a previous run was
+still busy. The default is `skip`, which is what every manifest did before the
+key existed: each occurrence is admitted while the daemon runs, and nothing is
+replayed after a stop.
+
+```yaml
+trigger:
+  cron: "0 * * * *"
+  missed_policy: catch_up
+  max_catch_up: 24   # optional; default 100
+```
+
+| Policy | After a stop (downtime) | While a previous run is pending (uptime) |
+| --- | --- | --- |
+| `skip` *(default)* | Nothing is replayed. | Every occurrence becomes its own queued run. |
+| `coalesce` | One run fires on the next wake-up, standing for every missed occurrence. | At most one occurrence is pending per schedule: a new tick folds into the waiting run, which records the count and window it absorbed. |
+| `catch_up` | Each missed occurrence fires as its own run, oldest first, up to `max_catch_up`; the rest are skipped and counted. | Unchanged from `skip`: each occurrence becomes its own queued run. |
+
+The full matrix, including what each choice promises across a restart, is in
+[runtime-contract.md §3.1](runtime-contract.md#31-missed-occurrences-are-policy-dependent).
+Two rules are worth stating here because they surprise people:
+
+- **A schedule that has never fired has no window to replay.** `catch_up` reads
+  back only as far as the last occurrence that actually produced a run, so a
+  brand-new schedule starts with its next occurrence rather than with a herd.
+- **A policy needs a cron trigger.** A `missed_policy` other than `skip`, or a
+  `max_catch_up`, without `trigger.cron` is a validation error rather than an
+  ignored key.
+
+### Admission
+
+`max_queue_depth` bounds how much work a job may have accepted and unfinished —
+counting runs that are queued, running or retrying — before an **autonomous**
+trigger is refused.
+
+```yaml
+max_queue_depth: 5
+```
+
+- A cron or webhook trigger at the bound is **refused, not queued**: the API
+  answers `429` with the `overloaded` code and a `Retry-After`, and the refusal
+  is counted and timestamped in the daemon log and reported by `/health`.
+- A **manual** `otter run` is always accepted. The bound exists to stop a
+  schedule or a webhook storm from building a backlog nobody asked for; an
+  operator running a job by hand is the opposite of that.
+- The bound is read from the **live** manifest, so raising or removing it takes
+  effect on the next reload rather than needing a release.
+- Leaving it unset means unbounded, which is the previous behaviour.
 
 ### Manual only
 

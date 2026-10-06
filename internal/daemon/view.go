@@ -261,6 +261,38 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 			label, label, api.ErrPaused)
 	}
 
+	// The max_queue_depth bound is the job's own pressure valve, and like a
+	// pause it governs autonomous admission only.
+	//
+	// Manual runs are exempt on purpose: the bound exists to stop a schedule or
+	// a webhook storm from building a backlog nobody asked for, and an operator
+	// running a job by hand is the opposite of that. A manual run is a
+	// deliberate act with a person waiting on it, so refusing it would take the
+	// one tool away exactly when the queue is deep.
+	//
+	// Retries are exempt for a different reason: they are already-accepted work
+	// finishing, created by the worker from the attempt they retry, so they
+	// never reach this function.
+	if triggerType != api.TriggerManual {
+		if limit := entry.Manifest.MaxQueueDepth; limit > 0 {
+			// The count is queued plus running plus retrying -- accepted and
+			// unfinished -- which is what the contract calls the job's pending
+			// count. Bounding only the wait queue would let a schedule pile work
+			// onto a job that has not started any of it.
+			depth, err := d.pendingCount(ctx, jobID)
+			if err != nil {
+				return "", err
+			}
+			if depth >= limit {
+				d.recordDepthRefusal(jobID, triggerType, depth, limit)
+				return "", fmt.Errorf(
+					"job %q has %d runs pending, at its max_queue_depth of %d; "+
+						"a manual run is always accepted, and the queue drains as workers finish: %w",
+					label, depth, limit, api.ErrOverloaded)
+			}
+		}
+	}
+
 	// The capture policy is resolved once, here, and then recorded on the run:
 	// the child is told the result and cannot widen it, and a retry inherits
 	// exactly what the run was submitted with.
@@ -274,7 +306,7 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 		return "", fmt.Errorf("%v: %w", err, api.ErrInvalid)
 	}
 
-	metadata, err := encodeTriggerMetadata(payload, triggerType)
+	metadata, err := encodeTriggerMetadata(payload, triggerType, opts.Metadata)
 	if err != nil {
 		return "", err
 	}
@@ -425,7 +457,48 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 	return run.ID, nil
 }
 
-func encodeTriggerMetadata(payload api.TriggerPayload, triggerType string) (json.RawMessage, error) {
+// recordDepthRefusal counts one autonomous trigger refused by a job's
+// max_queue_depth, and logs it with the trigger type, the depth that was
+// measured and the bound, so the operator learns both that it happened and how
+// close to the bound the job is running.
+func (d *Daemon) recordDepthRefusal(jobID, triggerType string, depth, limit int) {
+	now := time.Now().UTC()
+	d.depthMu.Lock()
+	if d.depthRefusals == nil {
+		d.depthRefusals = map[string]*depthRefusal{}
+	}
+	rec := d.depthRefusals[jobID]
+	if rec == nil {
+		rec = &depthRefusal{}
+		d.depthRefusals[jobID] = rec
+	}
+	rec.Total++
+	rec.LastAt = now
+	total := rec.Total
+	d.depthMu.Unlock()
+
+	d.log.Warn("admission_refused", nil,
+		"job", jobID, "trigger", triggerType, "depth", depth, "bound", limit, "refused_total", total)
+}
+
+// AdmissionRefusals reports the per-job overload accounting for the health
+// surface, in the shape the API publishes.
+func (d *Daemon) AdmissionRefusals(context.Context) (map[string]api.AdmissionRefusal, error) {
+	d.depthMu.Lock()
+	defer d.depthMu.Unlock()
+	out := make(map[string]api.AdmissionRefusal, len(d.depthRefusals))
+	for id, rec := range d.depthRefusals {
+		at := rec.LastAt
+		out[id] = api.AdmissionRefusal{Total: rec.Total, LastAt: &at}
+	}
+	return out, nil
+}
+
+// encodeTriggerMetadata builds a run's trigger metadata. extra carries anything
+// the caller decided about this run that is not part of the trigger itself --
+// the window a coalesced run absorbed, for instance -- and merges last, so the
+// runtime's own accounting is what a reader sees.
+func encodeTriggerMetadata(payload api.TriggerPayload, triggerType string, extra map[string]any) (json.RawMessage, error) {
 	meta := map[string]any{"type": triggerType}
 	if len(payload.Body) > 0 {
 		meta["body"] = json.RawMessage(payload.Body)
@@ -435,6 +508,9 @@ func encodeTriggerMetadata(payload api.TriggerPayload, triggerType string) (json
 	}
 	if payload.ScheduledAt != nil {
 		meta["scheduled_at"] = payload.ScheduledAt.UTC().Format(time.RFC3339Nano)
+	}
+	for k, v := range extra {
+		meta[k] = v
 	}
 
 	encoded, err := json.Marshal(meta)

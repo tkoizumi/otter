@@ -42,7 +42,14 @@ type fakeBackend struct {
 	nextRun   int
 	logs      map[string][]runs.LogEntry
 	nextLogID int64
-	state     map[string]map[string]json.RawMessage
+	// overloadedJob, when set, makes SubmitRun refuse autonomous triggers for
+	// that job with ErrOverloaded -- the max_queue_depth answer -- so the API's
+	// status code for it is asserted rather than assumed.
+	overloadedJob string
+	// admissionRefusals is what the authenticated health view reports for jobs
+	// whose max_queue_depth refused a trigger.
+	admissionRefusals map[string]AdmissionRefusal
+	state             map[string]map[string]json.RawMessage
 
 	queueDepth int
 	runCounts  map[string]int
@@ -508,6 +515,13 @@ func (f *fakeBackend) SubmitRun(_ context.Context, jobID string, payload Trigger
 		}
 	}
 
+	// max_queue_depth is modelled as it reaches the API: a refusal the handler
+	// has to turn into a status code. Which triggers it applies to is the
+	// daemon's decision and is asserted there, not here.
+	if f.overloadedJob == jobID {
+		return "", fmt.Errorf("job %q is at its max_queue_depth: %w", jobID, ErrOverloaded)
+	}
+
 	f.submitted = append(f.submitted, submittedRun{jobID: jobID, payload: payload})
 	f.nextRun++
 	runID := fmt.Sprintf("submitted-%d", f.nextRun)
@@ -640,6 +654,14 @@ func (f *fakeBackend) QueueStats(context.Context) (QueueStats, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.queueStats, nil
+}
+
+// admissionRefusals is what the fake reports for the health surface. A test
+// that wants a refusal visible sets it.
+func (f *fakeBackend) AdmissionRefusals(context.Context) (map[string]AdmissionRefusal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.admissionRefusals, nil
 }
 
 func (f *fakeBackend) LastSuccessByJob(context.Context) (map[string]time.Time, error) {

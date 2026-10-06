@@ -78,13 +78,12 @@ Versioning rules:
 > **Implementation status of version 3.** Version 3 states the `v0.5.0`
 > semantics decided on 2026-10-05
 > ([decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded)).
-> The runtime behaviour those clauses describe — `coalesce`, bounded `catch_up`,
-> and the `max_queue_depth` refusal — lands in `v0.5.0` WS2, in the same release
-> as this contract. On the tree as it stands before WS2, the write boundary still
-> accepts only `missed_policy: skip` and admission is unbounded. The clauses are
-> written once, as the shipped `v0.5.0` contract, so a reader of the released
-> artifact reads the semantics that artifact implements; this note is what keeps
-> the interim tree from reading as a false claim.
+> **The runtime behaviour is implemented**, with tests for each clause:
+> `coalesce` for both halves of the gap, bounded `catch_up` on the per-schedule
+> bound added by migration `0016`, and the `max_queue_depth` refusal with its
+> manual-run exemption. It ships with `v0.5.0`. This document describes the
+> released artifact, so these clauses are the `v0.5.0` contract: on an earlier
+> release, read them as the next version's rather than as that artifact's.
 
 > **Reading the tables.** *Guarantee* rows are promises backed by at least one
 > named scenario. *Explicit non-guarantee* rows are behaviors the runtime does
@@ -202,8 +201,10 @@ autonomous trigger becomes a run:
   admission per job.** When the job's pending count — `queued` plus `running` —
   is at or above the bound, a cron or webhook trigger is **refused, not queued**:
   the API returns `429 Too Many Requests` with the `overloaded` error code, the
-  refusal is counted and timestamped for `/health` and `otter status`, and it is
-  logged as `admission_refused` with the job, trigger type, depth and bound. A
+  refusal is counted and timestamped per job, published as `admission_refusals`
+  in the authenticated `/health` view (which `otter status --json` returns
+  verbatim), and logged as `admission_refused` with the job, trigger type, depth
+  and bound. A
   manual `POST /v1/jobs/{id}/runs` (or `otter run`) is never refused by this
   bound; it is an operator decision. Because the bound is read from the live
   manifest, a reload can raise or remove it without a release. The bound's

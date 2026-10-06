@@ -173,6 +173,25 @@ type Daemon struct {
 	// than one daemon syncing the same destination -- a laptop and a server,
 	// say -- an alert without it does not say which one is broken.
 	hostname string
+
+	// depthRefusals counts, per job, the autonomous triggers refused because
+	// the job's max_queue_depth was reached, and remembers when the last one
+	// happened. A refusal is a run that did not happen, so it has to be
+	// visible somewhere the operator already looks rather than only in a log
+	// line that scrolls away.
+	depthMu       sync.Mutex
+	depthRefusals map[string]*depthRefusal
+}
+
+// depthRefusal is one job's overload accounting.
+type depthRefusal struct {
+	// Total is every refusal since the daemon started. It is deliberately not
+	// persisted: a restart means a new process, and the queue it was protecting
+	// may have drained in between.
+	Total int64
+	// LastAt is when the most recent refusal happened, so an operator can tell
+	// "this is happening now" from "this happened once, hours ago".
+	LastAt time.Time
 }
 
 // Compile-time proof that the daemon satisfies the API's backend contract.
@@ -598,7 +617,15 @@ func manifestSpecs(m *config.Manifest) []schedule.ManifestSpec {
 	if spec == "" {
 		return nil
 	}
-	return []schedule.ManifestSpec{{Ref: "trigger.cron", Cron: spec}}
+	// The policy and its bound travel with the schedule. A manifest-owned row
+	// refuses API mutation, so the file is the only usable home for them:
+	// an API-only policy would be unusable on every real schedule.
+	return []schedule.ManifestSpec{{
+		Ref:          "trigger.cron",
+		Cron:         spec,
+		MissedPolicy: schedule.MissedPolicy(strings.TrimSpace(m.Trigger.MissedPolicy)),
+		MaxCatchUp:   m.Trigger.MaxCatchUp,
+	}}
 }
 
 // cronJob returns the job registered for a schedule's cron trigger. The
@@ -833,6 +860,20 @@ func (d *Daemon) cronTick(scheduleID string, occurrence time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// coalesce bounds uptime as well as downtime: while one of this schedule's
+	// runs is already accepted and not yet executing, a new occurrence folds
+	// into it rather than becoming a second queued run. The bound is per
+	// schedule, which is what makes it the schedule's own answer to a backlog.
+	//
+	// A running attempt is not "pending": it is already doing work. When the
+	// only run in flight is executing, the occurrence becomes the next pending
+	// run, which still leaves exactly one waiting -- so a job slower than its
+	// interval stops accumulating a queue without stopping firing.
+	if rec.MissedPolicy == schedule.MissedCoalesce {
+		d.coalesceTick(ctx, rec, occurrence)
+		return
+	}
+
 	at := occurrence.UTC()
 	payload := api.TriggerPayload{Type: api.TriggerCron, ScheduledAt: &at}
 	if body := strings.TrimSpace(string(rec.Payload)); body != "" && body != "{}" {
@@ -854,6 +895,52 @@ func (d *Daemon) cronTick(scheduleID string, occurrence time.Time) {
 	}
 }
 
+// coalesceTick handles one occurrence of a coalesce schedule during uptime:
+// fold it into the run already waiting, or start the single pending run.
+func (d *Daemon) coalesceTick(ctx context.Context, rec schedule.Schedule, occurrence time.Time) {
+	at := occurrence.UTC()
+
+	runID, prev, ok, err := d.pendingRunFor(ctx, rec.JobID)
+	if err != nil {
+		d.log.Error("coalesce_pending_lookup_failed", err, "schedule", rec.ID, "job", rec.JobID)
+		return
+	}
+	if ok {
+		folded, err := d.foldOccurrence(ctx, rec, occurrence, prev, runID)
+		if err != nil {
+			d.log.Error("coalesce_fold_failed", err, "schedule", rec.ID, "job", rec.JobID, "run_id", runID)
+			return
+		}
+		if folded {
+			d.log.Info("coalesce_folded",
+				"schedule", rec.ID, "job", rec.JobID, "run_id", runID,
+				"occurrence", at.Format(time.RFC3339))
+		} else {
+			d.log.Debug("coalesce_duplicate", "schedule", rec.ID, "occurrence", at.Format(time.RFC3339))
+		}
+		return
+	}
+
+	// Nothing is waiting: this occurrence starts the one pending run. A run
+	// already executing does not change that, which is what keeps a job slower
+	// than its interval from silently losing its window.
+	payload := api.TriggerPayload{Type: api.TriggerCron, ScheduledAt: &at}
+	if body := strings.TrimSpace(string(rec.Payload)); body != "" && body != "{}" {
+		payload.Body = rec.Payload
+	}
+	if _, err := d.submitRun(ctx, "id:"+rec.JobID, payload, api.SubmitRunOptions{},
+		&fireRequest{ScheduleID: rec.ID, Occurrence: occurrence}); err != nil {
+		if errors.Is(err, errAlreadyFired) {
+			d.log.Debug("coalesce_duplicate", "schedule", rec.ID, "occurrence", at.Format(time.RFC3339))
+			return
+		}
+		d.log.Error("coalesce_submit_failed", err, "schedule", rec.ID, "job", rec.JobID)
+		return
+	}
+	d.log.Info("coalesce_fired",
+		"schedule", rec.ID, "job", rec.JobID, "occurrence", at.Format(time.RFC3339))
+}
+
 // Run starts the API, the scheduler and the workers, then blocks until ctx is
 // cancelled (SIGINT/SIGTERM) or the API fails, and shuts down gracefully.
 func (d *Daemon) Run(ctx context.Context) error {
@@ -865,6 +952,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	apiErr := make(chan error, 1)
 	go func() { apiErr <- d.apiServer.Run(apiCtx) }()
+
+	// Replay the missed window before the cron runner is armed and before any
+	// worker exists to claim work. Running it first is what keeps a replayed
+	// occurrence from racing the live fire path: the queue is filled by policy,
+	// then the normal machinery starts and drains it.
+	d.replayMissedOccurrences(apiCtx, time.Now().UTC())
 
 	d.sched.Start()
 	d.startWorkers()

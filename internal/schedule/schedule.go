@@ -44,6 +44,13 @@ const DefaultTimezone = "UTC"
 // on one wake-up, so a long outage cannot become a thundering herd.
 const MaxCatchUp = 100
 
+// MaxCatchUpCeiling is the largest per-schedule catch-up bound an operator may
+// set. The default is deliberately modest and this is deliberately not: the
+// point is to refuse a bound that is really "no bound", not to second-guess a
+// large one. A schedule that asks for more than this is asking for the outage
+// to become the herd.
+const MaxCatchUpCeiling = 10000
+
 const (
 	// LegacyRefMigrated marks a row carried forward from v0.3.0's
 	// job_schedules table.
@@ -89,10 +96,13 @@ func (p MissedPolicy) Valid() bool {
 	return p == MissedSkip || p == MissedCoalesce || p == MissedCatchUp
 }
 
-// Supported reports whether p is implemented. Only skip is: the other two are
-// refused at the write boundary so a caller cannot select behaviour that does
-// not exist.
-func (p MissedPolicy) Supported() bool { return p == MissedSkip }
+// Supported reports whether p is implemented. All three are: skip (the
+// default, and the only one a manifest or API caller gets without asking),
+// coalesce and catch_up. The write boundary refuses a name that is not a known
+// policy; it no longer refuses a known one for being unimplemented.
+func (p MissedPolicy) Supported() bool {
+	return p == MissedSkip || p == MissedCoalesce || p == MissedCatchUp
+}
 
 // Sentinel errors. The daemon maps them onto HTTP status codes without leaking
 // HTTP concepts into this package.
@@ -119,8 +129,13 @@ type Schedule struct {
 	Payload json.RawMessage
 	// ConfigVersion pins the job configuration a run uses. It is stored now so
 	// the configuration layer can land without a second migration.
-	ConfigVersion  string
-	MissedPolicy   MissedPolicy
+	ConfigVersion string
+	MissedPolicy  MissedPolicy
+	// MaxCatchUp bounds how many missed occurrences this schedule replays on
+	// one wake-up. Zero means the daemon default (MaxCatchUp); it is stored as
+	// an explicit number only when an operator asked for one, so a release can
+	// move the default without rewriting rows.
+	MaxCatchUp     int
 	Origin         Origin
 	OriginRef      string
 	PausedAt       *time.Time
@@ -128,6 +143,15 @@ type Schedule struct {
 	IdempotencyKey string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+// CatchUpLimit resolves the schedule's catch-up bound, falling back to the
+// package default when the row carries none.
+func (s Schedule) CatchUpLimit() int {
+	if s.MaxCatchUp <= 0 {
+		return MaxCatchUp
+	}
+	return s.MaxCatchUp
 }
 
 // Paused reports whether this schedule is held back. A paused schedule is not
@@ -151,11 +175,14 @@ func (s Schedule) Location() (*time.Location, error) {
 
 // CreateInput describes a new schedule.
 type CreateInput struct {
-	JobID          string
-	Cron           string
-	Timezone       string
-	Payload        json.RawMessage
-	MissedPolicy   MissedPolicy
+	JobID        string
+	Cron         string
+	Timezone     string
+	Payload      json.RawMessage
+	MissedPolicy MissedPolicy
+	// MaxCatchUp is the schedule's own catch-up bound. Zero means the daemon
+	// default, which is what a caller that does not ask for one gets.
+	MaxCatchUp     int
 	Origin         Origin
 	OriginRef      string
 	IdempotencyKey string
@@ -169,6 +196,7 @@ type UpdateInput struct {
 	Timezone     *string
 	Payload      *json.RawMessage
 	MissedPolicy *MissedPolicy
+	MaxCatchUp   *int
 }
 
 // ManifestSpec is one schedule a manifest declares for a job.
@@ -179,6 +207,10 @@ type ManifestSpec struct {
 	Cron     string
 	Timezone string
 	Payload  json.RawMessage
+	// MissedPolicy and MaxCatchUp are optional in the manifest. Their absence
+	// means the same as an API create that omitted them: skip, daemon default.
+	MissedPolicy MissedPolicy
+	MaxCatchUp   int
 }
 
 // ReconcileResult reports what a manifest reconciliation changed.
@@ -203,7 +235,7 @@ type Store struct {
 }
 
 const scheduleColumns = `id, job_id, cron, timezone, payload, config_version,
-	missed_policy, origin, origin_ref, paused_at, last_fired_at,
+	missed_policy, max_catch_up, origin, origin_ref, paused_at, last_fired_at,
 	idempotency_key, created_at, updated_at`
 
 // NewStore reads the schedule table into memory and returns a Store over db.
@@ -321,9 +353,13 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Schedule, bool, err
 	if !policy.Valid() {
 		return Schedule{}, false, fmt.Errorf("%w: unknown missed_policy %q", ErrInvalid, policy)
 	}
-	if !policy.Supported() {
-		return Schedule{}, false, fmt.Errorf("%w: missed_policy %q is not supported yet; only %q is implemented",
-			ErrInvalid, policy, MissedSkip)
+	// A catch-up bound is only meaningful for catch_up. Refusing it elsewhere
+	// would make a policy change and a bound cleanup two edits; ignoring it
+	// would store a number that does nothing. It is normalized away instead, so
+	// the row says what it means.
+	maxCatchUp, err := normalizeMaxCatchUp(policy, in.MaxCatchUp)
+	if err != nil {
+		return Schedule{}, false, err
 	}
 	origin := in.Origin
 	if origin == "" {
@@ -352,6 +388,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Schedule, bool, err
 		Timezone:       tz,
 		Payload:        payload,
 		MissedPolicy:   policy,
+		MaxCatchUp:     maxCatchUp,
 		Origin:         origin,
 		OriginRef:      in.OriginRef,
 		IdempotencyKey: in.IdempotencyKey,
@@ -364,9 +401,9 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Schedule, bool, err
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO schedules (`+scheduleColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.JobID, rec.Cron, rec.Timezone, string(rec.Payload),
-		database.NullableString(rec.ConfigVersion), string(rec.MissedPolicy),
+		database.NullableString(rec.ConfigVersion), string(rec.MissedPolicy), rec.MaxCatchUp,
 		string(rec.Origin), rec.OriginRef,
 		database.FormatNullable(rec.PausedAt), database.FormatNullable(rec.LastFiredAt),
 		database.NullableString(rec.IdempotencyKey),
@@ -446,14 +483,29 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Schedule
 		if !in.MissedPolicy.Valid() {
 			return Schedule{}, false, fmt.Errorf("%w: unknown missed_policy %q", ErrInvalid, *in.MissedPolicy)
 		}
-		if !in.MissedPolicy.Supported() {
-			return Schedule{}, false, fmt.Errorf("%w: missed_policy %q is not supported yet; only %q is implemented",
-				ErrInvalid, *in.MissedPolicy, MissedSkip)
-		}
 		if rec.MissedPolicy != *in.MissedPolicy {
 			rec.MissedPolicy = *in.MissedPolicy
 			changed = true
 		}
+	}
+	if in.MaxCatchUp != nil {
+		// Validated against the policy the row will end up with, not the one it
+		// had: a request that sets catch_up and its bound in one call must be
+		// judged on the result.
+		limit, err := normalizeMaxCatchUp(rec.MissedPolicy, *in.MaxCatchUp)
+		if err != nil {
+			return Schedule{}, false, err
+		}
+		if rec.MaxCatchUp != limit {
+			rec.MaxCatchUp = limit
+			changed = true
+		}
+	} else if in.MissedPolicy != nil && rec.MissedPolicy != MissedCatchUp && rec.MaxCatchUp != 0 {
+		// Moving away from catch_up drops a bound that no longer applies, so a
+		// later return to catch_up starts from the default rather than
+		// resurrecting a stale number.
+		rec.MaxCatchUp = 0
+		changed = true
 	}
 	if !changed {
 		return rec, false, nil
@@ -461,9 +513,9 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Schedule
 
 	rec.UpdatedAt = time.Now().UTC()
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE schedules SET cron = ?, timezone = ?, payload = ?, missed_policy = ?, updated_at = ?
+		`UPDATE schedules SET cron = ?, timezone = ?, payload = ?, missed_policy = ?, max_catch_up = ?, updated_at = ?
 		 WHERE id = ?`,
-		rec.Cron, rec.Timezone, string(rec.Payload), string(rec.MissedPolicy),
+		rec.Cron, rec.Timezone, string(rec.Payload), string(rec.MissedPolicy), rec.MaxCatchUp,
 		database.FormatTime(rec.UpdatedAt), rec.ID); err != nil {
 		return Schedule{}, false, fmt.Errorf("schedule: update %s: %w", id, err)
 	}
@@ -570,9 +622,9 @@ func (s *Store) SetLegacyCadence(ctx context.Context, jobID, cron string) (Sched
 	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO schedules (`+scheduleColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.JobID, rec.Cron, rec.Timezone, string(rec.Payload),
-		nil, string(rec.MissedPolicy), string(rec.Origin), rec.OriginRef,
+		nil, string(rec.MissedPolicy), rec.MaxCatchUp, string(rec.Origin), rec.OriginRef,
 		nil, nil, nil,
 		database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt)); err != nil {
 		return Schedule{}, false, fmt.Errorf("schedule: create cadence %s: %w", jobID, err)
@@ -656,6 +708,19 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 			if err != nil {
 				return err
 			}
+			// A manifest schedule carries its policy too. Absence means skip and
+			// the daemon default, exactly as an API create that omitted them.
+			policy := spec.MissedPolicy
+			if policy == "" {
+				policy = MissedSkip
+			}
+			if !policy.Valid() {
+				return fmt.Errorf("%w: unknown missed_policy %q", ErrInvalid, policy)
+			}
+			maxCatchUp, err := normalizeMaxCatchUp(policy, spec.MaxCatchUp)
+			if err != nil {
+				return err
+			}
 
 			var current *Schedule
 			if spec.Ref != "" {
@@ -682,7 +747,8 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 					Cron:         spec.Cron,
 					Timezone:     tz,
 					Payload:      payload,
-					MissedPolicy: MissedSkip,
+					MissedPolicy: policy,
+					MaxCatchUp:   maxCatchUp,
 					Origin:       OriginManifest,
 					OriginRef:    ref,
 					CreatedAt:    now,
@@ -690,9 +756,9 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 				}
 				if _, err := tx.ExecContext(ctx,
 					`INSERT INTO schedules (`+scheduleColumns+`)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					rec.ID, rec.JobID, rec.Cron, rec.Timezone, string(rec.Payload),
-					nil, string(rec.MissedPolicy), string(rec.Origin), rec.OriginRef,
+					nil, string(rec.MissedPolicy), rec.MaxCatchUp, string(rec.Origin), rec.OriginRef,
 					nil, nil, nil,
 					database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt)); err != nil {
 					return fmt.Errorf("schedule: reconcile insert %s: %w", jobID, err)
@@ -705,7 +771,8 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 			matched[current.ID] = true
 
 			if current.Cron == spec.Cron && current.Timezone == tz &&
-				string(current.Payload) == string(payload) && current.OriginRef == ref {
+				string(current.Payload) == string(payload) && current.OriginRef == ref &&
+				current.MissedPolicy == policy && current.MaxCatchUp == maxCatchUp {
 				continue
 			}
 			updated := *current
@@ -713,11 +780,15 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 			updated.Timezone = tz
 			updated.Payload = payload
 			updated.OriginRef = ref
+			updated.MissedPolicy = policy
+			updated.MaxCatchUp = maxCatchUp
 			updated.UpdatedAt = now
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE schedules SET cron = ?, timezone = ?, payload = ?, origin_ref = ?, updated_at = ?
+				`UPDATE schedules SET cron = ?, timezone = ?, payload = ?, origin_ref = ?,
+				     missed_policy = ?, max_catch_up = ?, updated_at = ?
 				 WHERE id = ?`,
 				updated.Cron, updated.Timezone, string(updated.Payload), updated.OriginRef,
+				string(updated.MissedPolicy), updated.MaxCatchUp,
 				database.FormatTime(updated.UpdatedAt), updated.ID); err != nil {
 				return fmt.Errorf("schedule: reconcile update %s: %w", updated.ID, err)
 			}
@@ -907,7 +978,7 @@ func scanSchedule(sc interface{ Scan(...any) error }) (Schedule, error) {
 		pausedAt, lastFired     database.NullableTime
 	)
 	if err := sc.Scan(&rec.ID, &rec.JobID, &rec.Cron, &rec.Timezone, &payload,
-		&configVer, &policy, &origin, &originRef, &pausedAt, &lastFired,
+		&configVer, &policy, &rec.MaxCatchUp, &origin, &originRef, &pausedAt, &lastFired,
 		&idem, &createdAt, &updatedAt); err != nil {
 		return Schedule{}, err
 	}
@@ -938,6 +1009,28 @@ func normalizeTimezone(name string) (string, error) {
 		return "", fmt.Errorf("%w: unknown timezone %q", ErrInvalid, name)
 	}
 	return name, nil
+}
+
+// normalizeMaxCatchUp validates a requested catch-up bound against the policy it
+// would apply to.
+//
+// The bound is only meaningful for catch_up, so a value supplied for any other
+// policy is normalized to zero -- "use the daemon default" -- rather than
+// stored, where it would look like configuration that does something. A
+// negative or absurd bound is refused rather than silently clamped: the caller
+// asked for something the runtime will not do.
+func normalizeMaxCatchUp(policy MissedPolicy, requested int) (int, error) {
+	if requested < 0 {
+		return 0, fmt.Errorf("%w: max_catch_up must not be negative", ErrInvalid)
+	}
+	if policy != MissedCatchUp {
+		return 0, nil
+	}
+	if requested > MaxCatchUpCeiling {
+		return 0, fmt.Errorf("%w: max_catch_up %d exceeds the ceiling of %d",
+			ErrInvalid, requested, MaxCatchUpCeiling)
+	}
+	return requested, nil
 }
 
 // normalizePayload checks that a payload is a JSON object within the size

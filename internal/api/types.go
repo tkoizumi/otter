@@ -279,6 +279,12 @@ type HealthResponse struct {
 	Queue     *HealthQueue      `json:"queue,omitempty"`
 	Freshness []HealthFreshness `json:"freshness,omitempty"`
 	Storage   *HealthStorage    `json:"storage,omitempty"`
+
+	// AdmissionRefusals is per job and present only for jobs whose
+	// max_queue_depth refused an autonomous trigger. A refusal is a run that
+	// did not happen, so it is reported here rather than being visible only in
+	// a log line that scrolls away.
+	AdmissionRefusals map[string]AdmissionRefusal `json:"admission_refusals,omitempty"`
 }
 
 // HealthCounts summarises discovered jobs.
@@ -341,6 +347,17 @@ type QueueStats struct {
 	NextRetryAt     *time.Time
 }
 
+// AdmissionRefusal is one job's max_queue_depth accounting: how many autonomous
+// triggers it refused since the daemon started, and when the most recent one
+// happened. It is deliberately not persisted -- a restart is a new process, and
+// the queue it was protecting may have drained in between -- so this answers
+// "is a job being held back right now?" rather than "how often, ever?".
+type AdmissionRefusal struct {
+	Total int64 `json:"refused_total"`
+	// LastAt is when the most recent refusal happened. Absent when Total is 0.
+	LastAt *time.Time `json:"last_refused_at,omitempty"`
+}
+
 // StorageStats is the raw storage data the daemon reports to the API.
 type StorageStats struct {
 	DBBytes        int64
@@ -397,6 +414,12 @@ type SubmitRunResponse struct {
 type SubmitRunOptions struct {
 	// Capture is the HTTP capture policy for the run. Empty means the default.
 	Capture inspection.Policy
+
+	// Metadata merges into the run's trigger metadata alongside the payload.
+	// It is how a runtime-side scheduling decision records what it decided --
+	// the bounds of a coalesced window, for instance -- so the run explains
+	// itself instead of the accounting living only in a log line.
+	Metadata map[string]any
 }
 
 // CancelRunResponse is returned when a cancellation is accepted.
@@ -484,4 +507,9 @@ const (
 	CodeForbidden    = "forbidden"
 	CodeInternal     = "internal_error"
 	CodeUnavailable  = "unavailable"
+	// CodeOverloaded refuses an autonomous trigger because the job's own queue
+	// depth bound is reached. It is distinct from CodeUnavailable: this is a
+	// backpressure answer with a known relief (the queue drains), not a job that
+	// has stopped accepting work.
+	CodeOverloaded = "overloaded"
 )

@@ -32,19 +32,24 @@ const SupportedVersion = 1
 
 // Default values applied when a manifest omits a field.
 const (
-	DefaultTimeout                  = 300 * time.Second
-	DefaultConcurrency              = 1
-	DefaultRetryAttempts            = 0
-	DefaultRetryInitialDelay        = 2 * time.Second
-	DefaultRetryMaxDelay            = 60 * time.Second
-	DefaultBackoff                  = BackoffExponential
-	DefaultPythonExecutable         = "python3"
-	MaxRetryAttempts                = 100
-	MaxNameLength                   = 64
-	maxTimeout                      = 30 * 24 * time.Hour
-	BackoffNone              string = "none"
-	BackoffLinear            string = "linear"
-	BackoffExponential       string = "exponential"
+	DefaultTimeout           = 300 * time.Second
+	DefaultConcurrency       = 1
+	DefaultRetryAttempts     = 0
+	DefaultRetryInitialDelay = 2 * time.Second
+	DefaultRetryMaxDelay     = 60 * time.Second
+	DefaultBackoff           = BackoffExponential
+	DefaultPythonExecutable  = "python3"
+	MaxRetryAttempts         = 100
+	MaxNameLength            = 64
+	// MaxCatchUpCeiling mirrors schedule.MaxCatchUpCeiling. The two packages
+	// are deliberately independent -- config does not import schedule -- so a
+	// test in each asserts they agree rather than one importing the other for a
+	// single number.
+	MaxCatchUpCeiling         = 10000
+	maxTimeout                = 30 * 24 * time.Hour
+	BackoffNone        string = "none"
+	BackoffLinear      string = "linear"
+	BackoffExponential string = "exponential"
 )
 
 var (
@@ -66,6 +71,15 @@ type Manifest struct {
 	Retry       RetryConfig       `yaml:"retry"`
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
+
+	// MaxQueueDepth bounds how many of this job's runs may be waiting at once,
+	// counting only runs an autonomous trigger produced: cron and webhook. A
+	// manual `otter run` is always accepted, because an operator asking for a
+	// run is not the backlog the bound exists to cap.
+	//
+	// It is optional, and an omitted field means unbounded -- today's meaning,
+	// which is what the compatibility policy requires of an additive minor.
+	MaxQueueDepth int `yaml:"max_queue_depth"`
 
 	// Capture is the job's HTTP capture policy: off, metadata or full.
 	// It is optional, and an omitted field means the job has no opinion
@@ -170,6 +184,23 @@ func (m *Manifest) ValidatePythonPathsForRelease() error {
 type TriggerConfig struct {
 	Cron    string         `yaml:"cron"`
 	Webhook *WebhookConfig `yaml:"webhook"`
+
+	// MissedPolicy is what happens to occurrences the runtime could not act on
+	// when they came due: skip (the default), coalesce or catch_up.
+	MissedPolicy string `yaml:"missed_policy"`
+
+	// MaxCatchUp is how many occurrences a catch_up trigger may replay on one
+	// wake-up. Zero means the daemon default; it is only consulted for
+	// catch_up.
+	MaxCatchUp int `yaml:"max_catch_up"`
+}
+
+// rawTriggerConfig is the presence-aware form of TriggerConfig.
+type rawTriggerConfig struct {
+	Cron         string         `yaml:"cron"`
+	Webhook      *WebhookConfig `yaml:"webhook"`
+	MissedPolicy *string        `yaml:"missed_policy"`
+	MaxCatchUp   *int           `yaml:"max_catch_up"`
 }
 
 // WebhookConfig enables the POST /v1/hooks/{job} endpoint.
@@ -239,13 +270,15 @@ type rawManifest struct {
 	Description string            `yaml:"description"`
 	Entrypoint  string            `yaml:"entrypoint"`
 	Python      PythonConfig      `yaml:"python"`
-	Trigger     TriggerConfig     `yaml:"trigger"`
+	Trigger     rawTriggerConfig  `yaml:"trigger"`
 	Timeout     *Duration         `yaml:"timeout"`
 	Concurrency *int              `yaml:"concurrency"`
 	Retry       rawRetryConfig    `yaml:"retry"`
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
 	Capture     string            `yaml:"capture"`
+
+	MaxQueueDepth *int `yaml:"max_queue_depth"`
 }
 
 // rawRetryConfig is the presence-aware form of RetryConfig.
@@ -286,13 +319,28 @@ func Load(path string) (*Manifest, error) {
 		Description: raw.Description,
 		Entrypoint:  raw.Entrypoint,
 		Python:      raw.Python,
-		Trigger:     raw.Trigger,
-		Env:         raw.Env,
-		Secrets:     raw.Secrets,
-		Capture:     raw.Capture,
+		Trigger: TriggerConfig{
+			Cron:    raw.Trigger.Cron,
+			Webhook: raw.Trigger.Webhook,
+		},
+		Env:     raw.Env,
+		Secrets: raw.Secrets,
+		Capture: raw.Capture,
 		Retry: RetryConfig{
 			Backoff: raw.Retry.Backoff,
 		},
+	}
+	// Absent trigger policy keys keep their zero value, which is skip and the
+	// daemon's own catch-up default. Only an explicit value is carried, so the
+	// manifest can gain a default later without every file changing meaning.
+	if raw.Trigger.MissedPolicy != nil {
+		m.Trigger.MissedPolicy = *raw.Trigger.MissedPolicy
+	}
+	if raw.Trigger.MaxCatchUp != nil {
+		m.Trigger.MaxCatchUp = *raw.Trigger.MaxCatchUp
+	}
+	if raw.MaxQueueDepth != nil {
+		m.MaxQueueDepth = *raw.MaxQueueDepth
 	}
 	if raw.Timeout != nil {
 		m.Timeout = *raw.Timeout
@@ -522,6 +570,31 @@ func (m *Manifest) Validate() error {
 		if _, err := parser.Parse(m.Cron()); err != nil {
 			add("trigger.cron %q is not a valid cron expression: %v", m.Cron(), err)
 		}
+	}
+
+	// The trigger policy is only meaningful with a cron trigger: without one
+	// there are no occurrences to miss. Refusing it rather than ignoring it
+	// keeps a manifest from claiming behaviour it cannot have.
+	switch m.Trigger.MissedPolicy {
+	case "", "skip", "coalesce", "catch_up":
+	default:
+		add("trigger.missed_policy must be one of %q, %q or %q, got %q",
+			"skip", "coalesce", "catch_up", m.Trigger.MissedPolicy)
+	}
+	if m.Trigger.MissedPolicy != "" && m.Trigger.MissedPolicy != "skip" && m.Cron() == "" {
+		add("trigger.missed_policy %q requires trigger.cron", m.Trigger.MissedPolicy)
+	}
+	if m.Trigger.MaxCatchUp < 0 {
+		add("trigger.max_catch_up must not be negative, got %d", m.Trigger.MaxCatchUp)
+	} else if m.Trigger.MaxCatchUp > MaxCatchUpCeiling {
+		add("trigger.max_catch_up must be at most %d, got %d", MaxCatchUpCeiling, m.Trigger.MaxCatchUp)
+	}
+	if m.Trigger.MaxCatchUp > 0 && m.Trigger.MissedPolicy != "catch_up" {
+		add("trigger.max_catch_up is only meaningful with trigger.missed_policy: catch_up")
+	}
+
+	if m.MaxQueueDepth < 0 {
+		add("max_queue_depth must not be negative, got %d", m.MaxQueueDepth)
 	}
 
 	envKeys := make([]string, 0, len(m.Env))

@@ -422,11 +422,14 @@ schedule's own backlog, `max_queue_depth` bounds a job's backlog however it was
 triggered, and `catch_up` is the only policy that deliberately creates work on
 wake-up — which is why it is bounded separately and counted when it truncates.
 
-The `coalesce`/`catch_up` runtime behaviour lands in `v0.5.0` WS2
+The `coalesce`/`catch_up` runtime behaviour is implemented, in `v0.5.0` WS2
 ([v0.5.0-release-plan.md](v0.5.0-release-plan.md#ws2--implement-the-policy-and-bound-admission)),
-and `max_catch_up` is per-schedule data added by migration `0016`. Until that
-behaviour ships the write boundary still accepts only `skip`; this section states
-the decided semantics, not yet the tree's behaviour.
+and `max_catch_up` is per-schedule data added by migration `0016`. The write
+boundary accepts all three policies, a missed window is replayed or coalesced
+before the cron runner is armed, and `max_queue_depth` refuses autonomous
+admission with `429 overloaded` while always admitting a manual run. This section
+states the semantics; [runtime-contract.md §3.1](runtime-contract.md#31-missed-occurrences-are-policy-dependent)
+states them as promises.
 
 ## 12. Security
 

@@ -317,16 +317,23 @@ func TestStoreReloadsFromDisk(t *testing.T) {
 	}
 }
 
-// Only skip is implemented. coalesce and catch_up are reserved names and are
-// refused at the write boundary rather than accepted and silently ignored, so a
-// caller cannot select behaviour that does not exist.
-func TestUnsupportedMissedPoliciesAreRefused(t *testing.T) {
+// All three policies are implemented. An unknown name is still refused at the
+// write boundary, so a typo cannot be stored as a policy that does nothing.
+func TestMissedPoliciesAreAcceptedAndUnknownNamesRefused(t *testing.T) {
 	s, _, ctx := newTestStore(t)
 
-	for _, policy := range []MissedPolicy{MissedCoalesce, MissedCatchUp} {
-		if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: policy}); !errors.Is(err, ErrInvalid) {
-			t.Fatalf("Create with missed_policy %q = %v, want ErrInvalid", policy, err)
+	for _, policy := range []MissedPolicy{MissedSkip, MissedCoalesce, MissedCatchUp} {
+		rec, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: policy})
+		if err != nil {
+			t.Fatalf("Create with missed_policy %q: %v", policy, err)
 		}
+		if rec.MissedPolicy != policy {
+			t.Errorf("stored policy = %q, want %q", rec.MissedPolicy, policy)
+		}
+	}
+
+	if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: "replay_everything"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Create with an unknown policy = %v, want ErrInvalid", err)
 	}
 
 	rec, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedSkip})
@@ -334,7 +341,67 @@ func TestUnsupportedMissedPoliciesAreRefused(t *testing.T) {
 		t.Fatalf("Create with skip: %v", err)
 	}
 	coalesce := MissedCoalesce
-	if _, _, err := s.Update(ctx, rec.ID, UpdateInput{MissedPolicy: &coalesce}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Update to coalesce = %v, want ErrInvalid", err)
+	updated, changed, err := s.Update(ctx, rec.ID, UpdateInput{MissedPolicy: &coalesce})
+	if err != nil || !changed {
+		t.Fatalf("Update to coalesce: changed=%v err=%v", changed, err)
+	}
+	if updated.MissedPolicy != MissedCoalesce {
+		t.Errorf("policy after update = %q, want coalesce", updated.MissedPolicy)
+	}
+}
+
+// A catch-up bound belongs to catch_up. Requesting one for another policy is
+// normalized away rather than stored, so the row never claims a bound that has
+// no effect, and a negative or absurd one is refused rather than clamped.
+func TestCatchUpBoundIsNormalizedAndCeilinged(t *testing.T) {
+	s, _, ctx := newTestStore(t)
+
+	// skip with a bound: the bound does not survive, because it would not apply.
+	skipped, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedSkip, MaxCatchUp: 5})
+	if err != nil {
+		t.Fatalf("Create with skip and a bound: %v", err)
+	}
+	if skipped.MaxCatchUp != 0 {
+		t.Errorf("skip stored max_catch_up = %d, want 0 (daemon default)", skipped.MaxCatchUp)
+	}
+	if got := skipped.CatchUpLimit(); got != MaxCatchUp {
+		t.Errorf("skip resolved limit = %d, want the default %d", got, MaxCatchUp)
+	}
+
+	// catch_up with an explicit bound: stored, and resolved to itself.
+	bounded, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedCatchUp, MaxCatchUp: 7})
+	if err != nil {
+		t.Fatalf("Create with catch_up and a bound: %v", err)
+	}
+	if bounded.MaxCatchUp != 7 || bounded.CatchUpLimit() != 7 {
+		t.Errorf("catch_up bound = %d (limit %d), want 7", bounded.MaxCatchUp, bounded.CatchUpLimit())
+	}
+
+	// catch_up without one: the daemon default, not zero.
+	unbounded, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedCatchUp})
+	if err != nil {
+		t.Fatalf("Create with catch_up: %v", err)
+	}
+	if unbounded.MaxCatchUp != 0 || unbounded.CatchUpLimit() != MaxCatchUp {
+		t.Errorf("catch_up with no bound stored %d and resolved %d, want 0 and %d",
+			unbounded.MaxCatchUp, unbounded.CatchUpLimit(), MaxCatchUp)
+	}
+
+	if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedCatchUp, MaxCatchUp: -1}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a negative bound = %v, want ErrInvalid", err)
+	}
+	if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", MissedPolicy: MissedCatchUp, MaxCatchUp: MaxCatchUpCeiling + 1}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a bound above the ceiling = %v, want ErrInvalid", err)
+	}
+
+	// Moving away from catch_up drops the stored bound, so a later return starts
+	// from the default instead of resurrecting a stale number.
+	p := MissedSkip
+	moved, changed, err := s.Update(ctx, bounded.ID, UpdateInput{MissedPolicy: &p})
+	if err != nil || !changed {
+		t.Fatalf("Update catch_up -> skip: changed=%v err=%v", changed, err)
+	}
+	if moved.MaxCatchUp != 0 {
+		t.Errorf("bound after leaving catch_up = %d, want 0", moved.MaxCatchUp)
 	}
 }

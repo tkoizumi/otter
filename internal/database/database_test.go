@@ -533,3 +533,72 @@ func TestMigrateSkipsAlreadyAppliedMigration(t *testing.T) {
 		t.Fatalf("migrated schema is not usable: %v", err)
 	}
 }
+
+// A database migrated to the version before 0016 must gain max_catch_up with
+// the documented default when it is upgraded, keeping every existing schedule
+// row. An additive column is only additive if the older rows keep working, and
+// the default is what decides whether they mean "daemon default" or "replay
+// nothing".
+func TestMigration0016AddsMaxCatchUpToExistingSchedules(t *testing.T) {
+	db := openTempDB(t)
+	ctx := context.Background()
+
+	// Migrate to 0015 only: the schema as it was before the column existed.
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := fstest.MapFS{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		m, err := parseVersion(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m > 15 {
+			continue
+		}
+		body, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[e.Name()] = &fstest.MapFile{Data: body}
+	}
+	if _, err := migrate(ctx, db, before); err != nil {
+		t.Fatalf("migrate to 0015: %v", err)
+	}
+
+	// A schedule written under the old schema, before the column existed.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schedules (id, job_id, cron, timezone, payload, missed_policy, origin, created_at, updated_at)
+		 VALUES ('s1', 'job-1', '@every 1h', 'UTC', '{}', 'skip', 'api',
+		         '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z')`); err != nil {
+		t.Fatalf("insert a pre-0016 schedule: %v", err)
+	}
+
+	// The full embedded set now upgrades it in place.
+	if _, err := migrate(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("migrate to the embedded head: %v", err)
+	}
+
+	var maxCatchUp int
+	if err := db.QueryRowContext(ctx,
+		`SELECT max_catch_up FROM schedules WHERE id = 's1'`).Scan(&maxCatchUp); err != nil {
+		t.Fatalf("an upgraded schedule lost its row or the column is missing: %v", err)
+	}
+	if maxCatchUp != 0 {
+		t.Errorf("existing schedule max_catch_up = %d, want 0 (the daemon default)", maxCatchUp)
+	}
+
+	// And the policy the row already carried is untouched.
+	var policy string
+	if err := db.QueryRowContext(ctx,
+		`SELECT missed_policy FROM schedules WHERE id = 's1'`).Scan(&policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy != "skip" {
+		t.Errorf("upgraded schedule policy = %q, want skip", policy)
+	}
+}
