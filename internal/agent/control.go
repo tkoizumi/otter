@@ -95,6 +95,14 @@ func (c *HTTPControlPlane) post(ctx context.Context, path string, reqBody any, o
 
 func (c *HTTPControlPlane) Desired(ctx context.Context, observed Observed) (*Desired, error) {
 	req := DesiredRequest{
+		// The control plane refuses a request that does not name a runtime, and
+		// this independently of the credential: the runtime is what the answer is
+		// ABOUT, so it cannot be inferred from who is asking.
+		//
+		// It was empty here, and the loop only set it on the way back out of step()
+		// -- so the request went out nameless and every poll got "request does not
+		// name a runtime" while bootstrap succeeded. A live run found it; no unit
+		// test did, because the test fakes checked the credential and not this.
 		RuntimeID:  c.RuntimeID,
 		Observed:   observed,
 		Generation: 0,

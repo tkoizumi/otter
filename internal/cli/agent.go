@@ -80,6 +80,11 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		Control: &agent.HTTPControlPlane{
 			BaseURL: *cloudURL,
 			Creds:   creds,
+			// The control plane refuses a request that does not name a runtime,
+			// and this was unset here: the agent bootstrapped successfully and then
+			// got "request does not name a runtime" on every poll. The field
+			// existed and the method used it; nothing filled it in.
+			RuntimeID: *runtimeID,
 		},
 		Runtime: &agent.RuntimeHTTP{
 			BaseURL: *runtimeURL,
