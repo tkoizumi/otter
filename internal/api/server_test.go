@@ -31,6 +31,10 @@ type fakeBackend struct {
 	webhookFor map[string]string
 	runTokens  map[string]RunToken
 
+	// Release activation (the agent's promote path).
+	activated   []string
+	activateErr error
+
 	// Named, scoped API tokens (CL-21). The fake keys them by the presented
 	// token, which is what ResolveAPIToken is handed.
 	apiTokens   map[string]APIToken
@@ -703,6 +707,25 @@ func (f *fakeBackend) ExitMaintenance(context.Context) (MaintenanceView, error) 
 	defer f.mu.Unlock()
 	f.maintenance = MaintenanceView{Mode: "serving", AcceptingWork: true, Explicit: true}
 	return f.maintenance, nil
+}
+
+// ActivateRelease mirrors the daemon's contract closely enough to test the HTTP
+// surface: it refuses while serving, because that ordering requirement is the
+// property the endpoint exists to enforce.
+func (f *fakeBackend) ActivateRelease(_ context.Context, digest string) (ReleaseView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if digest == "" {
+		return ReleaseView{}, ErrInvalid
+	}
+	if f.maintenance.Mode != "maintenance" && f.maintenance.Mode != "draining" && f.maintenance.Mode != "startup" {
+		return ReleaseView{}, ErrInvalid
+	}
+	if f.activateErr != nil {
+		return ReleaseView{}, f.activateErr
+	}
+	f.activated = append(f.activated, digest)
+	return ReleaseView{Job: "sync", Digest: digest}, nil
 }
 
 // scheduleCounters is what the fake reports for the per-schedule missed

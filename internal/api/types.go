@@ -596,3 +596,17 @@ const (
 	// has stopped accepting work.
 	CodeOverloaded = "overloaded"
 )
+
+// ReleaseView is the result of activating a release.
+//
+// It names the job the release belongs to as well as the digest, because a
+// pull-based deploy is told "run release abc123" and the caller that asked does
+// not necessarily know which job that is -- the job is resolved from the release
+// metadata, which is what makes the digest the identifier.
+type ReleaseView struct {
+	Job    string `json:"job"`
+	Digest string `json:"digest"`
+	// Digest_ is the digest recorded in the release metadata, echoed so a caller
+	// can detect a metadata/digest disagreement rather than trusting the request.
+	Digest_ string `json:"recorded_digest,omitempty"`
+}

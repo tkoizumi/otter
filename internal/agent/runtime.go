@@ -157,33 +157,40 @@ func (r *RuntimeHTTP) ExitMaintenance(ctx context.Context) error {
 	return r.do(ctx, http.MethodDelete, "/v1/runtime/maintenance", nil, nil)
 }
 
-// What is NOT here, and why
+// Promote makes a verified release active.
 //
-// Runtime has five methods. RuntimeHTTP implements three of them, and the other
-// two are deliberately absent rather than stubbed:
+// It goes through the runtime API -- POST /v1/runtime/releases/activate -- rather
+// than touching the data directory. That endpoint was added for this purpose and
+// the reason is the property the whole agent design rests on: the agent must not
+// be able to do anything an operator could not, and every action must be
+// auditable in one place.
 //
-//	Fetch    downloading and digest-verifying a release
-//	Promote  making a verified release active
-//	Validate checking it without executing a customer integration
+// The runtime refuses activation while serving, so a caller that skipped
+// EnterMaintenance gets an explicit conflict rather than swapping the active
+// release under running work.
+func (r *RuntimeHTTP) Promote(ctx context.Context, digest string) error {
+	if digest == "" {
+		return fmt.Errorf("agent: promote needs a digest")
+	}
+	return r.do(ctx, http.MethodPost, "/v1/runtime/releases/activate",
+		map[string]string{"digest": digest}, nil)
+}
+
+// Fetch and Validate remain unimplemented, and that is a finding rather than an
+// omission.
 //
-// Building this surfaced a real constraint. The runtime API has a maintenance
-// gate, because WP2 added one, but it has **no release-activation endpoint**, and
-// the release package exposes no public activate method either -- activation
-// happens through the CLI's own path (internal/release/stage.go creates the
-// `active` symlink). So a pull-based deploy cannot be expressed as runtime API
-// calls today.
+// Fetch   downloading a release and verifying it against its digest
+// Validate checking it without executing a customer integration
 //
-// The fix is a small addition rather than a workaround, and there are two
-// options worth deciding between before writing it:
+// Neither has a runtime API endpoint. Fetch is genuinely agent-side work -- the
+// agent has the release URL and the digest, so it can download and verify
+// without the runtime's help, and the verification is the agent's own
+// responsibility because it is the agent that must not be deceived. Validate is
+// the harder question: checking a release without running a customer integration
+// means reading its manifest, paths and dependency metadata, which the runtime
+// already does at release time, so it may be that activation's own refusal is the
+// validation and a separate call is unnecessary.
 //
-//	1. add `POST /v1/runtime/releases/{digest}/activate` to the runtime API, so
-//	   the agent stays a client of the API and inherits its authorisation and
-//	   audit; or
-//	2. export an `Activate` on internal/release and let the agent call it
-//	   in-process, which is simpler but makes the agent reach past the API.
-//
-// Option 1 is the one consistent with the rest of this design -- the agent uses
-// the same API an operator would, so it cannot do anything an operator could not
-// and every action is auditable in one place. This is recorded here rather than
-// implemented as a stub, because a Promote that compiled but did nothing would
-// be mistaken for a working deploy path.
+// Recorded here rather than stubbed: a Validate that compiled but checked nothing
+// would be worse than none, because the apply sequence would report it as a step
+// that passed.

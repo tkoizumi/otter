@@ -222,6 +222,13 @@ type Backend interface {
 	// credential, only by an admin one.
 	ExitMaintenance(ctx context.Context) (MaintenanceView, error)
 
+	// ActivateRelease makes a verified release active by digest, so a runtime
+	// agent can promote a release through the API an operator uses rather than
+	// reaching past it into the data directory. It refuses while the runtime is
+	// serving: swapping the active release under running work is the failure the
+	// maintenance gate exists to prevent.
+	ActivateRelease(ctx context.Context, digest string) (ReleaseView, error)
+
 	// ScheduleCounters reports the per-schedule missed-occurrence accounting:
 	// occurrences folded by coalesce, and occurrences a bounded catch-up
 	// declined to replay. Only schedules with a non-zero counter are returned.
