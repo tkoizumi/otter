@@ -148,6 +148,17 @@ func TestEgressVerificationIsPresentAndConnects(t *testing.T) {
 	if strings.Contains(src, "curl ") {
 		t.Error("verify-egress.sh uses curl, which is not in the runtime image")
 	}
+	// The probes must be real files it copies in. Embedding them in a heredoc
+	// piped through docker exec does not reach the process, and silent probes
+	// read as a clean pass -- which is exactly what happened.
+	for _, probe := range []string{"egress_probe.py", "rebind_probe.py"} {
+		if _, err := os.Stat(filepath.Join(dir, probe)); err != nil {
+			t.Errorf("%s is missing: verify-egress.sh copies it into the container", probe)
+		}
+		if !strings.Contains(src, probe) {
+			t.Errorf("verify-egress.sh does not install %s", probe)
+		}
+	}
 }
 
 // The build context is the repository root, so without an allowlist the image
