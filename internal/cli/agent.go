@@ -87,6 +87,9 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 			// Releases stage into the runtime's own release root, so activation
 			// finds exactly what the agent verified.
 			ReleaseDir: filepath.Join(*dataDir, "releases"),
+			// Releases come from the control plane under the agent's own
+			// credential, which is a different secret from the runtime's token.
+			ReleaseClient: agent.AuthenticatedClient(*cloudURL, creds),
 		},
 		Creds:        creds,
 		Bootstrap:    bootstrap,

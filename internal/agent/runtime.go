@@ -37,6 +37,15 @@ type RuntimeHTTP struct {
 	// release root, so activation finds what the agent verified -- staging
 	// elsewhere would verify one thing and activate another.
 	ReleaseDir string
+	// ReleaseClient fetches release artifacts, and is SEPARATE from the client
+	// used for the runtime's own API.
+	//
+	// The two go to different places with different credentials: the runtime API
+	// is loopback and takes the runtime's admin token, while a release comes from
+	// the control plane and takes the agent's credential. Reusing one client meant
+	// the release fetch carried the wrong token -- or, once the credential is
+	// attached by host, needed a client that knows which host it is talking to.
+	ReleaseClient *http.Client
 }
 
 func (r *RuntimeHTTP) client() *http.Client {
@@ -217,7 +226,14 @@ func (r *RuntimeHTTP) Fetch(ctx context.Context, rel Release) error {
 		// failure would look like a corrupt release rather than a misconfiguration.
 		return fmt.Errorf("agent: runtime client has no release directory; cannot stage %s", shortDigest(rel.Digest))
 	}
-	f := &Fetcher{Dir: r.ReleaseDir, HTTPClient: r.HTTPClient}
+	// The release client, not the runtime client: an artifact served by Cloud is
+	// authenticated with the AGENT's credential, which the runtime's token cannot
+	// stand in for.
+	client := r.ReleaseClient
+	if client == nil {
+		client = r.HTTPClient
+	}
+	f := &Fetcher{Dir: r.ReleaseDir, HTTPClient: client}
 	return f.Fetch(ctx, rel)
 }
 
