@@ -26,7 +26,11 @@
 FROM debian:bookworm-slim AS runtime
 
 ARG OTTER_VERSION=unspecified
-ARG PYTHON_VERSION=3.13
+# The interpreter managed jobs pin in .python-version. It is provisioned at build
+# time because a preparation sandbox has no egress: uv would otherwise have to
+# download it at first use, which cannot happen inside the sandbox and turned
+# class C preparation into a network failure rather than a measurement.
+ARG PYTHON_VERSION=3.13.5
 # Recorded in the image so a running container can be tied back to the source it
 # was built from, which is what makes a qualification result attributable.
 LABEL org.otter.version="${OTTER_VERSION}" \
@@ -37,7 +41,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_CACHE_DIR=/tmp/uv/cache \
-    UV_PYTHON_INSTALL_DIR=/tmp/uv/python \
+    UV_PYTHON_INSTALL_DIR=/opt/otter/python \
     UV_TOOL_DIR=/tmp/uv/tools \
     UV_TOOL_BIN_DIR=/tmp/uv/bin
 
@@ -61,12 +65,26 @@ RUN apt-get update -qq \
 
 # uv prepares managed Python environments. Pinned, and installed for the
 # unprivileged user only: preparation runs as the tenant, so it must not have a
-# writable toolchain owned by root.
+# writable toolchain owned by root. The interpreter it installs below is global
+# and read-only, which is the distinction that matters.
 COPY --from=ghcr.io/astral-sh/uv:0.4.30 /uv /usr/local/bin/uv
 
 # The runtime binary. Copied, not downloaded: see the build arguments above.
 COPY bin/otterd /usr/local/bin/otterd
 COPY bin/otter /usr/local/bin/otter
+
+# The interpreter is provisioned into the image at BUILD time, under
+# UV_PYTHON_INSTALL_DIR, which is where uv looks for it at run time. That
+# directory is read-only at run time -- correctly, since an interpreter is not
+# tenant state -- and is why the variable points there rather than at /tmp.
+#
+# Provisioning it here is what makes an offline preparation possible at all: a
+# preparation sandbox has no egress, so an interpreter uv had to download at
+# first use turned class C preparation into a network failure instead of a
+# measurement.
+RUN UV_PYTHON_INSTALL_DIR=/opt/otter/python \
+      /usr/local/bin/uv python install "${PYTHON_VERSION}" \
+ && chmod -R a+rX /opt/otter/python
 
 # A dedicated unprivileged identity. The uid is fixed rather than allocated so
 # that a tenant volume mounted from the host can be ownership-checked against a

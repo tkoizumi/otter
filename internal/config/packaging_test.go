@@ -61,10 +61,20 @@ func TestTenantImageKeepsItsBoundarySettings(t *testing.T) {
 			t.Errorf("Dockerfile does not set %s, so uv will write to the read-only root", env)
 		}
 	}
-	for _, env := range []string{"UV_CACHE_DIR=/tmp", "UV_PYTHON_INSTALL_DIR=/tmp", "UV_TOOL_DIR=/tmp"} {
+	// Cache and tool state are tenant-writable, so they belong in /tmp. The
+	// interpreter does NOT: uv installs it where UV_PYTHON_INSTALL_DIR points,
+	// and a preparation sandbox has no egress to download one, so it must be
+	// provisioned into the image and read at run time from a read-only path.
+	for _, env := range []string{"UV_CACHE_DIR=/tmp", "UV_TOOL_DIR=/tmp"} {
 		if !strings.Contains(src, env) {
 			t.Errorf("%s must point under /tmp, the tenant's bounded temporary storage", env)
 		}
+	}
+	if !strings.Contains(src, "UV_PYTHON_INSTALL_DIR=/opt/") {
+		t.Error("UV_PYTHON_INSTALL_DIR must point at a provisioned, read-only path; a preparation sandbox has no egress to download an interpreter")
+	}
+	if !strings.Contains(src, "uv python install") {
+		t.Error("the image does not provision the managed interpreter at build time")
 	}
 
 	// The daemon must not be told to listen anywhere but loopback: a pool where
