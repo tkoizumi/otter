@@ -60,6 +60,7 @@ docker run -d \
   --pids-limit 64 \
   --network tenant-a-net \
   -v /var/lib/otter/tenants/a:/workspace \
+  -v /run/otter/resolv-tenant-a.conf:/etc/resolv.conf:ro \
   -e OTTER_API_TOKEN="$(cat /run/secrets/tenant-a-token)" \
   otter-runtime:local
 ```
@@ -76,7 +77,8 @@ part of the contract, and each flag maps to a requirement:
 | `--user 10001:10001` | Matches the image's fixed uid, so a host-mounted volume can be ownership-checked against a known value |
 | `--memory-swap` equal to `--memory` | Disables swap for the container. Without it a tenant exceeding its cap is paged instead of killed, and the OOM threshold becomes a host-level question |
 | `--cpus` / `--pids-limit` | Set explicitly. The daemon has no `--memory-max`, `--cpu-quota` or `--tasks-max` flags: **these limits are the sandbox's, not otterd's**, which is why they must be verified in the cgroup rather than trusted from the command line |
-| `--network tenant-a-net` | A per-tenant network, named explicitly. The daemon binds loopback only, and a shared loopback is not authorization. Omitting this puts the tenant on the host's default bridge, where it reaches instance metadata and the host's services — measured, not hypothesised |
+| `--network tenant-a-net` | A per-tenant network with **its own subnet**, named explicitly. The daemon binds loopback only, and a shared loopback is not authorization. Omitting this puts the tenant on the host's default bridge, where it reaches instance metadata and the host's services — measured, not hypothesised |
+| `-v …/resolv-tenant-a.conf:/etc/resolv.conf:ro` | **Required for egress.** Docker always installs `127.0.0.11` as the container resolver and `--dns` only sets that stub's upstream, so the query never becomes an outbound packet and dies against the loopback denial. Mounting a `resolv.conf` that names the resolver directly makes DNS a normal outbound packet the tenant's own policy governs |
 | `-v …:/workspace` | One volume, mounted at the one path the tenant owns. No host socket, device, credential or broad root |
 
 `OTTER_API_TOKEN` is required rather than decorative: the plan's launch contract
@@ -121,9 +123,21 @@ directly, so a policy that only blocks resolution is not a policy. It must be
 tested by connecting, which is what `verify-egress.sh` does.
 
 `--network=none` is the strictest form and the right default for a tenant that
-makes no outbound calls. A tenant that does needs the `shared-public` path, which
-in the pilot is an internal network plus an explicit egress route — not the
-host's default bridge, which denies nothing.
+makes no outbound calls.
+
+A tenant that *does* make outbound calls needs **three** things together, and two
+of them are easy to miss:
+
+1. a per-tenant bridge with its **own non-overlapping subnet** — if Docker picks a
+   range inside the host VPC's CIDR, the RFC1918 denial blocks the tenant's own
+   upstream;
+2. **a host-local resolver listening on that tenant's bridge gateway**, which the
+   filter chain already permits, so no rule is widened and **no loopback exception
+   is needed** — a sibling's loopback API stays denied;
+3. that `resolv.conf` mount above, because otherwise Docker's stub intercepts.
+
+Verified: public DNS resolves, HTTPS returns 200, and metadata, RFC1918 and
+loopback all remain blocked.
 
 ## Preparation sandbox
 
