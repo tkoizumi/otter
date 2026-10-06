@@ -11,8 +11,14 @@
 #
 #   docker build \
 #     --build-arg OTTER_VERSION=v0.4.0-11-gc027d9c \
-#     --build-arg PYTHON_VERSION=3.13 \
+#     -f packaging/container/Dockerfile \
 #     -t otter-runtime:c027d9c .
+#
+# The context is the REPOSITORY ROOT, not this directory: the COPY instructions
+# below name bin/otterd and bin/otter, which live at the root. Building from this
+# directory instead makes the context ~800 bytes and fails with "checksum ...
+# /bin/otter: not found" for a file that exists, because the path is resolved
+# relative to the context.
 #
 # The binary is copied in rather than fetched so the image cannot silently
 # change when a URL does; the build context carries `bin/otterd` and

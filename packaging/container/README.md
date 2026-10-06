@@ -18,11 +18,19 @@ Both inputs are pinned, because "latest" is not reproducible:
 make build                      # produces bin/otterd and bin/otter
 docker build \
   --build-arg OTTER_VERSION="$(git describe --tags --always)" \
-  -t otter-runtime:local packaging/container
+  -f packaging/container/Dockerfile \
+  -t otter-runtime:local .
 ```
 
 The binary is **copied** from `bin/` rather than downloaded in the image, so a
 build cannot silently change because a URL did.
+
+Note the context: it is the repository root, and `-f` names the Dockerfile. The
+`COPY` instructions reference `bin/otterd` and `bin/otter`, which exist only
+relative to the root. Running `docker build … packaging/container` sends an
+~800-byte context instead and fails with `checksum … /bin/otter: not found` for
+a file that plainly exists — the misleading error that cost three attempts while
+`.dockerignore` was blamed.
 
 ## Launch
 
