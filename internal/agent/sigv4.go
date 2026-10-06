@@ -170,6 +170,11 @@ func (in sigV4Input) Header() (http.Header, error) {
 		return nil, err
 	}
 	h := http.Header{}
+	// Host is signed, so it must be returned: a verifier re-derives the signature
+	// from the headers it RECEIVES, and omitting a header the signature covers
+	// makes it unreproducible -- reported as "signed header host is missing", which
+	// names the symptom and not the cause.
+	h.Set("Host", in.Host)
 	h.Set("Authorization", auth)
 	h.Set("X-Amz-Date", in.Now.UTC().Format("20060102T150405Z"))
 	h.Set("X-Amz-Content-Sha256", sha256Hex(in.Payload))
