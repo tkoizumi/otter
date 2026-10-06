@@ -667,3 +667,70 @@ func TestMigration0016AddsMaxCatchUpToExistingSchedules(t *testing.T) {
 		t.Errorf("upgraded schedule policy = %q, want skip", policy)
 	}
 }
+
+// 0018 adds the operation and lock tables for the pooled pilot.
+//
+// Two properties are asserted rather than the tables merely existing: that the
+// schema refuses a second open operation for one runtime, because that invariant
+// is what stops two operators deploying the same runtime at once, and that an
+// 'unknown' result is representable, because a deploy that lost contact mid-swap
+// is neither failed nor applied and collapsing it into either is how a runtime
+// ends up in a state nobody chose.
+func TestMigration0018AddsOperationsAndLocks(t *testing.T) {
+	db := openTempDB(t)
+	ctx := context.Background()
+
+	if _, err := migrate(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("migrate to the embedded head: %v", err)
+	}
+	for _, table := range []string{"operations", "runtime_locks"} {
+		if !tableExists(t, db, table) {
+			t.Fatalf("0018 did not create %s", table)
+		}
+	}
+
+	insert := func(id string, gen int, result string) error {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO operations (id, runtime_id, expected_generation, result, created_at, updated_at)
+			VALUES (?, 'rt-1', ?, ?, 1, 1)`, id, gen, result)
+		return err
+	}
+
+	if err := insert("op-1", 1, "pending"); err != nil {
+		t.Fatalf("the first open operation must be accepted: %v", err)
+	}
+	if err := insert("op-2", 2, "pending"); err == nil {
+		t.Error("a second OPEN operation for one runtime was accepted; two operators could deploy it at once")
+	}
+	// 'unknown' is also open: an operation whose outcome nobody knows is exactly
+	// the one that must not be raced.
+	if err := insert("op-3", 3, "unknown"); err == nil {
+		t.Error("an open 'unknown' operation did not block a second open one")
+	}
+
+	// A terminal result frees the runtime, or no runtime could ever be deployed
+	// twice.
+	if _, err := db.ExecContext(ctx, `UPDATE operations SET result='applied' WHERE id='op-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("op-4", 4, "pending"); err != nil {
+		t.Errorf("a terminal operation must free the runtime for the next one: %v", err)
+	}
+
+	// The result set is closed, so an invented value cannot be stored.
+	if err := insert("op-5", 5, "probably-fine"); err == nil {
+		t.Error("an unrecognised result was accepted; the set must be closed")
+	}
+
+	// A lock records an expiry but nothing may take it over automatically, so the
+	// table must allow a stale-looking row to exist for a human to inspect.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO runtime_locks (runtime_id, holder, operation_id, acquired_at, expires_at, reason)
+		VALUES ('rt-1', 'operator-a', 'op-4', 1, 2, 'pilot deploy')`); err != nil {
+		t.Fatalf("a lock with a past expiry must be storable, for a human to clear: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO runtime_locks (runtime_id, holder, acquired_at) VALUES ('rt-1', 'operator-b', 3)`); err == nil {
+		t.Error("a second lock for one runtime was accepted")
+	}
+}
