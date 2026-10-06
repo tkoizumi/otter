@@ -129,68 +129,79 @@ func (l *Loop) Run(ctx context.Context) error {
 			backoff = l.base()
 		}
 
-		observed, err := l.Runtime.Observe(ctx)
+		wait, err := l.step(ctx, &gen)
 		if err != nil {
-			// The runtime being unreachable is not a reason to change anything:
-			// there is nothing to change it to. Retry.
-			l.logger().Warn("agent_runtime_observe_failed", "error", err.Error())
-			if !sleepCtx(ctx, l.applyJitter(backoff)) {
-				return nil
-			}
-			backoff = bump(backoff)
-			continue
+			return err
 		}
-
-		want, err := l.Control.Desired(ctx, observed)
-		if err != nil {
-			// Cloud unreachable: keep running the current release. This is the
-			// table's first row and the most important one -- a partition must
-			// not cause the agent to do anything at all.
-			l.logger().Warn("agent_control_unavailable", "error", err.Error())
-			if !sleepCtx(ctx, l.applyJitter(backoff)) {
+		if wait > 0 {
+			if !sleepCtx(ctx, wait) {
 				return nil
 			}
 			backoff = bump(backoff)
 			continue
 		}
 		backoff = l.base()
-
-		// A report is sent even when nothing is to be done, so Cloud learns the
-		// observed state rather than inferring it from silence.
-		// The runtime id travels back on every report: the control plane refuses a
-		// report that does not name one, so an omission here would make every
-		// report fail while every local test passed.
-		want.RuntimeID = l.RuntimeID
-		rep, err := Apply(ctx, l.Runtime, want, gen.applied, l.Drain)
-		rep.RuntimeID = l.RuntimeID
-		gen.observe(rep)
-		if err != nil {
-			switch {
-			case errors.Is(err, ErrFenced):
-				// Applies nothing and re-reports. Cloud reconciles; the agent does
-				// not try to catch up, because guessing which way to move is how a
-				// runtime rolls backwards.
-				l.logger().Info("agent_generation_fenced", "desired", want.Generation, "applied", gen.applied)
-			case errors.Is(err, ErrDrainTimeout):
-				l.logger().Warn("agent_deploy_abandoned", "generation", want.Generation, "reason", rep.Reason)
-			default:
-				l.logger().Warn("agent_apply_error", "generation", want.Generation, "error", err.Error())
-			}
-		} else {
-			l.logger().Info("agent_apply", "generation", want.Generation, "outcome", rep.Outcome)
-		}
-
-		if err := l.Control.Report(ctx, rep); err != nil {
-			// A failed report does not undo an applied release, and retrying the
-			// apply would be worse than re-reporting later. Log and move on.
-			l.logger().Warn("agent_report_failed", "generation", rep.Generation, "error", err.Error())
-		}
-		if err := l.Control.Lease(ctx); err != nil {
-			// A lapsed lease makes the runtime visible as stale. It does not make
-			// it eligible for anything, and it does not stop serving.
-			l.logger().Warn("agent_lease_failed", "error", err.Error())
-		}
 	}
+}
+
+// step performs one cycle: observe, ask, apply, report, lease.
+//
+// It returns a suggested backoff rather than sleeping, so Run and RunOnce share
+// the same logic -- a diagnostic that took a different path from the real loop
+// would be worse than no diagnostic. A zero wait means the cycle completed and
+// the caller may continue immediately.
+func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration, error) {
+	observed, err := l.Runtime.Observe(ctx)
+	if err != nil {
+		// The runtime being unreachable is not a reason to change anything:
+		// there is nothing to change it to. Retry.
+		l.logger().Warn("agent_runtime_observe_failed", "error", err.Error())
+		return l.applyJitter(l.base()), nil
+	}
+
+	want, err := l.Control.Desired(ctx, observed)
+	if err != nil {
+		// Cloud unreachable: keep running the current release. This is the
+		// table's first row and the most important one -- a partition must not
+		// cause the agent to do anything at all.
+		l.logger().Warn("agent_control_unavailable", "error", err.Error())
+		return l.applyJitter(l.base()), nil
+	}
+
+	// The runtime id travels back on every report: the control plane refuses a
+	// report that does not name one, so an omission here would make every report
+	// fail while every local test passed.
+	want.RuntimeID = l.RuntimeID
+	rep, applyErr := Apply(ctx, l.Runtime, want, gen.applied, l.Drain)
+	rep.RuntimeID = l.RuntimeID
+	gen.observe(rep)
+	if applyErr != nil {
+		switch {
+		case errors.Is(applyErr, ErrFenced):
+			// Applies nothing and re-reports. Cloud reconciles; the agent does
+			// not try to catch up, because guessing which way to move is how a
+			// runtime rolls backwards.
+			l.logger().Info("agent_generation_fenced", "desired", want.Generation, "applied", gen.applied)
+		case errors.Is(applyErr, ErrDrainTimeout):
+			l.logger().Warn("agent_deploy_abandoned", "generation", want.Generation, "reason", rep.Reason)
+		default:
+			l.logger().Warn("agent_apply_error", "generation", want.Generation, "error", applyErr.Error())
+		}
+	} else {
+		l.logger().Info("agent_apply", "generation", want.Generation, "outcome", rep.Outcome)
+	}
+
+	if err := l.Control.Report(ctx, rep); err != nil {
+		// A failed report does not undo an applied release, and retrying the
+		// apply would be worse than re-reporting later. Log and move on.
+		l.logger().Warn("agent_report_failed", "generation", rep.Generation, "error", err.Error())
+	}
+	if err := l.Control.Lease(ctx); err != nil {
+		// A lapsed lease makes the runtime visible as stale. It does not make it
+		// eligible for anything, and it does not stop serving.
+		l.logger().Warn("agent_lease_failed", "error", err.Error())
+	}
+	return 0, nil
 }
 
 // bootstrap obtains a credential via the Bootstrap provider.
@@ -238,4 +249,31 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// RunOnce performs one iteration and returns, for an operator answering "can
+// this host reach its control plane and authenticate" without leaving a process
+// running, and for tests that need one cycle rather than a loop.
+//
+// It shares step() with Run so the two cannot drift: a diagnostic that took a
+// different path from the real loop would be worse than no diagnostic.
+func (l *Loop) RunOnce(ctx context.Context) error {
+	if l.Control == nil || l.Runtime == nil {
+		return fmt.Errorf("agent: loop needs a control plane and a runtime")
+	}
+	var gen generationTracker
+	if l.Creds == nil || l.Creds.Expired(l.clock()) {
+		if err := l.bootstrap(ctx); err != nil {
+			return err
+		}
+	}
+	wait, err := l.step(ctx, &gen)
+	if err != nil {
+		return err
+	}
+	if wait > 0 {
+		// A single iteration should not sleep: the caller asked for one cycle.
+		l.logger().Info("agent_once_retry_suggested", "after", wait.String())
+	}
+	return nil
 }

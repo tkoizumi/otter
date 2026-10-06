@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -31,6 +33,10 @@ type RuntimeHTTP struct {
 	// provisioning should issue it a scoped one.
 	Token      string
 	HTTPClient *http.Client
+	// ReleaseDir is where fetched releases are staged. It is the runtime's own
+	// release root, so activation finds what the agent verified -- staging
+	// elsewhere would verify one thing and activate another.
+	ReleaseDir string
 }
 
 func (r *RuntimeHTTP) client() *http.Client {
@@ -194,3 +200,56 @@ func (r *RuntimeHTTP) Promote(ctx context.Context, digest string) error {
 // Recorded here rather than stubbed: a Validate that compiled but checked nothing
 // would be worse than none, because the apply sequence would report it as a step
 // that passed.
+
+// Fetch downloads and digest-verifies a release.
+//
+// It lives on RuntimeHTTP rather than a separate type because the Runtime
+// interface requires it, and because the destination is a property of the
+// runtime being managed: releases must land where activation looks for them.
+//
+// It is agent-side work, not an endpoint. The agent has the URL and the digest,
+// and it is the agent that must not be deceived, so asking the runtime to fetch
+// and verify would move the check to the component being protected.
+func (r *RuntimeHTTP) Fetch(ctx context.Context, rel Release) error {
+	if r.ReleaseDir == "" {
+		// Refusing rather than fetching nowhere: a release that lands outside the
+		// runtime's release root can never be activated, and a later validation
+		// failure would look like a corrupt release rather than a misconfiguration.
+		return fmt.Errorf("agent: runtime client has no release directory; cannot stage %s", shortDigest(rel.Digest))
+	}
+	f := &Fetcher{Dir: r.ReleaseDir, HTTPClient: r.HTTPClient}
+	return f.Fetch(ctx, rel)
+}
+
+// Validate checks a staged release before it is activated.
+//
+// This is deliberately shallow, and the reason is worth stating rather than
+// hiding behind a thorough-looking check: the runtime already performs the real
+// validation at release time (snapshotting, path resolution, environment
+// readiness) and again at activation, where it refuses a release whose metadata
+// does not resolve. Re-implementing that here would mean two validators that can
+// disagree, and the agent's copy would be the one with less context.
+//
+// What this DOES catch is the one failure the activation refusal cannot: a
+// release the agent believes it staged and that is not present at all. That is
+// the gap the apply sequence's validate step exists to close, and pretending it
+// is more would be worse than stating its scope.
+func (r *RuntimeHTTP) Validate(ctx context.Context, digest string) error {
+	if digest == "" {
+		return fmt.Errorf("agent: validate needs a digest")
+	}
+	if r.ReleaseDir == "" {
+		return fmt.Errorf("agent: cannot validate %s: no release directory configured", shortDigest(digest))
+	}
+	want, err := normalizeDigest(digest)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(r.ReleaseDir, want)); err != nil {
+		// Not present: either the fetch silently failed or the digest differs.
+		// Either way, activating would fail at the runtime with a message about
+		// a missing release, which is less specific than saying so here.
+		return fmt.Errorf("agent: release %s is not staged in %s: %w", shortDigest(want), r.ReleaseDir, err)
+	}
+	return nil
+}

@@ -160,6 +160,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		// Project-aware: finds the project, picks a free port, loads the
 		// project's environment files, records where it listens.
 		return a.cmdStart(ctx, commandArgs)
+	case "agent":
+		// The pooled-runtime agent: outbound to the control plane, loopback to
+		// the runtime, and never an inbound connection from Cloud.
+		return a.cmdAgent(ctx, commandArgs)
 	case "stop":
 		return a.cmdStop(ctx, commandArgs)
 	case "serve":
