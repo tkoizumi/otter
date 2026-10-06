@@ -67,7 +67,12 @@ RUN apt-get update -qq \
 # unprivileged user only: preparation runs as the tenant, so it must not have a
 # writable toolchain owned by root. The interpreter it installs below is global
 # and read-only, which is the distinction that matters.
-COPY --from=ghcr.io/astral-sh/uv:0.4.30 /uv /usr/local/bin/uv
+#
+# The pin is not arbitrary and was not 0.4.30 for long: that version reports
+# "No download found for request: cpython-3.13.5-linux-aarch64-gnu" on arm64, so
+# it cannot provision the interpreter the fixtures pin. A uv pin that cannot
+# install the pinned interpreter is a broken image, not a reproducible one.
+COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /usr/local/bin/uv
 
 # The runtime binary. Copied, not downloaded: see the build arguments above.
 COPY bin/otterd /usr/local/bin/otterd
