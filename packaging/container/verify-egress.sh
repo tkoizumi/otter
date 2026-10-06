@@ -22,9 +22,16 @@ docker inspect "$name" >/dev/null 2>&1 || { echo "no such container: $name" >&2;
 
 # python3 rather than curl: the image carries python3 and does not carry curl, and
 # a probe that fails because its tool is missing reports a boundary never tested.
+# Installed through the shell, not `docker cp`. The launch contract makes the
+# root filesystem read-only and gives the container a writable /tmp tmpfs;
+# `docker cp` writes via the daemon into the container's rootfs path and fails
+# against the read-only mount even though /tmp is writable inside.
 for probe in egress_probe.py rebind_probe.py; do
-  docker cp "$here/$probe" "$name:/tmp/$probe" >/dev/null 2>&1 \
-    || { echo "cannot install $probe into $name (is /tmp writable?)" >&2; exit 1; }
+  b64=$(base64 -w0 < "$here/$probe" 2>/dev/null || base64 < "$here/$probe" | tr -d '\n')
+  printf '%s' "$b64" | docker exec -i "$name" sh -c "base64 -d > /tmp/$probe" 2>/dev/null \
+    || { echo "cannot install $probe into $name" >&2; exit 1; }
+  docker exec "$name" test -s "/tmp/$probe" \
+    || { echo "$probe is empty after install; the probe would report nothing" >&2; exit 1; }
 done
 
 echo "container: $name"
