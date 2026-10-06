@@ -232,6 +232,26 @@ type Store struct {
 	byID  map[string]Schedule
 	byJob map[string][]string
 	byKey map[string]string // idempotency key -> schedule id
+
+	// counters is in-process missed-occurrence accounting per schedule: how
+	// often coalesce folded occurrences away, and how much a bounded catch_up
+	// declined to replay. It is deliberately not persisted -- both answer "is
+	// this happening now?", and a restart is the moment to start counting
+	// again -- and deliberately not derived from the runs table, because a
+	// folded occurrence produces no run to count.
+	counters map[string]*MissedCounters
+}
+
+// MissedCounters is one schedule's lifetime (per-process) missed-occurrence
+// accounting. Both fields are monotonic for the life of the process.
+type MissedCounters struct {
+	// Coalesced counts occurrences that did not become their own run because a
+	// pending run absorbed them, after a stop or during uptime.
+	Coalesced int64
+	// CatchUpSkipped counts occurrences a catch_up declined to replay because
+	// the per-schedule bound was reached. They are not "dropped silently" only
+	// if this number is reachable.
+	CatchUpSkipped int64
 }
 
 const scheduleColumns = `id, job_id, cron, timezone, payload, config_version,
@@ -241,10 +261,11 @@ const scheduleColumns = `id, job_id, cron, timezone, payload, config_version,
 // NewStore reads the schedule table into memory and returns a Store over db.
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	s := &Store{
-		db:    db,
-		byID:  map[string]Schedule{},
-		byJob: map[string][]string{},
-		byKey: map[string]string{},
+		db:       db,
+		counters: map[string]*MissedCounters{},
+		byID:     map[string]Schedule{},
+		byJob:    map[string][]string{},
+		byKey:    map[string]string{},
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT `+scheduleColumns+` FROM schedules`)
@@ -864,6 +885,62 @@ func (s *Store) NoteFired(scheduleID string, occurrence time.Time) {
 	at := occurrence.UTC()
 	rec.LastFiredAt = &at
 	s.byID[scheduleID] = rec
+}
+
+// NoteCoalesced counts occurrences a schedule folded rather than ran. It is
+// called once per absorbed occurrence, so the total is the number of runs that
+// did not happen.
+func (s *Store) NoteCoalesced(scheduleID string, n int) {
+	if n <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.counters == nil {
+		s.counters = map[string]*MissedCounters{}
+	}
+	c := s.counters[scheduleID]
+	if c == nil {
+		c = &MissedCounters{}
+		s.counters[scheduleID] = c
+	}
+	c.Coalesced += int64(n)
+}
+
+// NoteCatchUpSkipped counts occurrences a bounded catch_up declined to replay,
+// so a truncated backlog is a number an operator can read rather than a
+// consequence they have to infer from a gap in run history.
+func (s *Store) NoteCatchUpSkipped(scheduleID string, n int) {
+	if n <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.counters == nil {
+		s.counters = map[string]*MissedCounters{}
+	}
+	c := s.counters[scheduleID]
+	if c == nil {
+		c = &MissedCounters{}
+		s.counters[scheduleID] = c
+	}
+	c.CatchUpSkipped += int64(n)
+}
+
+// Counters returns the missed-occurrence accounting for every schedule that has
+// something to report. A schedule that has folded nothing is absent rather than
+// present as zeros, so the block stays quiet on a runtime using the defaults.
+func (s *Store) Counters() map[string]MissedCounters {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]MissedCounters, len(s.counters))
+	for id, c := range s.counters {
+		if c == nil || (c.Coalesced == 0 && c.CatchUpSkipped == 0) {
+			continue
+		}
+		out[id] = *c
+	}
+	return out
 }
 
 // FireRecorded reports whether an occurrence is already in the ledger. It

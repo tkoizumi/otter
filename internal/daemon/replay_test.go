@@ -497,3 +497,204 @@ retry:
 		}
 	}
 }
+
+// The counters the health surface publishes must actually move when the
+// behaviour they describe happens: a folded occurrence, a truncated catch-up,
+// and a run that stands for more than its own occurrence.
+func TestMissedOccurrenceCountersTrackTheBehaviour(t *testing.T) {
+	t.Run("coalesce folds are counted", func(t *testing.T) {
+		root := t.TempDir()
+		writeJob(t, root, "ticker", `
+version: 1
+name: ticker
+entrypoint: main.py
+timeout: 30
+trigger:
+  cron: "0 * * * *"
+  missed_policy: coalesce
+retry:
+  attempts: 0
+`, noopPython)
+
+		d := newDaemon(t, root, "", nil, nil)
+		rec, ok := scheduleForJob(d, "ticker")
+		if !ok {
+			t.Fatal("schedule not reconciled")
+		}
+		// Three missed occurrences after the last fire.
+		d.schedules.NoteFired(rec.ID, time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC))
+		d.replayMissedOccurrences(context.Background(), time.Date(2026, 10, 5, 12, 30, 0, 0, time.UTC))
+
+		got, err := d.ScheduleCounters(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("counters = %+v, want one schedule", got)
+		}
+		if got[0].CoalescedTotal != 3 {
+			t.Errorf("coalesced_total = %d, want 3 (the occurrences the run absorbed)", got[0].CoalescedTotal)
+		}
+		if got[0].CatchUpSkippedTotal != 0 {
+			t.Errorf("catch_up_skipped_total = %d, want 0", got[0].CatchUpSkippedTotal)
+		}
+	})
+
+	t.Run("a truncated catch-up is counted", func(t *testing.T) {
+		root := t.TempDir()
+		writeJob(t, root, "ticker", `
+version: 1
+name: ticker
+entrypoint: main.py
+timeout: 30
+trigger:
+  cron: "0 * * * *"
+  missed_policy: catch_up
+  max_catch_up: 2
+retry:
+  attempts: 0
+`, noopPython)
+
+		d := newDaemon(t, root, "", nil, nil)
+		rec, ok := scheduleForJob(d, "ticker")
+		if !ok {
+			t.Fatal("schedule not reconciled")
+		}
+		// Ten hours missed, a bound of two, so eight are declined.
+		d.schedules.NoteFired(rec.ID, time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC))
+		d.replayMissedOccurrences(context.Background(), time.Date(2026, 10, 5, 10, 30, 0, 0, time.UTC))
+
+		got, err := d.ScheduleCounters(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("counters = %+v, want one schedule", got)
+		}
+		if got[0].CatchUpSkippedTotal != 8 {
+			t.Errorf("catch_up_skipped_total = %d, want 8 (10 missed minus the bound of 2)", got[0].CatchUpSkippedTotal)
+		}
+		if got[0].CoalescedTotal != 0 {
+			t.Errorf("coalesced_total = %d, want 0 for catch_up", got[0].CoalescedTotal)
+		}
+	})
+
+	t.Run("a folded run reports its collapsed occurrences", func(t *testing.T) {
+		root := t.TempDir()
+		writeJob(t, root, "ticker", `
+version: 1
+name: ticker
+entrypoint: main.py
+timeout: 30
+trigger:
+  cron: "@every 1h"
+  missed_policy: coalesce
+retry:
+  attempts: 0
+`, noopPython)
+
+		d := newDaemon(t, root, "", nil, nil)
+		ctx := context.Background()
+		rec, ok := scheduleForJob(d, "ticker")
+		if !ok {
+			t.Fatal("schedule not reconciled")
+		}
+		base := time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC)
+		for i := 0; i < 3; i++ {
+			d.cronTick(rec.ID, base.Add(time.Duration(i)*time.Hour))
+		}
+		waiting, err := d.runs.ListByStatus(ctx, runs.StatusQueued, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(waiting) != 1 {
+			t.Fatalf("pending runs = %d, want 1", len(waiting))
+		}
+		// The run view has to say it stands for more than itself.
+		view, err := d.GetRunDetail(ctx, waiting[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.CollapsedOccurrences != 2 {
+			t.Errorf("collapsed_occurrences = %d, want 2 (the two occurrences folded into the first)", view.CollapsedOccurrences)
+		}
+	})
+}
+
+// The cron path is the autonomous trigger the whole bound exists for, and it
+// reaches admission through cronTick rather than through the HTTP routes. This
+// fills a job's pending count past its bound and then fires a real tick, so the
+// assertion is that the *scheduler* is refused rather than that the daemon
+// would refuse a webhook.
+func TestCronTickIsRefusedAtTheQueueBound(t *testing.T) {
+	root := t.TempDir()
+	writeJob(t, root, "ticker", `
+version: 1
+name: ticker
+entrypoint: main.py
+timeout: 300
+concurrency: 1
+max_queue_depth: 2
+trigger:
+  cron: "@every 6h"
+retry:
+  attempts: 0
+`, noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+	ctx := context.Background()
+
+	rec, ok := scheduleForJob(d, "ticker")
+	if !ok {
+		t.Fatal("the schedule was not reconciled")
+	}
+
+	// Fill the bound with accepted, unfinished runs. Nothing drains them, so
+	// the job sits exactly at its bound.
+	for i := 0; i < 2; i++ {
+		if _, err := d.SubmitRun(ctx, "ticker", api.TriggerPayload{Type: api.TriggerManual}); err != nil {
+			t.Fatalf("seed run %d: %v", i+1, err)
+		}
+	}
+
+	// A cron occurrence arrives. It is autonomous, so the bound refuses it and
+	// the refusal is recorded rather than only logged.
+	occurrence := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	d.cronTick(rec.ID, occurrence)
+
+	refusals, err := d.AdmissionRefusals(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refusals) != 1 {
+		t.Fatalf("a cron tick at the bound recorded %d refusals, want 1: %+v", len(refusals), refusals)
+	}
+	for _, rec := range refusals {
+		if rec.Total != 1 {
+			t.Errorf("refused_total = %d, want 1", rec.Total)
+		}
+		if rec.LastAt == nil {
+			t.Error("the cron refusal was not timestamped")
+		}
+	}
+
+	// The occurrence was not turned into a run, which is the difference between
+	// a refusal and a queued backlog.
+	queued, err := d.runs.ListByStatus(ctx, runs.StatusQueued, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 2 {
+		t.Errorf("pending runs = %d, want the 2 that filled the bound: the refused occurrence became a run", len(queued))
+	}
+
+	// And the occurrence is not in the ledger, so a later wake-up can still
+	// account for it rather than treating it as done.
+	recorded, err := d.schedules.FireRecorded(ctx, rec.ID, occurrence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Error("a refused occurrence was written to the ledger, so it can never be accounted for")
+	}
+}

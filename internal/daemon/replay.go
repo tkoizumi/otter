@@ -27,6 +27,14 @@ import (
 // before any worker can claim work, so a replayed occurrence cannot race the
 // normal fire path.
 func (d *Daemon) replayMissedOccurrences(ctx context.Context, now time.Time) {
+	// A gated runtime replays nothing. Under maintenance the pilot's answer for
+	// missed occurrences is skip, and creating runs on a start that has not
+	// been activated would defeat the gate: the whole point is that nothing
+	// executes until an operator says so.
+	if d.maint.Gated() {
+		d.log.Info("schedule_replay_skipped", "reason", "runtime is under maintenance")
+		return
+	}
 	for _, rec := range d.schedules.All() {
 		if rec.Cron == "" || rec.Paused() || d.paused.Paused(rec.JobID) {
 			continue
@@ -80,6 +88,7 @@ func (d *Daemon) replaySchedule(ctx context.Context, rec schedule.Schedule, now 
 			"from", missed[0].Format(time.RFC3339), "to", missed[len(missed)-1].Format(time.RFC3339),
 			"limit", rec.CatchUpLimit())
 		if skipped > 0 {
+			d.schedules.NoteCatchUpSkipped(rec.ID, skipped)
 			// Reported once with the window, not per occurrence: the operator
 			// needs to know work was dropped, not to read it a hundred times.
 			d.log.Warn("catch_up_truncated",
@@ -104,6 +113,9 @@ func (d *Daemon) replaySchedule(ctx context.Context, rec schedule.Schedule, now 
 		if err := d.fireOccurrence(ctx, rec, last, meta); err != nil {
 			return err
 		}
+		// Every occurrence in the window is one that did not become its own
+		// run, so the counter is the size of the window it absorbed.
+		d.schedules.NoteCoalesced(rec.ID, len(missed)+skipped)
 		d.log.Info("coalesce_fired",
 			"schedule", rec.ID, "job", rec.JobID,
 			"absorbed", len(missed)+skipped, "skipped", skipped,

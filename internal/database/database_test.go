@@ -234,6 +234,71 @@ func TestMigrateNamesTheMigrationThatFailed(t *testing.T) {
 	}
 }
 
+// An existing database gains the maintenance table on upgrade and the runtime
+// it describes still serves: the new table is additive, and a runtime with no
+// maintenance row has never opted in, so an upgraded deployment behaves exactly
+// as it did before the feature existed.
+func TestMigration0017AddsMaintenanceWithoutGating(t *testing.T) {
+	db := openTempDB(t)
+	ctx := context.Background()
+
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := fstest.MapFS{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		v, err := parseVersion(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v > 16 {
+			continue
+		}
+		body, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[e.Name()] = &fstest.MapFile{Data: body}
+	}
+	if _, err := migrate(ctx, db, before); err != nil {
+		t.Fatalf("migrate to 0016: %v", err)
+	}
+	if tableExists(t, db, "runtime_maintenance") {
+		t.Fatal("the maintenance table exists before its migration")
+	}
+
+	if _, err := migrate(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("migrate to the embedded head: %v", err)
+	}
+	if !tableExists(t, db, "runtime_maintenance") {
+		t.Fatal("0017 did not create runtime_maintenance")
+	}
+
+	// No row: the runtime has never opted in, which is what keeps an upgraded
+	// deployment serving.
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_maintenance`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("the new table has %d rows, want 0: an upgrade must not gate a runtime", n)
+	}
+
+	// The singleton constraint is what stops a second, contradictory row.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runtime_maintenance (id, mode, entered_at) VALUES (1, 'maintenance', '2026-10-05T00:00:00Z')`); err != nil {
+		t.Fatalf("insert the singleton row: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO runtime_maintenance (id, mode, entered_at) VALUES (2, 'serving', '2026-10-05T00:00:00Z')`); err == nil {
+		t.Error("a second maintenance row was accepted; the state must be a singleton")
+	}
+}
+
 // A database migrated by a newer binary must be refused, and refused before
 // anything is applied: running an older build against renamed columns is how a
 // downgrade corrupts data, so the documented policy is "not supported, restore

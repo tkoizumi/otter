@@ -396,6 +396,21 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 		if len(q.ByJob) > 0 {
 			fmt.Fprintf(a.Stdout, "backlog:       %s\n", backlogLine(q.ByJob))
 		}
+		// A refusal is a run that did not happen, so it is stated here rather
+		// than left in the journal: this is the line that answers "is a bound
+		// holding work back right now?".
+		if q.RefusedTotal > 0 {
+			line := refusalLine(q.ByJobRefused)
+			if q.LastRefusedAt != nil {
+				line += fmt.Sprintf(" (last %s)", q.LastRefusedAt.Local().Format("15:04:05"))
+			}
+			fmt.Fprintf(a.Stdout, "refused:       %s\n", line)
+		}
+	}
+	// Schedules that folded work away or truncated a catch-up, so "the
+	// schedule is coalescing" is visible without reading the journal.
+	if line := scheduleCounterLine(health.Schedules); line != "" {
+		fmt.Fprintf(a.Stdout, "schedule:      %s\n", line)
 	}
 	if s := health.Storage; s != nil {
 		fmt.Fprintf(a.Stdout, "storage:       db %s, disk %s free of %s\n",
@@ -405,6 +420,66 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 		fmt.Fprintf(a.Stdout, "last success:  %s\n", freshnessLine(health.Freshness, now))
 	}
 	return 0
+}
+
+// refusalLine renders the per-job max_queue_depth refusals, biggest first so a
+// single noisy job is not buried in a list.
+func refusalLine(byJob map[string]api.AdmissionRefusal) string {
+	type entry struct {
+		id    string
+		total int64
+	}
+	entries := make([]entry, 0, len(byJob))
+	var sum int64
+	for id, rec := range byJob {
+		entries = append(entries, entry{id: id, total: rec.Total})
+		sum += rec.Total
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].total != entries[j].total {
+			return entries[i].total > entries[j].total
+		}
+		return entries[i].id < entries[j].id
+	})
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		parts = append(parts, fmt.Sprintf("%s x%d", shortJobID(e.id), e.total))
+	}
+	return fmt.Sprintf("%d refused: %s", sum, strings.Join(parts, ", "))
+}
+
+// scheduleCounterLine summarises the schedules that folded occurrences or
+// truncated a catch-up. It returns "" when there is nothing to report, so a
+// runtime using the default skip policy prints no line at all.
+func scheduleCounterLine(entries []api.HealthSchedule) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var coalesced, skipped int64
+	for _, e := range entries {
+		coalesced += e.CoalescedTotal
+		skipped += e.CatchUpSkippedTotal
+	}
+	parts := make([]string, 0, 2)
+	if coalesced > 0 {
+		parts = append(parts, fmt.Sprintf("%d coalesced", coalesced))
+	}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d catch-up skipped", skipped))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+// shortJobID abbreviates a job id for a one-line summary, keeping the leading
+// characters that distinguish it.
+func shortJobID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 func (a *App) cmdInspect(ctx context.Context, g globals, args []string) int {

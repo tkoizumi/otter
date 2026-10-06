@@ -1177,7 +1177,43 @@ pinned version meaningful.
 
 ## Capacity and concurrency tuning
 
-Two knobs, applied together:
+### Every bound, and what happens at it
+
+A bound with no visible breach is a silent drop, so every limit the runtime
+enforces is listed here with its default, where it is set, and what the operator
+sees when it is reached. This is the single published home for them: the table
+in [`v0.5.0-release-plan.md`](v0.5.0-release-plan.md) is the work order, and this
+is what an operator reads.
+
+| Bound | Default | Set by | On breach |
+| --- | --- | --- | --- |
+| Workers (whole daemon) | CPU cores, capped at 8 | `--workers` / `OTTER_WORKERS` | Runs wait in the queue |
+| Per-job concurrency | `1` | `concurrency:` in `otter.yaml` | Runs wait in the queue |
+| Attempt timeout | `300s` (max `720h`) | `timeout:` in `otter.yaml` | Run `timed_out` |
+| Retry attempts | `0` (max `100`) | `retry.attempts` in `otter.yaml` | Run terminal `failed` |
+| **Queue depth (autonomous)** | **unbounded** | `max_queue_depth` in `otter.yaml` | Cron/webhook refused `429 overloaded`; a manual run is still admitted |
+| Schedule backlog (`coalesce`) | one pending run per schedule | `trigger.missed_policy` | A tick folds into the waiting run and is counted |
+| Schedule replay (`catch_up`) | `100`, max `10000` | `trigger.max_catch_up` | Occurrences beyond the bound are skipped and counted |
+| Schedule payload | 64 KiB | API `POST /v1/jobs/{id}/schedules` | Write refused `400` |
+| Run log line | 64 KiB | executor | Line truncated in storage |
+| Capture body per message | 256 KiB | capture policy | Payload omitted, reason recorded |
+| API read body | 1 MiB | API server | `400 invalid_request` |
+| Capture retention | 7 days | daemon config | Payload expires; the summary stays |
+| Run / log retention | off | `otter.deploy.yaml` | Rows deleted |
+| `schedule_fires` | pruned with the runs window | daemon | Ledger rows deleted |
+
+The three middle rows are the ones `v0.5.0` added, and they compose: `coalesce`
+bounds a schedule's own backlog, `max_queue_depth` bounds a job's backlog
+however it was triggered, and `catch_up` is the only policy that deliberately
+creates work on wake-up, which is why it is bounded separately. Every "not a
+run" outcome is visible — a fold and a cap-skip in `/health` under `schedules`,
+a refusal under `queue` — because a bound nobody can see is indistinguishable
+from a drop.
+
+### The two knobs people change
+
+Two limits are worth tuning per deployment; the rest are defaults you should
+leave alone unless you have a reason.
 
 | Knob | Scope | Default | Effect |
 | --- | --- | --- | --- |
@@ -1194,18 +1230,28 @@ Sizing guidance:
   default. Jobs are usually I/O-bound (HTTP to SaaS APIs), so you can
   safely go higher — `2 × cores` is common — but each worker is a Python
   process with real memory cost.
-- **Watch RSS, not CPU.** A worker holding a large pandas DataFrame can use
-  hundreds of MB. Budget `workers × peak_python_RSS` against available RAM, and
-  leave room for the page cache that makes SQLite fast.
+- **Watch the job's RSS, not `otterd`'s.** The measured envelope
+  ([supported-load.md](supported-load.md)) puts a loaded single runtime at
+  ~23 MiB, of which the daemon idle is ~3 MiB: the per-runtime floor is
+  dominated by what a job imports, not by the runtime. Budget
+  `workers × peak_python_RSS` against available RAM, and leave room for the page
+  cache that makes SQLite fast.
+- **Watch disk before you watch memory.** The same measurement found ~69 KiB
+  written per run (`otter.db` + WAL, capture `off`). A busy schedule reaches the
+  documented ~2 GB alert threshold in a few tens of thousands of runs, so a
+  high-frequency job needs retention configured — not more RAM.
 - **Raise `concurrency` only for stateless jobs.** A job that
   increments a shared counter through `ctx.state` is safe at `concurrency: 1`
   and racy above it. A counter that reads and writes one key must stay at
   `concurrency: 1`; a checkpoint-based sync needs care to run concurrently
   because two attempts can claim the same work.
-- **Long runs + cron schedules queue up.** A 20-minute job on a
-  `*/5` schedule with `concurrency: 1` produces a growing backlog of queued runs
-  instead of overlapping execution. Fix the schedule or shorten the run; raising
-  `concurrency` may hammer the downstream API.
+- **Long runs + cron schedules queue up** under the default `skip` policy. A
+  20-minute job on a `*/5` schedule with `concurrency: 1` produces a growing
+  backlog of queued runs instead of overlapping execution. Fix the schedule or
+  shorten the run; raising `concurrency` may hammer the downstream API. If the
+  backlog itself is the problem rather than the work, `max_queue_depth` refuses
+  new autonomous triggers instead of growing, and `missed_policy: coalesce`
+  keeps at most one pending run per schedule.
 - **Backoff is not a worker.** A run in `retrying` is not holding a worker; it is
   parked in the queue with `available_at` set. Retries do not consume capacity
   while they wait.
@@ -1213,7 +1259,7 @@ Sizing guidance:
 Check the current picture:
 
 ```bash
-otter status                                    # queue age and depth, run counts, freshness, storage
+otter status                                    # queue age and depth, refusals, folds, run counts, storage
 otter runs --all --status running               # what is executing right now
 otter runs --all --status queued --limit 100    # what is waiting
 curl -s http://127.0.0.1:7337/health | python3 -m json.tool
@@ -1222,7 +1268,9 @@ curl -s http://127.0.0.1:7337/health | python3 -m json.tool
 If `queue_depth` grows without bound and `runs.running` sits at the worker limit,
 add workers (if RAM allows) or reduce run duration. If `runs.running` is below
 the worker limit while work is queued, the per-job `concurrency` is the
-constraint.
+constraint. If `queue.refused_total` is climbing, an autonomous trigger is being
+held back by `max_queue_depth` and the job is behind — see the refusal line in
+`otter status`, which names the job.
 
 ### Backlog behavior
 
@@ -1237,13 +1285,18 @@ that takes 20 minutes does not skip the occurrences it misses.
 2. **With the default `concurrency: 1`, those runs serialize.** A slow job
    therefore builds a *catch-up backlog*: each occurrence waits for the one
    before it, and nothing overlaps until you raise `concurrency`.
-3. **Downtime skips; slowness accumulates.** Occurrences that fall while the
-   daemon is stopped are never replayed — the scheduler does not catch up — but
-   occurrences that fall while it is running always queue, however far behind it
-   has fallen. [runtime-contract.md](runtime-contract.md) §"Missed occurrences
-   are policy-dependent" states the policy; this is its operational consequence. A
-   job that needs gap reconciliation must model it in durable state (a
-   `last_processed_at` checkpoint, say) and reconcile on its next run.
+3. **Downtime and slowness are both policy, and both default to accumulating.**
+   Under the default `skip`, occurrences that fell while the daemon was stopped
+   are never replayed, and occurrences that fall while it is running always
+   queue however far behind it has fallen. Two non-default policies change that:
+   `coalesce` keeps at most one occurrence pending per schedule, and `catch_up`
+   replays the missed window oldest-first up to `max_catch_up`. Separately,
+   `max_queue_depth` refuses a new autonomous trigger rather than growing the
+   backlog past a bound. [runtime-contract.md](runtime-contract.md) §"Missed
+   occurrences are policy-dependent" states the matrix; this is its operational
+   consequence. A job that needs gap reconciliation without changing policy can
+   still model it in durable state (a `last_processed_at` checkpoint, say) and
+   reconcile on its next run.
 4. **Queued work runs the code that was active when it was submitted.** A run
    binds its release at submission — see [architecture.md](architecture.md)
    §"What runs is the release, not the tree" — so a deep backlog can be executing
@@ -1255,10 +1308,12 @@ that takes 20 minutes does not skip the occurrences it misses.
    one job beyond the `concurrency` limit, so two runs can be inside the same
    downstream system at the same time if the job is not written for it.
 
-This is the admission behavior Otter ships, not a defect: a policy that coalesces
-or skips missed occurrences for a busy job is not promised today. `otter status`
-is how you watch it — `queue_depth` is the size, `queue.oldest_waiting_seconds`
-the age, and `queue.by_job` names the job that is behind (see
+This is the default admission behavior, not a defect: `skip` with unbounded
+admission is what a manifest gets when it asks for nothing, so an existing job
+does not change meaning. The policies above are opt-in per schedule, and
+`otter status` is how you watch all of it — `queue_depth` is the size,
+`queue.oldest_waiting_seconds` the age, `queue.by_job` names the job that is
+behind, and the `refused:`/`schedule:` lines report the bounds doing work (see
 [Health checking](#health-checking)).
 
 ## Health checking
@@ -1287,8 +1342,15 @@ otter runs --all --status failed --limit 5
     "oldest_waiting_seconds": 3725.4,
     "by_job": {"shopify-to-salesforce": 2},
     "retrying": 1,
-    "next_retry_at": "2026-10-01T05:14:00Z"
+    "next_retry_at": "2026-10-01T05:14:00Z",
+    "refused_total": 3,
+    "last_refused_at": "2026-10-01T05:02:00Z",
+    "refusals_by_job": {"9f1c...": {"refused_total": 3, "last_refused_at": "2026-10-01T05:02:00Z"}}
   },
+  "schedules": [
+    {"schedule_id": "b21e...", "job_id": "9f1c...", "name": "shopify-to-salesforce",
+     "coalesced_total": 4, "catch_up_skipped_total": 0}
+  ],
   "freshness": [
     {"job_id": "9f1c...", "name": "shopify-to-salesforce", "last_success_at": "2026-10-01T05:00:04Z", "age_seconds": 325.1},
     {"job_id": "41ab...", "name": "nightly-report"}

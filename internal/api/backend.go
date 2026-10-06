@@ -26,6 +26,14 @@ var (
 	// run is never refused with this error.
 	ErrPaused = errors.New("paused")
 
+	// ErrGated refuses *every* path that would admit work because the runtime
+	// itself is under maintenance. It is deliberately not ErrPaused: a pause
+	// is one job's triggers and a manual run still gets through, while
+	// maintenance is the whole runtime and nothing does. 503 with a
+	// machine-readable reason is the answer, and the reason tells the operator
+	// how to activate the runtime.
+	ErrGated = errors.New("maintenance")
+
 	// ErrOverloaded refuses an autonomous trigger because the job's own
 	// max_queue_depth is already reached. Like ErrPaused it describes a
 	// temporary condition, but the answer differs: the queue drains on its own,
@@ -199,6 +207,26 @@ type Backend interface {
 	// max_queue_depth refused and when the most recent refusal happened. The
 	// counters are in-process, so they are empty after a restart.
 	AdmissionRefusals(ctx context.Context) (map[string]AdmissionRefusal, error)
+
+	// Maintenance reports the runtime's maintenance state: whether it accepts
+	// work, how much is still running, and why it is held back.
+	Maintenance(ctx context.Context) (MaintenanceView, error)
+
+	// EnterMaintenance closes every path that admits work. It returns the
+	// resulting state, so a caller learns what mode it landed in rather than
+	// assuming.
+	EnterMaintenance(ctx context.Context, reason string) (MaintenanceView, error)
+
+	// ExitMaintenance activates the runtime: maintenance is cleared and work is
+	// accepted again. It must not be reachable by a read, control or capture
+	// credential, only by an admin one.
+	ExitMaintenance(ctx context.Context) (MaintenanceView, error)
+
+	// ScheduleCounters reports the per-schedule missed-occurrence accounting:
+	// occurrences folded by coalesce, and occurrences a bounded catch-up
+	// declined to replay. Only schedules with a non-zero counter are returned.
+	// In-process, so a restart starts the counts again.
+	ScheduleCounters(ctx context.Context) ([]HealthSchedule, error)
 
 	// LastSuccessByJob reports each job's most recent successful completion,
 	// keyed by job id. A job absent from the map has never succeeded.

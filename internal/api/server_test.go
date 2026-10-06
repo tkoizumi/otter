@@ -49,7 +49,15 @@ type fakeBackend struct {
 	// admissionRefusals is what the authenticated health view reports for jobs
 	// whose max_queue_depth refused a trigger.
 	admissionRefusals map[string]AdmissionRefusal
-	state             map[string]map[string]json.RawMessage
+	// scheduleCounters is what it reports for schedules that folded or skipped
+	// occurrences.
+	scheduleCounters []HealthSchedule
+	// maintenance is the runtime's maintenance state.
+	maintenance MaintenanceView
+	// gated makes SubmitRun refuse the way a gated runtime does, so the
+	// refusal's status code is asserted rather than assumed.
+	gated bool
+	state map[string]map[string]json.RawMessage
 
 	queueDepth int
 	runCounts  map[string]int
@@ -516,10 +524,18 @@ func (f *fakeBackend) SubmitRun(_ context.Context, jobID string, payload Trigger
 	}
 
 	// max_queue_depth is modelled as it reaches the API: a refusal the handler
-	// has to turn into a status code. Which triggers it applies to is the
-	// daemon's decision and is asserted there, not here.
-	if f.overloadedJob == jobID {
+	// has to turn into a status code. It governs autonomous triggers only -- a
+	// manual run is exempt -- which is the daemon's rule, modelled here so the
+	// manual-bypass assertion at the HTTP layer tests the real contract rather
+	// than this fake.
+	if f.overloadedJob == jobID && payload.Type != TriggerManual {
 		return "", fmt.Errorf("job %q is at its max_queue_depth: %w", jobID, ErrOverloaded)
+	}
+
+	// The maintenance gate closes every path, including a manual run: unlike a
+	// pause or a queue bound, there is nothing it does not apply to.
+	if f.gated {
+		return "", fmt.Errorf("runtime is under maintenance: %w", ErrGated)
 	}
 
 	f.submitted = append(f.submitted, submittedRun{jobID: jobID, payload: payload})
@@ -662,6 +678,39 @@ func (f *fakeBackend) AdmissionRefusals(context.Context) (map[string]AdmissionRe
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.admissionRefusals, nil
+}
+
+// maintenance is the fake's runtime maintenance state. Tests that exercise the
+// gate set it; the default is serving with nothing running.
+func (f *fakeBackend) Maintenance(context.Context) (MaintenanceView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maintenance, nil
+}
+
+func (f *fakeBackend) EnterMaintenance(_ context.Context, reason string) (MaintenanceView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.maintenance = MaintenanceView{
+		Mode: "draining", AcceptingWork: false, Explicit: true, Reason: reason,
+		Running: f.maintenance.Running,
+	}
+	return f.maintenance, nil
+}
+
+func (f *fakeBackend) ExitMaintenance(context.Context) (MaintenanceView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.maintenance = MaintenanceView{Mode: "serving", AcceptingWork: true, Explicit: true}
+	return f.maintenance, nil
+}
+
+// scheduleCounters is what the fake reports for the per-schedule missed
+// occurrence accounting.
+func (f *fakeBackend) ScheduleCounters(context.Context) ([]HealthSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.scheduleCounters, nil
 }
 
 func (f *fakeBackend) LastSuccessByJob(context.Context) (map[string]time.Time, error) {

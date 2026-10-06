@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -403,6 +404,16 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 	}
 
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The maintenance gate is checked inside the transaction, not from the
+		// cached view read before it. Tx retries this closure on a busy
+		// database, so a check hoisted above it would be evaluated once and
+		// then silently reused on the retry -- which is exactly the window an
+		// operator entering maintenance is trying to close. Reading the row
+		// here means a commit that lands before this transaction decides
+		// whether to admit the run, and one that lands after loses.
+		if err := d.maint.CheckTx(ctx, tx); err != nil {
+			return fmt.Errorf("%v: %w", err, api.ErrGated)
+		}
 		// The bound release must still exist. Retention renames a doomed
 		// release aside inside its own immediate transaction, and this
 		// transaction is also immediate, so the two cannot interleave: a run
@@ -494,6 +505,33 @@ func (d *Daemon) AdmissionRefusals(context.Context) (map[string]api.AdmissionRef
 	return out, nil
 }
 
+// ScheduleCounters reports the per-schedule missed-occurrence accounting for
+// the health surface. Only schedules with a non-zero counter are returned, and
+// they are ordered by schedule id so the response is diffable.
+func (d *Daemon) ScheduleCounters(context.Context) ([]api.HealthSchedule, error) {
+	counters := d.schedules.Counters()
+	if len(counters) == 0 {
+		return nil, nil
+	}
+	out := make([]api.HealthSchedule, 0, len(counters))
+	for id, c := range counters {
+		entry := api.HealthSchedule{
+			ScheduleID:          id,
+			CoalescedTotal:      c.Coalesced,
+			CatchUpSkippedTotal: c.CatchUpSkipped,
+		}
+		if rec, ok := d.schedules.Get(id); ok {
+			entry.JobID = rec.JobID
+			if got, ok := d.GetJob(rec.JobID); ok {
+				entry.Name = got.Name
+			}
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ScheduleID < out[j].ScheduleID })
+	return out, nil
+}
+
 // encodeTriggerMetadata builds a run's trigger metadata. extra carries anything
 // the caller decided about this run that is not part of the trigger itself --
 // the window a coalesced run absorbed, for instance -- and merges last, so the
@@ -581,11 +619,12 @@ func (d *Daemon) GetRunDetail(ctx context.Context, runID string) (*api.RunView, 
 	}
 
 	return &api.RunView{
-		Run:          target,
-		RootRunID:    root.ID,
-		LatestStatus: latest,
-		Attempts:     attempts,
-		MaxAttempts:  d.maxAttemptsFor(target.JobID),
+		Run:                  target,
+		RootRunID:            root.ID,
+		LatestStatus:         latest,
+		Attempts:             attempts,
+		MaxAttempts:          d.maxAttemptsFor(target.JobID),
+		CollapsedOccurrences: api.CollapsedOccurrences(target.Metadata),
 	}, nil
 }
 

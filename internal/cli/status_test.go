@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -197,5 +198,97 @@ func TestStatusSaysNothingWaiting(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("status output is missing %q:\n%s", want, text)
 		}
+	}
+}
+
+// A bound doing work has to be visible in the terminal, not only in /health:
+// "is a job being held back right now?" is answered by the refused and schedule
+// lines. This asserts they render, and that a runtime with no refusals and no
+// folded occurrences prints neither line.
+func TestStatusReportsBoundsDoingWork(t *testing.T) {
+	lastRefused := time.Date(2026, time.October, 1, 11, 58, 0, 0, time.UTC)
+
+	// Two whole payloads rather than one with injected fragments: a hand-built
+	// JSON string that is only sometimes valid is a bad fixture, and getting it
+	// wrong tests the decoder instead of the renderer.
+	quiet := `{"status":"ok","version":"v0.5.0","uptime_seconds":90,
+		"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":4,
+		"runs":{"running":1,"queued":4},
+		"queue":{"by_job":{"9f1c...":4},"retrying":0},
+		"storage":{"db_bytes":4096,"disk_free_bytes":1073741824,"disk_total_bytes":2147483648}}`
+
+	busy := fmt.Sprintf(`{"status":"ok","version":"v0.5.0","uptime_seconds":90,
+		"jobs":{"total":1,"valid":1,"invalid":0},"queue_depth":4,
+		"runs":{"running":1,"queued":4},
+		"queue":{"by_job":{"9f1c...":4},"retrying":0,
+			"refused_total":3,"last_refused_at":%q,
+			"refusals_by_job":{"9f1c...":{"refused_total":3,"last_refused_at":%q}}},
+		"schedules":[{"schedule_id":"b21e...","job_id":"9f1c...","name":"shopify",
+			"coalesced_total":4,"catch_up_skipped_total":2}],
+		"storage":{"db_bytes":4096,"disk_free_bytes":1073741824,"disk_total_bytes":2147483648}}`,
+		lastRefused.Format(time.RFC3339Nano), lastRefused.Format(time.RFC3339Nano))
+
+	serve := func(payload string) string {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, payload)
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+
+	var out bytes.Buffer
+	app := New("test", &out, &out)
+	if code := app.cmdStatus(context.Background(), globals{api: serve(busy)}); code != 0 {
+		t.Fatalf("exit code = %d, want 0; output:\n%s", code, out.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"refused:       3 refused: 9f1c... x3",
+		"(last 11:58:00)",
+		"schedule:      4 coalesced, 2 catch-up skipped",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status output is missing %q:\n%s", want, text)
+		}
+	}
+
+	// Nothing refused, nothing folded: neither line appears, so their presence
+	// means something rather than being decoration.
+	out.Reset()
+	if code := app.cmdStatus(context.Background(), globals{api: serve(quiet)}); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(out.String(), "refused:") || strings.Contains(out.String(), "schedule:") {
+		t.Errorf("a quiet runtime printed a bound line:\n%s", out.String())
+	}
+}
+
+func TestRefusalLineLeadsWithTheBusiestJob(t *testing.T) {
+	got := refusalLine(map[string]api.AdmissionRefusal{
+		"a": {Total: 2},
+		"b": {Total: 5},
+		"c": {Total: 1},
+	})
+	if want := "8 refused: b x5, a x2, c x1"; got != want {
+		t.Errorf("refusalLine() = %q, want %q", got, want)
+	}
+}
+
+func TestScheduleCounterLineOmitsZeroCounters(t *testing.T) {
+	if got := scheduleCounterLine(nil); got != "" {
+		t.Errorf("no schedules = %q, want empty", got)
+	}
+	// A schedule present with no counts should not render a line either.
+	if got := scheduleCounterLine([]api.HealthSchedule{{ScheduleID: "x"}}); got != "" {
+		t.Errorf("zero counters = %q, want empty", got)
+	}
+	got := scheduleCounterLine([]api.HealthSchedule{
+		{ScheduleID: "x", CoalescedTotal: 3},
+		{ScheduleID: "y", CatchUpSkippedTotal: 7},
+	})
+	if want := "3 coalesced, 7 catch-up skipped"; got != want {
+		t.Errorf("scheduleCounterLine() = %q, want %q", got, want)
 	}
 }

@@ -2,8 +2,10 @@ package schedule
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -403,5 +405,83 @@ func TestCatchUpBoundIsNormalizedAndCeilinged(t *testing.T) {
 	}
 	if moved.MaxCatchUp != 0 {
 		t.Errorf("bound after leaving catch_up = %d, want 0", moved.MaxCatchUp)
+	}
+}
+
+// The published bounds table claims a schedule payload over 64 KiB is refused at
+// the write boundary. A limit documented but not reached by a test is a claim,
+// so this drives both sides of that boundary.
+func TestSchedulePayloadBoundIsEnforcedAtTheBoundary(t *testing.T) {
+	s, _, ctx := newTestStore(t)
+
+	// Exactly at the limit: accepted. The payload must be a JSON object, so pad
+	// with a value that keeps it valid.
+	pad := MaxPayloadBytes - len(`{"pad":""}`)
+	atLimit := json.RawMessage(`{"pad":"` + strings.Repeat("x", pad) + `"}`)
+	if len(atLimit) != MaxPayloadBytes {
+		t.Fatalf("fixture is %d bytes, wanted exactly %d", len(atLimit), MaxPayloadBytes)
+	}
+	if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", Payload: atLimit}); err != nil {
+		t.Errorf("a payload of exactly the limit was refused: %v", err)
+	}
+
+	// One byte over: refused, and refused as invalid rather than stored.
+	over := json.RawMessage(`{"pad":"` + strings.Repeat("x", pad+1) + `"}`)
+	if _, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h", Payload: over}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a payload one byte over the limit = %v, want ErrInvalid", err)
+	}
+}
+
+// The ledger is pruned with the runs window, which the bounds table lists as a
+// bound whose breach is "rows deleted". This reaches that boundary: an old
+// fire goes, a recent one stays, and the return value counts what went.
+func TestPruneFiresDropsOnlyOccurrencesBeforeTheCutoff(t *testing.T) {
+	s, db, ctx := newTestStore(t)
+	rec, _, err := s.Create(ctx, CreateInput{JobID: "job-1", Cron: "@every 1h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	// The ledger row is written inside the run's transaction in production, so
+	// the test writes it the same way rather than through a store helper that
+	// only exists for the fire path.
+	for i, at := range []time.Time{old, recent} {
+		if err := db.Tx(ctx, func(tx *sql.Tx) error {
+			recorded, err := s.RecordFireTx(ctx, tx, rec.ID, at, "run-"+string(rune('a'+i)))
+			if err != nil {
+				return err
+			}
+			if !recorded {
+				t.Fatalf("occurrence %s was not recorded", at)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := s.PruneFires(ctx, time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Errorf("pruned %d occurrences, want 1 (only the one before the cutoff)", removed)
+	}
+	// The recent occurrence is still recorded, so it cannot be replayed.
+	kept, err := s.FireRecorded(ctx, rec.ID, recent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept {
+		t.Error("the recent occurrence was pruned; it could now be replayed twice")
+	}
+	gone, err := s.FireRecorded(ctx, rec.ID, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone {
+		t.Error("the old occurrence survived the prune")
 	}
 }

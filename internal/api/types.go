@@ -256,6 +256,38 @@ type RunView struct {
 	// "a retry is still coming" -- a distinction the statuses alone cannot make
 	// until the successor attempt exists.
 	MaxAttempts int `json:"max_attempts,omitempty"`
+
+	// CollapsedOccurrences is how many schedule occurrences this attempt
+	// stands for beyond its own, recorded when a coalesce policy folded them
+	// into it. Zero for an ordinary run, and omitted then, so the common case
+	// is unchanged. It is how a run that represents five fires says so.
+	CollapsedOccurrences int `json:"collapsed_occurrences,omitempty"`
+}
+
+// CollapsedOccurrences reads the folded-occurrence count a coalesce recorded in
+// a run's trigger metadata. It is exported so the daemon and any other reader
+// agree on the shape: metadata["coalesced"]["count"] on an uptime fold, and
+// metadata["coalesced"]["missed"] on one that absorbed a downtime window.
+func CollapsedOccurrences(metadata json.RawMessage) int {
+	if len(metadata) == 0 {
+		return 0
+	}
+	var meta struct {
+		Coalesced struct {
+			Count  *int `json:"count"`
+			Missed *int `json:"missed"`
+		} `json:"coalesced"`
+	}
+	if err := json.Unmarshal(metadata, &meta); err != nil {
+		return 0
+	}
+	if meta.Coalesced.Count != nil {
+		return *meta.Coalesced.Count
+	}
+	if meta.Coalesced.Missed != nil {
+		return *meta.Coalesced.Missed
+	}
+	return 0
 }
 
 // HealthResponse is returned by GET /health.
@@ -280,11 +312,16 @@ type HealthResponse struct {
 	Freshness []HealthFreshness `json:"freshness,omitempty"`
 	Storage   *HealthStorage    `json:"storage,omitempty"`
 
-	// AdmissionRefusals is per job and present only for jobs whose
-	// max_queue_depth refused an autonomous trigger. A refusal is a run that
-	// did not happen, so it is reported here rather than being visible only in
-	// a log line that scrolls away.
-	AdmissionRefusals map[string]AdmissionRefusal `json:"admission_refusals,omitempty"`
+	// Maintenance is present for an authenticated caller so a monitor can tell
+	// "held back on purpose" from "broken" without a second request.
+	Maintenance *MaintenanceView `json:"maintenance,omitempty"`
+
+	// Schedules reports the per-schedule counters that are not derivable from
+	// runs: how often a schedule folded occurrences, and how much a bounded
+	// catch-up declined to replay. Only schedules with a non-zero counter
+	// appear, so the block is absent on a runtime that never uses the
+	// non-default policies.
+	Schedules []HealthSchedule `json:"schedules,omitempty"`
 }
 
 // HealthCounts summarises discovered jobs.
@@ -313,6 +350,29 @@ type HealthQueue struct {
 	// from the age above: a retry is waiting on a clock, not on capacity.
 	Retrying    int        `json:"retrying"`
 	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+
+	// Refusals is the max_queue_depth picture: a refusal is a run that did not
+	// happen, so it is reported beside the depth it was refused at rather than
+	// only in the journal. Absent until a job has refused something.
+	RefusedTotal  int64                       `json:"refused_total,omitempty"`
+	LastRefusedAt *time.Time                  `json:"last_refused_at,omitempty"`
+	ByJobRefused  map[string]AdmissionRefusal `json:"refusals_by_job,omitempty"`
+}
+
+// HealthSchedule is one schedule's missed-occurrence accounting. Both counters
+// are lifetime totals for this process, so they answer "is this schedule
+// folding work away, or did catch-up truncate?" without reading the journal.
+// A schedule with nothing to report is absent rather than present as zeros.
+type HealthSchedule struct {
+	ScheduleID string `json:"schedule_id"`
+	JobID      string `json:"job_id"`
+	Name       string `json:"name,omitempty"`
+	// CoalescedTotal counts occurrences folded into a run that was already
+	// pending, or absorbed by a coalesce after downtime.
+	CoalescedTotal int64 `json:"coalesced_total"`
+	// CatchUpSkippedTotal counts occurrences a bounded catch-up declined to
+	// replay, so a truncated backlog is visible rather than implied.
+	CatchUpSkippedTotal int64 `json:"catch_up_skipped_total"`
 }
 
 // HealthFreshness is one job's last success. LastSuccessAt and AgeSeconds are
@@ -356,6 +416,29 @@ type AdmissionRefusal struct {
 	Total int64 `json:"refused_total"`
 	// LastAt is when the most recent refusal happened. Absent when Total is 0.
 	LastAt *time.Time `json:"last_refused_at,omitempty"`
+}
+
+// MaintenanceView is what GET /v1/runtime/maintenance returns and what /health
+// embeds. It answers the three questions an operator has during a window:
+// whether the runtime is accepting work, whether anything is still running, and
+// how long it has been held back.
+type MaintenanceView struct {
+	// Mode is serving, startup, draining or maintenance.
+	Mode string `json:"mode"`
+	// AcceptingWork is the question callers actually ask, stated directly so a
+	// reader does not have to know that draining and maintenance both refuse.
+	AcceptingWork bool `json:"accepting_work"`
+	// Running is how many runs are still executing. It is what separates a
+	// drain that is progressing from one that is stuck.
+	Running int `json:"running"`
+	// Explicit is true when an operator decided this state, as distinct from a
+	// process that started gated and has not been activated.
+	Explicit bool `json:"explicit"`
+	// Since is when the current state began, so "held back for 40 minutes" is
+	// readable rather than derived from a log search.
+	Since string `json:"since,omitempty"`
+	// Reason is the operator's own text, echoed back for the audit trail.
+	Reason string `json:"reason,omitempty"`
 }
 
 // StorageStats is the raw storage data the daemon reports to the API.

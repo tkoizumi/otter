@@ -95,6 +95,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/jobs/{id}/move", s.admin(s.handleMoveJob))
 	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
+
+	// Maintenance is admin-only in both directions. A control credential can
+	// pause a job; only an admin credential can hold the whole runtime back or
+	// activate it, because that decides whether customer work runs at all.
+	mux.Handle("GET /v1/runtime/maintenance", s.admin(s.handleGetMaintenance))
+	mux.Handle("POST /v1/runtime/maintenance", s.admin(s.handleEnterMaintenance))
+	mux.Handle("DELETE /v1/runtime/maintenance", s.admin(s.handleExitMaintenance))
 	mux.Handle("POST /v1/tokens", s.admin(s.handleCreateToken))
 	mux.Handle("GET /v1/tokens", s.admin(s.handleListTokens))
 	mux.Handle("DELETE /v1/tokens/{id}", s.admin(s.handleRevokeToken))
@@ -514,10 +521,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Runs = runCounts
 
 	now := time.Now().UTC()
-	if refusals, err := s.backend.AdmissionRefusals(r.Context()); err != nil {
+
+	refusals, err := s.backend.AdmissionRefusals(r.Context())
+	if err != nil {
 		s.logger.Warn("health_admission_refusals", "error", err.Error())
-	} else if len(refusals) > 0 {
-		resp.AdmissionRefusals = refusals
+		refusals = nil
 	}
 
 	if stats, err := s.backend.QueueStats(r.Context()); err != nil {
@@ -529,7 +537,33 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			queue.OldestWaitingAt = stats.OldestWaitingAt
 			queue.OldestWaitingSeconds = &age
 		}
+		// The refusal picture belongs beside the depth it was refused at: a
+		// depth with no bound reports nothing, and a bound with no refusals
+		// reports zeros rather than an absent block, which is itself the
+		// statement "this job is not being held back".
+		if len(refusals) > 0 {
+			queue.ByJobRefused = refusals
+			for _, rec := range refusals {
+				queue.RefusedTotal += rec.Total
+				if rec.LastAt != nil && (queue.LastRefusedAt == nil || rec.LastAt.After(*queue.LastRefusedAt)) {
+					at := *rec.LastAt
+					queue.LastRefusedAt = &at
+				}
+			}
+		}
 		resp.Queue = queue
+	}
+
+	if maint, err := s.backend.Maintenance(r.Context()); err != nil {
+		s.logger.Warn("health_maintenance", "error", err.Error())
+	} else {
+		resp.Maintenance = &maint
+	}
+
+	if counters, err := s.backend.ScheduleCounters(r.Context()); err != nil {
+		s.logger.Warn("health_schedule_counters", "error", err.Error())
+	} else if len(counters) > 0 {
+		resp.Schedules = counters
 	}
 
 	if fresh, err := s.backend.LastSuccessByJob(r.Context()); err != nil {
@@ -1550,6 +1584,13 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		// one run is not the backlog the bound exists to cap.
 		w.Header().Set("Retry-After", "30")
 		s.writeError(w, http.StatusTooManyRequests, CodeOverloaded, err.Error())
+	case errors.Is(err, ErrGated):
+		// The runtime is under maintenance, so every path that admits work is
+		// closed and this is the answer on all of them. 503 rather than 429:
+		// unlike a queue bound there is no automatic relief, only an operator
+		// activating the runtime, and the reason says how. No Retry-After is
+		// offered for the same reason a pause offers none.
+		s.writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
 	case errors.Is(err, ErrForbidden):
 		s.writeError(w, http.StatusForbidden, CodeForbidden, err.Error())
 	case errors.Is(err, timeline.ErrReadDeadline):

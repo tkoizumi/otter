@@ -112,6 +112,10 @@ func (d *Daemon) foldOccurrence(ctx context.Context, rec schedule.Schedule, occu
 	}
 	if recorded {
 		d.schedules.NoteFired(rec.ID, occurrence)
+		// One occurrence folded, and the run it folded into now stands for one
+		// more than it did. Counted here rather than at the call site so a
+		// duplicate tick, which records nothing, cannot inflate it.
+		d.schedules.NoteCoalesced(rec.ID, 1)
 	}
 	return recorded, nil
 }
