@@ -132,17 +132,31 @@ func TestEgressVerificationIsPresentAndConnects(t *testing.T) {
 	}
 	src := string(body)
 
-	// The addresses the v1 contract denies, and the metadata endpoint the
-	// prototype was measured reaching on the default bridge.
-	for _, must := range []string{"169.254.169.254", "AF_INET6", "nip.io", "172.16.0.1", "192.168.0.1", "10.0.0.1"} {
+	// The denied addresses are composed by the shell script, which passes them to
+	// the probe as arguments -- the metadata endpoint the prototype was measured
+	// reaching on the default bridge, both RFC1918 ranges, and the IPv6
+	// loopback, link-local and unique-local forms.
+	for _, must := range []string{"169.254.169.254", "AF_INET6", "172.16.0.1", "192.168.0.1", "10.0.0.1", "fe80::1", "fd00::1", "::ffff:169.254.169.254"} {
 		if !strings.Contains(src, must) {
 			t.Errorf("verify-egress.sh does not probe %q", must)
 		}
 	}
-	// It must connect, not merely resolve: a resolve-only check passes while a
-	// direct-IP or rebound connection still works.
-	if !strings.Contains(src, "s.connect(") {
-		t.Error("verify-egress.sh does not attempt connections; a resolve-only check is not an egress policy")
+	// The probe must connect, not merely resolve: a resolve-only check passes
+	// while a direct-IP or rebound connection still works.
+	egress, err := os.ReadFile(filepath.Join(dir, "egress_probe.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(egress), "s.connect(") {
+		t.Error("egress_probe.py does not attempt connections; a resolve-only check is not an egress policy")
+	}
+	// The rebinding case: a name that resolves to a blocked address.
+	rebind, err := os.ReadFile(filepath.Join(dir, "rebind_probe.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rebind), "nip.io") || !strings.Contains(string(rebind), "s.connect(") {
+		t.Error("rebind_probe.py must resolve a name to a blocked address and then attempt to connect")
 	}
 	// And it must not depend on curl, which the image does not carry.
 	if strings.Contains(src, "curl ") {
