@@ -113,6 +113,43 @@ func TestLimitVerificationScriptIsPresentAndExecutable(t *testing.T) {
 	}
 }
 
+// The egress verifier is the only check on the policy that the qualification
+// found violated on the default bridge, so losing it would remove the guard
+// without failing anything.
+func TestEgressVerificationIsPresentAndConnects(t *testing.T) {
+	dir := packagingDir(t)
+	path := filepath.Join(dir, "verify-egress.sh")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("verify-egress.sh is missing: nothing would check the egress policy: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Error("verify-egress.sh is not executable")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+
+	// The addresses the v1 contract denies, and the metadata endpoint the
+	// prototype was measured reaching on the default bridge.
+	for _, must := range []string{"169.254.169.254", "AF_INET6", "nip.io", "172.16.0.1", "192.168.0.1", "10.0.0.1"} {
+		if !strings.Contains(src, must) {
+			t.Errorf("verify-egress.sh does not probe %q", must)
+		}
+	}
+	// It must connect, not merely resolve: a resolve-only check passes while a
+	// direct-IP or rebound connection still works.
+	if !strings.Contains(src, "s.connect(") {
+		t.Error("verify-egress.sh does not attempt connections; a resolve-only check is not an egress policy")
+	}
+	// And it must not depend on curl, which the image does not carry.
+	if strings.Contains(src, "curl ") {
+		t.Error("verify-egress.sh uses curl, which is not in the runtime image")
+	}
+}
+
 // The build context is the repository root, so without an allowlist the image
 // would be built from .git, the test suite and local caches.
 func TestDockerignoreRestrictsTheBuildContext(t *testing.T) {

@@ -34,7 +34,18 @@ a file that plainly exists — the misleading error that cost three attempts whi
 
 ## Launch
 
+The network is not optional and must never be left implicit. Docker's **default
+`bridge` is not an acceptable tenant network**: the qualification measured a
+tenant on it reaching the **instance metadata service** (`HTTP 401 ... Server:
+EC2ws`) and the **host's SSH port**. Create a per-tenant network first, then name
+it explicitly on the run.
+
 ```sh
+# Per tenant. --internal denies all egress, which is the correct default for a
+# workload that does not call out. A tenant whose job talks to Shopify, HubSpot
+# or NetSuite needs an egress path; see "Egress" below for what v1 permits.
+docker network create --internal tenant-a-net
+
 docker run -d \
   --name tenant-a \
   --runtime=runsc \
@@ -65,12 +76,25 @@ part of the contract, and each flag maps to a requirement:
 | `--user 10001:10001` | Matches the image's fixed uid, so a host-mounted volume can be ownership-checked against a known value |
 | `--memory-swap` equal to `--memory` | Disables swap for the container. Without it a tenant exceeding its cap is paged instead of killed, and the OOM threshold becomes a host-level question |
 | `--cpus` / `--pids-limit` | Set explicitly. The daemon has no `--memory-max`, `--cpu-quota` or `--tasks-max` flags: **these limits are the sandbox's, not otterd's**, which is why they must be verified in the cgroup rather than trusted from the command line |
-| `--network tenant-a-net` | A per-tenant network. The daemon binds loopback only, and a shared loopback is not authorization |
+| `--network tenant-a-net` | A per-tenant network, named explicitly. The daemon binds loopback only, and a shared loopback is not authorization. Omitting this puts the tenant on the host's default bridge, where it reaches instance metadata and the host's services — measured, not hypothesised |
 | `-v …:/workspace` | One volume, mounted at the one path the tenant owns. No host socket, device, credential or broad root |
 
 `OTTER_API_TOKEN` is required rather than decorative: the plan's launch contract
 says a token is mandatory because loopback alone on a shared host authorises
 everyone on that host.
+
+## Verification
+
+Two scripts, because two different things are being claimed:
+
+- `verify-limits.sh` reads back the resource limits the kernel actually enforced
+  — `memory.max`, `memory.swap.max`, `cpu.max`, `pids.max`, the read-only root,
+  the dropped capabilities and the uid. A launch flag is a request; the cgroup is
+  the fact.
+- `verify-egress.sh` attempts **connections**, not resolutions, to the addresses
+  a tenant must not reach, including a name that resolves to a blocked address
+  (DNS rebinding) and the IPv6 equivalents. A policy that holds only against
+  name lookup is not a boundary.
 
 ## Effective-limit verification
 
@@ -80,6 +104,26 @@ kernel actually enforced — `memory.max`, `memory.swap.max`, `cpu.max`,
 if any of them differs from what was asked for. That distinction is WP0's
 threshold A1/A4 territory: a limit believed but not applied is worse than one
 never set, because the placement decision is made on it.
+
+## Egress
+
+Per decision D3, v1's egress contract is deliberately narrow, and it is carried
+as an **`egress_profile_id`** so it can widen later without changing what a job
+is:
+
+| Profile | Permits | Denies |
+| --- | --- | --- |
+| `shared-public` (v1) | Public internet destinations, via shared Otter-managed egress | RFC1918, loopback, link-local, the IPv6 equivalents, and cloud metadata endpoints |
+
+The denial is enforced **where the connection is made**, not by filtering DNS.
+Name-based rules are bypassable by DNS rebinding and by connecting to an address
+directly, so a policy that only blocks resolution is not a policy. It must be
+tested by connecting, which is what `verify-egress.sh` does.
+
+`--network=none` is the strictest form and the right default for a tenant that
+makes no outbound calls. A tenant that does needs the `shared-public` path, which
+in the pilot is an internal network plus an explicit egress route — not the
+host's default bridge, which denies nothing.
 
 ## Preparation sandbox
 
