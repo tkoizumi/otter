@@ -888,6 +888,80 @@ be unusable and it is. Revoking an unknown id is `404`.
 
 ## Runs
 
+### `POST /v1/runtime/maintenance` and `DELETE /v1/runtime/maintenance`
+
+Runtime maintenance is a property of the whole runtime, not of a job. While it
+is on, **every path that admits work is closed**: manual runs, reruns, webhooks,
+schedules and retries. That is the difference from a job pause, which suppresses
+autonomous triggers only and still lets a manual run through, and from
+`max_queue_depth`, which governs autonomous admission only.
+
+Both endpoints are **admin-only**. Activating a runtime decides whether customer
+work runs at all, so a `read` or `control` credential is refused; there is no
+scope that can enter or leave maintenance except `admin`.
+
+```bash
+# Hold the runtime back before taking a snapshot.
+curl -sS -X POST "$OTTER_API_URL/v1/runtime/maintenance" \
+  -H "Authorization: Bearer $OTTER_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"planned upgrade"}'
+
+# Activate it again. This is the audited activation step.
+curl -sS -X DELETE "$OTTER_API_URL/v1/runtime/maintenance" \
+  -H "Authorization: Bearer $OTTER_API_TOKEN"
+```
+
+The body of the `POST` is optional and may be empty. `reason` is recorded and
+echoed back for the audit trail.
+
+Both return the resulting state (`200`):
+
+```json
+{
+  "mode": "draining",
+  "accepting_work": false,
+  "running": 2,
+  "explicit": true,
+  "since": "2026-10-05T12:00:00Z",
+  "reason": "planned upgrade"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | `serving`, `startup`, `draining` or `maintenance`. |
+| `accepting_work` | The question callers actually ask, stated directly rather than left to be derived from the mode. |
+| `running` | Runs still executing. A drain that is progressing and one that is stuck look identical without it. |
+| `explicit` | Whether an operator decided this state, as distinct from a process that started gated and has not been activated. |
+| `since` | When the current state began, so "held back for 40 minutes" is readable rather than inferred. |
+| `reason` | The caller's own text. |
+
+The mode is derived from the live running count rather than asserted: entering
+maintenance on a busy runtime reports `draining`, and the state becomes
+`maintenance` when the last child finishes. A snapshot should be taken on
+`mode: maintenance`, not on the `POST` returning.
+
+`GET /v1/runtime/maintenance` (admin-only) reads the same document, so a script
+watching a window does not have to parse `/health`.
+
+**Submissions while gated answer `503 unavailable`** with a reason and the step
+that clears it:
+
+```json
+{"schema_version": 1, "error": {"code": "unavailable",
+  "message": "runtime is under maintenance (draining: planned upgrade); activate it with DELETE /v1/runtime/maintenance: maintenance"}}
+```
+
+A runtime is **not** gated by default. An ordinary deployment has no maintenance
+row and serves exactly as it did before the feature existed. A pooled lifecycle
+starts a runtime gated with `--start-in-maintenance` (or
+`OTTER_START_IN_MAINTENANCE=true`), validates it, and activates it deliberately;
+because the gate is persisted, one gated start is enough and a crash before
+activation does not come back up serving. `/health` still answers `200 ok` while
+gated — a gate is not a liveness failure, and a monitor must not restart a
+runtime an operator held back on purpose.
+
 ### `GET /v1/runs`
 
 List runs, newest first.

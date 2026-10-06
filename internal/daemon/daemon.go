@@ -29,6 +29,7 @@ import (
 	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/jobconfig"
 	"github.com/tkoizumi/otter/internal/logging"
+	"github.com/tkoizumi/otter/internal/maintenance"
 	"github.com/tkoizumi/otter/internal/notify"
 	"github.com/tkoizumi/otter/internal/pause"
 	"github.com/tkoizumi/otter/internal/queue"
@@ -120,6 +121,13 @@ type Daemon struct {
 	// cron and webhook admission without retiring anything, so it is keyed by
 	// durable identity rather than by label or path.
 	paused *pause.Store
+
+	// maint is the runtime maintenance gate. It is deliberately not a pause:
+	// a pause is per job and leaves manual runs and retries open, while
+	// maintenance is a property of the whole runtime and closes every path
+	// that would admit work, which is what makes it safe to snapshot a data
+	// directory under it.
+	maint *maintenance.Store
 
 	// inspection holds bounded HTTP capture: per-run summaries and request
 	// records. It is diagnostic, so nothing recorded through it may change what
@@ -229,6 +237,28 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	// The maintenance gate is loaded before anything else can run, so startup
+	// recovery and every execution path below already know whether this
+	// runtime is allowed to accept work. Loading it later would mean a gated
+	// runtime could claim or recover work for a moment before the gate existed.
+	maintStore, err := maintenance.Load(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// Starting gated is an explicit act, not a default: a plain start must
+	// serve exactly as it did before maintenance existed, and a pooled
+	// lifecycle asks for the gate because it activates deliberately later.
+	if cfg.StartInMaintenance {
+		state, changed, err := maintStore.StartGated(ctx, "started in maintenance")
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		opts.Logger.Info("start_in_maintenance",
+			"mode", string(state.Mode), "changed", changed)
+	}
+
 	identStore := identity.NewStore(db.DB)
 	runsStore := runs.NewStore(db.DB).WithLogger(opts.Logger)
 	logsStore := runs.NewLogStore(db.DB)
@@ -260,6 +290,7 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		queue:      queue.New(db.DB),
 		state:      state.NewStore(db.DB),
 		paused:     pauseStore,
+		maint:      maintStore,
 		apiTokens:  apitoken.NewStore(db.DB),
 		inspection: inspectionStore,
 		timeline:   timeline.NewReader(db, runsStore, logsStore, inspectionStore),
@@ -964,12 +995,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.runCaptureRetention(apiCtx)
 	go d.runRetention(apiCtx)
 
+	// Say plainly whether this process is accepting work, because "the daemon
+	// started" and "the runtime is serving" are different facts and a start
+	// under maintenance is the normal case for a pooled lifecycle.
+	state := d.maint.State()
 	d.log.Info("daemon_started",
 		"version", d.version,
 		"workers", d.cfg.Workers,
 		"cron_triggers", d.sched.Count(),
 		"data", d.cfg.DataDir,
-		"database", d.db.Path)
+		"database", d.db.Path,
+		"maintenance", string(state.Mode),
+		"accepting_work", !state.Mode.Gated())
 
 	select {
 	case <-ctx.Done():

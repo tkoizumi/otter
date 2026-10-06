@@ -59,6 +59,14 @@ func (d *Daemon) worker(id int) {
 			if d.draining.Load() {
 				return
 			}
+			// Maintenance stops claiming without stopping the worker: a run
+			// already executing has to finish, keep its state and log APIs,
+			// and be visible while it does. Returning here rather than
+			// exiting the goroutine is what lets a drain complete and the
+			// runtime be activated again without a restart.
+			if d.maint.Gated() {
+				break
+			}
 
 			// Claim reserves a concurrency slot; the executor releases it.
 			item, err := d.queue.Claim(context.Background(), time.Now().UTC(), d.cap)
@@ -83,7 +91,13 @@ func (d *Daemon) worker(id int) {
 // executeRun performs one attempt and records its outcome. The concurrency
 // slot reserved by Claim is released exactly once, on return.
 func (d *Daemon) executeRun(item *queue.Item) {
-	defer d.cap.Release(item.JobID)
+	// The released slot is what decides whether a drain has finished, so the
+	// transition is recorded after it, not before: asking "is anything still
+	// running?" while this run still holds its slot would always say yes.
+	defer func() {
+		d.cap.Release(item.JobID)
+		d.noteDrainProgress()
+	}()
 
 	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 30*time.Second)
 	run, err := d.runs.Get(loadCtx, item.RunID)

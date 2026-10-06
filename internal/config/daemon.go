@@ -63,6 +63,16 @@ type DaemonConfig struct {
 	// and nothing repairs it until a later restart succeeds.
 	AllowIncompleteRecovery bool
 
+	// StartInMaintenance brings the runtime up gated: it accepts no work until
+	// an operator activates it with DELETE /v1/runtime/maintenance.
+	//
+	// It is off by default so an ordinary deployment behaves exactly as it did
+	// before maintenance existed -- a plain `otter start` serves. A pooled
+	// lifecycle sets it, because that lifecycle starts a runtime, validates it
+	// and only then activates it, and a crash in between must not come back up
+	// serving. The gate is persisted, so one gated start is enough.
+	StartInMaintenance bool
+
 	// CaptureRetention is how long HTTP capture payloads are retained. Zero
 	// disables automatic expiry, which is only sensible when something else
 	// prunes the database.
@@ -284,6 +294,13 @@ func (c *DaemonConfig) ApplyEnv() error {
 		}
 		c.AllowIncompleteRecovery = allow
 	}
+	if v, ok := os.LookupEnv("OTTER_START_IN_MAINTENANCE"); ok && strings.TrimSpace(v) != "" {
+		gated, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("OTTER_START_IN_MAINTENANCE must be true or false, got %q", v)
+		}
+		c.StartInMaintenance = gated
+	}
 	if v, ok := os.LookupEnv("OTTER_SDK_PATH"); ok && v != "" {
 		c.SDKPath = v
 	}
@@ -366,6 +383,8 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "how long running jobs may finish after SIGTERM before being terminated")
 	fs.BoolVar(&c.AllowIncompleteRecovery, "allow-incomplete-recovery", c.AllowIncompleteRecovery,
 		"start even when crash recovery or queue reconciliation fails; affected runs may stay stranded")
+	fs.BoolVar(&c.StartInMaintenance, "start-in-maintenance", c.StartInMaintenance,
+		"start gated: accept no work until an operator activates the runtime with DELETE /v1/runtime/maintenance")
 	fs.DurationVar(&c.CaptureRetention, "capture-retention", c.CaptureRetention, "how long captured HTTP payloads are kept; the per-run summary survives (0 disables expiry)")
 	fs.DurationVar(&c.LogRetention, "log-retention", c.LogRetention, "how long the captured output of a run is kept after the run (0 retains logs forever)")
 	fs.DurationVar(&c.RunRetention, "run-retention", c.RunRetention, "how long terminal run history is kept (0 retains runs forever)")
