@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,12 @@ type Loop struct {
 	backoffBase time.Duration
 	// jitter is injectable so backoff is deterministic under test.
 	jitter func(time.Duration) time.Duration
+
+	// mu guards lastErr, which records why the last cycle did not complete. Both
+	// exist so a one-shot diagnostic can name WHICH component was unreachable --
+	// "did not complete" alone sends an operator to the wrong one.
+	mu      sync.Mutex
+	lastErr string
 }
 
 func (l *Loop) logger() *slog.Logger {
@@ -155,6 +162,7 @@ func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration,
 	if err != nil {
 		// The runtime being unreachable is not a reason to change anything:
 		// there is nothing to change it to. Retry.
+		l.note("the local runtime at the configured -runtime-url could not be observed: " + err.Error())
 		l.logger().Warn("agent_runtime_observe_failed", "error", err.Error())
 		return l.applyJitter(l.base()), nil
 	}
@@ -164,6 +172,7 @@ func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration,
 		// Cloud unreachable: keep running the current release. This is the
 		// table's first row and the most important one -- a partition must not
 		// cause the agent to do anything at all.
+		l.note("the control plane could not be asked what to run: " + err.Error())
 		l.logger().Warn("agent_control_unavailable", "error", err.Error())
 		return l.applyJitter(l.base()), nil
 	}
@@ -276,12 +285,34 @@ func (l *Loop) RunOnce(ctx context.Context) error {
 		return err
 	}
 	if wait > 0 {
-		return fmt.Errorf("%w: the cycle did not complete (suggested retry in %s); "+
-			"check that the local runtime is running at the configured -runtime-url", errIncompleteCycle, wait)
+		return fmt.Errorf("%w: %s (retry suggested in %s)", errIncompleteCycle, l.lastReason(), wait)
 	}
 	return nil
+}
+
+// lastReason names why the last cycle did not complete. A diagnostic that says
+// only "did not complete" sends the operator to the wrong component; the whole
+// value of a one-shot run is knowing whether it was the runtime or the control
+// plane, and what the far side said.
+func (l *Loop) lastReason() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastErr == "" {
+		return "the cycle did not complete"
+	}
+	return l.lastErr
 }
 
 // errIncompleteCycle means one iteration did not complete a pass. It is distinct
 // from a failure: nothing is broken, something was simply not reachable yet.
 var errIncompleteCycle = fmt.Errorf("agent: incomplete cycle")
+
+// note records why the last cycle did not complete.
+//
+// Guarded because Run and RunOnce may share a Loop, and a diagnostic that raced
+// the loop it reports on would be worse than none.
+func (l *Loop) note(why string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lastErr = why
+}
