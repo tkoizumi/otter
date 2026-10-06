@@ -5,9 +5,10 @@
 # it has.
 *
 !packaging/container/**
-# The "./" prefix is load-bearing. Without it these patterns are matched by
-# prefix, so "!bin/otter" also matches "bin/otterd" -- and because a later
-# negative rule wins, it excluded the daemon the image needs. Anchoring to the
-# context root makes each pattern name exactly one file.
-!./bin/otterd
-!./bin/otter
+# Include the whole bin directory rather than naming the two files. Naming them
+# individually is ambiguous under prefix matching -- "bin/otter" is a prefix of
+# "bin/otterd" -- and an exclusion that drops the daemon fails the build with
+# "checksum ... /bin/otter: not found" for a file that plainly exists. The
+# Dockerfile COPYs exactly the two binaries it needs, so including the directory
+# grants nothing extra.
+!bin
