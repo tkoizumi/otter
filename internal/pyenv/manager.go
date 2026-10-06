@@ -50,6 +50,13 @@ type Spec struct {
 }
 
 // Ready is published only after uv has synchronized and the interpreter runs.
+//
+// Interpreter is absolute in memory, because that is what a run executes, but
+// the readiness marker stores it relative to its own environment directory. An
+// absolute path in the marker would pin the environment to the filesystem it
+// was prepared on: a restore to a different data directory would carry a path
+// that no longer resolves. Storing it relative is what lets the whole data
+// directory move as one self-contained unit.
 type Ready struct {
 	Spec
 	Interpreter string `json:"interpreter"`
@@ -276,13 +283,54 @@ func (m Manager) GetReady(spec Spec) (Ready, error) {
 	if !matches(spec, ready) {
 		return Ready{}, errors.New("managed Python readiness marker does not match the requested environment")
 	}
-	if info, err := os.Stat(ready.Interpreter); err != nil || info.IsDir() {
-		return Ready{}, fmt.Errorf("managed Python interpreter is missing: %s", ready.Interpreter)
+	ready, err = resolveInterpreter(dir, ready)
+	if err != nil {
+		return Ready{}, err
 	}
-	if filepath.Dir(filepath.Dir(ready.Interpreter)) != dir ||
-		filepath.Base(ready.Interpreter) != "python" {
+	return ready, nil
+}
+
+// interpreterRelPath is how the readiness marker stores the interpreter: the
+// path inside its environment directory, not the path on this filesystem.
+//
+// A marker written before this rule holds an absolute path. Writing one back as
+// a relative path is a compatibility fix, not a migration: the only writer is
+// Prepare, which rebuilds the marker from scratch. An absolute path that does
+// not resolve inside this environment is refused rather than repaired, because
+// a marker describing a different environment is an integrity fault and not a
+// stale field.
+func interpreterRelPath(dir, stored string) (string, error) {
+	clean := filepath.Clean(stored)
+	if !filepath.IsAbs(clean) {
+		return clean, nil
+	}
+	rel, err := filepath.Rel(dir, clean)
+	if err != nil {
+		return "", fmt.Errorf("managed Python interpreter %s is outside its environment", stored)
+	}
+	return rel, nil
+}
+
+// resolveInterpreter turns the marker's stored interpreter into the absolute
+// path a run executes, and refuses anything that is not the environment's own
+// interpreter executable.
+func resolveInterpreter(dir string, ready Ready) (Ready, error) {
+	rel, err := interpreterRelPath(dir, ready.Interpreter)
+	if err != nil {
+		return Ready{}, err
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return Ready{}, fmt.Errorf("managed Python interpreter %s is outside its environment", ready.Interpreter)
 	}
+	interpreter := filepath.Join(dir, rel)
+	info, err := os.Stat(interpreter)
+	if err != nil {
+		return Ready{}, fmt.Errorf("managed Python interpreter is missing: %s", interpreter)
+	}
+	if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		return Ready{}, fmt.Errorf("managed Python interpreter is not executable: %s", interpreter)
+	}
+	ready.Interpreter = interpreter
 	return ready, nil
 }
 
@@ -515,6 +563,8 @@ func (m Manager) Prepare(ctx context.Context, dir, job, uvPath string) (Ready, e
 	if out, err := sync.CombinedOutput(); err != nil {
 		return Ready{}, fmt.Errorf("sync %s: %w: %s", job, err, strings.TrimSpace(string(out)))
 	}
+	// Verify through the path we intend to record, so a broken interpreter is
+	// caught here rather than by the first run.
 	interpreter := filepath.Join(envDir, "bin", "python")
 	verify := exec.CommandContext(ctx, interpreter, "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))")
 	verify.Env = []string{"PATH=" + os.Getenv("PATH"), "PYTHONNOUSERSITE=1"}
@@ -525,17 +575,34 @@ func (m Manager) Prepare(ctx context.Context, dir, job, uvPath string) (Ready, e
 	if strings.TrimSpace(string(out)) != spec.Python {
 		return Ready{}, fmt.Errorf("prepared Python version %s does not match pin %s", strings.TrimSpace(string(out)), spec.Python)
 	}
-	ready := Ready{Spec: spec, Interpreter: interpreter, UVVersion: strings.TrimSpace(string(versionOut))}
-	body, err := json.MarshalIndent(ready, "", "  ")
-	if err != nil {
+	if err := writeReadyMarker(envDir, Ready{Spec: spec, Interpreter: interpreter, UVVersion: strings.TrimSpace(string(versionOut))}); err != nil {
 		return Ready{}, err
+	}
+	// The in-memory value a caller executes is absolute; the marker holds the
+	// relative form.
+	return Ready{Spec: spec, Interpreter: interpreter, UVVersion: strings.TrimSpace(string(versionOut))}, nil
+}
+
+// writeReadyMarker publishes a readiness marker with the interpreter recorded
+// relative to its own environment directory, so the environment moves with the
+// data directory instead of pointing back at where it was prepared.
+func writeReadyMarker(envDir string, ready Ready) error {
+	rel, err := filepath.Rel(envDir, ready.Interpreter)
+	if err != nil {
+		return fmt.Errorf("record managed Python interpreter: %w", err)
+	}
+	stored := ready
+	stored.Interpreter = filepath.ToSlash(rel)
+	body, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		return err
 	}
 	tmp := filepath.Join(envDir, "otter-ready.json.tmp")
 	if err := os.WriteFile(tmp, body, 0o600); err != nil {
-		return Ready{}, err
+		return err
 	}
 	if err := os.Rename(tmp, filepath.Join(envDir, "otter-ready.json")); err != nil {
-		return Ready{}, err
+		return err
 	}
-	return ready, nil
+	return nil
 }

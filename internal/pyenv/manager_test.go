@@ -195,6 +195,98 @@ func TestGetReadyAcceptsARecordedIdentity(t *testing.T) {
 	}
 }
 
+// The readiness marker must describe the interpreter by its place inside the
+// environment, not by where that environment happened to sit when it was
+// prepared. Otherwise restoring the data directory elsewhere leaves every
+// prepared environment pointing at a path that no longer exists.
+func TestPreparedEnvironmentSurvivesADataDirectoryMove(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, "3.13.5")
+	spec, err := (Manager{DataDir: data}).Resolve(dir, "one", "uv 0.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manager{DataDir: data}
+	envDir, err := m.envDir(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(envDir, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	interpreter := filepath.Join(envDir, "bin", "python")
+	if err := os.WriteFile(interpreter, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeReadyMarker(envDir, Ready{Spec: spec, Interpreter: interpreter, UVVersion: "uv 0.5.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The marker records the path relative to its own environment.
+	body, err := os.ReadFile(filepath.Join(envDir, "otter-ready.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored Ready
+	if err := json.Unmarshal(body, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Interpreter != "bin/python" {
+		t.Fatalf("marker stores interpreter %q, want the relative path bin/python", stored.Interpreter)
+	}
+
+	// Moving the whole data directory -- what a restore or a placement change
+	// does -- must not invalidate the environment.
+	movedRoot := filepath.Join(t.TempDir(), "restored")
+	if err := os.Rename(data, movedRoot); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := (Manager{DataDir: movedRoot}).GetReady(spec)
+	if err != nil {
+		t.Fatalf("an environment under a moved data directory was refused: %v", err)
+	}
+	want := filepath.Join(movedRoot, "environments", spec.Digest, "bin", "python")
+	if ready.Interpreter != want {
+		t.Errorf("resolved interpreter = %s, want the moved path %s", ready.Interpreter, want)
+	}
+}
+
+// A readiness marker is readable by anything that can read the environment, so
+// a stored path that climbs out of its own environment must be refused at read
+// time. Accepting it would let a doctored marker run another environment's -- or
+// any writable -- binary as the daemon.
+func TestGetReadyRefusesAnInterpreterOutsideItsEnvironment(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, "3.13.5")
+	m := Manager{DataDir: data}
+	spec, err := m.Resolve(dir, "one", "uv 0.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envDir, err := m.envDir(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(data, "outside-python")
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Written by hand, because the marker writer refuses to produce this.
+	body, err := json.Marshal(Ready{Spec: spec, Interpreter: "../../outside-python", UVVersion: "uv 0.5.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "otter-ready.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GetReady(spec); err == nil {
+		t.Fatal("a marker naming an interpreter outside its environment was accepted")
+	}
+}
+
 // recordedIdentityOf mirrors what the daemon stores on a run.
 func recordedIdentityOf(spec Spec) Spec {
 	return RecordedIdentity(spec.Job, spec.Python, spec.Digest, spec.Policy)

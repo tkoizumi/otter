@@ -85,22 +85,22 @@
 # A sabotage run is expected to exit non-zero. It is red for the right reason
 # only when the last lines name the member that was omitted.
 #
-# Two on-disk facts this drill makes explicit, both recorded as ABSOLUTE paths
-# under the data directory and both invisible until the data directory path
-# changes:
+# The data directory is self-contained, and this drill is what proves it. Two
+# facts make that true, and both used to be false:
 #
-#   * `<data>/.releases/active/<job>` is a symlink to the release directory
-#     (internal/release/stage.go writes os.Symlink(dir, ...) with the absolute
-#     dir);
+#   * `<data>/.releases/active/<job>` is a RELATIVE symlink to its release
+#     directory (internal/release/stage.go), so it resolves wherever the data
+#     directory is restored to;
 #   * `<data>/environments/<digest>/otter-ready.json` records its `interpreter`
-#     as an absolute path inside the environment directory.
+#     relative to its own environment directory, which GetReady resolves against
+#     the data directory in use (internal/pyenv/manager.go).
 #
-# Copying those trees into a data directory at a different path leaves both
-# pointing at the ORIGINAL data directory: the restored runtime silently serves
-# the old releases and cannot find its interpreter. A restore into a different
-# data directory must repoint both (step 4). docs/operations.md does not
-# currently mention either step; on a clean host restored to the same absolute
-# path neither is needed, which is why the gap has stayed invisible.
+# The restore below therefore copies and asserts; it does not repair. A restore
+# into a data directory at a different path needs no repointing step, which is
+# the property `OT-013` was raised for. The assertions are the drill: if either
+# value is ever written as an absolute path again, the restored runtime would
+# silently serve the original directory's releases and fail to find its
+# interpreter, and this drill fails instead.
 set -eu
 
 # --- which drill -------------------------------------------------------------
@@ -433,6 +433,9 @@ say "environment $ENV_DIGEST"
 # environment directory, exactly the shape pyenv.GetReady validates. It is a
 # symlink to the host interpreter because building a real managed Python is
 # neither offline nor fast (see the header).
+#
+# The marker records `interpreter` relative to ENVDIR, which is the format
+# pyenv.writeReadyMarker produces and the reason a restore needs no editing.
 PYTHON=$(command -v python3 2>/dev/null || true)
 [ -n "$PYTHON" ] || fail "python3 is required for the stub managed environment and was not found on PATH"
 ENVDIR="$DATA_ORIG/environments/$ENV_DIGEST"
@@ -445,7 +448,7 @@ cat >"$ENVDIR/otter-ready.json" <<JSON
   "digest": "$ENV_DIGEST",
   "inputs_digest": "",
   "policy": "",
-  "interpreter": "$ENVDIR/bin/python",
+  "interpreter": "bin/python",
   "uv_version": "$UV_STUB_VERSION"
 }
 JSON
@@ -554,68 +557,41 @@ rm -rf "$WS/$JOB" || fail "could not clear the job source directory before resto
 cp -a "$BACKUP/source" "$WS/$JOB" || fail "could not restore the job source directory"
 [ -f "$WS/$JOB/.otter-id" ] || fail "the restored source directory lost its .otter-id marker"
 
-# Two things on disk record ABSOLUTE paths under the data directory: the
-# release activation symlink (internal/release/stage.go) and each environment's
-# readiness marker, whose `interpreter` is `<data>/environments/<digest>/bin/python`.
-# Restoring into a data directory at a different path must repoint both, or the
-# restored runtime silently resolves releases through the original data
-# directory and fails to find its interpreter. docs/operations.md does not
-# currently mention either step.
-phys_orig=$(cd "$DATA_ORIG" 2>/dev/null && pwd -P) || phys_orig=""
-# repoint_prefix echoes the original-data-directory prefix an absolute path
-# carries, accepting both this shell's spelling and the physical one.
-repoint_prefix() {
-	case "$1" in
-	"$DATA_ORIG"/*)
-		printf '%s' "$DATA_ORIG"
-		return 0
-		;;
-	esac
-	if [ -n "$phys_orig" ]; then
-		case "$1" in
-		"$phys_orig"/*)
-			printf '%s' "$phys_orig"
-			return 0
-			;;
-		esac
-	fi
-	return 1
-}
-# repoint echoes the restored-data-directory spelling of an absolute path.
-repoint() {
-	old=$1
-	prefix=$(repoint_prefix "$old") || return 1
-	printf '%s' "$DATA_RESTORE/${old#"$prefix"/}"
-}
-
+# The restored data directory must be self-contained: nothing inside it may
+# name the path it was backed up from. Both stored values are asserted here
+# rather than repaired, because "a restore needs no hand-editing" is the claim.
 LINK="$DATA_RESTORE/.releases/active/$JOBID"
 if [ -L "$LINK" ]; then
-	target=$(readlink "$LINK")
-	if ! new_target=$(repoint "$target"); then
-		fail "the active release link points outside the original data directory: $target"
-	fi
-	rm -f "$LINK"
-	ln -s "$new_target" "$LINK"
-	say "restore     repointed active release link into the restored data directory"
-	resolved=$(readlink "$LINK")
-	case "$resolved" in
-	"$DATA_RESTORE"/*) ;;
-	*) fail "active release link still resolves outside the restored data directory: $resolved" ;;
+	target=$(readlink "$LINK") || fail "could not read the active release link $LINK"
+	case "$target" in
+	/*) fail "the active release link is absolute ($target), so the data directory cannot be restored to a different path" ;;
+	esac
+	case "$target" in
+	"$DATA_ORIG"/* | "$DATA_RESTORE"/*) fail "the active release link names a data directory ($target) instead of a path inside its own" ;;
 	esac
 	[ -e "$LINK" ] || fail "active release link $LINK does not resolve: the release snapshot is missing"
+	# A relative link must resolve inside the restored data directory, not back
+	# into the directory it was backed up from.
+	resolved=$(cd "$DATA_RESTORE/.releases/active" && cd "$(dirname "$target")" 2>/dev/null && pwd -P) || fail "active release link $LINK does not resolve"
+	case "$resolved" in
+	"$DATA_RESTORE"/*) ;;
+	*) fail "active release link resolves to $resolved, outside the restored data directory" ;;
+	esac
+	say "restore     active release link is relative and resolves inside the restored data directory"
+else
+	fail "no active release link was restored at $LINK"
 fi
 
 for marker in "$DATA_RESTORE"/environments/*/otter-ready.json; do
 	[ -f "$marker" ] || continue
-	old_interpreter=$(sed -n 's/.*"interpreter": "\([^"]*\)".*/\1/p' "$marker")
-	[ -n "$old_interpreter" ] || fail "an environment readiness marker has no interpreter: $marker"
-	if new_interpreter=$(repoint "$old_interpreter"); then
-		sed "s|\"interpreter\": \"[^\"]*\"|\"interpreter\": \"$new_interpreter\"|" \
-			"$marker" >"$marker.new" || fail "could not rewrite $marker"
-		mv "$marker.new" "$marker" || fail "could not replace $marker"
-		say "restore     repointed an environment interpreter into the restored data directory"
-	fi
-	[ -e "$new_interpreter" ] || fail "the restored environment interpreter does not exist: $old_interpreter"
+	rel_interpreter=$(sed -n 's/.*"interpreter": "\([^"]*\)".*/\1/p' "$marker")
+	[ -n "$rel_interpreter" ] || fail "an environment readiness marker has no interpreter: $marker"
+	case "$rel_interpreter" in
+	/*) fail "an environment readiness marker records an absolute interpreter ($rel_interpreter), so the data directory cannot be restored to a different path" ;;
+	esac
+	envdir=$(dirname "$marker")
+	[ -x "$envdir/$rel_interpreter" ] || fail "the restored environment interpreter does not exist: $envdir/$rel_interpreter"
+	say "restore     environment interpreter is recorded relatively ($rel_interpreter) and resolves"
 done
 
 # Put the original data directory out of reach. The restored runtime must

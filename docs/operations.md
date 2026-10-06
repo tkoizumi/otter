@@ -692,27 +692,19 @@ needs.
 4. Restore the job source directories **at the same absolute paths**. Identity,
    and the `source` recorded in each release, are path-bound: a restore into a
    different path is a different instance with different state.
-5. **If the restored data directory is not at the path it was backed up from,
-   repoint the absolute paths it records.** Two are stored as absolutes and are
-   otherwise resolved against the *old* directory:
-   - `.releases/active/<job>` is a symlink to
-     `<old-data>/.releases/<job>/<digest>`; recreate it pointing into the
-     restored directory;
-   - `environments/<digest>/otter-ready.json` records `interpreter` as an
-     absolute path; rewrite it to
-     `<new-data>/environments/<digest>/bin/python`.
-
-   Without both, the daemon reports either `no active release` or `managed
-   Python interpreter is missing`. A restore to the same absolute path needs
-   neither step — which is the simpler restore, and the reason this is easy to
-   miss. `scripts/drill/backup-restore.sh` performs both, and demonstrates why:
-   omit either and the restored job cannot run.
-6. Remove `otter.db-wal` and `otter.db-shm` if any came along.
-7. Start the daemon and verify in this order: `otter status` (serving),
+5. Remove `otter.db-wal` and `otter.db-shm` if any came along.
+6. Start the daemon and verify in this order: `otter status` (serving),
    `otter jobs` (manifests resolve from the snapshots), `otter runs --all
    --limit 10` (history reads back), then **execute one job for real**.
-8. Step 7 is the test. A restore that starts and lists history but cannot run a
+7. Step 6 is the test. A restore that starts and lists history but cannot run a
    job has not restored a runtime.
+
+The data directory is self-contained: the activation links under
+`.releases/active/` are relative, and each environment's
+`environments/<digest>/otter-ready.json` records its interpreter relative to
+itself. So the data directory can be restored to a different path, or moved to
+another host, without editing anything it records — the runtime and the job
+sources are the only things that must sit at their original paths.
 
 A complete backup is a script, not a memory:
 

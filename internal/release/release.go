@@ -34,7 +34,9 @@
 // The activation links live at <data dir>/.releases/active/<job>. They
 // sit outside the jobs tree on purpose: `otter deploy` rsyncs that tree
 // with --delete, and a symlink inside it would be replaced by a directory, or
-// worse, written through into the snapshot.
+// worse, written through into the snapshot. Each link targets its release
+// relatively, so the data directory can be moved or restored elsewhere and
+// every link keeps resolving.
 //
 // Nothing has to be rewritten to activate a release: the manifest travels
 // verbatim and a manifest that works locally works in a release. The live

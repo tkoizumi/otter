@@ -170,10 +170,9 @@ if grep -q 'MANIFEST.sha256' "$DEST/MANIFEST.sha256"; then
 fi
 MANIFEST_FILES=$(wc -l <"$DEST/MANIFEST.sha256" | tr -d ' ')
 
-# SYMLINKS.txt records the link targets. A release's `active` symlink is an
-# absolute path into the data directory: on a restore at the same path it stays
-# valid, at a different path it must be repointed, and the drill reads this file
-# to know what to expect.
+# SYMLINKS.txt records the link targets. A release's `active` symlink is
+# relative, so it stays valid wherever the data directory is restored; the drill
+# reads this file to know what to expect.
 SYMLINKS_TMP=$(mktemp 2>/dev/null || echo /tmp/otter-symlinks.$$)
 (
 	cd "$DEST"

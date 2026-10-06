@@ -64,7 +64,7 @@ SRC_JOBS=$(record_value jobs_dir)
 }
 [ "$SRC_DATA" = "$DATA" ] || {
 	echo "restore-host: the backup was taken from data directory $SRC_DATA, this restore targets $DATA" >&2
-	echo "restore-host: restore at the path it was backed up from, or repoint the absolute paths it records first" >&2
+	echo "restore-host: restore at the path it was backed up from; the data directory itself is relocatable, but the job source paths recorded in it are not" >&2
 	exit 1
 }
 [ "$SRC_JOBS" = "$JOBS" ] || {

@@ -817,3 +817,55 @@ func TestPlanRetainProtectsAReferencedRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The activation link must be relative, so the data directory can be restored
+// or moved to another host without every job pointing back at the filesystem it
+// was released on. This is what makes a restore a copy rather than a repair.
+func TestActivationLinkIsRelativeAndSurvivesADataDirectoryMove(t *testing.T) {
+	f := newFixture(t, "one")
+	meta := f.stage(t, "env-1")
+	manager := f.manager()
+	if err := manager.Activate(f.name, meta.Digest); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	link, err := manager.ActivePath(f.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsAbs(target) {
+		t.Fatalf("activation link %s -> %s is absolute, so the data directory cannot move", link, target)
+	}
+
+	// Resolve before and after moving the data directory. EvalSymlinks fails
+	// rather than lying when the target does not exist, so this is the check
+	// that an absolute link would flunk.
+	want, err := manager.Dir(f.name, meta.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := filepath.EvalSymlinks(link)
+	if err != nil || before != want {
+		t.Fatalf("active link resolved to %s (err=%v), want %s", before, err, want)
+	}
+
+	movedRoot := filepath.Join(t.TempDir(), "restored")
+	if err := os.Rename(f.data, movedRoot); err != nil {
+		t.Fatal(err)
+	}
+	movedLink := filepath.Join(movedRoot, DirName, activeDirName, f.name)
+	after, err := filepath.EvalSymlinks(movedLink)
+	if err != nil {
+		t.Fatalf("active link no longer resolves after the move: %v", err)
+	}
+	if after != filepath.Join(movedRoot, DirName, f.name, meta.Digest) {
+		t.Errorf("active link resolved to %s after the move", after)
+	}
+	if _, ok, err := (Manager{DataDir: movedRoot}).Active(f.name); err != nil || !ok {
+		t.Errorf("active release is not resolvable after the move (ok=%v err=%v)", ok, err)
+	}
+}

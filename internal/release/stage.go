@@ -160,6 +160,11 @@ func (m Manager) StageWithLayout(job, sourceDir string, layout Layout, environme
 // missing path. A process that has already imported its modules is unaffected
 // because the kernel keeps the old files open, which is what makes it safe to
 // activate while an attempt is running.
+//
+// The replacement is a *relative* symlink. The data directory is meant to move
+// as one self-contained unit -- a restore to a different directory, a different
+// host, or another placement -- and an absolute link would pin every job to the
+// filesystem it was released on.
 func (m Manager) Activate(job, digest string) error {
 	dir, err := m.Dir(job, digest)
 	if err != nil {
@@ -177,9 +182,26 @@ func (m Manager) Activate(job, digest string) error {
 		return err
 	}
 
+	// The link sits at <root>/active/<job> and the release at
+	// <root>/<job>/<digest>, so the relative target normally climbs out of the
+	// active directory. What must not happen is a target that leaves the
+	// releases root: that would be a link the data directory cannot carry with
+	// it.
+	root, err := m.Root()
+	if err != nil {
+		return err
+	}
+	if !within(dir, root) || !within(link, root) {
+		return fmt.Errorf("activate release %s: release lives outside the activation root", digest[:12])
+	}
+	target, err := filepath.Rel(filepath.Dir(link), dir)
+	if err != nil {
+		return fmt.Errorf("activate release %s: %w", digest[:12], err)
+	}
+
 	tmp := link + ".new"
 	_ = os.Remove(tmp)
-	if err := os.Symlink(dir, tmp); err != nil {
+	if err := os.Symlink(target, tmp); err != nil {
 		return fmt.Errorf("create activation link: %w", err)
 	}
 	if err := os.Rename(tmp, link); err != nil {
