@@ -27,15 +27,21 @@ import (
 // bound to that identity. A stolen credential is useful only from the host it
 // was issued to, and it can be revoked when that host is replaced.
 type Bootstrap interface {
-	// Provider names the mechanism, e.g. "aws-instance-role" or "static-token".
-	// The control plane refuses a provider it does not have a verifier for,
-	// rather than falling back to something weaker.
+	// Provider names the mechanism, e.g. "aws-instance-role" or
+	// "static-credentials". The control plane refuses a provider it does not have
+	// a verifier for, rather than falling back to something weaker.
 	Provider() string
 
-	// Assert produces the signed material the control plane verifies. For AWS
-	// this is a SigV4-signed request to the identity endpoint, using the host's
-	// instance role: no long-lived secret is stored on disk, which is the point.
-	Assert(ctx context.Context) (*Assertion, error)
+	// Identity supplies who this host is and a key to prove it.
+	//
+	// It deliberately does NOT return a signed assertion, and that is a fix
+	// rather than a preference: a provider cannot sign the request body, because
+	// it does not know the serialized body -- only the exchanger does. When
+	// providers signed an extracted field instead, the verifier received a
+	// signature covering different bytes than the request it inspected, and the
+	// only symptom was "signature does not match". The exchanger now assembles and
+	// signs, so every mechanism signs the same bytes.
+	Identity(ctx context.Context) (Identity, error)
 }
 
 // Assertion is a provider's proof of identity plus the claims it makes about

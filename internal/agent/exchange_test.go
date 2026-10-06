@@ -19,8 +19,18 @@ type stubBootstrap struct {
 }
 
 func (s *stubBootstrap) Provider() string { return "stub" }
-func (s *stubBootstrap) Assert(context.Context) (*Assertion, error) {
-	return s.a, s.err
+func (s *stubBootstrap) Identity(context.Context) (Identity, error) {
+	if s.err != nil {
+		return Identity{}, s.err
+	}
+	claims := map[string]string{"account_id": "426714791664", "role": "otter-agent", "instance_id": "i-abc"}
+	if s.a != nil {
+		claims = s.a.Claims
+	}
+	return Identity{
+		Provider: "stub", Claims: claims,
+		AccessKeyID: "AKID", SecretAccessKey: "secret", Region: "us-east-1", Service: "otter-agent",
+	}, nil
 }
 
 func goodAssertion(now time.Time) *Assertion {
@@ -167,14 +177,17 @@ func TestExchangeTreatsAMalformedResponseAsUnavailable(t *testing.T) {
 
 // The exchanger re-validates the assertion, so a provider that builds a
 // malformed one cannot put it on the wire.
-func TestExchangeRejectsAMalformedAssertionBeforeSending(t *testing.T) {
+// An identity that makes no claims cannot be signed into a valid assertion, so
+// the exchanger refuses before sending rather than putting a malformed one on the
+// wire.
+func TestExchangeRejectsAnIdentityWithNoClaims(t *testing.T) {
 	now := time.Now()
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	defer srv.Close()
 	e := &Exchanger{BaseURL: srv.URL, Now: func() time.Time { return now }}
 	bad := goodAssertion(now)
-	bad.Headers = nil
+	bad.Claims = nil
 	if _, err := e.Exchange(context.Background(), &stubBootstrap{a: bad}, "rt-1", "0"); err == nil {
 		t.Fatal("expected a refusal")
 	}

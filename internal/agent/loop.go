@@ -267,13 +267,21 @@ func (l *Loop) RunOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	// What the loop WOULD have waited before retrying. A non-zero value means the
+	// cycle did not complete a full pass -- typically because the runtime or the
+	// control plane was unreachable -- and reporting that as success would be a
+	// diagnostic that lies about the thing it exists to diagnose.
 	wait, err := l.step(ctx, &gen)
 	if err != nil {
 		return err
 	}
 	if wait > 0 {
-		// A single iteration should not sleep: the caller asked for one cycle.
-		l.logger().Info("agent_once_retry_suggested", "after", wait.String())
+		return fmt.Errorf("%w: the cycle did not complete (suggested retry in %s); "+
+			"check that the local runtime is running at the configured -runtime-url", errIncompleteCycle, wait)
 	}
 	return nil
 }
+
+// errIncompleteCycle means one iteration did not complete a pass. It is distinct
+// from a failure: nothing is broken, something was simply not reachable yet.
+var errIncompleteCycle = fmt.Errorf("agent: incomplete cycle")

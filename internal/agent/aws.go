@@ -154,36 +154,31 @@ func firstLine(s string) string {
 	return s
 }
 
-// Assert fetches the host identity and signs a request with the instance role.
+// Identity fetches the host identity and the instance role's credentials.
 //
-// The signature is produced by signing a canonical request to the control plane's
-// identity endpoint; the control plane re-derives it from the same credentials
-// and compares. What travels is the signature, never the secret key.
-func (p *AWSInstanceRole) Assert(ctx context.Context) (*Assertion, error) {
+// The credentials are returned to the caller to sign with and are never sent,
+// stored or logged. No long-lived secret exists on disk, which is the property
+// the instance-role bootstrap exists to provide.
+func (p *AWSInstanceRole) Identity(ctx context.Context) (Identity, error) {
 	claims, err := p.describeInstanceIdentity(ctx)
 	if err != nil {
-		return nil, err
+		return Identity{}, err
 	}
-	// The credentials are read here so the signature is derived from the role
-	// actually attached to this instance. They are used and discarded, never
-	// written anywhere.
 	creds, err := p.imdsGet(ctx, "/latest/meta-data/iam/security-credentials/"+claims["role"])
 	if err != nil {
-		return nil, fmt.Errorf("%w: instance role credentials: %v", ErrBootstrapUnavailable, err)
+		return Identity{}, fmt.Errorf("%w: instance role credentials: %v", ErrBootstrapUnavailable, err)
 	}
 	var parsed struct {
 		AccessKeyID     string `json:"AccessKeyId"`
 		SecretAccessKey string `json:"SecretAccessKey"`
 		Token           string `json:"Token"`
-		Expiration      string `json:"Expiration"`
 	}
 	if err := json.Unmarshal([]byte(creds), &parsed); err != nil {
-		return nil, fmt.Errorf("%w: role credential document: %v", ErrBootstrapUnavailable, err)
+		return Identity{}, fmt.Errorf("%w: role credential document: %v", ErrBootstrapUnavailable, err)
 	}
 	if parsed.AccessKeyID == "" || parsed.SecretAccessKey == "" {
-		return nil, fmt.Errorf("%w: instance role returned no usable credentials", ErrBootstrapUnavailable)
+		return Identity{}, fmt.Errorf("%w: instance role returned no usable credentials", ErrBootstrapUnavailable)
 	}
-
 	region := p.Region
 	if region == "" {
 		region = claims["region"]
@@ -192,33 +187,15 @@ func (p *AWSInstanceRole) Assert(ctx context.Context) (*Assertion, error) {
 	if service == "" {
 		service = "otter-agent"
 	}
-
-	headers, err := (sigV4Input{
+	return Identity{
+		Provider:        p.Provider(),
+		Claims:          claims,
 		AccessKeyID:     parsed.AccessKeyID,
 		SecretAccessKey: parsed.SecretAccessKey,
 		SessionToken:    parsed.Token,
 		Region:          region,
 		Service:         service,
-		Method:          http.MethodPost,
-		Host:            "cloud.otter.invalid",
-		Path:            "/agent/v1/bootstrap",
-		Payload:         []byte(claims["instance_id"]),
-		Now:             time.Now().UTC(),
-	}).Header()
-	if err != nil {
-		return nil, err
-	}
-
-	a := &Assertion{
-		Provider: p.Provider(),
-		Claims:   claims,
-		SignedAt: time.Now().UTC(),
-		Headers:  normaliseHeaderNames(headers),
-	}
-	if err := a.validate(time.Now().UTC()); err != nil {
-		return nil, err
-	}
-	return a, nil
+	}, nil
 }
 
 // MetadataBaseFromEnv lets an operator point the agent at a proxy for testing,

@@ -79,31 +79,17 @@ func StaticCredentialsFromEnv(env func(string) string) (*StaticCredentials, erro
 	}, nil
 }
 
-func (s *StaticCredentials) Assert(ctx context.Context) (*Assertion, error) {
-	now := time.Now().UTC()
-	if s.Now != nil {
-		now = s.Now().UTC()
-	}
-	headers, err := (sigV4Input{
+func (s *StaticCredentials) Identity(ctx context.Context) (Identity, error) {
+	_ = ctx
+	return Identity{
+		Provider:        s.Provider(),
+		Claims:          s.Claims,
 		AccessKeyID:     s.AccessKeyID,
 		SecretAccessKey: s.SecretAccessKey,
 		SessionToken:    s.SessionToken,
 		Region:          s.Region,
 		Service:         s.Service,
-		Method:          "POST",
-		Host:            "cloud.otter.invalid",
-		Path:            "/agent/v1/bootstrap",
-		Payload:         []byte(s.Claims["instance_id"]),
-		Now:             now,
-	}).Header()
-	if err != nil {
-		return nil, err
-	}
-	a := &Assertion{Provider: s.Provider(), Claims: s.Claims, SignedAt: now, Headers: normaliseHeaderNames(headers)}
-	if err := a.validate(now); err != nil {
-		return nil, err
-	}
-	return a, nil
+	}, nil
 }
 
 func orDefault(v, fallback string) string {

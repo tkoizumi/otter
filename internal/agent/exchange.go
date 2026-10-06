@@ -40,11 +40,21 @@ func (e *Exchanger) now() time.Time {
 	return time.Now()
 }
 
+// assertionBody is the claims half of an assertion: everything except the
+// signature, which travels as headers so a body log cannot leak it.
+type assertionBody struct {
+	Provider string            `json:"provider"`
+	Claims   map[string]string `json:"claims"`
+}
+
 // bootstrapRequest is what travels. The claims travel with the assertion so the
 // control plane can compare them against its own record, but they are not what
 // authenticates: the signature is.
 type bootstrapRequest struct {
-	Assertion *Assertion `json:"assertion"`
+	// The claims travel in the body so the control plane can compare them against
+	// its record. The signature travels in headers and is NOT repeated here, so a
+	// body log cannot leak it.
+	Assertion *assertionBody `json:"assertion"`
 	// RuntimeID is the runtime the agent believes it is. Cloud must reject a
 	// mismatch rather than create a second registration, or a reimaged host would
 	// silently become a new runtime with the old one still registered.
@@ -61,19 +71,32 @@ func (e *Exchanger) Exchange(ctx context.Context, b Bootstrap, runtimeID, agentV
 	if b == nil {
 		return nil, fmt.Errorf("agent: exchanger has no bootstrap provider")
 	}
-	assertion, err := b.Assert(ctx)
+	identity, err := b.Identity(ctx)
 	if err != nil {
-		return nil, err
-	}
-	// Re-validate here rather than trusting the provider: a provider that
-	// constructed a malformed assertion would otherwise put it on the wire.
-	if err := assertion.validate(e.now().UTC()); err != nil {
 		return nil, err
 	}
 
-	body, err := json.Marshal(bootstrapRequest{Assertion: assertion, RuntimeID: runtimeID, AgentVersion: agentVersion})
+	// The BODY is serialized first, then signed, because that is the order the
+	// verifier's world imposes: it receives these exact bytes and re-derives the
+	// signature over them. Signing anything else -- an extracted field, a
+	// re-serialization -- produces a signature it cannot reproduce, and the only
+	// symptom is "signature does not match".
+	body, err := json.Marshal(bootstrapRequest{
+		Assertion:    &assertionBody{Provider: identity.Provider, Claims: identity.Claims},
+		RuntimeID:    runtimeID,
+		AgentVersion: agentVersion,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("agent: bootstrap request: %w", err)
+	}
+	assertion, err := AssertionFor(ctx, identity, http.MethodPost, e.BaseURL+"/agent/v1/bootstrap", string(body))
+	if err != nil {
+		return nil, err
+	}
+	// Re-validate rather than trusting the assembly: a malformed assertion must
+	// not reach the wire.
+	if err := assertion.validate(e.now().UTC()); err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.BaseURL+"/agent/v1/bootstrap", bytes.NewReader(body))
 	if err != nil {
