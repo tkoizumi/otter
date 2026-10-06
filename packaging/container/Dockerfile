@@ -35,7 +35,11 @@ LABEL org.otter.version="${OTTER_VERSION}" \
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_CACHE_DIR=/tmp/uv/cache \
+    UV_PYTHON_INSTALL_DIR=/tmp/uv/python \
+    UV_TOOL_DIR=/tmp/uv/tools \
+    UV_TOOL_BIN_DIR=/tmp/uv/bin
 
 # ca-certificates is not optional: every integration class in the qualification
 # contract talks to a vendor HTTPS API, and a runtime without a trust store
@@ -70,11 +74,23 @@ COPY bin/otter /usr/local/bin/otter
 RUN groupadd --gid 10001 otter \
  && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin otter \
  && install -d -o otter -g otter -m 0755 /workspace \
- && install -d -o otter -g otter -m 0700 /tmp/otter
+ && install -d -o otter -g otter -m 0700 /tmp/otter \
+ && install -d -o otter -g otter -m 0755 /tmp/uv
 
 # Everything the runtime writes lives under /workspace (the tenant volume) or
 # /tmp (bounded temporary storage). The root filesystem stays read-only at run
 # time, so nothing else may be a write target.
+#
+# The UV_* variables above are the reason this works at all. uv defaults to
+# $HOME/.local/share/uv for the interpreters it installs, and $HOME is on the
+# read-only root, so a managed job failed with "failed to create directory
+# /home/otter/.local/share/uv/python: Read-only file system" -- the image could
+# not prepare a managed environment, which is the class C workload. Pointing
+# every uv write target at /tmp keeps the root read-only and the tenant's
+# temporary storage bounded and explicit.
+#
+# /tmp/uv is created here so the directory exists with the right ownership; the
+# run itself mounts a bounded tmpfs over /tmp.
 VOLUME ["/workspace"]
 WORKDIR /workspace
 USER 10001:10001

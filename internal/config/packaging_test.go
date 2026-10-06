@@ -52,6 +52,21 @@ func TestTenantImageKeepsItsBoundarySettings(t *testing.T) {
 		}
 	}
 
+	// uv writes the interpreters it installs under $HOME by default, and $HOME is
+	// on the read-only root. Without these the image cannot prepare a managed
+	// environment at all -- observed as "failed to create directory
+	// /home/otter/.local/share/uv/python: Read-only file system".
+	for _, env := range []string{"UV_CACHE_DIR=", "UV_PYTHON_INSTALL_DIR=", "UV_TOOL_DIR="} {
+		if !strings.Contains(src, env) {
+			t.Errorf("Dockerfile does not set %s, so uv will write to the read-only root", env)
+		}
+	}
+	for _, env := range []string{"UV_CACHE_DIR=/tmp", "UV_PYTHON_INSTALL_DIR=/tmp", "UV_TOOL_DIR=/tmp"} {
+		if !strings.Contains(src, env) {
+			t.Errorf("%s must point under /tmp, the tenant's bounded temporary storage", env)
+		}
+	}
+
 	// The daemon must not be told to listen anywhere but loopback: a pool where
 	// the runtime binds a routable address exposes every tenant on the host.
 	if strings.Contains(src, "--listen\", \"0.0.0.0") {
