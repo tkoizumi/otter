@@ -11,7 +11,7 @@ func validAssertion(now time.Time) *Assertion {
 		Provider: "aws-instance-role",
 		Claims:   map[string]string{"account": "426714791664", "role": "otter-agent"},
 		SignedAt: now,
-		Material: "AWS4-HMAC-SHA256 Credential=...",
+		Headers:  map[string]string{"authorization": "AWS4-HMAC-SHA256 Credential=stub", "x-amz-date": "20261006T120000Z"},
 	}
 }
 
@@ -32,7 +32,10 @@ func TestAssertionValidationRefusesIncompleteProofs(t *testing.T) {
 		mutate     func(*Assertion)
 	}{
 		{"no provider", "no provider", func(a *Assertion) { a.Provider = "" }},
-		{"no material", "no signed material", func(a *Assertion) { a.Material = "" }},
+		{"no headers", "no signed material", func(a *Assertion) { a.Headers = nil }},
+		{"headers without Authorization", "no Authorization header", func(a *Assertion) {
+			a.Headers = map[string]string{"x-amz-date": "20261006T120000Z"}
+		}},
 		{"no claims", "no claims to bind", func(a *Assertion) { a.Claims = nil }},
 		{"not timestamped", "not timestamped", func(a *Assertion) { a.SignedAt = time.Time{} }},
 	}

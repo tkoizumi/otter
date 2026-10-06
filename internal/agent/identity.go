@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -48,9 +49,14 @@ type Assertion struct {
 	// SignedAt lets the control plane reject a replayed assertion. The window is
 	// short: an assertion is a request to authenticate, not a durable token.
 	SignedAt time.Time `json:"signed_at"`
-	// Material is provider-specific, and is never logged. For AWS it carries the
-	// SigV4 headers, which are derived from the instance role's credentials.
-	Material string `json:"material"`
+	// Headers are the signed values that must travel WITH the request, because a
+	// signature covers specific headers and the verifier re-derives it from the
+	// headers it receives. Sending the Authorization header alone is not enough:
+	// the verifier needs x-amz-date and the body hash too, and a signature it
+	// cannot reproduce is a signature it must reject.
+	//
+	// These are never logged and never placed in a JSON body.
+	Headers map[string]string `json:"-"`
 }
 
 // Credential is the short-lived agent credential an assertion is exchanged for.
@@ -75,14 +81,31 @@ var ErrBootstrapUnavailable = errors.New("agent: bootstrap identity unavailable"
 // expects.
 var ErrBootstrapRefused = errors.New("agent: bootstrap refused")
 
+// hasHeader reports whether a header is present under any spelling.
+func hasHeader(h map[string]string, name string) bool {
+	for k := range h {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // validate keeps the invariants every provider must satisfy in one place, so a
 // new provider cannot quietly omit one.
 func (a *Assertion) validate(now time.Time) error {
 	if a.Provider == "" {
 		return fmt.Errorf("agent: assertion has no provider")
 	}
-	if a.Material == "" {
+	if len(a.Headers) == 0 {
 		return fmt.Errorf("agent: assertion has no signed material")
+	}
+	// Header names are matched case-insensitively: http.Header canonicalises them
+	// to "Authorization", a map literal may use "authorization", and a signature
+	// covers the lowercase form regardless. Requiring one spelling would make a
+	// correctly signed assertion fail validation.
+	if !hasHeader(a.Headers, "authorization") {
+		return fmt.Errorf("agent: assertion has no Authorization header")
 	}
 	if len(a.Claims) == 0 {
 		return fmt.Errorf("agent: assertion makes no claims to bind")

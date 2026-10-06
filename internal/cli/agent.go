@@ -125,10 +125,30 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 // agentBootstrap selects the identity mechanism. The name is the protocol's
 // provider string, so an agent configured for a provider the control plane does
 // not verify fails at bootstrap rather than silently using another one.
+//
+// Static credentials are selected by their presence, NOT by preference: an agent
+// that quietly preferred a key on disk over the instance role would be exactly
+// the long-lived-secret problem the instance-role bootstrap exists to avoid. If
+// both are configured, the name decides, and an unknown name is an error rather
+// than a fallback.
 func agentBootstrap(name, imdsBase string) (agent.Bootstrap, error) {
+	static, err := agent.StaticCredentialsFromEnv(agent.EnvLookup)
+	if err != nil {
+		return nil, err
+	}
 	switch name {
-	case "", "aws-instance-role":
+	case "":
+		if static != nil {
+			return static, nil
+		}
 		return &agent.AWSInstanceRole{MetadataBase: imdsBase}, nil
+	case "aws-instance-role":
+		return &agent.AWSInstanceRole{MetadataBase: imdsBase}, nil
+	case "static-credentials":
+		if static == nil {
+			return nil, fmt.Errorf("bootstrap provider %q selected but OTTER_AGENT_STATIC_ACCESS_KEY_ID is not set", name)
+		}
+		return static, nil
 	default:
 		return nil, fmt.Errorf("unknown bootstrap provider %q", name)
 	}

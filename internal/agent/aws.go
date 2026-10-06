@@ -193,7 +193,7 @@ func (p *AWSInstanceRole) Assert(ctx context.Context) (*Assertion, error) {
 		service = "otter-agent"
 	}
 
-	material, err := signSigV4(sigV4Input{
+	headers, err := (sigV4Input{
 		AccessKeyID:     parsed.AccessKeyID,
 		SecretAccessKey: parsed.SecretAccessKey,
 		SessionToken:    parsed.Token,
@@ -204,7 +204,7 @@ func (p *AWSInstanceRole) Assert(ctx context.Context) (*Assertion, error) {
 		Path:            "/agent/v1/bootstrap",
 		Payload:         []byte(claims["instance_id"]),
 		Now:             time.Now().UTC(),
-	})
+	}).Header()
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func (p *AWSInstanceRole) Assert(ctx context.Context) (*Assertion, error) {
 		Provider: p.Provider(),
 		Claims:   claims,
 		SignedAt: time.Now().UTC(),
-		Material: material,
+		Headers:  normaliseHeaderNames(headers),
 	}
 	if err := a.validate(time.Now().UTC()); err != nil {
 		return nil, err

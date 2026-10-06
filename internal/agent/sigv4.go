@@ -149,6 +149,19 @@ func hmacSHA256(key []byte, data string) []byte {
 	return m.Sum(nil)
 }
 
+// normaliseHeaderNames lowercases header names, because a signature covers
+// lowercase names and a verifier reading "X-Amz-Date" would not find the
+// "x-amz-date" it signed.
+func normaliseHeaderNames(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			out[strings.ToLower(k)] = v[0]
+		}
+	}
+	return out
+}
+
 // Header renders the signed values as request headers, so the agent and any test
 // client send exactly what was signed.
 func (in sigV4Input) Header() (http.Header, error) {

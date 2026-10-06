@@ -80,11 +80,15 @@ func (e *Exchanger) Exchange(ctx context.Context, b Bootstrap, runtimeID, agentV
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// The provider's signed material authenticates the request. It is a header
-	// rather than a field so it is never written to a log line that prints the
-	// JSON body.
-	req.Header.Set("X-Otter-Bootstrap", assertion.Provider)
-	req.Header.Set("X-Otter-Assertion", assertion.Material)
+	// The signed values travel AS HEADERS, which is what makes the signature
+	// reproducible: a verifier re-derives the signature from the headers it
+	// receives, so sending the Authorization header alone would leave it without
+	// the x-amz-date and body hash it needs. The provider name is the one extra
+	// header, and it selects the verifier rather than being signed.
+	req.Header.Set("X-Otter-Bootstrap-Provider", assertion.Provider)
+	for name, value := range assertion.Headers {
+		req.Header.Set(name, value)
+	}
 
 	resp, err := e.client().Do(req)
 	if err != nil {

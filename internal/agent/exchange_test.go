@@ -28,7 +28,7 @@ func goodAssertion(now time.Time) *Assertion {
 		Provider: "stub",
 		Claims:   map[string]string{"account_id": "426714791664", "role": "otter-agent", "instance_id": "i-abc"},
 		SignedAt: now,
-		Material: "signed-material",
+		Headers:  map[string]string{"Authorization": "AWS4-HMAC-SHA256 Credential=stub", "X-Amz-Date": "20261006T120000Z"},
 	}
 }
 
@@ -38,8 +38,17 @@ func TestExchangeReturnsABoundCredential(t *testing.T) {
 		if r.URL.Path != "/agent/v1/bootstrap" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		if r.Header.Get("X-Otter-Assertion") == "" {
-			t.Error("assertion was not sent")
+		// The signed values must travel AS HEADERS: a verifier re-derives the
+		// signature from the headers it receives, so sending the Authorization
+		// header alone would leave it without the date and body hash it needs.
+		if r.Header.Get("Authorization") == "" {
+			t.Error("the signed Authorization header was not sent")
+		}
+		if r.Header.Get("X-Amz-Date") == "" {
+			t.Error("x-amz-date was not sent; the verifier cannot reproduce the signature without it")
+		}
+		if r.Header.Get("X-Otter-Bootstrap-Provider") != "stub" {
+			t.Errorf("provider header = %q, want stub", r.Header.Get("X-Otter-Bootstrap-Provider"))
 		}
 		// The JSON body must not carry the signed material: it is a header so a
 		// body log cannot leak it.
@@ -165,7 +174,7 @@ func TestExchangeRejectsAMalformedAssertionBeforeSending(t *testing.T) {
 	defer srv.Close()
 	e := &Exchanger{BaseURL: srv.URL, Now: func() time.Time { return now }}
 	bad := goodAssertion(now)
-	bad.Material = ""
+	bad.Headers = nil
 	if _, err := e.Exchange(context.Background(), &stubBootstrap{a: bad}, "rt-1", "0"); err == nil {
 		t.Fatal("expected a refusal")
 	}
