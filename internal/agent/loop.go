@@ -157,7 +157,12 @@ func (l *Loop) Run(ctx context.Context) error {
 
 		// A report is sent even when nothing is to be done, so Cloud learns the
 		// observed state rather than inferring it from silence.
+		// The runtime id travels back on every report: the control plane refuses a
+		// report that does not name one, so an omission here would make every
+		// report fail while every local test passed.
+		want.RuntimeID = l.RuntimeID
 		rep, err := Apply(ctx, l.Runtime, want, gen.applied, l.Drain)
+		rep.RuntimeID = l.RuntimeID
 		gen.observe(rep)
 		if err != nil {
 			switch {

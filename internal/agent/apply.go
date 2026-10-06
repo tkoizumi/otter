@@ -12,9 +12,27 @@ import (
 // the spec means a protocol change is a visible edit to a Go file and a test,
 // not a silent regeneration.
 
+// DesiredRequest is what the agent SENDS when asking what to run.
+//
+// It is a distinct type from Desired because it is a distinct message: the
+// request carries the observed state the control plane reconciles against, and
+// conflating the two would have the agent sending a release it has not been told
+// about yet. The conformance fixtures caught exactly that conflation.
+type DesiredRequest struct {
+	RuntimeID    string   `json:"runtime_id"`
+	Generation   int64    `json:"generation"`
+	Observed     Observed `json:"observed"`
+	AgentVersion string   `json:"agent_version,omitempty"`
+	LeaseID      string   `json:"lease_id,omitempty"`
+}
+
 // Desired is what the control plane answers with: which release and
 // configuration this runtime should be running, and its generation.
 type Desired struct {
+	// RuntimeID is echoed by the control plane and MUST be sent back on every
+	// request: the endpoints refuse a request that does not name a runtime,
+	// because a credential's binding cannot be checked without one.
+	RuntimeID   string            `json:"runtime_id"`
 	Generation  int64             `json:"generation"`
 	Release     Release           `json:"release"`
 	Config      map[string]string `json:"config,omitempty"`
@@ -41,6 +59,11 @@ type MaintenanceWant struct {
 
 // Reported is the outcome of applying a generation.
 type Reported struct {
+	// RuntimeID is required by the control plane. Omitting it made every report a
+	// 400 with "request does not name a runtime" -- the kind of cross-language
+	// divergence that unit tests on one side cannot see, and that shared protocol
+	// fixtures now pin.
+	RuntimeID  string            `json:"runtime_id"`
 	Generation int64             `json:"generation"`
 	Outcome    string            `json:"outcome"`
 	Reason     string            `json:"reason,omitempty"`
