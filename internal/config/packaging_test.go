@@ -1,0 +1,107 @@
+package config
+
+// The pool's tenant image is a security boundary, and its properties are the
+// kind that get lost in a refactor: someone removes --read-only to make a test
+// pass, or drops tini because it looks redundant. These assert the invariants
+// the WP1 launch contract depends on, so losing one is a failing test rather
+// than a discovery made in production.
+//
+// This is not a substitute for qualification. It cannot tell whether the
+// sandbox actually enforces anything -- only WP1's effective-limit verification
+// can do that, and the README says so.
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func packagingDir(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate the test file")
+	}
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "packaging", "container")
+	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err != nil {
+		t.Skipf("packaging/container is not in this checkout (%s)", dir)
+	}
+	return dir
+}
+
+func TestTenantImageKeepsItsBoundarySettings(t *testing.T) {
+	dir := packagingDir(t)
+	body, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+
+	// Each entry is a property the launch contract relies on, and why.
+	required := []struct{ snippet, why string }{
+		{"USER 10001:10001", "runs non-root, with a fixed uid a host volume can be ownership-checked against"},
+		{"tini", "reaps orphaned children and forwards signals, so a cancelled run cannot leave a process counting against pids-limit"},
+		{"ca-certificates", "every integration class talks to a vendor HTTPS API"},
+		{"FROM debian:bookworm-slim", "the base is pinned by tag rather than floating"},
+	}
+	for _, r := range required {
+		if !strings.Contains(src, r.snippet) {
+			t.Errorf("Dockerfile no longer contains %q: %s", r.snippet, r.why)
+		}
+	}
+
+	// The daemon must not be told to listen anywhere but loopback: a pool where
+	// the runtime binds a routable address exposes every tenant on the host.
+	if strings.Contains(src, "--listen\", \"0.0.0.0") {
+		t.Error("the image must not bind a routable address; the controlled ingress route is what exposes the API")
+	}
+	// One writable tree. A second --data path outside /workspace would be state
+	// the backup does not capture.
+	if !strings.Contains(src, "--data\", \"/workspace") {
+		t.Error("the data directory must live inside the tenant volume")
+	}
+}
+
+// The launch flags are a request; the cgroup is the fact. The verification
+// script is what turns one into the other, so it has to exist and be executable.
+func TestLimitVerificationScriptIsPresentAndExecutable(t *testing.T) {
+	dir := packagingDir(t)
+	path := filepath.Join(dir, "verify-limits.sh")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("every qualification claim about memory, cpu and pids limits depends on reading them back: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Error("verify-limits.sh is not executable")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The properties the plan calls out by name.
+	for _, want := range []string{"memory.max", "memory.swap.max", "pids.max", "cpu.max", "ReadonlyRootfs"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("verify-limits.sh does not check %q", want)
+		}
+	}
+}
+
+// The build context is the repository root, so without an allowlist the image
+// would be built from .git, the test suite and local caches.
+func TestDockerignoreRestrictsTheBuildContext(t *testing.T) {
+	dir := packagingDir(t)
+	body, err := os.ReadFile(filepath.Join(dir, ".dockerignore"))
+	if err != nil {
+		t.Fatalf(".dockerignore is missing: the build context is the repo root: %v", err)
+	}
+	for _, must := range []string{"!bin/otterd", "!bin/otter"} {
+		if !strings.Contains(string(body), must) {
+			t.Errorf(".dockerignore does not allow %q, so the build will fail", must)
+		}
+	}
+	if !strings.Contains(string(body), "*") {
+		t.Error(".dockerignore does not exclude anything by default")
+	}
+}

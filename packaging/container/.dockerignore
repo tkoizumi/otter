@@ -1,0 +1,8 @@
+# The build context is the repository root: the image COPYs bin/otterd and
+# bin/otter from it, so it cannot be narrowed to this directory. Everything else
+# is excluded, because a context carrying .git, the test suite and local caches
+# makes the build slower and gives the image more inputs than it has.
+*
+!packaging/container/**
+!bin/otterd
+!bin/otter
