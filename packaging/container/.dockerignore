@@ -1,8 +1,13 @@
 # The build context is the repository root: the image COPYs bin/otterd and
-# bin/otter from it, so it cannot be narrowed to this directory. Everything else
-# is excluded, because a context carrying .git, the test suite and local caches
-# makes the build slower and gives the image more inputs than it has.
+# bin/otter from it, so the context cannot be narrowed to this directory.
+# Everything else is excluded, because a context carrying .git, the test suite
+# and local caches makes the build slower and gives the image more inputs than
+# it has.
 *
 !packaging/container/**
-!bin/otterd
-!bin/otter
+# The "./" prefix is load-bearing. Without it these patterns are matched by
+# prefix, so "!bin/otter" also matches "bin/otterd" -- and because a later
+# negative rule wins, it excluded the daemon the image needs. Anchoring to the
+# context root makes each pattern name exactly one file.
+!./bin/otterd
+!./bin/otter
