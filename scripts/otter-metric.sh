@@ -39,6 +39,7 @@
 # debugging a silent host needs to know which role was assumed.
 #
 #   OTTER_METRIC_HOST      the Host dimension value      (default castor-runtime)
+#   OTTER_METRIC_TENANT    the Tenant dimension value    (default: no Tenant dimension)
 #   OTTER_METRIC_REGION    the AWS region to sign for    (default: IMDS, else us-east-1)
 #   OTTER_METRIC_ENDPOINT  the CloudWatch query endpoint (default below)
 #   OTTER_IMDS_ENDPOINT    the metadata service          (default http://169.254.169.254)
@@ -63,6 +64,15 @@ die() {
 }
 
 host=${OTTER_METRIC_HOST:-castor-runtime}
+# A per-tenant publisher sets this so the datapoint carries a `Tenant` dimension
+# BESIDE the host-wide `Host` one. It is a dimension VALUE, so it is validated
+# here rather than trusted: a newline or a quote in a metric request is how a
+# request is reshaped.
+tenant=${OTTER_METRIC_TENANT:-}
+case $tenant in
+"") ;;
+*[!A-Za-z0-9_.-]*) die "OTTER_METRIC_TENANT '$tenant' is not a plain dimension value" ;;
+esac
 timeout=${OTTER_METRIC_TIMEOUT:-10}
 imds=${OTTER_IMDS_ENDPOINT:-http://169.254.169.254}
 imds=${imds%/}
@@ -107,7 +117,13 @@ while IFS= read -r pair; do
 		--data-urlencode "MetricData.member.$member.MetricName=$name" \
 		--data-urlencode "MetricData.member.$member.Value=$value" \
 		--data-urlencode "MetricData.member.$member.Dimensions.member.1.Name=Host" \
-		--data-urlencode "MetricData.member.$member.Dimensions.member.1.Value=$host" \
+		--data-urlencode "MetricData.member.$member.Dimensions.member.1.Value=$host"
+	if [ -n "$tenant" ]; then
+		set -- "$@" \
+			--data-urlencode "MetricData.member.$member.Dimensions.member.2.Name=Tenant" \
+			--data-urlencode "MetricData.member.$member.Dimensions.member.2.Value=$tenant"
+	fi
+	set -- "$@" \
 		--data-urlencode "MetricData.member.$member.StorageResolution=60"
 done <<EOF
 $pairs

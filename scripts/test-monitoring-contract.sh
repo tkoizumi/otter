@@ -47,6 +47,7 @@ field() {
 
 namespace=$(field namespace)
 dimension=$(field dimension)
+tenant_dimension=$(field tenant_dimension)
 heartbeat_name=$("$py" -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["heartbeat"]["name"])' "$contract")
 disk_name=$("$py" -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["disk_check"]["name"])' "$contract")
 
@@ -76,6 +77,11 @@ check() {
 		pass "$label: publisher sends the $dimension dimension"
 	else
 		fail "$label: publisher does not send the $dimension dimension"
+	fi
+	if grep -q "Dimensions.member.2.Name=$tenant_dimension\"" "$pub"; then
+		pass "$label: publisher can send the $tenant_dimension dimension"
+	else
+		fail "$label: publisher cannot send the $tenant_dimension dimension"
 	fi
 	if grep -q "otter-metric.sh\" $heartbeat_name=" "$hb"; then
 		pass "$label: heartbeat publishes $heartbeat_name"
