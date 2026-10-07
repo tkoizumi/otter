@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 )
@@ -288,7 +289,9 @@ func (l *Loop) RunOnce(ctx context.Context) error {
 	// cycle did not complete a full pass -- typically because the runtime or the
 	// control plane was unreachable -- and reporting that as success would be a
 	// diagnostic that lies about the thing it exists to diagnose.
+	fmt.Fprintf(os.Stderr, "[trace] RunOnce: entering step\n")
 	wait, err := l.step(ctx, &gen)
+	fmt.Fprintf(os.Stderr, "[trace] RunOnce: step returned wait=%v err=%v reachedControl=%v\n", wait, err, l.reachedControl)
 	if err != nil {
 		return err
 	}

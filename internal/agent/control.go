@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -107,8 +108,18 @@ func (c *HTTPControlPlane) Desired(ctx context.Context, observed Observed) (*Des
 		Observed:   observed,
 		Generation: 0,
 	}
+	// Temporary tracing, at the ONE place that settles whether this function is
+	// reached at all. Inferring it from the server's log has been wrong three
+	// times, so the answer is taken from the client.
+	fmt.Fprintf(os.Stderr, "[trace] Desired: sending (runtime_id=%q)\n", c.RuntimeID)
 	var out Desired
-	if err := c.post(ctx, "/agent/v1/desired", req, &out); err != nil {
+	postErr := c.post(ctx, "/agent/v1/desired", req, &out)
+	if postErr != nil {
+		fmt.Fprintf(os.Stderr, "[trace] Desired: failed: %v\n", postErr)
+	} else {
+		fmt.Fprintf(os.Stderr, "[trace] Desired: answered generation=%d\n", out.Generation)
+	}
+	if err := postErr; err != nil {
 		if err == errNoDesiredWork {
 			// Nothing to converge on. Reporting the current generation as the
 			// desired one would look like a change, so instead the loop treats
