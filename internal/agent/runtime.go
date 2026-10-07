@@ -112,16 +112,46 @@ func (r *RuntimeHTTP) Observe(ctx context.Context) (Observed, error) {
 	if err := r.do(ctx, http.MethodGet, "/health", nil, &health); err != nil {
 		return Observed{}, err
 	}
-	// The release the runtime is actually serving is not in /health, so it comes
-	// from the local view. Health answers liveness and maintenance state; the
-	// release identity is a filesystem fact.
 	var maint struct {
 		Mode string `json:"mode"`
 	}
 	if err := r.do(ctx, http.MethodGet, "/v1/runtime/maintenance", nil, &maint); err != nil {
 		return Observed{}, err
 	}
+
+	// WHAT THE RUNTIME IS ACTUALLY SERVING.
+	//
+	// This is the evidence the control plane's unknown-outcome rule needs. Before
+	// it, an agent could only CLAIM it had applied a release, and a claim is not
+	// evidence -- which is why an operation could never be closed as applied and a
+	// deploy never completed.
+	//
+	// The active release is per JOB and a runtime manages several, so:
+	//   - exactly one active release: that is the runtime's release, reported.
+	//   - none: reported as empty, which is the honest answer for a runtime that
+	//     has never been given one.
+	//   - several: NOT reported, because a single field cannot say which. Guessing
+	//     would be worse than saying nothing, since the control plane treats a
+	//     reported digest as evidence.
+	var active struct {
+		Active []struct {
+			Job    string `json:"job"`
+			Digest string `json:"digest"`
+		} `json:"active"`
+	}
+	digest := ""
+	if err := r.do(ctx, http.MethodGet, "/v1/runtime/releases/active", nil, &active); err == nil {
+		if len(active.Active) == 1 {
+			digest = active.Active[0].Digest
+		}
+	}
+	// A failure to read the active release is not fatal: the cycle can still
+	// observe health and maintenance, and reporting no digest is better than
+	// abandoning the cycle. The consequence is only that an operation will not be
+	// closed automatically, which is the safe direction.
+
 	return Observed{
+		ReleaseDigest:  digest,
 		RuntimeVersion: health.Version,
 		Health:         health.Status,
 		Maintenance:    maint.Mode,
