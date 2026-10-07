@@ -34,17 +34,18 @@ const (
 	// daemon, or manage tokens.
 	ScopeCapture Scope = "capture"
 
-	// ScopeAgent is the runtime's OWN agent credential, and it is deliberately
-	// narrow: hold maintenance in both directions, read the active releases,
-	// install a portable package, and activate a release. That is the whole
-	// apply sequence and nothing else.
+	// ScopeAgent is the runtime's OWN agent credential, held by the sidecar that
+	// is the tenant's only control channel, and it is the read/control/deploy
+	// surface for one runtime: read jobs, runs, output, the timeline and capture
+	// metadata; submit, cancel, pause, resume and schedule; and hold maintenance,
+	// read active releases, install and activate.
 	//
-	// It exists because the agent used to hold the static admin token, which
-	// also reads business state and can execute arbitrary code (CL-21, R-04).
-	// An agent credential that leaks must not be a way into the tenant's data,
-	// so this scope cannot list jobs or runs, read logs, state, config or
-	// capture payloads, submit a run, register or delete a job, or manage
-	// tokens. It is independently revocable per runtime like every named token.
+	// It exists because the agent used to hold the static admin token, which also
+	// manages identity and can read business state (CL-21, R-04). This scope is
+	// deliberately NOT wider: it cannot read capture payloads or job state,
+	// register/delete a job, write configuration, reload the daemon, or manage
+	// tokens. The agent runs in a PID namespace the tenant cannot see, so this
+	// credential is not reachable from the tenant's own Python.
 	ScopeAgent Scope = "agent"
 )
 

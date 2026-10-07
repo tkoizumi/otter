@@ -509,24 +509,28 @@ func TestUnrelatedBearerIsRejected(t *testing.T) {
 	}
 }
 
-// TestAgentTokenReachesTheDeploySurfaceAndNothingElse is the evidence for the
-// runtime's own credential: the agent can run the ENTIRE apply sequence -- gate,
-// read the active releases, install a package, activate -- and a leaked agent
-// token cannot read or command the tenant's jobs, runs, state or config. Before
-// this the agent had to hold the static admin token, which can do all of them.
-func TestAgentTokenReachesTheDeploySurfaceAndNothingElse(t *testing.T) {
+// TestAgentTokenReachesTheAgentSurfaceAndNothingElse is the evidence for the
+// runtime's own credential. The agent is the tenant's only control channel, so
+// it reaches the deploy surface AND the read/control surface: gate, releases,
+// jobs, runs, output, timeline, capture metadata, run/cancel/pause/schedule.
+// It must not reach capture payloads, job state, job registration, configuration
+// writes, reload or token management -- those stay admin, and the tenant's own
+// Python cannot read the credential because the agent is a separate PID
+// namespace.
+func TestAgentTokenReachesTheAgentSurfaceAndNothingElse(t *testing.T) {
 	built := scopedFixtureAll(t)
 	agent := mintToken(t, built.srv, "runtime-agent", ScopeAgent)
 	auth := bearer(agent.Token)
 
-	// The whole deploy surface, and a 400 from a handler is fine: the point is
-	// that the GATE admitted the credential (not 401/403).
-	deploy := []struct {
+	// Everything the agent's allowlist covers. A 400 from a handler is fine: the
+	// point is that the GATE admitted the credential (not 401/403).
+	allowed := []struct {
 		name   string
 		method string
 		path   string
 		body   []byte
 	}{
+		// Deploy.
 		{"read maintenance", http.MethodGet, "/v1/runtime/maintenance", nil},
 		{"enter maintenance", http.MethodPost, "/v1/runtime/maintenance", []byte(`{}`)},
 		{"exit maintenance", http.MethodDelete, "/v1/runtime/maintenance", nil},
@@ -534,25 +538,7 @@ func TestAgentTokenReachesTheDeploySurfaceAndNothingElse(t *testing.T) {
 		{"install a package", http.MethodPost, "/v1/runtime/releases/install", nil},
 		{"activate a release", http.MethodPost, "/v1/runtime/releases/activate",
 			[]byte(`{"digest":"sha256:` + strings.Repeat("a", 64) + `"}`)},
-	}
-	for _, tc := range deploy {
-		t.Run("deploy/"+tc.name, func(t *testing.T) {
-			res := do(t, tc.method, built.srv.URL+tc.path, tc.body, auth)
-			if res.status == http.StatusForbidden || res.status == http.StatusUnauthorized {
-				t.Fatalf("%s %s: agent token refused with %d; it is the agent's own surface\n%s",
-					tc.method, tc.path, res.status, res.body)
-			}
-		})
-	}
-
-	// Everything a tenant's data touches. The agent credential is not a read or
-	// control credential, so each must be 403, not 404 and not 401.
-	forbidden := []struct {
-		name   string
-		method string
-		path   string
-		body   []byte
-	}{
+		// Read.
 		{"list jobs", http.MethodGet, "/v1/jobs", nil},
 		{"read a job", http.MethodGet, "/v1/jobs/job-A", nil},
 		{"list runs", http.MethodGet, "/v1/runs", nil},
@@ -560,14 +546,44 @@ func TestAgentTokenReachesTheDeploySurfaceAndNothingElse(t *testing.T) {
 		{"read run output", http.MethodGet, "/v1/runs/run-A/logs", nil},
 		{"read the timeline", http.MethodGet, "/v1/runs/run-A/timeline", nil},
 		{"read capture metadata", http.MethodGet, "/v1/runs/run-A/requests", nil},
-		{"read a capture payload", http.MethodGet, "/v1/runs/run-A/requests/req-1", nil},
-		{"read job state", http.MethodGet, "/v1/jobs/job-A/state", nil},
 		{"read job config", http.MethodGet, "/v1/jobs/job-A/config", nil},
+		// Control.
 		{"submit a run", http.MethodPost, "/v1/jobs/job-A/runs", []byte(`{}`)},
 		{"cancel a run", http.MethodPost, "/v1/runs/run-A/cancel", nil},
 		{"pause a job", http.MethodPost, "/v1/jobs/job-A/pause", nil},
+		{"resume a job", http.MethodPost, "/v1/jobs/job-A/resume", nil},
 		{"set a schedule", http.MethodPut, "/v1/jobs/job-A/schedule", []byte(`{"cron":"*/5 * * * *"}`)},
+		{"clear a schedule", http.MethodDelete, "/v1/jobs/job-A/schedule", nil},
+	}
+	for _, tc := range allowed {
+		t.Run("allowed/"+tc.name, func(t *testing.T) {
+			res := do(t, tc.method, built.srv.URL+tc.path, tc.body, auth)
+			if res.status == http.StatusForbidden || res.status == http.StatusUnauthorized {
+				t.Fatalf("%s %s: agent token refused with %d; it is on the agent's surface\n%s",
+					tc.method, tc.path, res.status, res.body)
+			}
+		})
+	}
+
+	// The surface the agent must NOT hold, even though it is the tenant's own
+	// credential: capture payloads (PII), job state, registration and identity,
+	// configuration writes, reload, and token management.
+	forbidden := []struct {
+		name   string
+		method string
+		path   string
+		body   []byte
+	}{
+		{"read a capture payload", http.MethodGet, "/v1/runs/run-A/requests/req-1", nil},
+		{"read a capture payload by id", http.MethodGet, "/v1/requests/req-1", nil},
+		{"read job state", http.MethodGet, "/v1/jobs/job-A/state", nil},
+		{"write job state", http.MethodPut, "/v1/jobs/job-A/state/k", []byte(`"v"`)},
+		{"delete job state", http.MethodDelete, "/v1/jobs/job-A/state/k", nil},
+		{"write job config", http.MethodPut, "/v1/jobs/job-A/config", []byte(`{}`)},
 		{"register a job", http.MethodPost, "/v1/jobs", []byte(`{"path":"/jobs/new"}`)},
+		{"resolve a job reference", http.MethodGet, "/v1/jobs/resolve?ref=job-A", nil},
+		{"reset a job", http.MethodPost, "/v1/jobs/job-A/reset", nil},
+		{"move a job", http.MethodPost, "/v1/jobs/job-A/move", []byte(`{"destination":"/jobs/moved"}`)},
 		{"delete a job", http.MethodDelete, "/v1/jobs/job-A", nil},
 		{"reload the daemon", http.MethodPost, "/v1/reload", nil},
 		{"list tokens", http.MethodGet, "/v1/tokens", nil},

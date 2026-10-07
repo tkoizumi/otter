@@ -98,11 +98,11 @@ func (s *Server) Handler() http.Handler {
 
 	// The deploy surface: maintenance in both directions, the active releases,
 	// package install and activation. Gated on `deploy`, which admits the admin
-	// token OR an agent-scoped token -- and nothing else. This is the whole
-	// surface the runtime's own agent needs, so it no longer holds the admin
-	// token to run the apply sequence (CL-21). A control credential can pause a
-	// job; only the admin or the runtime's agent can hold the whole runtime back
-	// or activate a release, because that decides whether customer work runs.
+	// token OR an agent-scoped token -- and nothing else. This is the deploy half
+	// of the agent's surface; the read and control halves are the `scoped` and
+	// `control` routes below, which also admit `agent` because the agent is the
+	// tenant's only control channel. What stays admin is capture payloads, job
+	// state, registration, configuration writes, reload and tokens.
 	mux.Handle("GET /v1/runtime/maintenance", s.deploy(s.handleGetMaintenance))
 	mux.Handle("POST /v1/runtime/maintenance", s.deploy(s.handleEnterMaintenance))
 	mux.Handle("DELETE /v1/runtime/maintenance", s.deploy(s.handleExitMaintenance))
@@ -247,13 +247,16 @@ func (p principal) allowsRun(id string) bool {
 // separately because the handler narrows it to its own run. A capture-scoped
 // token reads everything a control token does, and payloads besides.
 func (p principal) canRead() bool {
-	return p.Admin || p.Scope == ScopeRead || p.Scope == ScopeControl || p.Scope == ScopeCapture
+	return p.Admin || p.Scope == ScopeRead || p.Scope == ScopeControl ||
+		p.Scope == ScopeCapture || p.Scope == ScopeAgent
 }
 
 // canControl reports whether the caller may command the runtime: submit, cancel,
 // pause, resume and schedule. `capture` is a superset of `control`, so it may.
+// `agent` carries the tenant's control channel, so it may too; capture payloads
+// and job state remain out of both.
 func (p principal) canControl() bool {
-	return p.Admin || p.Scope == ScopeControl || p.Scope == ScopeCapture
+	return p.Admin || p.Scope == ScopeControl || p.Scope == ScopeCapture || p.Scope == ScopeAgent
 }
 
 // canReadCapture reports whether the caller may read captured request and
@@ -266,9 +269,10 @@ func (p principal) canReadCapture() bool {
 
 // canDeploy reports whether the caller may run the agent's apply sequence:
 // hold maintenance in both directions, read the active releases, install a
-// portable package, and activate a release. The `agent` scope is exactly that
-// surface; it is NOT a read or control credential, so it cannot see a job, a
-// run, logs, state, config or a capture body.
+// portable package, and activate a release. The `agent` scope is that surface,
+// plus the read and control surface (see canRead/canControl): the agent is the
+// tenant's only control channel. It still cannot read capture payloads or job
+// state, register or delete jobs, write configuration, reload, or manage tokens.
 func (p principal) canDeploy() bool {
 	return p.Admin || p.Scope == ScopeAgent
 }
