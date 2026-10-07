@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -140,7 +142,14 @@ func (r *RuntimeHTTP) Observe(ctx context.Context) (Observed, error) {
 	digest := ""
 	if err := r.do(ctx, http.MethodGet, "/v1/runtime/releases/active", nil, &active); err == nil {
 		if len(active.Active) == 1 {
-			digest = active.Active[0].Digest
+			// Reported in the control plane's canonical `sha256:<hex>` form. The
+			// runtime's own store names directories by bare hex, but Cloud decides
+			// whether a deploy landed by comparing this value with the desired
+			// digest it stored -- and comparing spellings instead of identities
+			// leaves a landed deploy open forever.
+			if d, err := normalizeDigest(active.Active[0].Digest); err == nil {
+				digest = "sha256:" + d
+			}
 		}
 	}
 	// A failure to read the active release is not fatal: the cycle can still
@@ -215,8 +224,16 @@ func (r *RuntimeHTTP) Promote(ctx context.Context, digest string) error {
 	if digest == "" {
 		return fmt.Errorf("agent: promote needs a digest")
 	}
+	// Send the store's canonical form. The control plane speaks
+	// `sha256:<hex>` and the runtime's release directories are named by bare hex;
+	// forwarding the prefixed spelling unchanged produced "no job has release
+	// sha256:...", a comparison of spellings rather than of identities.
+	want, err := normalizeDigest(digest)
+	if err != nil {
+		return err
+	}
 	return r.do(ctx, http.MethodPost, "/v1/runtime/releases/activate",
-		map[string]string{"digest": digest}, nil)
+		map[string]string{"digest": want}, nil)
 }
 
 // Fetch and Validate remain unimplemented, and that is a finding rather than an
@@ -298,11 +315,24 @@ func (r *RuntimeHTTP) Fetch(ctx context.Context, rel Release) error {
 
 	// Streamed to the runtime rather than buffered: a package can be large, and
 	// holding it in memory buys nothing when the runtime has to receive every byte
-	// anyway.
+	// anyway. The stream is hashed on the way through so the transport checksum
+	// Cloud stated can be checked without a second pass or a buffer.
+	//
+	// The checksum is a TRANSPORT check, not the identity: it proves the bytes did
+	// not change in flight, while the runtime's recompute proves what release
+	// those bytes are. Both are worth having, and conflating them is the error
+	// this whole contract exists to remove.
+	wantArtifact := resp.Header.Get("X-Otter-Artifact-Sha256")
+	hasher := sha256.New()
+
 	pr, pw := io.Pipe()
+	defer pr.Close()
+	var streamErr error
+	streamed := make(chan struct{})
 	go func() {
-		_, copyErr := io.Copy(pw, resp.Body)
-		_ = pw.CloseWithError(copyErr)
+		defer close(streamed)
+		_, streamErr = io.Copy(pw, io.TeeReader(resp.Body, hasher))
+		_ = pw.CloseWithError(streamErr)
 	}()
 
 	// The transport is the RUNTIME's client (its own token, loopback), not the
@@ -330,6 +360,71 @@ func (r *RuntimeHTTP) Fetch(ctx context.Context, rel Release) error {
 	if installResp.StatusCode != http.StatusOK {
 		return fmt.Errorf("agent: install %s: status %d: %s",
 			shortDigest(want), installResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// The download has been fully consumed by now (the runtime reads the whole
+	// body before it verifies), so the transport checksum can be compared.
+	<-streamed
+	if streamErr != nil {
+		return fmt.Errorf("%w: fetch %s: %v", ErrRuntimeUnavailable, shortDigest(want), streamErr)
+	}
+	if wantArtifact != "" {
+		statement, err := normalizeDigest(wantArtifact)
+		if err != nil {
+			return fmt.Errorf("agent: install %s: the transport checksum header is unreadable: %v",
+				shortDigest(want), err)
+		}
+		if got := hex.EncodeToString(hasher.Sum(nil)); got != statement {
+			return fmt.Errorf(
+				"%w: the archive changed in transit: cloud stated sha256:%s, the bytes hash to sha256:%s",
+				ErrDigestMismatch, statement, got)
+		}
+	}
+
+	// THE CONFIRMATION LINK. Cloud asked the runtime to run `want`; the runtime
+	// replies with the digest it RECOMPUTED from the bytes it actually stored.
+	// Confirming the two are equal is what makes the runtime's store an address
+	// rather than a label -- and without it the agent would be asserting that the
+	// package it uploaded matches the release it was told to run.
+	//
+	// The digest is not trusted from the URL the agent fetched. A runtime that
+	// answers with a different digest is saying the bytes it verified are a
+	// different release, which is exactly the substitution this check exists to
+	// catch.
+	var installed struct {
+		Job            string `json:"job"`
+		Digest         string `json:"digest"`
+		RecordedDigest string `json:"recorded_digest"`
+	}
+	if err := json.Unmarshal(body, &installed); err != nil {
+		return fmt.Errorf("agent: install %s: the runtime returned no readable install result: %v",
+			shortDigest(want), err)
+	}
+	if installed.Digest == "" {
+		return fmt.Errorf("agent: install %s: the runtime did not report which release it installed",
+			shortDigest(want))
+	}
+	got, err := normalizeDigest(installed.Digest)
+	if err != nil {
+		return fmt.Errorf("agent: install %s: the runtime reported an unreadable digest: %v",
+			shortDigest(want), err)
+	}
+	if got != want {
+		return fmt.Errorf(
+			"%w: cloud asked for %s but the runtime installed %s",
+			ErrDigestMismatch, shortDigest(want), shortDigest(got))
+	}
+	// The manifest's own claim, when the runtime returns it, has to agree with
+	// the recomputed digest as well: a package whose content hashes to X while
+	// its manifest claims Y would otherwise install under X and still be reported
+	// as Y.
+	if installed.RecordedDigest != "" {
+		recorded, err := normalizeDigest(installed.RecordedDigest)
+		if err != nil || recorded != got {
+			return fmt.Errorf(
+				"%w: the installed release is %s but its manifest claims %s",
+				ErrDigestMismatch, shortDigest(got), shortDigest(installed.RecordedDigest))
+		}
 	}
 	return nil
 }

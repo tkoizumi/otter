@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,4 +164,84 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// installRuntime serves a package and stands in for otterd's install endpoint,
+// answering with the digest it "recomputed".
+func installRuntime(t *testing.T, archive []byte, report map[string]string, artifactHeader string) (*httptest.Server, *httptest.Server) {
+	t.Helper()
+	rel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if artifactHeader != "" {
+			w.Header().Set("X-Otter-Artifact-Sha256", artifactHeader)
+		}
+		_, _ = w.Write(archive)
+	}))
+	rt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runtime/releases/install" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = json.NewEncoder(w).Encode(report)
+	}))
+	t.Cleanup(rel.Close)
+	t.Cleanup(rt.Close)
+	return rel, rt
+}
+
+// THE confirmation link: the runtime reports the digest it RECOMPUTED, and the
+// agent refuses unless it equals the release Cloud asked for. Without this the
+// agent would be asserting that the package it uploaded is the release it was
+// told to run, which is a claim rather than a check.
+func TestFetchConfirmsTheInstalledCanonicalDigest(t *testing.T) {
+	archive := []byte("a portable package")
+	want := "sha256:" + sha256HexString(archive)
+	rel, rt := installRuntime(t, archive, map[string]string{
+		"job": "sync", "digest": want, "recorded_digest": want,
+	}, "")
+
+	r := &RuntimeHTTP{BaseURL: rt.URL, Token: "t", ReleaseClient: rel.Client()}
+	if err := r.Fetch(context.Background(), Release{Digest: want, URL: rel.URL}); err != nil {
+		t.Fatalf("a matching install must be accepted: %v", err)
+	}
+}
+
+// The assertion-vs-address case on the agent side: the runtime is honest about
+// what it stored, and it is NOT what Cloud named. Fetch must refuse and name both
+// digests rather than report a successful install of the wrong release.
+func TestFetchRefusesAnInstallThatReportsADifferentDigest(t *testing.T) {
+	archive := []byte("a portable package")
+	want := "sha256:" + sha256HexString(archive)
+	other := "sha256:" + strings.Repeat("b", 64)
+	rel, rt := installRuntime(t, archive, map[string]string{
+		"job": "sync", "digest": other, "recorded_digest": other,
+	}, "")
+
+	r := &RuntimeHTTP{BaseURL: rt.URL, Token: "t", ReleaseClient: rel.Client()}
+	err := r.Fetch(context.Background(), Release{Digest: want, URL: rel.URL})
+	if !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("want ErrDigestMismatch, got %v", err)
+	}
+	if !contains(err.Error(), sha256HexString(archive)[:12]) || !contains(err.Error(), other[7:19]) {
+		t.Errorf("the refusal must name both digests: %v", err)
+	}
+}
+
+// The transport checksum is checked separately from the identity: bytes that
+// changed in flight must be refused even before the runtime's recompute.
+func TestFetchRefusesABodyThatDoesNotMatchTheTransportChecksum(t *testing.T) {
+	archive := []byte("a portable package")
+	want := "sha256:" + sha256HexString(archive)
+	rel, rt := installRuntime(t, archive, map[string]string{
+		"job": "sync", "digest": want, "recorded_digest": want,
+	}, "sha256:"+strings.Repeat("c", 64))
+
+	r := &RuntimeHTTP{BaseURL: rt.URL, Token: "t", ReleaseClient: rel.Client()}
+	err := r.Fetch(context.Background(), Release{Digest: want, URL: rel.URL})
+	if !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("want ErrDigestMismatch, got %v", err)
+	}
+	if !contains(err.Error(), "in transit") {
+		t.Errorf("the refusal should name the transport check: %v", err)
+	}
 }

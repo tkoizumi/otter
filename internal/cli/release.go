@@ -52,6 +52,10 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	var opts prepareOptions
 	opts.registerPrepareFlags(fs)
 	keep := fs.Int("keep", 0, "retain this many inactive releases (0 keeps every release)")
+	// Publishing the portable package is how the canonical digest leaves this
+	// machine. The digest the release already computed is printed alongside the
+	// archive hash: the two are different things and travel separately.
+	packagePath := fs.String("package", "", "write the portable release package to this file, with its release digest and archive hash")
 	list := fs.Bool("list", false, "list staged releases instead of creating one")
 	prune := fs.Bool("prune", false, "with --list --all: remove release directories that have no registered identity")
 	apply := fs.Bool("apply", false, "with --prune: actually remove; without it the command only reports")
@@ -91,6 +95,10 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	}
 	if *activate != "" && *all {
 		fmt.Fprintln(a.Stderr, "otter: --activate works on one job at a time")
+		return 2
+	}
+	if *packagePath != "" && (*all || *list || *activate != "") {
+		fmt.Fprintln(a.Stderr, "otter: --package writes one job's portable package; it cannot be combined with --all, --list or --activate")
 		return 2
 	}
 	if *list && (*activate != "" || *source != "") {
@@ -160,7 +168,7 @@ func (a *App) cmdRelease(ctx context.Context, g globals, args []string) int {
 	}
 
 	for _, target := range targets {
-		if code := a.releaseOne(ctx, manager, jobsRoot, target, *shared, opts, *keep); code != 0 {
+		if code := a.releaseOne(ctx, manager, jobsRoot, target, *shared, opts, *keep, *packagePath); code != 0 {
 			return code
 		}
 	}
@@ -285,7 +293,7 @@ func absoluteDir(path string) (string, error) {
 }
 
 // releaseOne stages, validates, prepares and activates one job.
-func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared string, opts prepareOptions, keep int) int {
+func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared string, opts prepareOptions, keep int, packagePath string) int {
 	label := target.Label()
 	manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
 	if err != nil {
@@ -404,6 +412,15 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 		return code
 	}
 
+	// Publishing comes AFTER activation on purpose: a package is a claim that
+	// this release is good to run elsewhere, so it is only written once the
+	// release passed its own validation here.
+	if packagePath != "" {
+		if code := a.writePackage(manager, target.ID, label, meta, packagePath); code != 0 {
+			return code
+		}
+	}
+
 	if keep > 0 {
 		// A queued, running or retrying attempt is bound to the snapshot it was
 		// submitted against. Retention must not remove that snapshot, or the
@@ -420,6 +437,42 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 			fmt.Fprintf(a.Stdout, "%s: removed old release %s\n", label, digest[:12])
 		}
 	}
+	return 0
+}
+
+// writePackage serializes a staged release into the portable package format and
+// prints the two values a publisher needs.
+//
+// They are printed as separate fields on one line so a caller can parse them
+// without guessing: the release digest is the IDENTITY read from the manifest,
+// and artifact_sha256 is the TRANSPORT checksum of the bytes just written. A
+// consumer that used the archive hash as the identity would ask a runtime to
+// activate a digest it had never computed.
+func (a *App) writePackage(manager release.Manager, id, label string, meta release.Metadata, path string) int {
+	dir, err := manager.Dir(id, meta.Digest)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %s: package: %v\n", label, err)
+		return 1
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %s: package: %v\n", label, err)
+		return 1
+	}
+	packaged, artifact, packErr := release.Package(dir, f)
+	closeErr := f.Close()
+	if packErr != nil {
+		_ = os.Remove(path)
+		fmt.Fprintf(a.Stderr, "otter: %s: package: %v\n", label, packErr)
+		return 1
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		fmt.Fprintf(a.Stderr, "otter: %s: package: %v\n", label, closeErr)
+		return 1
+	}
+	fmt.Fprintf(a.Stdout, "%s: package %s\n", label, path)
+	fmt.Fprintf(a.Stdout, "%s: release_digest=%s artifact_sha256=%s\n", label, packaged.Digest, artifact)
 	return 0
 }
 

@@ -71,7 +71,28 @@ func VerifyPackage(root string) (VerifiedPackage, error) {
 			"%w: the package does not contain the job at %q", ErrInvalidPackage, meta.Layout.JobPath)
 	}
 
-	got, err := meta.Layout.Digest(jobDir, meta.Environment)
+	// The layout's TREE SOURCES are the producer's live directories and do not
+	// exist here. Point them at the copies the package actually carries --
+	// `root/<tree.Name>`, which is exactly where the recorded placement says the
+	// tree lives -- so verification hashes THE PACKAGE's bytes. Hashing
+	// tree.Source instead would re-read the producer's checkout (or fail because
+	// it is absent), which is the "verification is a heuristic" failure the
+	// recorded layout exists to remove.
+	layout := meta.Layout
+	layout.Trees = make([]SharedTree, 0, len(meta.Layout.Trees))
+	for _, tree := range meta.Layout.Trees {
+		dir, err := safeJoin(root, tree.Name)
+		if err != nil {
+			return VerifiedPackage{}, fmt.Errorf("%w: %s", ErrInvalidPackage, err)
+		}
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return VerifiedPackage{}, fmt.Errorf(
+				"%w: the package does not contain the shared tree recorded at %q", ErrInvalidPackage, tree.Name)
+		}
+		layout.Trees = append(layout.Trees, SharedTree{Source: dir, Name: tree.Name})
+	}
+
+	got, err := layout.Digest(jobDir, meta.Environment)
 	if err != nil {
 		return VerifiedPackage{}, fmt.Errorf("%w: recompute digest: %v", ErrInvalidPackage, err)
 	}

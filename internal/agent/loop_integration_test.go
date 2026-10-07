@@ -64,12 +64,16 @@ func TestTheFullCycleOverRealHTTP(t *testing.T) {
 		case r.URL.Path == "/v1/runtime/releases/install":
 			// The agent hands the downloaded package to the runtime, which is what
 			// makes the digest an address: the runtime recomputes it before
-			// installing, so this endpoint must be reached for a deploy to apply.
+			// installing and REPORTS the canonical digest it stored. The agent
+			// confirms that equals what Cloud asked for, so a runtime that echoed
+			// anything else would (correctly) fail the cycle.
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]string{"job": "sync", "digest": "sha256:x"})
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"job": "sync", "digest": digest, "recorded_digest": digest,
+			})
 		case r.URL.Path == "/v1/runtime/releases/activate":
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]string{"job": "sync", "digest": "sha256:x"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"job": "sync", "digest": digest})
 		default:
 			w.WriteHeader(http.StatusOK)
 		}

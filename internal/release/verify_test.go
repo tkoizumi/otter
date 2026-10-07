@@ -107,6 +107,35 @@ func TestVerifyPackageRefusesAlteredContent(t *testing.T) {
 	}
 }
 
+// SHARED content is part of the release too, and the verifier must hash the
+// PACKAGE's copy of it -- not the producer's live tree, which still exists on the
+// machine that built the package. Hashing the live tree is the failure this test
+// exists for: it would accept a tampered shared tree because the original on disk
+// still hashes correctly.
+func TestVerifyPackageRefusesAlteredSharedContent(t *testing.T) {
+	f := newFixture(t, "one")
+	meta := f.stage(t, "env-1")
+	if len(meta.Layout.Trees) == 0 {
+		t.Fatal("the fixture records no shared tree, so this test proves nothing")
+	}
+	staged, err := f.manager().Dir(f.name, meta.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(t.TempDir(), "package")
+	copyRelease(t, staged, pkg)
+
+	// Change the copy inside the package. The live source is untouched.
+	shared := filepath.Join(pkg, meta.Layout.Trees[0].Name, "shared_lib.py")
+	if err := os.WriteFile(shared, []byte("VALUE = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := VerifyPackage(pkg); !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("altered shared content must be refused, got: %v", err)
+	}
+}
+
 // A package from before the layout was recorded cannot be verified, and the
 // refusal must say WHY: guessing the layout is the failure the field prevents.
 func TestVerifyPackageRefusesAPackageWithoutALayout(t *testing.T) {

@@ -23,8 +23,11 @@ import (
 // belongs to. The job is resolved from the release metadata, which is what makes
 // the digest the identifier.
 func (d *Daemon) ActivateRelease(ctx context.Context, digest string) (api.ReleaseView, error) {
-	digest = strings.TrimSpace(digest)
-	if digest == "" {
+	// The control plane sends the canonical `sha256:<hex>` form while the store is
+	// keyed by bare hex, so normalise at the boundary. Comparing spellings instead
+	// of identities was the "no job has release sha256:..." failure.
+	digest, err := release.NormalizeDigest(digest)
+	if err != nil {
 		return api.ReleaseView{}, fmt.Errorf("activate release: %w", api.ErrInvalid)
 	}
 

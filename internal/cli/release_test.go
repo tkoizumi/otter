@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -125,6 +127,54 @@ func TestReleaseByNameAndAll(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("--all did not release everything (%q missing):\n%s", want, stdout)
 		}
+	}
+}
+
+// `otter release --package` publishes the canonical release digest alongside the
+// archive, with the archive hash as a separate transport value. The two must not
+// be the same, or a deploy would point at a tarball hash the runtime never
+// computed.
+func TestReleasePackagePublishesTheCanonicalDigest(t *testing.T) {
+	root, dir := releaseWorkspace(t, "counter")
+	pkg := filepath.Join(t.TempDir(), "counter.tar.gz")
+
+	stdout, stderr, code := otterIn(t, root, "release", "--package", pkg, "counter")
+	if code != 0 {
+		t.Fatalf("release --package exited %d: %s", code, stderr)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(stdout, "\n") {
+		for _, f := range strings.Fields(line) {
+			if k, v, ok := strings.Cut(f, "="); ok {
+				fields[k] = v
+			}
+		}
+	}
+	releaseDigest := fields["release_digest"]
+	artifact := fields["artifact_sha256"]
+	if releaseDigest == "" || artifact == "" {
+		t.Fatalf("output does not publish both values:\n%s", stdout)
+	}
+
+	data, err := os.ReadFile(pkg)
+	if err != nil {
+		t.Fatalf("the package was not written: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	if want := "sha256:" + hex.EncodeToString(sum[:]); artifact != want {
+		t.Errorf("artifact_sha256 = %s, want the hash of the file %s", artifact, want)
+	}
+	if artifact == "sha256:"+releaseDigest {
+		t.Error("the artifact hash and the release digest are the same value; they are different things")
+	}
+
+	manager := release.Manager{DataDir: filepath.Join(root, stateDirName, "data")}
+	meta, ok, err := manager.Active(idFor(t, dir))
+	if err != nil || !ok {
+		t.Fatalf("no active release after packaging: ok=%v err=%v", ok, err)
+	}
+	if meta.Digest != releaseDigest {
+		t.Errorf("published release_digest %s, active release %s", releaseDigest, meta.Digest)
 	}
 }
 
