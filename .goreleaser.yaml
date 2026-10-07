@@ -86,6 +86,35 @@ changelog:
 # workflow pushes the generated cask into. The cask installs the two
 # prebuilt binaries rather than building from source: a Go toolchain on every
 # developer's machine is exactly the cost this release exists to remove.
+# Ubuntu's native path: the same two binaries as a .deb (and .rpm), attached to
+# each GitHub release. `sudo apt install ./otter_<ver>_linux_amd64.deb` then
+# works with no repository to add and no key to trust -- which is the difference
+# between "download a tarball and place it yourself" and a real install that apt
+# can upgrade and remove.
+#
+# A hosted APT repository (a signed archive in R2, plus one .sources entry) is
+# the upgrade from here, so plain `sudo apt install otter` works. This is the
+# step before that, and it is deliberately a package rather than a repository:
+# the artifact is useful on its own.
+#
+# NOT `brews:`: GoReleaser deprecated it, and the workflow runs `goreleaser
+# check` as a gate before publishing, so a formula would fail the release rather
+# than ship a Linux install.
+nfpms:
+  - id: otter
+    package_name: otter
+    ids:
+      - otter
+      - otterd
+    formats:
+      - deb
+    bindir: /usr/bin
+    maintainer: "Takayuki Koizumi <takayuki.koizumi@gmail.com>"
+    description: "Runtime for reliable Python jobs: scheduling, retries, state and logs"
+    homepage: "https://github.com/tkoizumi/otter"
+    section: utils
+    priority: optional
+
 homebrew_casks:
   - name: otter
     ids:
