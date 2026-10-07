@@ -45,6 +45,9 @@ type Loop struct {
 	// "did not complete" alone sends an operator to the wrong one.
 	mu      sync.Mutex
 	lastErr string
+	// reachedControl is set once Desired has ANSWERED. A cycle that never asked
+	// is not a completed cycle, and --once reported success for one -- twice.
+	reachedControl bool
 }
 
 func (l *Loop) logger() *slog.Logger {
@@ -168,6 +171,11 @@ func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration,
 	}
 
 	want, err := l.Control.Desired(ctx, observed)
+	if err == nil {
+		l.mu.Lock()
+		l.reachedControl = true
+		l.mu.Unlock()
+	}
 	if err != nil {
 		// Cloud unreachable: keep running the current release. This is the
 		// table's first row and the most important one -- a partition must not
@@ -284,8 +292,21 @@ func (l *Loop) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if wait > 0 {
-		return fmt.Errorf("%w: %s (retry suggested in %s)", errIncompleteCycle, l.lastReason(), wait)
+	// A cycle that never got an answer from the control plane did NOT complete,
+	// whatever the retry timing says. This was wrong twice: the loop treats an
+	// unreachable runtime or control plane as a retryable condition and returns no
+	// error, so `--once` printed "one iteration completed" for a run that never
+	// asked what to run. A diagnostic that reports success for the thing it exists
+	// to diagnose is worse than no diagnostic.
+	l.mu.Lock()
+	reached := l.reachedControl
+	l.mu.Unlock()
+	if wait > 0 || !reached {
+		reason := l.lastReason()
+		if reached {
+			reason = "the cycle completed but suggests a retry"
+		}
+		return fmt.Errorf("%w: %s (retry suggested in %s)", errIncompleteCycle, reason, wait)
 	}
 	return nil
 }
