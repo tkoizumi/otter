@@ -33,11 +33,24 @@ const (
 	// still cannot read job state, register or delete a job, reload the
 	// daemon, or manage tokens.
 	ScopeCapture Scope = "capture"
+
+	// ScopeAgent is the runtime's OWN agent credential, and it is deliberately
+	// narrow: hold maintenance in both directions, read the active releases,
+	// install a portable package, and activate a release. That is the whole
+	// apply sequence and nothing else.
+	//
+	// It exists because the agent used to hold the static admin token, which
+	// also reads business state and can execute arbitrary code (CL-21, R-04).
+	// An agent credential that leaks must not be a way into the tenant's data,
+	// so this scope cannot list jobs or runs, read logs, state, config or
+	// capture payloads, submit a run, register or delete a job, or manage
+	// tokens. It is independently revocable per runtime like every named token.
+	ScopeAgent Scope = "agent"
 )
 
 // Valid reports whether the scope is one this build issues.
 func (s Scope) Valid() bool {
-	return s == ScopeRead || s == ScopeControl || s == ScopeCapture
+	return s == ScopeRead || s == ScopeControl || s == ScopeCapture || s == ScopeAgent
 }
 
 // APIToken is the authority a presented token resolved to.

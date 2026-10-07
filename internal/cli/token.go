@@ -36,17 +36,21 @@ func (a *App) cmdToken(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("token", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
 	name := fs.String("name", "", "a label for the credential, so it can be identified later")
-	scope := fs.String("scope", "", "read, control or capture")
+	scope := fs.String("scope", "", "read, control, capture or agent")
 	fs.Usage = func() {
 		fmt.Fprint(a.Stderr, "Usage: otter token <create|list|revoke> [flags] [id]\n\n"+
 			"Manages the runtime's scoped operator credentials.\n\n"+
 			"  otter token create --name cloud-gateway --scope control\n"+
+			"  otter token create --name runtime-agent --scope agent\n"+
 			"  otter token list\n"+
 			"  otter token revoke <id>\n\n"+
 			"Scopes:\n"+
 			"  read     read jobs, runs, output, the timeline and capture metadata\n"+
 			"  control  read, plus run, cancel, pause, resume and schedule\n"+
-			"  capture  control, plus captured request and response bodies\n")
+			"  capture  control, plus captured request and response bodies\n"+
+			"  agent    the runtime agent's own apply surface only: maintenance,\n"+
+			"           active releases, install and activate. No jobs, runs,\n"+
+			"           logs, state, config or captures.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -57,7 +61,7 @@ func (a *App) cmdToken(ctx context.Context, g globals, args []string) int {
 	switch verb {
 	case "create":
 		if len(rest) != 0 {
-			fmt.Fprint(a.Stderr, "otter: usage: otter token create --name <name> --scope <read|control|capture>\n")
+			fmt.Fprint(a.Stderr, "otter: usage: otter token create --name <name> --scope <read|control|capture|agent>\n")
 			return 2
 		}
 		created, err := client.CreateAPIToken(ctx, *name, api.Scope(strings.TrimSpace(*scope)))

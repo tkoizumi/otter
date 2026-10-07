@@ -96,17 +96,19 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
 
-	// Maintenance is admin-only in both directions. A control credential can
-	// pause a job; only an admin credential can hold the whole runtime back or
-	// activate it, because that decides whether customer work runs at all.
-	mux.Handle("GET /v1/runtime/maintenance", s.admin(s.handleGetMaintenance))
-	mux.Handle("POST /v1/runtime/maintenance", s.admin(s.handleEnterMaintenance))
-	mux.Handle("DELETE /v1/runtime/maintenance", s.admin(s.handleExitMaintenance))
-	// Release activation, so a runtime agent promotes through the same surface an
-	// operator uses instead of reaching past the API into the data directory.
-	mux.Handle("GET /v1/runtime/releases/active", s.admin(s.handleActiveReleases))
-	mux.Handle("POST /v1/runtime/releases/install", s.admin(s.handleInstallRelease))
-	mux.Handle("POST /v1/runtime/releases/activate", s.admin(s.handleActivateRelease))
+	// The deploy surface: maintenance in both directions, the active releases,
+	// package install and activation. Gated on `deploy`, which admits the admin
+	// token OR an agent-scoped token -- and nothing else. This is the whole
+	// surface the runtime's own agent needs, so it no longer holds the admin
+	// token to run the apply sequence (CL-21). A control credential can pause a
+	// job; only the admin or the runtime's agent can hold the whole runtime back
+	// or activate a release, because that decides whether customer work runs.
+	mux.Handle("GET /v1/runtime/maintenance", s.deploy(s.handleGetMaintenance))
+	mux.Handle("POST /v1/runtime/maintenance", s.deploy(s.handleEnterMaintenance))
+	mux.Handle("DELETE /v1/runtime/maintenance", s.deploy(s.handleExitMaintenance))
+	mux.Handle("GET /v1/runtime/releases/active", s.deploy(s.handleActiveReleases))
+	mux.Handle("POST /v1/runtime/releases/install", s.deploy(s.handleInstallRelease))
+	mux.Handle("POST /v1/runtime/releases/activate", s.deploy(s.handleActivateRelease))
 	mux.Handle("POST /v1/tokens", s.admin(s.handleCreateToken))
 	mux.Handle("GET /v1/tokens", s.admin(s.handleListTokens))
 	mux.Handle("DELETE /v1/tokens/{id}", s.admin(s.handleRevokeToken))
@@ -262,6 +264,15 @@ func (p principal) canReadCapture() bool {
 	return p.Admin || p.Scope == ScopeCapture
 }
 
+// canDeploy reports whether the caller may run the agent's apply sequence:
+// hold maintenance in both directions, read the active releases, install a
+// portable package, and activate a release. The `agent` scope is exactly that
+// surface; it is NOT a read or control credential, so it cannot see a job, a
+// run, logs, state, config or a capture body.
+func (p principal) canDeploy() bool {
+	return p.Admin || p.Scope == ScopeAgent
+}
+
 type principalCtxKey struct{}
 
 func principalFrom(ctx context.Context) principal {
@@ -300,6 +311,15 @@ func (s *Server) admin(h http.HandlerFunc) http.Handler {
 func (s *Server) control(h http.HandlerFunc) http.Handler {
 	return s.gate(h, principal.canControl,
 		"this endpoint requires the admin API token or a control-scoped token")
+}
+
+// deploy admits the admin token or an agent-scoped API token. It is the gate on
+// the release/maintenance surface only, which is why the runtime's own agent can
+// hold it without also holding authority over the tenant's data. A read-,
+// control- or capture-scoped token is refused: none of them is the agent.
+func (s *Server) deploy(h http.HandlerFunc) http.Handler {
+	return s.gate(h, principal.canDeploy,
+		"this endpoint requires the admin API token or an agent-scoped token")
 }
 
 // scoped is the operator read surface: the admin token, or a read-, control- or

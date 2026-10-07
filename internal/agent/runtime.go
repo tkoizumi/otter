@@ -28,9 +28,10 @@ import (
 type RuntimeHTTP struct {
 	// BaseURL is the runtime's API, normally http://127.0.0.1:7337.
 	BaseURL string
-	// Token is a runtime-scoped control credential. The agent holds an admin
-	// token only because it is the runtime's own operator; the pilot's
-	// provisioning should issue it a scoped one.
+	// Token is the agent's own runtime-scoped credential. Mint it with
+	// `otter token create --name <runtime> --scope agent`: that scope reaches
+	// only the deploy surface (maintenance and releases), so the agent no longer
+	// needs -- and should not hold -- the static admin token (CL-21).
 	Token      string
 	HTTPClient *http.Client
 	// ReleaseDir is where fetched releases are staged. It is the runtime's own
@@ -41,10 +42,11 @@ type RuntimeHTTP struct {
 	// used for the runtime's own API.
 	//
 	// The two go to different places with different credentials: the runtime API
-	// is loopback and takes the runtime's admin token, while a release comes from
-	// the control plane and takes the agent's credential. Reusing one client meant
-	// the release fetch carried the wrong token -- or, once the credential is
-	// attached by host, needed a client that knows which host it is talking to.
+	// is loopback and takes the runtime's agent-scoped token, while a release
+	// comes from the control plane and takes the agent's credential. Reusing one
+	// client meant the release fetch carried the wrong token -- or, once the
+	// credential is attached by host, needed a client that knows which host it is
+	// talking to.
 	ReleaseClient *http.Client
 }
 

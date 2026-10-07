@@ -34,8 +34,17 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		"the runtime this agent manages (env OTTER_AGENT_RUNTIME_ID)")
 	runtimeURL := fs.String("runtime-url", envOr("OTTER_AGENT_RUNTIME_URL", "http://127.0.0.1:7337"),
 		"local runtime API base URL")
-	runtimeToken := fs.String("runtime-token", os.Getenv("OTTER_API_TOKEN"),
-		"token for the local runtime API (env OTTER_API_TOKEN)")
+	// The agent's own credential. `otter token create --scope agent` mints one;
+	// it reaches only the deploy surface (maintenance, releases), so a leaked
+	// agent credential is not a way into the tenant's jobs, runs or state. The
+	// admin token still works for a hand-run diagnostic, but is no longer the
+	// recommended shape.
+	defaultRuntimeToken := os.Getenv("OTTER_AGENT_RUNTIME_TOKEN")
+	if defaultRuntimeToken == "" {
+		defaultRuntimeToken = os.Getenv("OTTER_API_TOKEN")
+	}
+	runtimeToken := fs.String("runtime-token", defaultRuntimeToken,
+		"token for the local runtime API; prefer an agent-scoped one (env OTTER_AGENT_RUNTIME_TOKEN, then OTTER_API_TOKEN)")
 	dataDir := fs.String("data", os.Getenv("OTTER_DATA_DIR"),
 		"runtime data directory, where releases are staged (env OTTER_DATA_DIR)")
 	once := fs.Bool("once", false,
