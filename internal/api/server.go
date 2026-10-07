@@ -104,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /v1/runtime/maintenance", s.admin(s.handleExitMaintenance))
 	// Release activation, so a runtime agent promotes through the same surface an
 	// operator uses instead of reaching past the API into the data directory.
+	mux.Handle("GET /v1/runtime/releases/active", s.admin(s.handleActiveReleases))
 	mux.Handle("POST /v1/runtime/releases/activate", s.admin(s.handleActivateRelease))
 	mux.Handle("POST /v1/tokens", s.admin(s.handleCreateToken))
 	mux.Handle("GET /v1/tokens", s.admin(s.handleListTokens))

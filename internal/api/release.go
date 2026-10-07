@@ -13,6 +13,24 @@ import (
 // active release under running work, and the refusal is explicit so a caller
 // learns the ordering requirement from the error rather than from a corrupt
 // deployment.
+// handleActiveReleases reports what each job is currently serving.
+//
+// Read-only and admin-scoped like the rest of the release surface: it names the
+// code a tenant is running, which is operator information.
+func (s *Server) handleActiveReleases(w http.ResponseWriter, r *http.Request) {
+	views, err := s.backend.ActiveReleases(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	if views == nil {
+		// An empty list, not null: a caller iterating it should not have to guard
+		// against a null that means the same thing.
+		views = []ReleaseView{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"active": views})
+}
+
 func (s *Server) handleActivateRelease(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Digest string `json:"digest"`

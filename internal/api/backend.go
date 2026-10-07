@@ -229,6 +229,19 @@ type Backend interface {
 	// maintenance gate exists to prevent.
 	ActivateRelease(ctx context.Context, digest string) (ReleaseView, error)
 
+	// ActiveReleases reports which release each job is CURRENTLY serving.
+	//
+	// It exists because the control plane's unknown-outcome rule needs evidence,
+	// and before this there was no way to ask a runtime what it was actually
+	// running: activation was write-only, so an agent could only CLAIM what it
+	// had applied. A claim is not evidence -- that distinction is the whole point
+	// of the rule -- so the runtime has to be able to answer.
+	//
+	// A SET rather than one digest, because the active release is per JOB and one
+	// runtime manages several. A single value could not express that, and
+	// answering with an arbitrary job's release would be worse than not answering.
+	ActiveReleases(ctx context.Context) ([]ReleaseView, error)
+
 	// ScheduleCounters reports the per-schedule missed-occurrence accounting:
 	// occurrences folded by coalesce, and occurrences a bounded catch-up
 	// declined to replay. Only schedules with a non-zero counter are returned.
