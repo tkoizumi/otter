@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -244,6 +245,22 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 	}
 	jobID := inst.ID.String()
 
+	// Runtime-side idempotency. Checked before any admission rule: a retried
+	// command was already accepted, and re-litigating a pause, a queue bound or a
+	// pruned release would turn a lost acknowledgement into a lost command. The
+	// authoritative check is the one inside the transaction below; this is the
+	// fast path that avoids re-resolving a release for an ordinary retry.
+	idempotencyKey := strings.TrimSpace(opts.IdempotencyKey)
+	if idempotencyKey != "" {
+		existing, found, keyErr := d.runs.FindIdempotencyTx(ctx, nil, jobID, idempotencyKey)
+		if keyErr != nil {
+			return "", keyErr
+		}
+		if found {
+			return existing, nil
+		}
+	}
+
 	triggerType := payload.Type
 	if triggerType == "" {
 		triggerType = api.TriggerManual
@@ -403,7 +420,25 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 		run.ScheduleID = fire.ScheduleID
 	}
 
+	// Set when the in-transaction idempotency check finds the key already bound:
+	// a concurrent delivery won the race after the fast path above. The
+	// transaction writes nothing and the caller gets the winner's run id.
+	duplicateRunID := ""
+
 	err = d.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The authoritative idempotency check. Reading it here, in the same
+		// immediate transaction that would insert the run, is what makes two
+		// concurrent deliveries of one command unable to both create a run.
+		if idempotencyKey != "" {
+			existing, found, keyErr := d.runs.FindIdempotencyTx(ctx, tx, jobID, idempotencyKey)
+			if keyErr != nil {
+				return keyErr
+			}
+			if found {
+				duplicateRunID = existing
+				return nil
+			}
+		}
 		// The maintenance gate is checked inside the transaction, not from the
 		// cached view read before it. Tx retries this closure on a busy
 		// database, so a check hoisted above it would be evaluated once and
@@ -438,6 +473,13 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 				return errAlreadyFired
 			}
 		}
+		if idempotencyKey != "" {
+			// Bound in the same transaction as the run and its queue entry, so a
+			// crash cannot leave a key pointing at a run that does not exist.
+			if err := d.runs.RecordIdempotencyTx(ctx, tx, jobID, idempotencyKey, run.ID, now); err != nil {
+				return err
+			}
+		}
 		if err := d.runs.CreateTx(ctx, tx, run); err != nil {
 			return err
 		}
@@ -448,6 +490,10 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 			return "", errAlreadyFired
 		}
 		return "", fmt.Errorf("queue run for %s: %w", jobID, err)
+	}
+	if duplicateRunID != "" {
+		// Nothing was written; the winner's run is the answer.
+		return duplicateRunID, nil
 	}
 	if fire != nil {
 		d.schedules.NoteFired(fire.ScheduleID, fire.Occurrence)

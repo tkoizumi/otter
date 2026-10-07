@@ -503,6 +503,13 @@ type SubmitRunOptions struct {
 	// the bounds of a coalesced window, for instance -- so the run explains
 	// itself instead of the accounting living only in a log line.
 	Metadata map[string]any
+
+	// IdempotencyKey is a caller-derived key scoped to one job. A second
+	// submission with the same key returns the FIRST run's id instead of
+	// creating another run, which is what makes an at-least-once control
+	// delivery safe. Empty means no deduplication, which is the historical
+	// behaviour for a trigger that has no caller to retry it.
+	IdempotencyKey string
 }
 
 // CancelRunResponse is returned when a cancellation is accepted.

@@ -861,3 +861,52 @@ func TestListStillDefaultsAndDoesNotWarnOnASmallLimit(t *testing.T) {
 		t.Errorf("in-range limits should not log: %v", logger.events)
 	}
 }
+
+// A caller-derived key binds to exactly one run, scoped to its job, and a
+// duplicate insert is refused rather than silently rebound. This is the store
+// half of runtime-side command deduplication.
+func TestIdempotencyKeyBindsToOneRun(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	first := sampleRun("run-1", StatusQueued, 1)
+	if err := store.CreateTx(ctx, nil, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordIdempotencyTx(ctx, nil, first.JobID, "key-1", first.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := store.FindIdempotencyTx(ctx, nil, first.JobID, "key-1")
+	if err != nil || !found || got != first.ID {
+		t.Fatalf("FindIdempotencyTx = (%q, %v, %v), want (%q, true, nil)", got, found, err, first.ID)
+	}
+	// Scoped to the job: the same key under another job is not the same command.
+	if _, found, _ := store.FindIdempotencyTx(ctx, nil, "another-job", "key-1"); found {
+		t.Error("an idempotency key must not resolve for a different job")
+	}
+	if _, found, _ := store.FindIdempotencyTx(ctx, nil, first.JobID, "key-2"); found {
+		t.Error("an unknown key must not resolve")
+	}
+
+	// A second run must not be able to claim the key the first one owns.
+	second := sampleRun("run-2", StatusQueued, 1)
+	if err := store.CreateTx(ctx, nil, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordIdempotencyTx(ctx, nil, first.JobID, "key-1", second.ID, time.Now().UTC()); err == nil {
+		t.Error("rebinding an existing key must conflict")
+	}
+	got, found, err = store.FindIdempotencyTx(ctx, nil, first.JobID, "key-1")
+	if err != nil || !found || got != first.ID {
+		t.Fatalf("after the refused rebind the key = (%q, %v, %v), want the first run", got, found, err)
+	}
+
+	// Offboarding removes the key with the run it produced.
+	if _, err := store.DeleteByJob(ctx, first.JobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.FindIdempotencyTx(ctx, nil, first.JobID, "key-1"); found {
+		t.Error("deleting a job must remove its idempotency keys")
+	}
+}

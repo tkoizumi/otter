@@ -1014,12 +1014,20 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runID, err := s.backend.SubmitRunWithOptions(r.Context(), id, payload, SubmitRunOptions{Capture: capture})
+	runID, err := s.backend.SubmitRunWithOptions(r.Context(), id, payload, SubmitRunOptions{
+		Capture: capture,
+		// The caller's own key, so a retried control delivery returns the same
+		// run instead of starting a second one. Empty is the historical no-dedup
+		// behaviour.
+		IdempotencyKey: idempotencyKey(r),
+	})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 
+	// A duplicate returns the original run id with the same 202: the command was
+	// accepted, and the run's actual state is read, not inferred from this status.
 	s.writeJSON(w, http.StatusAccepted, SubmitRunResponse{RunID: runID, Status: string(runs.StatusQueued)})
 }
 

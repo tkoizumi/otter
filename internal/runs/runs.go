@@ -232,6 +232,49 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 	return nil
 }
 
+// FindIdempotencyTx returns the run a (job, key) pair already produced.
+//
+// The caller checks this INSIDE the transaction that creates the run, which is
+// what makes "check then insert" atomic: two concurrent deliveries of the same
+// command cannot both see "not found" and both create a run. An early call
+// outside a transaction is the fast path for the ordinary retry; this method
+// serves both, so the retry and the race take the same code path.
+func (s *Store) FindIdempotencyTx(ctx context.Context, tx *sql.Tx, jobID, key string) (string, bool, error) {
+	const q = `SELECT run_id FROM run_idempotency WHERE job_id = ? AND idempotency_key = ?`
+	var runID string
+	var err error
+	if tx != nil {
+		err = tx.QueryRowContext(ctx, q, jobID, key).Scan(&runID)
+	} else {
+		err = s.db.QueryRowContext(ctx, q, jobID, key).Scan(&runID)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("runs: find idempotency key: %w", err)
+	}
+	return runID, true, nil
+}
+
+// RecordIdempotencyTx binds a caller's key to the run it produced, in the same
+// transaction as that run. A duplicate insert is a conflict rather than an
+// overwrite: the first delivery owns the key, and rewriting it would point a
+// retried command at a second run.
+func (s *Store) RecordIdempotencyTx(ctx context.Context, tx *sql.Tx, jobID, key, runID string, at time.Time) error {
+	const q = `INSERT INTO run_idempotency (job_id, idempotency_key, run_id, created_at) VALUES (?, ?, ?, ?)`
+	var err error
+	if tx != nil {
+		_, err = tx.ExecContext(ctx, q, jobID, key, runID, database.FormatTime(at))
+	} else {
+		_, err = s.db.ExecContext(ctx, q, jobID, key, runID, database.FormatTime(at))
+	}
+	if err != nil {
+		return fmt.Errorf("runs: record idempotency key: %w", err)
+	}
+	return nil
+}
+
 // DeleteByJob removes every durable trace of one job's runs:
 // captured logs, queue rows and run records. It exists for `otter delete`,
 // which purges an identity's history deliberately, and returns how many run
@@ -251,6 +294,12 @@ func (s *Store) DeleteByJob(ctx context.Context, jobID string) (int64, error) {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM run_queue WHERE job_id = ?`, jobID); err != nil {
 		return 0, fmt.Errorf("runs: delete queue rows for %s: %w", jobID, err)
+	}
+	// A command key left behind would let a stale retry return a run id that no
+	// longer exists, so offboarding removes it with the run it produced.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM run_idempotency WHERE job_id = ?`, jobID); err != nil {
+		return 0, fmt.Errorf("runs: delete idempotency keys for %s: %w", jobID, err)
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE job_id = ?`, jobID)
 	if err != nil {
