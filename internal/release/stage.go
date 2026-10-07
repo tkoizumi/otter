@@ -238,9 +238,18 @@ type Release struct {
 	Metadata
 	// Active reports whether this release is the one a job serves.
 	Active bool
+	// dirName is the directory the release was read from. It equals the digest
+	// for everything this package stages, but metadata and directory can be
+	// made to disagree by hand, and the mtime fallback must read the directory
+	// that is actually present.
+	dirName string
 }
 
 // List returns every staged release for a job, newest first.
+//
+// "Newest" is a user-visible definition -- `otter deploy --cloud` promotes the
+// latest release unless one is named -- so the order is stated here, and
+// Latest reads it back through this one function rather than re-deriving it.
 func (m Manager) List(job string) ([]Release, error) {
 	if err := validName(job); err != nil {
 		return nil, err
@@ -272,10 +281,75 @@ func (m Manager) List(job string) ([]Release, error) {
 		if err != nil {
 			continue // an unreadable directory is not a release
 		}
-		out = append(out, Release{Metadata: meta, Active: meta.Digest == active})
+		out = append(out, Release{Metadata: meta, Active: meta.Digest == active, dirName: entry.Name()})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool { return newerRelease(out[i], out[j], base) })
 	return out, nil
+}
+
+// Latest returns the release a promotion that does not name a digest means.
+//
+// "Latest" is a user-visible definition, which is why it lives here rather than
+// in each caller. The order is:
+//
+//  1. Metadata.CreatedAt, the timestamp staging writes once when it publishes
+//     the release. It is the release's creation time rather than a filesystem
+//     timestamp, so nothing that later touches the directory can reorder the
+//     store.
+//  2. the release directory's modification time, for two releases whose
+//     CreatedAt is identical. Go's os.FileInfo has no portable birth time, so
+//     the directory mtime -- set when the staged tree is renamed into place --
+//     is the closest thing to a creation time the filesystem itself records. It
+//     is only a fallback: a later touch changes it, which is exactly why the
+//     recorded CreatedAt outranks it.
+//  3. the digest, descending, so the answer is deterministic even when both
+//     timestamps agree.
+//
+// The second return value reports whether the job has any release at all, so a
+// caller can tell "nothing to promote" from "the store could not be read".
+func (m Manager) Latest(job string) (Release, bool, error) {
+	releases, err := m.List(job)
+	if err != nil {
+		return Release{}, false, err
+	}
+	if len(releases) == 0 {
+		return Release{}, false, nil
+	}
+	return releases[0], true, nil
+}
+
+// newerRelease orders two releases of one job, newest first, by the rule Latest
+// documents. base is the job's release directory, so the mtime fallback reads
+// the directory each release actually lives in.
+func newerRelease(a, b Release, base string) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	am, bm := dirModTime(filepath.Join(base, releaseDirName(a))), dirModTime(filepath.Join(base, releaseDirName(b)))
+	if !am.Equal(bm) {
+		return am.After(bm)
+	}
+	return a.Digest > b.Digest
+}
+
+// releaseDirName is the directory a listed release lives in. A Release value
+// built by hand carries no directory name, and its digest is the right fallback
+// because the two are the same for everything this package staged.
+func releaseDirName(rel Release) string {
+	if rel.dirName != "" {
+		return rel.dirName
+	}
+	return rel.Digest
+}
+
+// dirModTime is a best-effort directory timestamp; a directory that cannot be
+// stat'ed sorts as the zero time rather than failing the listing.
+func dirModTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 // trashDirName holds releases a retention pass has renamed out of the way but

@@ -65,6 +65,15 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
+// IsMethodNotAllowed reports whether err is a 405: the endpoint is real but this
+// deployment does not serve the method. A caller offering an optional probe can
+// read it as "the control plane cannot answer that question" rather than as a
+// failure of the command.
+func IsMethodNotAllowed(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusMethodNotAllowed
+}
+
 // RefusedError is an admitted=false answer to a deploy. It is separate from
 // APIError because the control plane answered 200 and still declined the work:
 // the caller must surface Message and exit non-zero, not treat the operation as
@@ -136,6 +145,28 @@ func (c *Client) Me(ctx context.Context) (*Me, error) {
 func (c *Client) Operations(ctx context.Context, runtimeID string) (*OperationsState, error) {
 	var out OperationsState
 	if err := c.get(ctx, "/api/runtimes/"+pathSegment(runtimeID)+"/operations", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Release reads the control plane's record of one uploaded release, which is how
+// a promotion answers "does Cloud already hold this digest?" before deciding
+// whether it has anything to send.
+//
+// The probe is an optimisation, not a correctness requirement: uploading is
+// content-addressed and therefore idempotent, so a caller that cannot get an
+// answer may still upload. A digest Cloud does not hold is a 404, which the
+// caller distinguishes with IsNotFound. The digest travels as bare hex in the
+// path, matching the x-otter-release-digest header the upload uses, so the two
+// calls name the release the same way.
+func (c *Client) Release(ctx context.Context, digest string) (*Release, error) {
+	bare, err := release.NormalizeDigest(digest)
+	if err != nil {
+		return nil, fmt.Errorf("release: %w", err)
+	}
+	var out Release
+	if err := c.get(ctx, "/api/releases/"+bare, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

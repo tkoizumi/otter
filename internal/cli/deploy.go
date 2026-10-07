@@ -33,11 +33,12 @@ func (a *App) cmdDeploy(ctx context.Context, g globals, args []string) int {
 	assumeYes := fs.Bool("yes", false, "skip the confirmation prompt")
 	cloudMode := fs.Bool("cloud", false, "promote one job's release to Otter Cloud instead of deploying over SSH")
 	runtimeID := fs.String("runtime", "", "with --cloud: the runtime to deploy to; required when the organization has more than one")
+	releaseRef := fs.String("release", "", "with --cloud: the local release to promote, by digest (sha256:<hex> or bare hex) or \"latest\"; default: the latest local release")
 
 	fs.Usage = func() {
 		fmt.Fprint(a.Stderr, `Usage:
   otter deploy --host <user@host> [flags]   install or update a remote runtime
-  otter deploy --cloud [flags]              package one job and promote it to Otter Cloud
+  otter deploy --cloud [flags]              promote one job's release to Otter Cloud
   otter deploy --status                     show the last deploy from this project
   otter deploy --host <host> --destroy      stop and remove it
 
@@ -48,10 +49,13 @@ every deploy. Old releases are pruned to --keep inactive releases per job,
 always keeping the active release, the rollback target, and any release a
 pending run is bound to.
 
-Deploying to Otter Cloud packages one job with the same release machinery
-"otter release" uses, so the digest it promotes is the canonical release
-identity, and asks the control plane to move a runtime onto it. It reuses
---job, --dry-run and --keep, and needs a credential from otter login.
+Deploying to Otter Cloud promotes a release that "otter release" already built
+locally: the release digest is the artifact's identity, so the deploy only
+transports it when Cloud does not already hold it and then asks the control
+plane to move a runtime onto it. Name one with --release, or take the latest
+release of the job. --build is the escape hatch: it packages the job from the
+workspace first, exactly as deploy --cloud always did. It reuses --job,
+--dry-run and --keep, and needs a credential from otter login.
 
 Flags:
 `)
@@ -63,8 +67,11 @@ Examples:
   otter deploy --host droplet --env-file ~/.otter/shopify-prod.env
   otter deploy --host droplet --job shopify-product-to-salesforce-product
   otter deploy --host droplet --binaries ./bin --platform linux/amd64
+  otter release --job counter
   otter deploy --cloud --job counter
-  otter deploy --cloud --job counter --runtime rt_123 --dry-run
+  otter deploy --cloud --job counter --release latest --runtime rt_123 --dry-run
+  otter deploy --cloud --job counter --release sha256:<digest>
+  otter deploy --cloud --job counter --build
   ssh -N -L 7337:127.0.0.1:7337 droplet &
   otter --api http://127.0.0.1:7337 --token "$OTTER_TOKEN" jobs
 `)
@@ -78,6 +85,10 @@ Examples:
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(a.Stderr, "otter: unexpected arguments: %v\n", fs.Args())
+		return 2
+	}
+	if !*cloudMode && strings.TrimSpace(*releaseRef) != "" {
+		fmt.Fprintln(a.Stderr, "otter: --release promotes to Otter Cloud; it needs --cloud")
 		return 2
 	}
 
@@ -98,7 +109,7 @@ Examples:
 			fmt.Fprintln(a.Stderr, "otter: --status reports an SSH deployment; there is nothing to report with --cloud")
 			return 2
 		}
-		return a.cmdDeployCloud(ctx, g, f, *runtimeID)
+		return a.cmdDeployCloud(ctx, g, f, *runtimeID, *releaseRef)
 	}
 
 	projectRoot, err := findProjectRoot()

@@ -173,6 +173,11 @@ func TestDeployCloudPromotesTheCanonicalRelease(t *testing.T) {
 	cloudHome(t)
 	t.Setenv(cloud.TokenEnv, "otk_1_secret")
 	root, _ := releaseWorkspace(t, "counter")
+	// The default cloud path promotes a release that already exists locally, so
+	// build one first. The canonical digest asserted below is that release's.
+	if _, stderr, code := otterIn(t, root, "release", "counter"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
 
 	var mu sync.Mutex
 	var paths, auths []string
@@ -184,6 +189,11 @@ func TestDeployCloudPromotesTheCanonicalRelease(t *testing.T) {
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		auths = append(auths, r.Header.Get("Authorization"))
 		mu.Unlock()
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/releases/") {
+			// Not uploaded yet: the presence probe must say so.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/cloud/me":
 			io.WriteString(w, meJSON(`{"id":"rt_1","lifecycle":"running","placement":"aws"}`))
@@ -278,6 +288,9 @@ func TestDeployCloudWithSeveralRuntimesRequiresTheFlag(t *testing.T) {
 	cloudHome(t)
 	t.Setenv(cloud.TokenEnv, "otk_1_secret")
 	root, _ := releaseWorkspace(t, "counter")
+	if _, stderr, code := otterIn(t, root, "release", "counter"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
 
 	var mu sync.Mutex
 	var paths []string
@@ -285,6 +298,10 @@ func TestDeployCloudWithSeveralRuntimesRequiresTheFlag(t *testing.T) {
 		mu.Lock()
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		mu.Unlock()
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/releases/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/cloud/me":
 			io.WriteString(w, meJSON(
@@ -331,8 +348,15 @@ func TestDeployCloudRefusalSurfacesTheServerMessage(t *testing.T) {
 	cloudHome(t)
 	t.Setenv(cloud.TokenEnv, "otk_1_secret")
 	root, _ := releaseWorkspace(t, "counter")
+	if _, stderr, code := otterIn(t, root, "release", "counter"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/releases/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/cloud/me":
 			io.WriteString(w, meJSON(`{"id":"rt_1","lifecycle":"running","placement":"aws"}`))
@@ -361,6 +385,9 @@ func TestDeployCloudDryRunSendsNoMutation(t *testing.T) {
 	cloudHome(t)
 	t.Setenv(cloud.TokenEnv, "otk_1_secret")
 	root, _ := releaseWorkspace(t, "counter")
+	if _, stderr, code := otterIn(t, root, "release", "counter"); code != 0 {
+		t.Fatalf("release exited %d: %s", code, stderr)
+	}
 
 	var mu sync.Mutex
 	posts := 0
@@ -369,6 +396,10 @@ func TestDeployCloudDryRunSendsNoMutation(t *testing.T) {
 			mu.Lock()
 			posts++
 			mu.Unlock()
+		}
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/releases/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /api/cloud/me":

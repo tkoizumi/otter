@@ -17,16 +17,26 @@ import (
 
 // cmdDeployCloud is `otter deploy --cloud`: the self-serve promotion path.
 //
-// It reuses the release machinery to produce the package and its CANONICAL
-// digest, then hands the archive to the control plane. The digest is the
-// release's identity, computed by stageJob from the same inputs `otter release`
-// hashes; it is never derived from the archive bytes, which are a transport
-// checksum that changes whenever the encoder does.
+// It splits building an artifact from shipping it the way `docker build` and
+// `docker push` do:
+//
+//   - the default, and --release, PROMOTES a release `otter release` already
+//     built locally. The store is content-addressed, so the digest is decided
+//     before the deploy starts and cannot change on the way to Cloud: sending
+//     the artifact is a COPY.
+//   - --build keeps the original behaviour: package the job from the workspace,
+//     upload, promote. It is the escape hatch for an operator who has not
+//     released the job yet, and it is the only mode that can need uv, because
+//     only it prepares a managed environment.
+//
+// The digest is the release's identity, computed by stageJob from the same
+// inputs `otter release` hashes; it is never derived from the archive bytes,
+// which are a transport checksum that changes whenever the encoder does.
 //
 // The SSH path is untouched: `otter deploy --host` still converges a host with
 // no Cloud in the loop, and the two modes are refused together rather than
 // guessing which one was meant.
-func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, runtimeFlag string) int {
+func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, runtimeFlag, releaseRef string) int {
 	ident, err := cloud.Resolve("", "")
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
@@ -38,6 +48,13 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 		return 1
 	}
 	client := cloud.NewClient(ident.BaseURL, ident.Token)
+
+	// --build and --release name opposite sources for the artifact, so the
+	// combination has no meaning to pick between.
+	if f.Build && strings.TrimSpace(releaseRef) != "" {
+		fmt.Fprintln(a.Stderr, "otter: --build packages the job from the workspace; it cannot be combined with --release")
+		return 2
+	}
 
 	// The organization and its runtimes are read before anything is staged: a
 	// deploy that cannot be targeted should fail before it spends time
@@ -87,16 +104,45 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 	stageCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
-	meta, err := a.stageJob(stageCtx, manager, jobsRoot, target, "", prepareOptions{})
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: %v\n", target.Label(), err)
-		return 1
+	// digest is the release identity Cloud is asked to activate. pkgPath is the
+	// transport archive, and it is empty when this run has nothing to send: a
+	// promotion of a release Cloud already holds, or a dry run.
+	digest, pkgPath, artifact := "", "", ""
+	present := false
+
+	if f.Build {
+		meta, err := a.stageJob(stageCtx, manager, jobsRoot, target, "", prepareOptions{})
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: %v\n", target.Label(), err)
+			return 1
+		}
+		digest = meta.Digest
+		// --build keeps the original path exactly: the workspace is packaged
+		// and uploaded whether or not Cloud already holds the digest. It is the
+		// idempotent store that makes the repeated upload safe.
+		pkgPath, artifact, code = a.packageReleaseForCloud(manager, target.ID, target.Label(), digest)
+		if code != 0 {
+			return code
+		}
+	} else {
+		digest, code = a.selectLocalRelease(manager, target, releaseRef)
+		if code != 0 {
+			return code
+		}
+		// The probe is a read, so a dry run makes it too: it is what says
+		// whether this promotion has anything to transfer.
+		present, err = cloudReleasePresent(stageCtx, client, digest)
+		if err != nil {
+			return a.cloudFail(err)
+		}
 	}
-	pkgPath, digest, artifact, code := a.writeCloudPackage(manager, target, meta)
-	if code != 0 {
-		return code
-	}
-	defer func() { _ = os.Remove(pkgPath) }()
+	// The closure reads pkgPath when it runs, not when it is registered, so a
+	// package created after the dry-run gate is removed just the same.
+	defer func() {
+		if pkgPath != "" {
+			_ = os.Remove(pkgPath)
+		}
+	}()
 
 	// Always read the generation, even for a dry run: it is a read, and showing
 	// the value a real deploy would present is part of what --dry-run is for.
@@ -106,24 +152,35 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 	}
 
 	if f.DryRun {
-		fmt.Fprintf(a.Stdout, "would deploy %s to %s (%s)\n", target.Label(), runtime.ID, me.Organization.Name)
-		fmt.Fprintf(a.Stdout, "release:       %s\n", digest)
-		fmt.Fprintf(a.Stdout, "artifact:      %s\n", artifact)
-		fmt.Fprintf(a.Stdout, "generation:    %d\n", state.Generation)
-		fmt.Fprintf(a.Stdout, "cloud:         %s\n", ident.BaseURL)
-		fmt.Fprintf(a.Stdout, "\nnothing was sent (--dry-run)\n")
+		a.printCloudDryRun(target, runtime, me, ident.BaseURL, digest, artifact, state.Generation, f.Build || !present)
 		return 0
 	}
 
-	pkg, err := os.Open(pkgPath)
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: open package: %v\n", err)
-		return 1
+	// A selected release that Cloud does not hold has to be serialized now.
+	// Nothing above staged or prepared anything to get here: the release
+	// already exists, and this only copies it into a transport archive.
+	if pkgPath == "" && !present {
+		var packCode int
+		pkgPath, _, packCode = a.packageReleaseForCloud(manager, target.ID, target.Label(), digest)
+		if packCode != 0 {
+			return packCode
+		}
 	}
-	_, err = client.UploadRelease(ctx, digest, pkg)
-	_ = pkg.Close()
-	if err != nil {
-		return a.cloudFail(err)
+
+	if pkgPath == "" {
+		fmt.Fprintf(a.Stdout, "%s: release %s is already in Cloud\n", target.Label(), shortDigest(digest))
+	} else {
+		pkg, err := os.Open(pkgPath)
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "otter: open package: %v\n", err)
+			return 1
+		}
+		_, err = client.UploadRelease(ctx, digest, pkg)
+		_ = pkg.Close()
+		if err != nil {
+			return a.cloudFail(err)
+		}
+		fmt.Fprintf(a.Stdout, "%s: uploaded release %s\n", target.Label(), shortDigest(digest))
 	}
 
 	admission, err := client.Deploy(ctx, runtime.ID, digest, cloud.Operator(), state.Generation)
@@ -149,44 +206,141 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 	return 0
 }
 
-// writeCloudPackage serializes the staged release the same way `otter release
-// --package` does and returns the temp file plus both identities: the release
-// digest that is the deploy target and the archive hash that is the transport
-// checksum.
-func (a *App) writeCloudPackage(manager release.Manager, target jobTarget, meta release.Metadata) (path, digest, artifact string, code int) {
-	dir, err := manager.Dir(target.ID, meta.Digest)
+// selectLocalRelease resolves which locally staged release a promotion names.
+//
+// An empty reference and "latest" are the same request: the newest release for
+// the job, as release.Manager.Latest defines it. Anything else has to be a
+// digest in one of the two spellings the rest of Otter accepts -- bare hex or
+// `sha256:<hex>` -- normalised through the release package's normaliser so a
+// deploy and the runtime agree on what the digest names.
+//
+// Every failure here is exit 2. The command could not name a release to
+// promote, which is a problem with the invocation rather than with the
+// transport or the admission; the message names the command that fixes it.
+func (a *App) selectLocalRelease(manager release.Manager, target jobTarget, ref string) (string, int) {
+	releases, err := manager.List(target.ID)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: %v\n", target.Label(), err)
-		return "", "", "", 1
+		return "", 1
+	}
+	if len(releases) == 0 {
+		fmt.Fprintf(a.Stderr, "otter: no release for %s; run otter release %s first\n", target.Label(), target.Label())
+		return "", 2
+	}
+
+	ref = strings.TrimSpace(ref)
+	if ref == "" || strings.EqualFold(ref, "latest") {
+		latest, ok, err := manager.Latest(target.ID)
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: %v\n", target.Label(), err)
+			return "", 1
+		}
+		if !ok {
+			fmt.Fprintf(a.Stderr, "otter: no release for %s; run otter release %s first\n", target.Label(), target.Label())
+			return "", 2
+		}
+		return latest.Digest, 0
+	}
+
+	digest, err := release.NormalizeDigest(ref)
+	if err != nil {
+		fmt.Fprintf(a.Stderr,
+			"otter: --release wants a release digest (sha256:<hex> or bare hex) or \"latest\"; %q is not one\n", ref)
+		return "", 2
+	}
+	for _, rel := range releases {
+		if rel.Digest == digest {
+			return digest, 0
+		}
+	}
+	fmt.Fprintf(a.Stderr, "otter: %s has no release %s; otter release --list %s\n", target.Label(), digest, target.Label())
+	return "", 2
+}
+
+// packageReleaseForCloud serializes one release from the local store the way
+// `otter release --package` does, and returns the temp file's path plus the
+// archive's transport checksum.
+//
+// It never stages, prepares or activates: the release already exists, and a
+// copy cannot change what it is. The digest the package carries is read back out
+// of the release and refused unless it is the one this deploy named, so a store
+// whose directory and metadata disagree cannot make Cloud promote something
+// other than the release the operator chose.
+func (a *App) packageReleaseForCloud(manager release.Manager, id, label, digest string) (path, artifact string, code int) {
+	dir, err := manager.Dir(id, digest)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: %v\n", label, err)
+		return "", "", 1
 	}
 	f, err := os.CreateTemp("", "otter-cloud-*.tar.gz")
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter: create package: %v\n", err)
-		return "", "", "", 1
+		return "", "", 1
 	}
 	packaged, artifact, packErr := release.Package(dir, f)
 	closeErr := f.Close()
 	if packErr != nil {
 		_ = os.Remove(f.Name())
-		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: package: %v\n", target.Label(), packErr)
-		return "", "", "", 1
+		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: package: %v\n", label, packErr)
+		return "", "", 1
 	}
 	if closeErr != nil {
 		_ = os.Remove(f.Name())
-		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: package: %v\n", target.Label(), closeErr)
-		return "", "", "", 1
+		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: package: %v\n", label, closeErr)
+		return "", "", 1
 	}
-	// A package that does not carry the identity just staged is not something
-	// to publish; this cannot happen if staging is intact, so a mismatch is a
-	// refusal rather than a warning.
-	if packaged.Digest != meta.Digest {
+	// A package that does not carry the identity this deploy named is not
+	// something to publish; this cannot happen if the store is intact, so a
+	// mismatch is a refusal rather than a warning.
+	if packaged.Digest != digest {
 		_ = os.Remove(f.Name())
-		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: package carries %s, staged release is %s\n",
-			target.Label(), packaged.Digest, meta.Digest)
-		return "", "", "", 1
+		fmt.Fprintf(a.Stderr, "otter: cloud deploy %s: package carries %s, release is %s\n",
+			label, packaged.Digest, digest)
+		return "", "", 1
 	}
-	fmt.Fprintf(a.Stdout, "%s: release_digest=%s artifact_sha256=%s\n", target.Label(), packaged.Digest, artifact)
-	return f.Name(), packaged.Digest, artifact, 0
+	fmt.Fprintf(a.Stdout, "%s: release_digest=%s artifact_sha256=%s\n", label, packaged.Digest, artifact)
+	return f.Name(), artifact, 0
+}
+
+// cloudReleasePresent asks the control plane whether it already holds a release.
+//
+// It is a read, so even a dry run may make it. A 404 is the control plane's
+// "no", and the promotion then has to upload. A 405 means this deployment does
+// not offer the lookup at all, and the honest reading is "not known to be
+// present": uploading is content-addressed and idempotent, so proceeding is
+// safe, while failing would refuse a promotion the control plane is perfectly
+// able to accept.
+func cloudReleasePresent(ctx context.Context, client *cloud.Client, digest string) (bool, error) {
+	if _, err := client.Release(ctx, digest); err != nil {
+		if cloud.IsNotFound(err) || cloud.IsMethodNotAllowed(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// printCloudDryRun reports what a promotion would do without doing any of it.
+//
+// It names the job and the release digest, because "which release" is the
+// question the split makes the operator answer, and it says whether the
+// artifact would have to be sent, because that is the only work a promotion
+// adds to Cloud when the release is already there.
+func (a *App) printCloudDryRun(target jobTarget, runtime cloud.Runtime, me *cloud.Me, baseURL, digest, artifact string, generation int, uploadNeeded bool) {
+	upload := "already in Cloud"
+	if uploadNeeded {
+		upload = "needed"
+	}
+	fmt.Fprintf(a.Stdout, "would deploy %s to %s (%s)\n", target.Label(), runtime.ID, me.Organization.Name)
+	fmt.Fprintf(a.Stdout, "job:           %s\n", target.Label())
+	fmt.Fprintf(a.Stdout, "release:       %s\n", digest)
+	if artifact != "" {
+		fmt.Fprintf(a.Stdout, "artifact:      %s\n", artifact)
+	}
+	fmt.Fprintf(a.Stdout, "upload:        %s\n", upload)
+	fmt.Fprintf(a.Stdout, "generation:    %d\n", generation)
+	fmt.Fprintf(a.Stdout, "cloud:         %s\n", baseURL)
+	fmt.Fprintf(a.Stdout, "\nnothing was sent (--dry-run)\n")
 }
 
 // resolveCloudRuntime applies the assignment rule: exactly one runtime is used

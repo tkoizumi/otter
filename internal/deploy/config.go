@@ -438,7 +438,7 @@ func (f *Flags) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.PythonMirror, "python-mirror", "", "source for managed interpreter downloads on the host (default uv's python-build-standalone releases)")
 	fs.BoolVar(&f.SkipEgressCheck, "skip-egress-check", false, "skip the host's preparation-time egress preflight")
 	fs.Var(&f.EgressEndpoints, "egress-endpoint", "extra endpoint the host's egress preflight must reach, such as an API a job calls (repeatable)")
-	fs.BoolVar(&f.Build, "build", false, "compile the runtime from Go source instead of using released binaries")
+	fs.BoolVar(&f.Build, "build", false, "compile the runtime from Go source instead of using released binaries; with --cloud, package the job from the workspace instead of promoting an existing release")
 	fs.StringVar(&f.Source, "source", "", "Otter Go checkout to compile from (implies --build)")
 	fs.StringVar(&f.Binaries, "binaries", "", "directory holding otterd and otter for the target platform (offline deploy)")
 	fs.BoolVar(&f.DryRun, "dry-run", false, "print what would change and touch nothing")

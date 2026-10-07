@@ -156,6 +156,46 @@ func TestDeployRefusalCarriesTheServerMessage(t *testing.T) {
 	}
 }
 
+// The presence probe normalises the digest to bare hex, the same spelling the
+// upload header uses, so the two calls name the release identically.
+func TestReleaseProbesTheStoreByBareDigest(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		io.WriteString(w, `{"id":"rel_1","digest":"`+digest+`"}`)
+	}))
+	defer srv.Close()
+
+	rel, err := NewClient(srv.URL, "otk_1_secret").Release(context.Background(), "sha256:"+digest)
+	if err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if gotPath != "/api/releases/"+digest {
+		t.Errorf("path = %q, want /api/releases/%s", gotPath, digest)
+	}
+	if gotAuth != "Bearer otk_1_secret" {
+		t.Errorf("Authorization = %q", gotAuth)
+	}
+	if rel.Digest != digest {
+		t.Errorf("release = %+v", rel)
+	}
+}
+
+// A digest the control plane does not hold is a 404, and the caller tells it
+// apart from a transport failure with IsNotFound.
+func TestReleaseReportsAMissingDigestAsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"message":"no such release"}`)
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL, "otk_1_secret").Release(context.Background(), digest)
+	if err == nil || !IsNotFound(err) {
+		t.Fatalf("err = %v, want IsNotFound", err)
+	}
+}
+
 func TestOperationsReadsTheGeneration(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
