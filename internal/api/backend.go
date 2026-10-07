@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/tkoizumi/otter/internal/inspection"
@@ -228,6 +229,14 @@ type Backend interface {
 	// serving: swapping the active release under running work is the failure the
 	// maintenance gate exists to prevent.
 	ActivateRelease(ctx context.Context, digest string) (ReleaseView, error)
+
+	// InstallRelease verifies and installs a portable release package.
+	//
+	// It takes the package bytes rather than a path, because VERIFICATION is the
+	// runtime's job: Cloud stores and distributes releases but does not define
+	// release identity, and an uploaded package must not land in the store under a
+	// name that was merely asserted.
+	InstallRelease(ctx context.Context, r io.Reader) (ReleaseView, error)
 
 	// ActiveReleases reports which release each job is CURRENTLY serving.
 	//

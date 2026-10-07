@@ -24,7 +24,10 @@ import (
 type fakeBackend struct {
 	// activeReleases is what GET /v1/runtime/releases/active reports.
 	activeReleases []ReleaseView
-	mu             sync.Mutex
+	// installed records the bodies POST /v1/runtime/releases/install received.
+	installed  []string
+	installErr error
+	mu         sync.Mutex
 
 	version   string
 	startedAt time.Time
@@ -714,6 +717,21 @@ func (f *fakeBackend) ExitMaintenance(context.Context) (MaintenanceView, error) 
 // ActivateRelease mirrors the daemon's contract closely enough to test the HTTP
 // surface: it refuses while serving, because that ordering requirement is the
 // property the endpoint exists to enforce.
+// InstallRelease records the upload so a test can assert what was installed.
+func (f *fakeBackend) InstallRelease(_ context.Context, r io.Reader) (ReleaseView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return ReleaseView{}, err
+	}
+	f.installed = append(f.installed, string(body))
+	if f.installErr != nil {
+		return ReleaseView{}, f.installErr
+	}
+	return ReleaseView{Job: "sync", Digest: "sha256:installed", Digest_: "sha256:installed"}, nil
+}
+
 // ActiveReleases reports whatever the test seeded, so the served release can be
 // asserted without a real release root.
 func (f *fakeBackend) ActiveReleases(_ context.Context) ([]ReleaseView, error) {
@@ -1757,5 +1775,52 @@ func TestActiveReleasesNeedsAdmin(t *testing.T) {
 	res := do(t, http.MethodGet, srv.URL+"/v1/runtime/releases/active", nil, nil)
 	if res.status != http.StatusUnauthorized && res.status != http.StatusForbidden {
 		t.Errorf("an unauthenticated read of the served release got %d, want 401/403", res.status)
+	}
+}
+
+// The install endpoint accepts a package body and hands the BYTES to the backend,
+// which is what makes verification the runtime's job rather than Cloud's.
+func TestInstallReleasePassesThePackageThrough(t *testing.T) {
+	fb := newFakeBackend()
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, fb)
+
+	res := do(t, http.MethodPost, srv.URL+"/v1/runtime/releases/install",
+		[]byte("package-bytes"), map[string]string{"Authorization": "Bearer " + adminToken})
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", res.status, res.body)
+	}
+	if len(fb.installed) != 1 || fb.installed[0] != "package-bytes" {
+		t.Errorf("the package body did not reach the backend verbatim: %q", fb.installed)
+	}
+}
+
+// A package that is not what it claims is a 4xx, not a 500: it is the uploader's
+// problem, and a 500 would send them looking at our logs.
+func TestInstallReleaseReportsARefusalAsBadRequest(t *testing.T) {
+	fb := newFakeBackend()
+	fb.installErr = fmt.Errorf("%w: the package claims %s but its content hashes to %s",
+		ErrInvalid, "sha256:aaa", "sha256:bbb")
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, fb)
+
+	res := do(t, http.MethodPost, srv.URL+"/v1/runtime/releases/install",
+		[]byte("tampered"), map[string]string{"Authorization": "Bearer " + adminToken})
+	if res.status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", res.status, res.body)
+	}
+	// Both digests must survive to the caller, or the CLI cannot tell a corrupted
+	// transfer from a wrong manifest.
+	body := string(res.body)
+	if !strings.Contains(body, "sha256:aaa") || !strings.Contains(body, "sha256:bbb") {
+		t.Errorf("the refusal must name both digests: %s", body)
+	}
+}
+
+// Installing changes which releases exist, so an unauthenticated caller must not
+// reach it.
+func TestInstallReleaseNeedsAdmin(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, newFakeBackend())
+	res := do(t, http.MethodPost, srv.URL+"/v1/runtime/releases/install", []byte("x"), nil)
+	if res.status != http.StatusUnauthorized && res.status != http.StatusForbidden {
+		t.Errorf("an unauthenticated install got %d, want 401/403", res.status)
 	}
 }
