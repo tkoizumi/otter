@@ -22,7 +22,9 @@ import (
 // fakeBackend is an in-memory Backend that lets the real HTTP handler be
 // exercised end to end through httptest.
 type fakeBackend struct {
-	mu sync.Mutex
+	// activeReleases is what GET /v1/runtime/releases/active reports.
+	activeReleases []ReleaseView
+	mu             sync.Mutex
 
 	version   string
 	startedAt time.Time
@@ -712,6 +714,19 @@ func (f *fakeBackend) ExitMaintenance(context.Context) (MaintenanceView, error) 
 // ActivateRelease mirrors the daemon's contract closely enough to test the HTTP
 // surface: it refuses while serving, because that ordering requirement is the
 // property the endpoint exists to enforce.
+// ActiveReleases reports whatever the test seeded, so the served release can be
+// asserted without a real release root.
+func (f *fakeBackend) ActiveReleases(_ context.Context) ([]ReleaseView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.activeReleases == nil {
+		return []ReleaseView{}, nil
+	}
+	out := make([]ReleaseView, len(f.activeReleases))
+	copy(out, f.activeReleases)
+	return out, nil
+}
+
 func (f *fakeBackend) ActivateRelease(_ context.Context, digest string) (ReleaseView, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1680,5 +1695,67 @@ func TestReloadEndpointIsAdminOnlyAndReturnsTheResult(t *testing.T) {
 	wantStatus(t, conflict, http.StatusConflict)
 	if env := conflict.errorEnvelope(t); env.Error.Code != CodeConflict {
 		t.Errorf("error code = %q, want %q", env.Error.Code, CodeConflict)
+	}
+}
+
+// GET /v1/runtime/releases/active reports what each job is serving.
+//
+// It exists so the control plane can check evidence rather than accept an
+// agent's claim, so the shape has to let a caller see WHICH job is on WHICH
+// digest.
+func TestActiveReleasesReportsTheServedDigest(t *testing.T) {
+	fb := newFakeBackend()
+	fb.activeReleases = []ReleaseView{
+		{Job: "sync", Digest: "sha256:aaa", Digest_: "sha256:aaa"},
+		{Job: "other", Digest: "sha256:bbb", Digest_: "sha256:bbb"},
+	}
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, fb)
+
+	res := do(t, http.MethodGet, srv.URL+"/v1/runtime/releases/active", nil,
+		map[string]string{"Authorization": "Bearer " + adminToken})
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", res.status, res.body)
+	}
+	var out struct {
+		Active []ReleaseView `json:"active"`
+	}
+	if err := json.Unmarshal([]byte(res.body), &out); err != nil {
+		t.Fatalf("unexpected shape: %v (%s)", err, res.body)
+	}
+	if len(out.Active) != 2 {
+		t.Fatalf("got %d active releases, want 2: %s", len(out.Active), res.body)
+	}
+	// Both jobs, not one: a single digest cannot express a per-job answer, and the
+	// control plane has to find the deployed digest among them.
+	seen := map[string]string{}
+	for _, v := range out.Active {
+		seen[v.Job] = v.Digest
+	}
+	if seen["sync"] != "sha256:aaa" || seen["other"] != "sha256:bbb" {
+		t.Errorf("wrong digests reported: %v", seen)
+	}
+}
+
+// A runtime with nothing active reports an EMPTY LIST: "nothing is serving" is a
+// normal state, and a caller iterating the result should not have to guard a null
+// that means the same thing.
+func TestActiveReleasesWithNothingActiveIsAnEmptyList(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, newFakeBackend())
+	res := do(t, http.MethodGet, srv.URL+"/v1/runtime/releases/active", nil,
+		map[string]string{"Authorization": "Bearer " + adminToken})
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", res.status, res.body)
+	}
+	if !strings.Contains(string(res.body), `"active":[]`) {
+		t.Errorf("expected an empty array, got %s", res.body)
+	}
+}
+
+// It names the code a tenant is running, which is operator information.
+func TestActiveReleasesNeedsAdmin(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, newFakeBackend())
+	res := do(t, http.MethodGet, srv.URL+"/v1/runtime/releases/active", nil, nil)
+	if res.status != http.StatusUnauthorized && res.status != http.StatusForbidden {
+		t.Errorf("an unauthenticated read of the served release got %d, want 401/403", res.status)
 	}
 }
