@@ -102,6 +102,22 @@ jobs:
       # with no notes file fails here, before anything is published, rather
       # than publishing a list of "fix bug" subjects. CHANGELOG.md links to
       # each file.
+      # The comment above says a tag with no notes file fails "before anything
+      # is published". It does — but only after GoReleaser has built all eight
+      # binaries, because the changelog step runs near the end of its pipeline.
+      # A typo'd or missing notes file therefore costs a full cross-platform
+      # build (measured: 1m7s) and reads as a mysterious release failure. This
+      # checks it first, where the failure is free and names the file.
+      - name: The release notes must exist before the build starts
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          notes="docs/releases/${{ github.ref_name }}.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes is missing; the release step passes it to GoReleaser as --release-notes"
+            exit 1
+          fi
+
       - name: Publish the release and the Homebrew cask
         if: github.event_name == 'push'
         uses: goreleaser/goreleaser-action@v6
