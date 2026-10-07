@@ -173,6 +173,13 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return RunDaemon(ctx, a.Version, commandArgs, a.Stdout, a.Stderr)
 	case "deploy":
 		return a.cmdDeploy(ctx, g, commandArgs)
+	case "login":
+		// Self-serve Otter Cloud: verify a token and store it at
+		// ~/.otter/cloud.json, so `otter deploy --cloud` finds a credential
+		// without a flag on every command.
+		return a.cmdLogin(ctx, g, commandArgs)
+	case "logout":
+		return a.cmdLogout(ctx, g, commandArgs)
 	case "release":
 		return a.cmdRelease(ctx, g, commandArgs)
 	case "prepare":
@@ -1491,6 +1498,14 @@ Deployment:
   deploy --host <user@host>       install or update a remote runtime over SSH
   deploy --status                 show the last deploy from this checkout
   deploy --host <host> --destroy  stop and remove it
+  deploy --cloud [--job NAME] [--runtime ID] [--dry-run]
+                                  package one job and promote its release to Otter Cloud
+
+Otter Cloud:
+  login [--cloud <url>] [--token <token>]
+                                  verify a Cloud token and store it (prompted when omitted)
+  login --status                  show the stored Cloud identity
+  logout                          remove the stored Cloud credential (idempotent)
 
 Global flags:
   --api <url>    daemon URL (default %s, or OTTER_API_URL)
@@ -1538,6 +1553,8 @@ Examples:
   otter state get counter count
   otter prepare shopify-to-salesforce
   otter deploy --host droplet
+  otter login
+  otter deploy --cloud --job counter
 `, api.DefaultBaseURL)
 }
 

@@ -31,19 +31,27 @@ func (a *App) cmdDeploy(ctx context.Context, g globals, args []string) int {
 	status := fs.Bool("status", false, "show the last deploy recorded in this project")
 	keepData := fs.Bool("keep-data", false, "with --destroy, leave the remote data directory in place")
 	assumeYes := fs.Bool("yes", false, "skip the confirmation prompt")
+	cloudMode := fs.Bool("cloud", false, "promote one job's release to Otter Cloud instead of deploying over SSH")
+	runtimeID := fs.String("runtime", "", "with --cloud: the runtime to deploy to; required when the organization has more than one")
 
 	fs.Usage = func() {
 		fmt.Fprint(a.Stderr, `Usage:
   otter deploy --host <user@host> [flags]   install or update a remote runtime
+  otter deploy --cloud [flags]              package one job and promote it to Otter Cloud
   otter deploy --status                     show the last deploy from this project
   otter deploy --host <host> --destroy      stop and remove it
 
-Deploying is a converge over SSH, not a recipe of one-off actions: running it
+Deploying over SSH is a converge, not a recipe of one-off actions: running it
 twice with the same inputs is safe, and the second run reports that nothing
 changed. Run history, sync watermarks and the extracted Python SDK survive
 every deploy. Old releases are pruned to --keep inactive releases per job,
 always keeping the active release, the rollback target, and any release a
 pending run is bound to.
+
+Deploying to Otter Cloud packages one job with the same release machinery
+"otter release" uses, so the digest it promotes is the canonical release
+identity, and asks the control plane to move a runtime onto it. It reuses
+--job, --dry-run and --keep, and needs a credential from otter login.
 
 Flags:
 `)
@@ -55,6 +63,8 @@ Examples:
   otter deploy --host droplet --env-file ~/.otter/shopify-prod.env
   otter deploy --host droplet --job shopify-product-to-salesforce-product
   otter deploy --host droplet --binaries ./bin --platform linux/amd64
+  otter deploy --cloud --job counter
+  otter deploy --cloud --job counter --runtime rt_123 --dry-run
   ssh -N -L 7337:127.0.0.1:7337 droplet &
   otter --api http://127.0.0.1:7337 --token "$OTTER_TOKEN" jobs
 `)
@@ -69,6 +79,26 @@ Examples:
 	if fs.NArg() > 0 {
 		fmt.Fprintf(a.Stderr, "otter: unexpected arguments: %v\n", fs.Args())
 		return 2
+	}
+
+	if *cloudMode {
+		// The two deploy modes are different targets, not options on the same
+		// action: converging a host and promoting to Cloud have nothing to
+		// share but the job. Refusing the combination is clearer than picking
+		// one.
+		if f.Target.Host != "" {
+			fmt.Fprintln(a.Stderr, "otter: --cloud promotes to Otter Cloud; --host deploys over SSH; pick one")
+			return 2
+		}
+		if *destroy {
+			fmt.Fprintln(a.Stderr, "otter: --destroy removes an SSH deployment; there is nothing to destroy with --cloud")
+			return 2
+		}
+		if *status {
+			fmt.Fprintln(a.Stderr, "otter: --status reports an SSH deployment; there is nothing to report with --cloud")
+			return 2
+		}
+		return a.cmdDeployCloud(ctx, g, f, *runtimeID)
 	}
 
 	projectRoot, err := findProjectRoot()

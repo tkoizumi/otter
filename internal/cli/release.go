@@ -292,13 +292,23 @@ func absoluteDir(path string) (string, error) {
 	return filepath.Clean(filepath.Join(wd, path)), nil
 }
 
-// releaseOne stages, validates, prepares and activates one job.
-func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared string, opts prepareOptions, keep int, packagePath string) int {
+// stageJob stages one job as an immutable release and, for managed Python,
+// prepares the environment its digest covers. It stops short of activation and
+// packaging.
+//
+// `otter release` continues from here to activate and optionally package;
+// `otter deploy --cloud` packages the same snapshot and uploads it instead of
+// making it active on this machine. Both call this one function on purpose:
+// the release digest is the deploy's identity, so a second implementation of
+// the staging rules would publish a digest no runtime could reproduce.
+//
+// Progress lines go to stdout because they are the release's observable
+// record; failures are returned and the caller decides how to name them.
+func (a *App) stageJob(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared string, opts prepareOptions) (release.Metadata, error) {
 	label := target.Label()
 	manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
-		return 1
+		return release.Metadata{}, err
 	}
 	// The manifest name is a label, not a key: it may differ from the identity
 	// and may even be shared with another job. Identity was resolved
@@ -308,8 +318,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	// job directory. An absolute python.path passes validation on this
 	// machine and is a missing directory on the host, so it is refused here.
 	if err := manifest.ValidatePythonPathsForRelease(); err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
-		return 1
+		return release.Metadata{}, err
 	}
 
 	// The manifest's own python.path is the authoritative list of shared code,
@@ -318,8 +327,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	// the manifest cannot express.
 	sources, err := sharedSourcesFor(target.Dir, manifest, shared)
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
-		return 1
+		return release.Metadata{}, err
 	}
 	trees := make([]release.SharedTree, 0, len(sources))
 	for _, src := range sources {
@@ -329,17 +337,10 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	// discovery root, this job and every captured tree.
 	layout, err := release.Plan(jobsRoot, target.Dir, trees)
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %s: %v\n", label, err)
-		return 1
+		return release.Metadata{}, err
 	}
 
 	envManager := a.prepareManager(manager.DataDir, opts)
-
-	// Bound one release: a release that hangs on a package download must not
-	// hold a deploy open indefinitely. With --all the bound is per job,
-	// so one slow environment does not starve the rest.
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
-	defer cancel()
 
 	// 1. Resolve the environment identity for this source tree. The release
 	//    digest covers it, so it has to be known before the snapshot is taken.
@@ -350,8 +351,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	if manifest.Python.Mode == "managed" {
 		spec, err := envManager.ResolveCurrentAt(ctx, target.Dir, target.ID, opts.UV)
 		if err != nil {
-			fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", label, err)
-			return 1
+			return release.Metadata{}, fmt.Errorf("resolve managed Python: %w", err)
 		}
 		environmentDigest = spec.Digest
 	}
@@ -360,8 +360,7 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	//    redeploy does not create a second copy of the same tree.
 	meta, err := manager.StageWithLayout(target.ID, target.Dir, layout, environmentDigest)
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", label, err)
-		return 1
+		return release.Metadata{}, err
 	}
 	// Traceability, not a gate: a dirty tree is reported because it is
 	// otherwise invisible once the release is on the host.
@@ -380,21 +379,37 @@ func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot 
 	//    snapshot manifest, not the live one, decides whether preparation runs.
 	releaseSource, bound, err := a.snapshotRelease(manager, target.ID, meta)
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", label, err)
-		return 1
+		return release.Metadata{}, err
 	}
 	if bound.Python.Mode == "managed" {
 		ready, err := envManager.Prepare(ctx, releaseSource, target.ID, opts.UV)
 		if err != nil {
-			fmt.Fprintf(a.Stderr, "otter: release %s: not activating: %v\n", label, err)
-			return 1
+			return release.Metadata{}, err
 		}
 		if ready.Digest != environmentDigest {
-			fmt.Fprintf(a.Stderr, "otter: release %s: environment changed during staging (%s -> %s); re-run the release\n",
-				label, environmentDigest[:12], ready.Digest[:12])
-			return 1
+			return release.Metadata{}, fmt.Errorf(
+				"environment changed during staging (%s -> %s); re-run the release",
+				environmentDigest[:12], ready.Digest[:12])
 		}
 		fmt.Fprintf(a.Stdout, "%s: environment %s (python %s)\n", label, ready.Digest[:12], ready.Python)
+	}
+	return meta, nil
+}
+
+// releaseOne stages, validates, prepares and activates one job.
+func (a *App) releaseOne(ctx context.Context, manager release.Manager, jobsRoot string, target jobTarget, shared string, opts prepareOptions, keep int, packagePath string) int {
+	label := target.Label()
+
+	// Bound one release: a release that hangs on a package download must not
+	// hold a deploy open indefinitely. With --all the bound is per job,
+	// so one slow environment does not starve the rest.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	meta, err := a.stageJob(ctx, manager, jobsRoot, target, shared, opts)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: release %s: %v\n", label, err)
+		return 1
 	}
 
 	// 4. Activate. Everything above is reversible; this is the commit point.
