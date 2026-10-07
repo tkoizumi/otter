@@ -58,6 +58,16 @@ func (r *RuntimeHTTP) client() *http.Client {
 }
 
 func (r *RuntimeHTTP) do(ctx context.Context, method, path string, body any, out any) error {
+	return r.doHeaders(ctx, method, path, body, nil, out)
+}
+
+// doHeaders is do plus extra request headers.
+//
+// It exists for the control channel: submitting a run must carry the command's
+// caller-derived Idempotency-Key, because the runtime is where duplicate
+// delivery is refused (OT: runtime-side dedup), and a header is the runtime's
+// documented mechanism for that key.
+func (r *RuntimeHTTP) doHeaders(ctx context.Context, method, path string, body any, headers map[string]string, out any) error {
 	if r.BaseURL == "" {
 		return fmt.Errorf("agent: runtime client has no base URL")
 	}
@@ -78,6 +88,9 @@ func (r *RuntimeHTTP) do(ctx context.Context, method, path string, body any, out
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
 	}
 	resp, err := r.client().Do(req)
 	if err != nil {

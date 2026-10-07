@@ -96,32 +96,41 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 	}
 
 	creds := &agent.MemoryCredentials{}
+	control := &agent.HTTPControlPlane{
+		BaseURL: *cloudURL,
+		Creds:   creds,
+		// The control plane refuses a request that does not name a runtime,
+		// and this was unset here: the agent bootstrapped successfully and then
+		// got "request does not name a runtime" on every poll. The field
+		// existed and the method used it; nothing filled it in.
+		RuntimeID: *runtimeID,
+	}
+	runtime := &agent.RuntimeHTTP{
+		BaseURL: *runtimeURL,
+		Token:   *runtimeToken,
+		// Releases stage into the runtime's own release root, so activation
+		// finds exactly what the agent verified.
+		ReleaseDir: filepath.Join(*dataDir, "releases"),
+		// Releases come from the control plane under the agent's own
+		// credential, which is a different secret from the runtime's token.
+		ReleaseClient: agent.AuthenticatedClient(*cloudURL, creds),
+	}
 	loop := &agent.Loop{
-		Control: &agent.HTTPControlPlane{
-			BaseURL: *cloudURL,
-			Creds:   creds,
-			// The control plane refuses a request that does not name a runtime,
-			// and this was unset here: the agent bootstrapped successfully and then
-			// got "request does not name a runtime" on every poll. The field
-			// existed and the method used it; nothing filled it in.
-			RuntimeID: *runtimeID,
-		},
-		Runtime: &agent.RuntimeHTTP{
-			BaseURL: *runtimeURL,
-			Token:   *runtimeToken,
-			// Releases stage into the runtime's own release root, so activation
-			// finds exactly what the agent verified.
-			ReleaseDir: filepath.Join(*dataDir, "releases"),
-			// Releases come from the control plane under the agent's own
-			// credential, which is a different secret from the runtime's token.
-			ReleaseClient: agent.AuthenticatedClient(*cloudURL, creds),
-		},
+		Control:      control,
+		Runtime:      runtime,
 		Creds:        creds,
 		Bootstrap:    bootstrap,
 		Exchanger:    &agent.Exchanger{BaseURL: *cloudURL},
 		RuntimeID:    *runtimeID,
 		AgentVersion: a.Version,
 		Drain:        agent.Drain{Timeout: agent.DrainTimeout},
+	}
+	// The tenant control channel rides the same connection and credential, but a
+	// SEPARATE loop: a read must never wait behind a deploy's drain.
+	controlLoop := &agent.ControlLoop{
+		Control:   control,
+		Runtime:   runtime,
+		RuntimeID: *runtimeID,
 	}
 
 	if *once {
@@ -134,6 +143,12 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 			fmt.Fprintf(a.Stderr, "otter agent: %v\n", err)
 			return 1
 		}
+		// Drain the control channel once too. A control plane that does not serve
+		// it yet is not a failed apply, so this is reported and not fatal -- the
+		// apply half above is what `--once` exists to prove.
+		if err := controlLoop.Once(runCtx); err != nil {
+			fmt.Fprintf(a.Stderr, "otter agent: control channel: %v\n", err)
+		}
 		fmt.Fprintln(a.Stdout, "otter agent: one iteration completed")
 		return 0
 	}
@@ -142,6 +157,15 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 	// which is why the loop's cancellation path never gates and returns.
 	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The control loop runs BESIDE the apply loop. They share the credential and
+	// the outbound connection, not a lock, so a bounded read is served while the
+	// apply loop sits in a drain.
+	go func() {
+		if err := controlLoop.Run(runCtx); err != nil {
+			fmt.Fprintf(a.Stderr, "otter agent: control channel: %v\n", err)
+		}
+	}()
 
 	if err := loop.Run(runCtx); err != nil {
 		fmt.Fprintf(a.Stderr, "otter agent: %v\n", err)
