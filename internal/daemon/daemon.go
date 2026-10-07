@@ -459,6 +459,19 @@ func (d *Daemon) loadJobs(ctx context.Context) (discovered, error) {
 		tokens:    map[string]string{},
 		instances: map[string]identity.Instance{},
 	}
+
+	// Every id the registry knows, whatever its status. A release is only a
+	// source of jobs the runtime has NO lifecycle opinion about. Once an id has
+	// a row, that row decides: removing a job's source retires its identity,
+	// and the contract is that a retired job leaves the active registry and its
+	// queued runs are cancelled. Resurrecting it from its release would undo an
+	// explicit removal (and did: a reload that removed a job no longer
+	// cancelled its runs, because the release store put the job back).
+	knownIDs := make(map[string]bool, len(instances))
+	for _, inst := range instances {
+		knownIDs[inst.ID.String()] = true
+	}
+
 	for _, inst := range instances {
 		if inst.Status != identity.StatusActive {
 			continue
@@ -482,6 +495,28 @@ func (d *Daemon) loadJobs(ctx context.Context) (discovered, error) {
 		}
 		set.items = append(set.items, it)
 		set.instances[it.ID] = inst
+	}
+
+	// A release makes a job runnable with no source in the jobs directory at
+	// all: `otter deploy --cloud` installs and activates the release under the
+	// data directory while the source never lands in /workspace. Discovery that
+	// walked only the jobs directory reported `jobs_discovered total:0`, an
+	// empty `GET /v1/jobs`, and `job "sync": not found` for a job whose release
+	// was installed and serving.
+	//
+	// The release store is read on every discovery pass rather than from a
+	// one-shot hook in the install handler, so the set is rebuilt from disk by
+	// every start and reload and nothing is lost with a restart. Only an id the
+	// registry has never seen is adopted this way: an identity the jobs
+	// directory already owns -- active, retired or deleted -- wins outright, so
+	// a job whose source IS in /workspace keeps its source path, identity and
+	// schedules exactly as before, and a removed job stays removed.
+	for _, rel := range d.observeReleases() {
+		if knownIDs[rel.instance.ID.String()] {
+			continue
+		}
+		set.items = append(set.items, rel.job)
+		set.instances[rel.instance.ID.String()] = rel.instance
 	}
 
 	// A directory the registry does not own is surfaced anyway when it is

@@ -52,6 +52,22 @@ func (d *Daemon) ActivateRelease(ctx context.Context, digest string) (api.Releas
 		return api.ReleaseView{}, fmt.Errorf("activate release: %s: %w", digest, err)
 	}
 	d.log.Info("release_activated", "job", job, "digest", digest)
+
+	// Activation is the moment a released job becomes runnable, so the registry
+	// is rebuilt now rather than waiting for a restart. This is a rescan
+	// TRIGGER, not the registration itself: discovery reads the release store,
+	// so a start or a reload converges on the same set from disk. Measured
+	// before this: a release was installed and activated, yet the job stayed
+	// unregistered and `POST /v1/jobs/sync/runs` answered 404 while the release
+	// was serving.
+	//
+	// A failed rescan does not undo the activation: the release IS active, and
+	// reporting failure would have the agent retry a swap that already landed.
+	// The next discovery pass converges, so the failure is logged, not returned.
+	if _, err := d.Reload(ctx); err != nil {
+		d.log.Error("release_activated_reload_failed", err, "job", job, "digest", digest)
+	}
+
 	return api.ReleaseView{
 		Job:     job,
 		Digest:  digest,
