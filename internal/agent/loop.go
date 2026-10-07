@@ -190,7 +190,9 @@ func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration,
 	// report that does not name one, so an omission here would make every report
 	// fail while every local test passed.
 	want.RuntimeID = l.RuntimeID
+	fmt.Fprintf(os.Stderr, "[trace] step: applying generation=%d digest=%q\n", want.Generation, want.Release.Digest)
 	rep, applyErr := Apply(ctx, l.Runtime, want, gen.applied, l.Drain)
+	fmt.Fprintf(os.Stderr, "[trace] step: apply done outcome=%q reason=%q err=%v\n", rep.Outcome, rep.Reason, applyErr)
 	rep.RuntimeID = l.RuntimeID
 	gen.observe(rep)
 	if applyErr != nil {
@@ -209,7 +211,9 @@ func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration,
 		l.logger().Info("agent_apply", "generation", want.Generation, "outcome", rep.Outcome)
 	}
 
-	if err := l.Control.Report(ctx, rep); err != nil {
+	reportErr := l.Control.Report(ctx, rep)
+	fmt.Fprintf(os.Stderr, "[trace] step: report err=%v\n", reportErr)
+	if err := reportErr; err != nil {
 		// A failed report does not undo an applied release, and retrying the
 		// apply would be worse than re-reporting later. Log and move on.
 		l.logger().Warn("agent_report_failed", "generation", rep.Generation, "error", err.Error())

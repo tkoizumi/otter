@@ -135,6 +135,7 @@ func (c *HTTPControlPlane) Desired(ctx context.Context, observed Observed) (*Des
 }
 
 func (c *HTTPControlPlane) Report(ctx context.Context, r Reported) error {
+	fmt.Fprintf(os.Stderr, "[trace] Report: sending generation=%d outcome=%q\n", r.Generation, r.Outcome)
 	if r.RuntimeID == "" {
 		r.RuntimeID = c.RuntimeID
 	}
