@@ -46,7 +46,10 @@ func InstallPackage(dataDir string, r io.Reader) (Metadata, error) {
 	}()
 
 	if err := UnpackPackage(io.LimitReader(r, maxPackageBytes), staging); err != nil {
-		return Metadata{}, fmt.Errorf("install release: %w", err)
+		// A package that cannot be unpacked is the UPLOADER's malformed input, so
+		// it must surface as invalid rather than as an internal error. Otherwise a
+		// bad archive reads as our bug and an operator looks in the wrong place.
+		return Metadata{}, fmt.Errorf("install release: %w: %v", ErrInvalidPackage, err)
 	}
 
 	verified, err := VerifyPackage(staging)
