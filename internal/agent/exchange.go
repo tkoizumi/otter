@@ -62,6 +62,16 @@ type bootstrapRequest struct {
 	AgentVersion string `json:"agent_version,omitempty"`
 }
 
+// bootstrapSecretRequest is the body on the secret path: a per-runtime secret
+// and nothing signed. There is deliberately NO `assertion` field, so the control
+// plane takes the secret path by the non-empty `bootstrap_secret` and a body log
+// cannot hold a signature.
+type bootstrapSecretRequest struct {
+	BootstrapSecret string `json:"bootstrap_secret"`
+	RuntimeID       string `json:"runtime_id"`
+	AgentVersion    string `json:"agent_version,omitempty"`
+}
+
 // Exchange performs the bootstrap. It returns a credential or an error that is
 // either ErrBootstrapUnavailable (retry) or ErrBootstrapRefused (do not).
 func (e *Exchanger) Exchange(ctx context.Context, b Bootstrap, runtimeID, agentVersion string) (*Credential, error) {
@@ -76,43 +86,70 @@ func (e *Exchanger) Exchange(ctx context.Context, b Bootstrap, runtimeID, agentV
 		return nil, err
 	}
 
-	// The BODY is serialized first, then signed, because that is the order the
+	// The body is serialized FIRST, then signed, because that is the order the
 	// verifier's world imposes: it receives these exact bytes and re-derives the
 	// signature over them. Signing anything else -- an extracted field, a
 	// re-serialization -- produces a signature it cannot reproduce, and the only
 	// symptom is "signature does not match".
-	body, err := json.Marshal(bootstrapRequest{
-		Assertion:    &assertionBody{Provider: identity.Provider, Claims: identity.Claims},
-		RuntimeID:    runtimeID,
-		AgentVersion: agentVersion,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("agent: bootstrap request: %w", err)
-	}
-	assertion, err := AssertionFor(ctx, identity, http.MethodPost, e.BaseURL+"/agent/v1/bootstrap", string(body))
-	if err != nil {
-		return nil, err
-	}
-	// Re-validate rather than trusting the assembly: a malformed assertion must
-	// not reach the wire.
-	if err := assertion.validate(e.now().UTC()); err != nil {
-		return nil, err
+	//
+	// The SECRET path has no key to sign with: it is a distinct proof shape, not
+	// a signed assertion with a different payload. `assertion` stays nil there,
+	// and the header block below attaches no signature to it.
+	var body []byte
+	var assertion *Assertion
+	if identity.BootstrapSecret != "" {
+		body, err = json.Marshal(bootstrapSecretRequest{
+			BootstrapSecret: identity.BootstrapSecret,
+			RuntimeID:       runtimeID,
+			AgentVersion:    agentVersion,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("agent: bootstrap request: %w", err)
+		}
+	} else {
+		body, err = json.Marshal(bootstrapRequest{
+			Assertion:    &assertionBody{Provider: identity.Provider, Claims: identity.Claims},
+			RuntimeID:    runtimeID,
+			AgentVersion: agentVersion,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("agent: bootstrap request: %w", err)
+		}
+		assertion, err = AssertionFor(ctx, identity, http.MethodPost, e.BaseURL+"/agent/v1/bootstrap", string(body))
+		if err != nil {
+			return nil, err
+		}
+		// Re-validate rather than trusting the assembly: a malformed assertion must
+		// not reach the wire.
+		if err := assertion.validate(e.now().UTC()); err != nil {
+			return nil, err
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.BaseURL+"/agent/v1/bootstrap", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// The signed values travel AS HEADERS, which is what makes the signature
-	// reproducible: a verifier re-derives the signature from the headers it
-	// receives, so sending the Authorization header alone would leave it without
-	// the x-amz-date and body hash it needs. The provider name is the one extra
-	// header, and it selects the verifier rather than being signed.
-	req.Header.Set("X-Otter-Bootstrap-Provider", assertion.Provider)
-	for name, value := range assertion.Headers {
-		req.Header.Set(name, value)
+	// The provider name is the one extra header, and it selects the verifier
+	// rather than being signed.
+	req.Header.Set("X-Otter-Bootstrap-Provider", identity.Provider)
+	if assertion != nil {
+		// The signed values travel AS HEADERS, which is what makes the signature
+		// reproducible: a verifier re-derives the signature from the headers it
+		// receives, so sending the Authorization header alone would leave it without
+		// the x-amz-date and body hash it needs.
+		for name, value := range assertion.Headers {
+			req.Header.Set(name, value)
+		}
 	}
 
+	return e.post(ctx, req, runtimeID)
+}
+
+// post sends one assembled bootstrap request and turns the response into a
+// credential. Shared by both proof shapes so they cannot disagree about what a
+// usable credential is.
+func (e *Exchanger) post(ctx context.Context, req *http.Request, runtimeID string) (*Credential, error) {
 	resp, err := e.client().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBootstrapUnavailable, err)

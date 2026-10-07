@@ -35,6 +35,12 @@ type Identity struct {
 	SessionToken    string
 	Region          string
 	Service         string
+	// BootstrapSecret, when non-empty, is a per-runtime secret presented in the
+	// request BODY instead of a signature. It is the one credential a provider
+	// supplies that is deliberately sent, because on a pooled sidecar the secret
+	// IS the proof and there is no instance role to sign with. It is never
+	// placed in a header, logged, or written to disk by the agent.
+	BootstrapSecret string
 }
 
 // signAssertion produces the headers that authenticate one request.

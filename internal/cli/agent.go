@@ -47,6 +47,12 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		"token for the local runtime API; prefer an agent-scoped one (env OTTER_AGENT_RUNTIME_TOKEN, then OTTER_API_TOKEN)")
 	dataDir := fs.String("data", os.Getenv("OTTER_DATA_DIR"),
 		"runtime data directory, where releases are staged (env OTTER_DATA_DIR)")
+	// The identity mechanism. Defaulted from the environment so a unit or a
+	// container can select it without a CLI change, but exposed as a flag so
+	// `otter agent -h` documents the modes rather than hiding them in the code.
+	bootstrapFlag := fs.String("bootstrap", os.Getenv("OTTER_AGENT_BOOTSTRAP"),
+		"bootstrap identity provider: aws-instance-role, static-credentials or runtime-secret "+
+			"(env OTTER_AGENT_BOOTSTRAP); runtime-secret reads OTTER_AGENT_BOOTSTRAP_SECRET")
 	once := fs.Bool("once", false,
 		"run one iteration and exit, for tests and for an operator checking connectivity")
 	if err := fs.Parse(args); err != nil {
@@ -75,10 +81,15 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	// The bootstrap provider is chosen by environment, which is what keeps the
-	// protocol abstract while the AWS implementation is the only one built.
-	// Adding a second provider means adding a case here and nothing else.
-	bootstrap, err := agentBootstrap(os.Getenv("OTTER_AGENT_BOOTSTRAP"), os.Getenv("OTTER_IMDS_BASE"))
+	// The bootstrap provider is chosen by the flag (defaulted from environment),
+	// which is what keeps the protocol abstract while the AWS implementation is
+	// the only one built.
+	// Adding a provider means adding a case here and nothing else.
+	bootstrap, err := agentBootstrap(
+		*bootstrapFlag,
+		os.Getenv("OTTER_IMDS_BASE"),
+		os.Getenv("OTTER_AGENT_BOOTSTRAP_SECRET"),
+	)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "otter agent: %v\n", err)
 		return 2
@@ -148,7 +159,13 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 // the long-lived-secret problem the instance-role bootstrap exists to avoid. If
 // both are configured, the name decides, and an unknown name is an error rather
 // than a fallback.
-func agentBootstrap(name, imdsBase string) (agent.Bootstrap, error) {
+//
+// `runtime-secret` is the pooled sidecar's mechanism: it presents a per-runtime
+// secret (OTTER_AGENT_BOOTSTRAP_SECRET) that only that tenant's sidecar holds,
+// instead of a SigV4 assertion. Selecting it with no secret is refused here, so
+// the agent fails to start rather than reaching the control plane with an empty
+// proof.
+func agentBootstrap(name, imdsBase, secret string) (agent.Bootstrap, error) {
 	static, err := agent.StaticCredentialsFromEnv(agent.EnvLookup)
 	if err != nil {
 		return nil, err
@@ -166,6 +183,11 @@ func agentBootstrap(name, imdsBase string) (agent.Bootstrap, error) {
 			return nil, fmt.Errorf("bootstrap provider %q selected but OTTER_AGENT_STATIC_ACCESS_KEY_ID is not set", name)
 		}
 		return static, nil
+	case "runtime-secret":
+		if secret == "" {
+			return nil, fmt.Errorf("bootstrap provider %q selected but OTTER_AGENT_BOOTSTRAP_SECRET is not set", name)
+		}
+		return &agent.RuntimeSecret{Secret: secret}, nil
 	default:
 		return nil, fmt.Errorf("unknown bootstrap provider %q", name)
 	}
