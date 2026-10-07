@@ -132,6 +132,9 @@ func (m Manager) StageWithLayout(job, sourceDir string, layout Layout, environme
 		Digest:      digest,
 		JobPath:     layout.JobPath,
 		Environment: environmentDigest,
+		// Recorded so a verifier can RECOMPUTE the digest rather than infer the
+		// layout it should have been computed from.
+		Layout:      layout,
 		Source:      sourceDir,
 		CreatedAt:   time.Now().UTC(),
 		GitRevision: git.Revision,

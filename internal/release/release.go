@@ -103,6 +103,23 @@ type Metadata struct {
 	// validated against. It is recorded rather than implied so a report can
 	// answer "what did this release run on?".
 	Environment string `json:"environment,omitempty"`
+
+	// Layout records EVERY input to the digest besides the file contents: the
+	// job's placement and each shared tree's name and placement.
+	//
+	// Without it a verifier holding the bytes cannot recompute the digest.
+	// Layout.Digest hashes each shared tree under "shared\0<name>\0", and JobPath
+	// and Environment alone do not name the trees -- so the verifier would have to
+	// RECONSTRUCT the layout from the directory structure. That works for the
+	// simple shapes and is inference standing in for a recorded fact everywhere
+	// else: the reconstruction has to be re-derived correctly for every workspace
+	// shape the layout supports, and any divergence silently produces a different
+	// digest for identical content.
+	//
+	// Omitted on releases staged before this field existed. A package without it
+	// is REFUSED by the installer rather than guessed at, because a guess here is
+	// indistinguishable from a verification.
+	Layout Layout `json:"layout,omitempty"`
 	// Source is the directory the snapshot was taken from, for diagnostics.
 	Source    string    `json:"source"`
 	CreatedAt time.Time `json:"created_at"`
