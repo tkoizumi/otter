@@ -15,6 +15,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -96,6 +98,12 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 	}
 
 	creds := &agent.MemoryCredentials{}
+	// A pooled agent that says nothing is an agent nobody can operate: when this
+	// one stopped applying releases there was no way to tell a failed bootstrap
+	// from a failed observe from a failed download. Its decisions go to stderr,
+	// which in a container is the container log. Never logs secret material --
+	// the loop's own contract.
+	logger := slog.New(slog.NewTextHandler(io.Writer(os.Stderr), &slog.HandlerOptions{Level: slog.LevelInfo}))
 	control := &agent.HTTPControlPlane{
 		BaseURL: *cloudURL,
 		Creds:   creds,
@@ -124,6 +132,7 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		RuntimeID:    *runtimeID,
 		AgentVersion: a.Version,
 		Drain:        agent.Drain{Timeout: agent.DrainTimeout},
+		Logger:       logger,
 	}
 	// The tenant control channel rides the same connection and credential, but a
 	// SEPARATE loop: a read must never wait behind a deploy's drain.
@@ -131,6 +140,7 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		Control:   control,
 		Runtime:   runtime,
 		RuntimeID: *runtimeID,
+		Logger:    logger,
 	}
 
 	if *once {
