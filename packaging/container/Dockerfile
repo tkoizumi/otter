@@ -61,6 +61,7 @@ RUN apt-get update -qq \
       python3-venv \
       tini \
       tzdata \
+      util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 # uv prepares managed Python environments. Pinned, and installed for the
@@ -78,6 +79,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /usr/local/bin/uv
 COPY bin/otterd /usr/local/bin/otterd
 COPY bin/otter /usr/local/bin/otter
 
+# The supervisor that starts both processes in this one container: otterd as uid
+# 10001 and the agent as uid 10002, over loopback. See the file for why they are
+# in one container and how the volume isolation is enforced.
+COPY packaging/container/entrypoint.sh /usr/local/bin/otter-entrypoint
+RUN chmod 0755 /usr/local/bin/otter-entrypoint
+
 # The interpreter is provisioned into the image at BUILD time, under
 # UV_PYTHON_INSTALL_DIR, which is where uv looks for it at run time. That
 # directory is read-only at run time -- correctly, since an interpreter is not
@@ -91,12 +98,20 @@ RUN UV_PYTHON_INSTALL_DIR=/opt/otter/python \
       /usr/local/bin/uv python install "${PYTHON_VERSION}" \
  && chmod -R a+rX /opt/otter/python
 
-# A dedicated unprivileged identity. The uid is fixed rather than allocated so
-# that a tenant volume mounted from the host can be ownership-checked against a
-# known value instead of whatever the image happened to pick.
+# TWO dedicated unprivileged identities. The tenant volume is 0700 and owned by
+# uid 10001, so the agent's uid 10002 cannot read or write it: that is the
+# isolation invariant between the agent and tenant data. The uids are fixed
+# rather than allocated so a volume mounted from the host can be ownership-checked
+# against known values.
+#
+# The container STARTS AS ROOT only to drop to these two uids; entrypoint.sh does
+# the drop, and the provisioner grants exactly SETUID, SETGID and CHOWN for it.
+# No process holds a capability after that.
 RUN groupadd --gid 10001 otter \
  && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin otter \
- && install -d -o otter -g otter -m 0755 /workspace \
+ && groupadd --gid 10002 otter-agent \
+ && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin otter-agent \
+ && install -d -o otter -g otter -m 0700 /workspace \
  && install -d -o otter -g otter -m 0700 /tmp/otter \
  && install -d -o otter -g otter -m 0755 /tmp/uv
 
@@ -116,21 +131,21 @@ RUN groupadd --gid 10001 otter \
 # run itself mounts a bounded tmpfs over /tmp.
 VOLUME ["/workspace"]
 WORKDIR /workspace
-USER 10001:10001
 
 # Documentation only. The daemon binds loopback inside the sandbox and the
 # controlled ingress route is what exposes it; publishing a port here would
 # suggest otherwise.
 EXPOSE 7337
 
-# The runtime is a stateful singleton. /workspace holds the database, releases
-# and environments, so it is the volume and nothing else is mounted.
+# Both processes live in this one container so they share a network namespace and
+# speak over loopback: gVisor cannot share a namespace between containers, which
+# is why the runtime is not a separate sandboxed sidecar. entrypoint.sh drops to
+# uid 10001 for otterd and 10002 for the agent.
 #
-# --data and --jobs both point at /workspace deliberately: the pool gives a
-# tenant one tree, and a second writable root would be a place for state to
-# escape the volume that is backed up and moved.
+# /workspace holds the database, releases and environments; it is the volume and
+# nothing else is. --data and --jobs both point at it deliberately: the pool gives
+# a tenant one tree, and a second writable root would be a place for state to
+# escape the volume that is backed up and moved. The agent's own data goes to a
+# tmpfs the tenant cannot read.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/usr/local/bin/otterd", \
-     "--jobs", "/workspace", \
-     "--data", "/workspace/.otter/data", \
-     "--listen", "127.0.0.1:7337"]
+CMD ["/usr/local/bin/otter-entrypoint"]
