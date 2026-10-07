@@ -228,6 +228,14 @@ func TestTheCycleRefusesAlteredContent(t *testing.T) {
 	if rep.Outcome != OutcomeFailed {
 		t.Fatalf("altered content must not apply; outcome = %s (%s)", rep.Outcome, rep.Reason)
 	}
+	// The refusal must come from the RUNTIME's recompute (a 400 from install),
+	// not merely from the agent's post-install confirmation. Otherwise the test
+	// would still pass with the runtime's comparison removed -- it would install
+	// under the wrong digest and the agent would catch it later, which is a
+	// different guarantee.
+	if !strings.Contains(rep.Reason, "status 400") || !strings.Contains(rep.Reason, "digest mismatch") {
+		t.Errorf("the runtime itself must refuse altered content: %s", rep.Reason)
+	}
 	if !strings.Contains(rep.Reason, meta.Digest) {
 		t.Errorf("the refusal must name the claimed digest: %s", rep.Reason)
 	}
@@ -288,6 +296,13 @@ func TestTheCycleRefusesAManifestThatClaimsADifferentDigest(t *testing.T) {
 		0, Drain{Timeout: 5 * time.Second})
 	if rep.Outcome != OutcomeFailed {
 		t.Fatalf("a package whose manifest lies about its digest must not apply; outcome = %s (%s)", rep.Outcome, rep.Reason)
+	}
+	// THE assertion that proves verification is real: the RUNTIME refused it
+	// (400 from install), naming both the claimed digest and the one the content
+	// actually produces. Without this a verifier that compared names would pass,
+	// and so would the test.
+	if !strings.Contains(rep.Reason, "status 400") || !strings.Contains(rep.Reason, "digest mismatch") {
+		t.Errorf("the runtime itself must refuse the false claim: %s", rep.Reason)
 	}
 	if !strings.Contains(rep.Reason, lied) {
 		t.Errorf("the refusal must name the claimed digest: %s", rep.Reason)
