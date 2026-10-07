@@ -142,7 +142,7 @@ var ErrDrainTimeout = errors.New("agent: drain deadline expired")
 // leaves it deliberately gated with a reason an operator can act on -- never
 // gated by accident, and never in a state where in-flight work was discarded to
 // make the deploy succeed.
-func Apply(ctx context.Context, rt Runtime, want *Desired, haveGeneration int64, drain Drain) (Reported, error) {
+func Apply(ctx context.Context, rt Runtime, want *Desired, haveGeneration int64, drain Drain, serving Observed) (Reported, error) {
 	// A generation the agent has already moved past must not be applied: this is
 	// the fence that stops a stale agent undoing a newer deployment.
 	if want.Generation < haveGeneration {
@@ -153,6 +153,27 @@ func Apply(ctx context.Context, rt Runtime, want *Desired, haveGeneration int64,
 	// 1. verify + 2. prepare, before anything touches the running release.
 	if want.Release.Digest == "" {
 		return Reported{Generation: want.Generation, Outcome: OutcomeFailed, Reason: "desired state names no release"}, nil
+	}
+
+	// ALREADY SERVING IT IS THE NORMAL CASE, NOT A REASON TO WORK.
+	//
+	// A control plane publishes DESIRED STATE, not events: it keeps returning the
+	// same generation until a deploy replaces it. So after a successful apply,
+	// every subsequent cycle asks for the release the runtime is already serving.
+	// Without this check the agent re-downloaded the release, gated the tenant,
+	// re-activated identical content and leaked a staging directory -- measured on
+	// a pooled tenant as a deploy re-applied every few seconds, each one leaving an
+	// .install-* directory behind.
+	//
+	// Content-addressing is what makes the test exact rather than a guess: the same
+	// digest IS the same release, whatever generation asked for it. This also
+	// covers an agent restart, which starts with no memory of what it applied.
+	if sameRelease(serving.ReleaseDigest, want.Release.Digest) {
+		return Reported{
+			Generation: want.Generation,
+			Outcome:    OutcomeApplied,
+			Observed:   map[string]string{"release_digest": serving.ReleaseDigest, "maintenance": serving.Maintenance},
+		}, nil
 	}
 	if err := rt.Fetch(ctx, want.Release); err != nil {
 		// A digest mismatch stops here. Content-addressing is what makes a
@@ -231,4 +252,20 @@ func reasonFor(want *Desired) string {
 		return want.Maintenance.Reason
 	}
 	return fmt.Sprintf("deploy generation %d", want.Generation)
+}
+
+// sameRelease reports whether two digest spellings name the same content. Cloud
+// stores `sha256:<hex>` while the runtime's own store names directories by bare
+// hex, so comparing spellings instead of identities would call an already-applied
+// release unapplied -- and re-install it on every cycle.
+func sameRelease(a, b string) bool {
+	na, err := normalizeDigest(a)
+	if err != nil {
+		return false
+	}
+	nb, err := normalizeDigest(b)
+	if err != nil {
+		return false
+	}
+	return na == nb
 }

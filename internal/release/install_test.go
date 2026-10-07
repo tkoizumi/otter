@@ -3,6 +3,7 @@ package release
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -55,5 +56,44 @@ func TestInstallPackageInstallsUnderTheProducerDigest(t *testing.T) {
 	}
 	if _, err := (Manager{DataDir: dataDir}).Metadata(f.name, checksum); err == nil {
 		t.Error("a release was installed under the transport checksum, which is not an identity")
+	}
+}
+
+// An install of a release that is ALREADY in the store is a no-op, and a no-op
+// must still clean up after itself.
+//
+// Cleanup used to be conditional on the install not having succeeded, and
+// InstallVerified reports success when it finds the release already installed --
+// so every idempotent re-install left its staging directory behind. A pooled
+// tenant whose control plane published a stable desired state re-applied the same
+// release every few seconds and accumulated 171 of them.
+func TestInstallPackageLeavesNoStagingDirectoryWhenAlreadyInstalled(t *testing.T) {
+	f := newFixture(t, "one")
+	meta := f.stage(t, "env-1")
+	staged, err := f.manager().Dir(f.name, meta.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if _, _, err := Package(staged, &archive); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := t.TempDir()
+	// Twice: the second call takes the "already installed" path.
+	for i := 1; i <= 2; i++ {
+		if _, err := InstallPackage(dataDir, bytes.NewReader(archive.Bytes())); err != nil {
+			t.Fatalf("install %d: %v", i, err)
+		}
+	}
+
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".install-") {
+			t.Errorf("staging directory %q survived the install", e.Name())
+		}
 	}
 }

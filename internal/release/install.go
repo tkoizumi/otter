@@ -35,15 +35,15 @@ func InstallPackage(dataDir string, r io.Reader) (Metadata, error) {
 	if err != nil {
 		return Metadata{}, fmt.Errorf("install release: %w", err)
 	}
-	// Removed unless the install MOVES the directory into place. A partially
-	// unpacked package left in the data directory would be discovered by nothing
-	// and cleaned up by no one.
-	installed := false
-	defer func() {
-		if !installed {
-			_ = os.RemoveAll(staging)
-		}
-	}()
+	// ALWAYS removed. A successful install MOVES this directory into the store
+	// with os.Rename, so removing the path afterwards is a harmless no-op on that
+	// path. The paths that matter are the ones that do NOT move it.
+	//
+	// This used to be conditional on the install not having succeeded, which
+	// included InstallVerified's "already installed" early return -- so every
+	// idempotent re-install left a staging directory behind. Measured on a pooled
+	// tenant: 171 leaked .install-* directories, one per re-apply.
+	defer func() { _ = os.RemoveAll(staging) }()
 
 	if err := UnpackPackage(io.LimitReader(r, maxPackageBytes), staging); err != nil {
 		// A package that cannot be unpacked is the UPLOADER's malformed input, so
@@ -61,7 +61,6 @@ func InstallPackage(dataDir string, r io.Reader) (Metadata, error) {
 	if err != nil {
 		return Metadata{}, fmt.Errorf("install release: %w", err)
 	}
-	installed = true
 	return meta, nil
 }
 

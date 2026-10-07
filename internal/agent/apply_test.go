@@ -64,7 +64,7 @@ func want(gen int64) *Desired {
 
 func TestApplyFollowsTheProtocolOrder(t *testing.T) {
 	rt := &fakeRuntime{}
-	rep, err := Apply(context.Background(), rt, want(42), 41, Drain{Timeout: time.Minute})
+	rep, err := Apply(context.Background(), rt, want(42), 41, Drain{Timeout: time.Minute}, Observed{})
 	if err != nil {
 		t.Fatalf("a clean apply must not error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestApplyFollowsTheProtocolOrder(t *testing.T) {
 // substitute release content.
 func TestApplyStopsWhenTheReleaseCannotBeFetched(t *testing.T) {
 	rt := &fakeRuntime{fetchErr: errors.New("digest mismatch")}
-	rep, err := Apply(context.Background(), rt, want(7), 6, Drain{Timeout: time.Minute})
+	rep, err := Apply(context.Background(), rt, want(7), 6, Drain{Timeout: time.Minute}, Observed{})
 	if err != nil {
 		t.Fatalf("a refused fetch is an outcome, not an error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestApplyStopsWhenTheReleaseCannotBeFetched(t *testing.T) {
 // it must not leave the runtime gated on the agent's own authority.
 func TestExpiredDrainAbortsAndReturnsToServing(t *testing.T) {
 	rt := &fakeRuntime{enterErr: ErrDrainTimeout}
-	rep, err := Apply(context.Background(), rt, want(9), 8, Drain{Timeout: time.Second})
+	rep, err := Apply(context.Background(), rt, want(9), 8, Drain{Timeout: time.Second}, Observed{})
 	if !errors.Is(err, ErrDrainTimeout) {
 		t.Fatalf("expected ErrDrainTimeout, got %v", err)
 	}
@@ -141,7 +141,7 @@ func TestAFailureAfterGatingRestoresServing(t *testing.T) {
 		{"validate fails", &fakeRuntime{validateErr: errors.New("manifest unreadable")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rep, err := Apply(context.Background(), tc.rt, want(3), 2, Drain{Timeout: time.Minute})
+			rep, err := Apply(context.Background(), tc.rt, want(3), 2, Drain{Timeout: time.Minute}, Observed{})
 			if err != nil {
 				t.Fatalf("a failed step is an outcome, not an error: %v", err)
 			}
@@ -168,7 +168,7 @@ func TestAFailureAfterGatingRestoresServing(t *testing.T) {
 // newer generation roll the runtime backwards.
 func TestAStaleGenerationIsFenced(t *testing.T) {
 	rt := &fakeRuntime{}
-	rep, err := Apply(context.Background(), rt, want(10), 12, Drain{Timeout: time.Minute})
+	rep, err := Apply(context.Background(), rt, want(10), 12, Drain{Timeout: time.Minute}, Observed{})
 	if !errors.Is(err, ErrFenced) {
 		t.Fatalf("expected ErrFenced, got %v", err)
 	}
@@ -184,7 +184,7 @@ func TestAStaleGenerationIsFenced(t *testing.T) {
 // interpreted as "leave things alone" or "remove the release".
 func TestApplyRefusesADesiredStateWithoutARelease(t *testing.T) {
 	rt := &fakeRuntime{}
-	rep, err := Apply(context.Background(), rt, &Desired{Generation: 5}, 4, Drain{Timeout: time.Minute})
+	rep, err := Apply(context.Background(), rt, &Desired{Generation: 5}, 4, Drain{Timeout: time.Minute}, Observed{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestApplyRefusesADesiredStateWithoutARelease(t *testing.T) {
 // so it has to name the deploy rather than being empty.
 func TestTheGateReasonNamesTheGeneration(t *testing.T) {
 	rt := &fakeRuntime{}
-	if _, err := Apply(context.Background(), rt, want(77), 76, Drain{Timeout: time.Minute}); err != nil {
+	if _, err := Apply(context.Background(), rt, want(77), 76, Drain{Timeout: time.Minute}, Observed{}); err != nil {
 		t.Fatal(err)
 	}
 	found := false
@@ -216,10 +216,57 @@ func TestTheGateReasonNamesTheGeneration(t *testing.T) {
 	rt2 := &fakeRuntime{}
 	w := want(78)
 	w.Maintenance = &MaintenanceWant{Desired: "maintenance", Reason: "operator window"}
-	if _, err := Apply(context.Background(), rt2, w, 77, Drain{Timeout: time.Minute}); err != nil {
+	if _, err := Apply(context.Background(), rt2, w, 77, Drain{Timeout: time.Minute}, Observed{}); err != nil {
 		t.Fatal(err)
 	}
 	if rt2.calls[1] != "enter:operator window" {
 		t.Errorf("operator reason not used for the gate: %v", rt2.calls)
+	}
+}
+
+// A control plane publishes DESIRED STATE, not events: it keeps returning the
+// same generation until a deploy replaces it. After a successful apply, every
+// subsequent cycle therefore asks for the release the runtime is already serving,
+// and re-applying it re-downloaded the release, gated the tenant, re-activated
+// identical content and leaked a staging directory -- once every few seconds.
+func TestApplyDoesNothingWhenTheRuntimeAlreadyServesTheRelease(t *testing.T) {
+	rt := &fakeRuntime{}
+	hex := strings.Repeat("a", 64)
+	d := &Desired{Generation: 4, Release: Release{Digest: "sha256:" + hex, URL: "https://example.invalid/r"}}
+
+	// The runtime's store names releases by bare hex while Cloud stores
+	// sha256:<hex>; both spellings are the same release and both must be caught.
+	rep, err := Apply(context.Background(), rt, d, 4, Drain{Timeout: time.Minute}, Observed{ReleaseDigest: hex, Maintenance: "serving"})
+	if err != nil {
+		t.Fatalf("apply returned an unexpected error: %v", err)
+	}
+	if rep.Outcome != OutcomeApplied {
+		t.Fatalf("outcome = %s, want applied (%s)", rep.Outcome, rep.Reason)
+	}
+	if len(rt.calls) != 0 {
+		t.Fatalf("an already-serving release must not be touched; calls = %v", rt.calls)
+	}
+	if rep.Observed["release_digest"] != hex {
+		t.Fatalf("reported digest = %q, want the observed one", rep.Observed["release_digest"])
+	}
+}
+
+// The check is CONTENT, not generation: a runtime serving something else must
+// still be brought to the desired release, even at the same generation. That is
+// what keeps a runtime changed behind Cloud's back from staying that way.
+func TestApplyStillAppliesWhenTheRuntimeServesSomethingElse(t *testing.T) {
+	rt := &fakeRuntime{}
+	hex := strings.Repeat("a", 64)
+	d := &Desired{Generation: 4, Release: Release{Digest: "sha256:" + hex, URL: "https://example.invalid/r"}}
+
+	rep, err := Apply(context.Background(), rt, d, 4, Drain{Timeout: time.Minute}, Observed{ReleaseDigest: strings.Repeat("b", 64)})
+	if err != nil {
+		t.Fatalf("apply returned an unexpected error: %v", err)
+	}
+	if rep.Outcome != OutcomeApplied {
+		t.Fatalf("outcome = %s, want applied (%s)", rep.Outcome, rep.Reason)
+	}
+	if len(rt.calls) == 0 {
+		t.Fatal("different content must be applied")
 	}
 }

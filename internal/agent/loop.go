@@ -189,7 +189,7 @@ func (l *Loop) step(ctx context.Context, gen *generationTracker) (time.Duration,
 	// report that does not name one, so an omission here would make every report
 	// fail while every local test passed.
 	want.RuntimeID = l.RuntimeID
-	rep, applyErr := Apply(ctx, l.Runtime, want, gen.applied, l.Drain)
+	rep, applyErr := Apply(ctx, l.Runtime, want, gen.applied, l.Drain, observed)
 	rep.RuntimeID = l.RuntimeID
 	gen.observe(rep)
 	if applyErr != nil {

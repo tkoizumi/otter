@@ -170,7 +170,7 @@ func TestTheReleaseIdentityCycleInstallsActivatesAndReports(t *testing.T) {
 	rt := &RuntimeHTTP{BaseURL: runtime.URL, Token: "runtime-token", ReleaseClient: cloud.Client()}
 	rep, err := Apply(context.Background(), rt,
 		&Desired{Generation: 1, Release: Release{Digest: canonical, URL: cloud.URL + "/agent/v1/releases/" + canonical, Size: int64(archive.Len())}},
-		0, Drain{Timeout: 5 * time.Second})
+		0, Drain{Timeout: 5 * time.Second}, Observed{})
 	if err != nil {
 		t.Fatalf("apply returned an unexpected error: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestTheCycleRefusesAlteredContent(t *testing.T) {
 	rt := &RuntimeHTTP{BaseURL: runtime.URL, Token: "runtime-token", ReleaseClient: cloud.Client()}
 	rep, _ := Apply(context.Background(), rt,
 		&Desired{Generation: 1, Release: Release{Digest: canonical, URL: cloud.URL + "/agent/v1/releases/" + canonical}},
-		0, Drain{Timeout: 5 * time.Second})
+		0, Drain{Timeout: 5 * time.Second}, Observed{})
 	if rep.Outcome != OutcomeFailed {
 		t.Fatalf("altered content must not apply; outcome = %s (%s)", rep.Outcome, rep.Reason)
 	}
@@ -293,7 +293,7 @@ func TestTheCycleRefusesAManifestThatClaimsADifferentDigest(t *testing.T) {
 	rt := &RuntimeHTTP{BaseURL: runtime.URL, Token: "runtime-token", ReleaseClient: cloud.Client()}
 	rep, _ := Apply(context.Background(), rt,
 		&Desired{Generation: 1, Release: Release{Digest: canonical, URL: cloud.URL + "/agent/v1/releases/" + canonical}},
-		0, Drain{Timeout: 5 * time.Second})
+		0, Drain{Timeout: 5 * time.Second}, Observed{})
 	if rep.Outcome != OutcomeFailed {
 		t.Fatalf("a package whose manifest lies about its digest must not apply; outcome = %s (%s)", rep.Outcome, rep.Reason)
 	}
