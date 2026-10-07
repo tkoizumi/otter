@@ -41,15 +41,26 @@ func TestTenantImageKeepsItsBoundarySettings(t *testing.T) {
 
 	// Each entry is a property the launch contract relies on, and why.
 	required := []struct{ snippet, why string }{
-		{"USER 10001:10001", "runs non-root, with a fixed uid a host volume can be ownership-checked against"},
 		{"tini", "reaps orphaned children and forwards signals, so a cancelled run cannot leave a process counting against pids-limit"},
 		{"ca-certificates", "every integration class talks to a vendor HTTPS API"},
 		{"FROM debian:bookworm-slim", "the base is pinned by tag rather than floating"},
+		// The container runs TWO processes under one supervisor, which is why it
+		// needs two unprivileged identities rather than one.
+		{"--uid 10001", "the tenant process runs as a fixed uid a host volume can be ownership-checked against"},
+		{"--uid 10002", "the agent gets its OWN uid, which is what keeps it out of the tenant's files"},
+		{"-m 0700 /workspace", "the tenant volume is unreadable and unwritable to the agent's uid"},
 	}
 	for _, r := range required {
 		if !strings.Contains(src, r.snippet) {
 			t.Errorf("Dockerfile no longer contains %q: %s", r.snippet, r.why)
 		}
+	}
+
+	// And it must NOT pin a single USER. A static USER applies to every process in
+	// the container, which would remove the supervisor's ability to drop the agent
+	// to a second uid -- and that separation is the isolation.
+	if strings.HasPrefix(src, "USER ") || strings.Contains(src, "\nUSER ") {
+		t.Error("the image must not pin a single USER; the supervisor drops to uid 10001 and 10002 per process")
 	}
 
 	// uv writes the interpreters it installs under $HOME by default, and $HOME is
@@ -77,15 +88,48 @@ func TestTenantImageKeepsItsBoundarySettings(t *testing.T) {
 		t.Error("the image does not provision the managed interpreter at build time")
 	}
 
+	// The launch arguments themselves now live in the supervisor, because one
+	// container runs both processes: otterd as uid 10001 and the agent as uid
+	// 10002, over loopback. The boundary properties are asserted there.
+	entryBody, err := os.ReadFile(filepath.Join(dir, "entrypoint.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := string(entryBody)
+
 	// The daemon must not be told to listen anywhere but loopback: a pool where
 	// the runtime binds a routable address exposes every tenant on the host.
-	if strings.Contains(src, "--listen\", \"0.0.0.0") {
-		t.Error("the image must not bind a routable address; the controlled ingress route is what exposes the API")
+	if strings.Contains(entry, "0.0.0.0") {
+		t.Error("the runtime must not bind a routable address; the agent reaches it over loopback in the same container")
 	}
-	// One writable tree. A second --data path outside /workspace would be state
-	// the backup does not capture.
-	if !strings.Contains(src, "--data\", \"/workspace") {
+	if !strings.Contains(entry, "127.0.0.1:7337") {
+		t.Error("the runtime must listen on loopback")
+	}
+	// One writable tree for the tenant. A second --data path outside /workspace
+	// would be state the backup does not capture.
+	if !strings.Contains(entry, "/workspace/.otter/data") {
 		t.Error("the data directory must live inside the tenant volume")
+	}
+	// The agent's own data must NOT live in the tenant volume: that separation,
+	// enforced by the two uids and the 0700 mode, is the isolation.
+	if !strings.Contains(entry, "/agent/.otter/data") {
+		t.Error("the agent's data must live outside the tenant volume")
+	}
+	// The supervisor must drop to BOTH uids, and must strip the agent-only
+	// variables -- the per-runtime bootstrap secret above all -- from otterd's
+	// environment, or the tenant process can read the agent's Cloud credential.
+	for _, want := range []string{"setpriv --reuid \"$agent_uid\"", "setpriv --reuid \"$tenant_uid\"", "agent_only=", "env $strip"} {
+		if !strings.Contains(entry, want) {
+			t.Errorf("entrypoint.sh no longer contains %q", want)
+		}
+	}
+	// chmod before chown: after chowning to the agent's uid, root is no longer the
+	// owner and chmod would need CAP_FOWNER, which this container deliberately
+	// lacks. Getting this backwards stopped the container from starting at all.
+	chmodAt := strings.Index(entry, "chmod 0700 \"$agent_root\"")
+	chownAt := strings.Index(entry, "chown \"$agent_uid:$agent_uid\" \"$agent_root\"")
+	if chmodAt < 0 || chownAt < 0 || chmodAt > chownAt {
+		t.Error("the agent data directory must be chmod 0700 BEFORE it is chowned; chown first needs CAP_FOWNER")
 	}
 }
 
