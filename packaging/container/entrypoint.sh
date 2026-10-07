@@ -44,8 +44,11 @@ if ! mkdir -p "$agent_root" 2>/dev/null; then
   log "$agent_root is not writable; mount a tmpfs there (the root filesystem is read-only)"
   exit 1
 fi
-chown "$agent_uid:$agent_uid" "$agent_root"
+# The chmod comes BEFORE the chown deliberately. After chowning it to the agent's
+# uid, root is no longer the owner and chmod would need CAP_FOWNER -- which this
+# container deliberately does NOT have, so the order is load-bearing, not style.
 chmod 0700 "$agent_root"
+chown "$agent_uid:$agent_uid" "$agent_root"
 
 # Variables the TENANT process must never see, because they carry the agent's
 # Cloud credential. The supervisor keeps them; otterd is started without them.
