@@ -26,14 +26,36 @@ already there, or let Otter prepare a managed Python environment for each job.
 
 ## Install
 
+**macOS** — a Homebrew cask:
+
 ```bash
 brew install tkoizumi/tap/otter
 ```
 
-Installs `otter` — the client, and the runtime for a project — and `otterd`,
+**Ubuntu / Debian** — a package, because the cask is macOS-only: Homebrew does
+not install casks on Linux, and GoReleaser has deprecated the formula path, so
+Linux ships a `.deb` per architecture instead.
+
+```bash
+# <version> is the latest tag, for example 0.5.1:
+# https://github.com/tkoizumi/otter/releases/latest
+curl -LO https://github.com/tkoizumi/otter/releases/download/v<version>/otter_<version>_linux_amd64.deb
+sudo apt install ./otter_<version>_linux_amd64.deb   # linux_arm64 also published
+```
+
+Both install `otter` — the client, and the runtime for a project — and `otterd`,
 the same daemon with its own flag defaults. Python 3 is required on the machine
 that runs jobs, unless a job opts into `python.mode: managed`,
 which prepares its own interpreter.
+
+There is no `apt install otter` by name yet: that needs a hosted APT repository,
+which does not exist. Until it does, upgrades are a download per release rather
+than `apt upgrade`. A release tarball per platform and `go install
+github.com/tkoizumi/otter/cmd/otter@latest` also work.
+
+If you previously installed from a tarball by hand — `~/.local/bin`, most likely
+— remove it after installing the package. A directory earlier in `PATH` wins,
+and `otter version` would then disagree with `dpkg -l otter`.
 
 To build from source instead, `make build` produces `./bin/otter` and
 `./bin/otterd`. Tagged releases are packaged by `.goreleaser.yaml` and
