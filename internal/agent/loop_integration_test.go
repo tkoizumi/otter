@@ -55,10 +55,18 @@ func TestTheFullCycleOverRealHTTP(t *testing.T) {
 		switch {
 		case r.URL.Path == "/health":
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": "v-test"})
+		case r.URL.Path == "/v1/runtime/releases/active":
+			_ = json.NewEncoder(w).Encode(map[string]any{"active": []map[string]string{}})
 		case r.URL.Path == "/v1/runtime/maintenance":
 			// Serving and idle until asked to gate, then gated and idle: the drain
 			// completes on the first poll.
 			_ = json.NewEncoder(w).Encode(map[string]any{"mode": "maintenance", "running": 0, "accepting_work": false})
+		case r.URL.Path == "/v1/runtime/releases/install":
+			// The agent hands the downloaded package to the runtime, which is what
+			// makes the digest an address: the runtime recomputes it before
+			// installing, so this endpoint must be reached for a deploy to apply.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"job": "sync", "digest": "sha256:x"})
 		case r.URL.Path == "/v1/runtime/releases/activate":
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]string{"job": "sync", "digest": "sha256:x"})
@@ -108,7 +116,13 @@ func TestTheFullCycleOverRealHTTP(t *testing.T) {
 	// A credential the bootstrap exchange would have obtained.
 	creds.Put(&Credential{Token: "issued-token", RuntimeID: "rt-1", ExpiresAt: time.Now().Add(time.Hour), Generation: 7})
 
-	rtc := &RuntimeHTTP{BaseURL: rt.URL, Token: "runtime-token", ReleaseDir: t.TempDir()}
+	rtc := &RuntimeHTTP{
+		BaseURL: rt.URL, Token: "runtime-token", ReleaseDir: t.TempDir(),
+		// The release client fetches the PACKAGE from Cloud; the runtime client
+		// installs it. A live deploy uses two different credentials here, so the
+		// test supplies a client rather than relying on a default.
+		ReleaseClient: rel.Client(),
+	}
 
 	l := &Loop{
 		Control:     &HTTPControlPlane{BaseURL: cloud.URL, Creds: creds, RuntimeID: "rt-1"},
@@ -136,9 +150,16 @@ func TestTheFullCycleOverRealHTTP(t *testing.T) {
 	// two calls would let the interesting half -- gate, promote, validate,
 	// activate -- go untested while the test still passed, which is what an
 	// earlier version of this test did.
+	// Subsequence, not a prefix: observe and validate interleave reads, and
+	// asserting an exact prefix would break every time a read is added even though
+	// the protocol order is intact.
+	//
+	// INSTALL COMES BEFORE ENTERING MAINTENANCE, and that is deliberate: the
+	// sequence fetches and installs first so a failed download does not gate a
+	// serving runtime.
 	wantOrder := []string{
 		"GET /health",
-		"GET /v1/runtime/maintenance",
+		"POST /v1/runtime/releases/install",
 		"POST /v1/runtime/maintenance",
 		"POST /v1/runtime/releases/activate",
 		"DELETE /v1/runtime/maintenance",

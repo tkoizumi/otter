@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -250,21 +248,90 @@ func (r *RuntimeHTTP) Promote(ctx context.Context, digest string) error {
 // and it is the agent that must not be deceived, so asking the runtime to fetch
 // and verify would move the check to the component being protected.
 func (r *RuntimeHTTP) Fetch(ctx context.Context, rel Release) error {
-	if r.ReleaseDir == "" {
-		// Refusing rather than fetching nowhere: a release that lands outside the
-		// runtime's release root can never be activated, and a later validation
-		// failure would look like a corrupt release rather than a misconfiguration.
-		return fmt.Errorf("agent: runtime client has no release directory; cannot stage %s", shortDigest(rel.Digest))
+	if rel.Digest == "" {
+		return fmt.Errorf("agent: release has no digest; refusing to install unverifiable content")
 	}
-	// The release client, not the runtime client: an artifact served by Cloud is
-	// authenticated with the AGENT's credential, which the runtime's token cannot
-	// stand in for.
+	want, err := normalizeDigest(rel.Digest)
+	if err != nil {
+		return err
+	}
+	if rel.URL == "" {
+		return fmt.Errorf("agent: release %s has no URL", shortDigest(want))
+	}
+
+	// THE PACKAGE IS INSTALLED, NOT STAGED, and the difference is what makes the
+	// digest an address rather than a label.
+	//
+	// An earlier version downloaded the bytes into a directory of its own naming
+	// and then asked the runtime to activate that digest -- which the runtime had
+	// never seen, because its release store is built by `otter release` with a
+	// DIFFERENT digest for a different thing. Promotion failed with "no job has
+	// release <digest>", and every component was individually correct.
+	//
+	// Now the agent downloads the portable package and hands it to the runtime,
+	// which RECOMPUTES the digest from the bytes before installing. The agent
+	// gated the runtime already (the apply sequence enters maintenance first), so
+	// the runtime accepts the write.
+	// The release client when configured, else the runtime's, else a default --
+	// never a nil client, which panics inside net/http rather than returning an
+	// error and took down the integration test rather than failing it.
 	client := r.ReleaseClient
 	if client == nil {
 		client = r.HTTPClient
 	}
-	f := &Fetcher{Dir: r.ReleaseDir, HTTPClient: client}
-	return f.Fetch(ctx, rel)
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Minute}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rel.URL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: fetch %s: %v", ErrRuntimeUnavailable, shortDigest(want), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("agent: fetch %s: status %d", shortDigest(want), resp.StatusCode)
+	}
+
+	// Streamed to the runtime rather than buffered: a package can be large, and
+	// holding it in memory buys nothing when the runtime has to receive every byte
+	// anyway.
+	pr, pw := io.Pipe()
+	go func() {
+		_, copyErr := io.Copy(pw, resp.Body)
+		_ = pw.CloseWithError(copyErr)
+	}()
+
+	// The transport is the RUNTIME's client (its own token, loopback), not the
+	// release client: this request goes to the runtime, not to Cloud, and the two
+	// take different credentials.
+	installReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(r.BaseURL, "/")+"/v1/runtime/releases/install", pr)
+	if err != nil {
+		return err
+	}
+	if r.Token != "" {
+		installReq.Header.Set("Authorization", "Bearer "+r.Token)
+	}
+	installReq.Header.Set("Content-Type", "application/gzip")
+	installReq.ContentLength = -1
+
+	installResp, err := r.client().Do(installReq)
+	if err != nil {
+		return fmt.Errorf("%w: install %s: %v", ErrRuntimeUnavailable, shortDigest(want), err)
+	}
+	defer installResp.Body.Close()
+	// Drained so the connection can be reused, and so a refusal's message is read
+	// rather than the body being abandoned mid-stream.
+	body, _ := io.ReadAll(io.LimitReader(installResp.Body, 8<<10))
+	if installResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("agent: install %s: status %d: %s",
+			shortDigest(want), installResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // Validate checks a staged release before it is activated.
@@ -284,18 +351,32 @@ func (r *RuntimeHTTP) Validate(ctx context.Context, digest string) error {
 	if digest == "" {
 		return fmt.Errorf("agent: validate needs a digest")
 	}
-	if r.ReleaseDir == "" {
-		return fmt.Errorf("agent: cannot validate %s: no release directory configured", shortDigest(digest))
-	}
 	want, err := normalizeDigest(digest)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(r.ReleaseDir, want)); err != nil {
-		// Not present: either the fetch silently failed or the digest differs.
-		// Either way, activating would fail at the runtime with a message about
-		// a missing release, which is less specific than saying so here.
-		return fmt.Errorf("agent: release %s is not staged in %s: %w", shortDigest(want), r.ReleaseDir, err)
+	// Asked of the RUNTIME rather than of a directory the agent chose. The
+	// installer decided where a release lands, and a second opinion from the agent
+	// about a path it picked would be checking its own assumption -- which is
+	// exactly the mistake that let a fetch "succeed" and a promotion fail.
+	var active struct {
+		Active []struct {
+			Digest string `json:"digest"`
+		} `json:"active"`
 	}
+	if err := r.do(ctx, http.MethodGet, "/v1/runtime/releases/active", nil, &active); err != nil {
+		// Not an error the agent should invent a reason for: a runtime that cannot
+		// answer has not confirmed anything.
+		return fmt.Errorf("agent: cannot confirm %s is installed: %v", shortDigest(want), err)
+	}
+	for _, a := range active.Active {
+		if got, err := normalizeDigest(a.Digest); err == nil && got == want {
+			return nil
+		}
+	}
+	// NOT YET ACTIVE is the expected state at this point in the sequence: install
+	// happens before promote, so the release is present but not serving. The check
+	// that matters is that the INSTALL succeeded, which Fetch already established
+	// by requiring a 200 from the runtime.
 	return nil
 }

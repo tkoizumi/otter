@@ -29,15 +29,18 @@ const maxPackageBytes = 512 << 20
 //
 //	a directory name must be a verified content address, not an assertion.
 //
-// Installation is a write to the release store, so it happens while the runtime
-// is gated, for the same reason activation does: a deployment must not be able to
-// change the set of releases underneath a running attempt.
+// Installation is deliberately NOT gated on maintenance, and the distinction from
+// activation is the whole reason. Installing ADDS a release to the store under its
+// verified digest; it does not change what the runtime serves, because the active
+// release is a separate per-job link that only activation moves. Nothing a running
+// attempt resolves through is touched.
+//
+// Gating it would also make the apply sequence worse, not safer: the sequence
+// fetches and installs BEFORE entering maintenance precisely so a failed download
+// does not gate a serving runtime. Requiring the gate here would invert that and
+// gate first, which is the thing that design avoids.
 func (d *Daemon) InstallRelease(ctx context.Context, r io.Reader) (api.ReleaseView, error) {
 	_ = ctx
-	if !d.maint.Gated() {
-		return api.ReleaseView{}, fmt.Errorf(
-			"install release: runtime is serving; enter maintenance first: %w", api.ErrInvalid)
-	}
 
 	staging, err := os.MkdirTemp(d.cfg.DataDir, ".install-*")
 	if err != nil {
