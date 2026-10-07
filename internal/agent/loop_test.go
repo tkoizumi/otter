@@ -208,3 +208,35 @@ func TestSleepIsInterruptedByCancellation(t *testing.T) {
 		t.Error("an uncancelled wait should complete")
 	}
 }
+
+// A completed cycle must PACE the next one, not start it immediately.
+//
+// step() returns a zero wait to mean "the cycle completed", and Run treated that
+// as "go again now", which made it a busy loop: a tight sequence of HTTP requests
+// to Cloud, and -- before Apply became idempotent -- a release re-install on every
+// iteration. This asserts the pacing exists by bounding the cycle count; a busy
+// loop manages thousands in this window.
+func TestACompletedCyclePacesTheNextOne(t *testing.T) {
+	rt := &fakeRuntime{}
+	ctl := &scriptedControl{}
+	creds := &MemoryCredentials{}
+	creds.Put(&Credential{Token: "t", RuntimeID: "rt", ExpiresAt: time.Now().Add(time.Hour)})
+
+	const interval = 20 * time.Millisecond
+	l := &Loop{Control: ctl, Runtime: rt, Creds: creds, Drain: Drain{Timeout: time.Minute},
+		backoffBase: interval, jitter: func(d time.Duration) time.Duration { return d }}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = l.Run(ctx)
+
+	_, _, cycles := ctl.got()
+	if cycles == 0 {
+		t.Fatal("the loop never asked what to run")
+	}
+	// 100ms at a 20ms interval is about five cycles; the bound is loose enough not
+	// to be flaky and far below what a busy loop produces.
+	if cycles > 12 {
+		t.Fatalf("loop ran %d cycles in 100ms at a %s interval; it is not pacing", cycles, interval)
+	}
+}

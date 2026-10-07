@@ -143,14 +143,20 @@ func (l *Loop) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if wait > 0 {
-			if !sleepCtx(ctx, wait) {
-				return nil
-			}
+		if wait <= 0 {
+			// The cycle COMPLETED: pace the next one instead of starting it at
+			// once. Zero means "nothing suggests a retry", not "poll immediately",
+			// and treating it as the latter made Run a busy loop -- a tight
+			// sequence of HTTP requests to Cloud once Apply became idempotent, and
+			// a re-install per iteration before that.
+			wait = l.applyJitter(l.base())
+			backoff = l.base()
+		} else {
 			backoff = bump(backoff)
-			continue
 		}
-		backoff = l.base()
+		if !sleepCtx(ctx, wait) {
+			return nil
+		}
 	}
 }
 
