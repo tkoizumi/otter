@@ -72,24 +72,27 @@ func (l *Loop) base() time.Duration {
 	if l.backoffBase > 0 {
 		return l.backoffBase
 	}
-	// Three minutes, not five seconds.
+	// Thirty seconds.
 	//
 	// The interval is the price of asking "anything for me?" across a boundary
-	// that only opens one way: the agent dials out, Cloud cannot dial in. At five
-	// seconds an IDLE tenant asked ~20,000 times a day, each cycle touching
-	// Durable Objects for desired, report and lease -- which exhausted a free
-	// tier outright, and on a paid one is a standing bill for hearing "no".
+	// that only opens one way: the agent dials out, Cloud cannot dial in. At the
+	// original five seconds an IDLE tenant asked ~1.5M times a month, each cycle
+	// touching Durable Objects for desired, report and lease -- which exhausted a
+	// free tier outright and was a standing bill for hearing "no".
 	//
-	// The cost is deliberate and visible: a deploy or a delete waits up to one
-	// cycle to be noticed, so it lands within about three minutes rather than
-	// seconds.
+	// Thirty seconds is ~260k Durable Object requests per tenant per month at
+	// three per cycle, so four tenants sit at the included million and cost cents
+	// beyond it ($0.15/million). Note the jitter below spreads a fleet across
+	// 15-30s, so the average is nearer 22s and the real figure for four tenants
+	// is around 1.4M -- about six cents, which is the price of a deploy being
+	// noticed in half a minute rather than three.
 	//
-	// Whatever decides a POOLED runtime is "stale" must be derived from this
-	// number, or every tenant reads stale between polls. The thresholds in
-	// Cloud's runtime registry (90s stale / 5min offline) are NOT that: they
-	// belong to the direct transport, where Cloud polls the runtime rather than
-	// the agent polling Cloud, and they must not be copied here.
-	return 3 * time.Minute
+	// Latency is the cost and it is deliberate: a deploy or a delete waits up to
+	// one cycle to be noticed. Whatever marks a POOLED runtime stale in Cloud
+	// must be derived from this number; the registry's 90s/5min thresholds belong
+	// to the DIRECT transport, where Cloud polls the runtime, and must not be
+	// copied here.
+	return 30 * time.Second
 }
 
 func (l *Loop) applyJitter(d time.Duration) time.Duration {
