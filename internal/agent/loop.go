@@ -72,27 +72,26 @@ func (l *Loop) base() time.Duration {
 	if l.backoffBase > 0 {
 		return l.backoffBase
 	}
-	// Thirty seconds.
+	// Two seconds -- a deliberate stopgap, not a considered default.
 	//
 	// The interval is the price of asking "anything for me?" across a boundary
-	// that only opens one way: the agent dials out, Cloud cannot dial in. At the
-	// original five seconds an IDLE tenant asked ~1.5M times a month, each cycle
-	// touching Durable Objects for desired, report and lease -- which exhausted a
-	// free tier outright and was a standing bill for hearing "no".
+	// that only opens one way: the agent dials out, Cloud cannot dial in. Polling
+	// is not free: at this rate two tenants make ~7.8M Worker requests and ~7.8M
+	// Durable Object requests a month, about a dollar over the paid allowances
+	// (~$6.50 in total once the jitter's 1.5s average is counted).
 	//
-	// Thirty seconds is ~260k Durable Object requests per tenant per month at
-	// three per cycle, so four tenants sit at the included million and cost cents
-	// beyond it ($0.15/million). Note the jitter below spreads a fleet across
-	// 15-30s, so the average is nearer 22s and the real figure for four tenants
-	// is around 1.4M -- about six cents, which is the price of a deploy being
-	// noticed in half a minute rather than three.
+	// It is this short for ONE reason: every dashboard read of a POOLED runtime is
+	// a synchronous round trip that waits for this cycle, so page loads are only
+	// as fast as this number. At thirty seconds the job and run pages were
+	// unusable.
 	//
-	// Latency is the cost and it is deliberate: a deploy or a delete waits up to
-	// one cycle to be noticed. Whatever marks a POOLED runtime stale in Cloud
-	// must be derived from this number; the registry's 90s/5min thresholds belong
-	// to the DIRECT transport, where Cloud polls the runtime, and must not be
-	// copied here.
-	return 30 * time.Second
+	// It does not scale. The cost is per tenant and linear -- the same two seconds
+	// at ten tenants is ~$5-6/month, at twenty ~$10-12 -- so the real fix is to
+	// stop making those reads round trips: serve the jobs list and job overview
+	// from the set the agent already reports, and leave only genuinely live data
+	// (logs, captures) on the wire. Then this number can be raised again, or the
+	// agent can hold a socket and it stops mattering at all.
+	return 2 * time.Second
 }
 
 func (l *Loop) applyJitter(d time.Duration) time.Duration {
