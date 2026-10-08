@@ -3,11 +3,14 @@ package cloud
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -259,6 +262,110 @@ func (c *Client) Deploy(ctx context.Context, runtimeID, digest, operator string,
 		return &out, &RefusedError{Message: out.Message}
 	}
 	return &out, nil
+}
+
+// Job is the control plane's projection of one runtime job. Only the fields a
+// reference needs are named: the id addresses the delete route, and the name is
+// the label an operator types.
+type Job struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	RuntimeID string `json:"runtimeId"`
+}
+
+// Jobs lists the organization's jobs, or one runtime's when runtimeID is given.
+//
+// It is the read that lets `otter delete --cloud counter` resolve a label to
+// the durable id the delete route takes, so a user never has to paste a UUID.
+func (c *Client) Jobs(ctx context.Context, runtimeID string) ([]Job, error) {
+	path := "/api/jobs"
+	if id := strings.TrimSpace(runtimeID); id != "" {
+		path += "?runtimeId=" + url.QueryEscape(id)
+	}
+	var out struct {
+		Jobs []Job `json:"jobs"`
+	}
+	if err := c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out.Jobs, nil
+}
+
+// JobDeleted is the runtime's own account of a delete: the reference it acted
+// on and the note that explains the delete's scope.
+//
+// The note is not decoration. A job known only from its releases has no
+// registry row, so no tombstone is written and releasing the same id brings it
+// back; a caller that reported a bare "deleted" would hide that.
+type JobDeleted struct {
+	JobID   string `json:"jobId"`
+	Deleted bool   `json:"deleted"`
+	Note    string `json:"note,omitempty"`
+}
+
+// DeleteJobResult is the command envelope DELETE /api/jobs/{id} answers with.
+// Job repeats Value, the shape the sibling command routes return, so a poller
+// that only knows the command's reference can match the answer; either side may
+// carry the runtime's note.
+type DeleteJobResult struct {
+	Applied bool        `json:"applied"`
+	Value   JobDeleted  `json:"value"`
+	Job     *JobDeleted `json:"job,omitempty"`
+}
+
+// Note is the runtime's account of what the delete actually removed, when it
+// sent one. A caller must surface it rather than report a scope it did not
+// verify.
+func (r *DeleteJobResult) Note() string {
+	if r == nil {
+		return ""
+	}
+	if strings.TrimSpace(r.Value.Note) != "" {
+		return r.Value.Note
+	}
+	if r.Job != nil {
+		return r.Job.Note
+	}
+	return ""
+}
+
+// DeleteJob deletes one job and everything it owns through
+// DELETE /api/jobs/{id}.
+//
+// The control plane refuses the call with a 400 without an Idempotency-Key, so
+// a fresh key is minted for every deliberate delete: the key is what makes a
+// retried request replay the same command instead of deleting twice. jobID must
+// be the runtime's own job id -- resolve a label with Jobs first -- and an id
+// the fleet does not have comes back as a 404, which IsNotFound distinguishes
+// from a transport or admission failure.
+func (c *Client) DeleteJob(ctx context.Context, jobID string) (*DeleteJobResult, error) {
+	req, err := c.request(ctx, http.MethodDelete, "/api/jobs/"+pathSegment(jobID), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Idempotency-Key", NewIdempotencyKey())
+
+	var out DeleteJobResult
+	if err := c.roundTrip(req, &out); err != nil {
+		return &out, err
+	}
+	return &out, nil
+}
+
+// NewIdempotencyKey mints a key for one mutating control-plane command.
+//
+// It is random rather than derived from the request: the key identifies one
+// deliberate intent, so two deliberate deletes must not share one or the second
+// would replay as a no-op. A caller that retries reuses the key it already has;
+// the CLI makes no retries, so each call mints a fresh one.
+func NewIdempotencyKey() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// crypto/rand does not fail in practice. A non-empty fallback keeps the
+		// request legal rather than sending a delete with no key at all.
+		return fmt.Sprintf("otk_%d", time.Now().UnixNano())
+	}
+	return "otk_" + hex.EncodeToString(buf[:])
 }
 
 // get performs an authenticated GET and decodes the JSON body.

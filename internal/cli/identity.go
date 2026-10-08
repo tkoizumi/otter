@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"strings"
 )
 
 // This file implements the identity lifecycle commands. Every one of them goes
@@ -88,26 +90,101 @@ func (a *App) cmdReset(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
-// cmdDelete implements `otter delete <job>`.
+// cmdDelete implements `otter delete <job>` and `otter delete --cloud <job>`.
+//
+// Both paths destroy data and neither can be undone, so both go through the one
+// confirmation in confirm.go before anything is sent: a declined prompt leaves
+// the local store and the Cloud command queue untouched. --yes (or -y) skips
+// the prompt, which is now what a script must pass -- a non-interactive stdin
+// without it refuses rather than waiting on a pipe or proceeding silently.
 func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
+	cloudMode := fs.Bool("cloud", false, "delete the job from Otter Cloud instead of this workspace")
+	runtimeID := fs.String("runtime", "", "with --cloud: the runtime that owns the job; needed only when the job's label is ambiguous")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt; deleting is irreversible")
+	shortYes := fs.Bool("y", false, "shorthand for --yes")
+	fs.Usage = func() {
+		fmt.Fprint(a.Stderr, `Usage:
+  otter delete <job> [--yes]              purge a workspace job and everything it owns
+  otter delete --cloud <job> [--yes]      delete the job from Otter Cloud
+  otter delete --cloud <job> --runtime <id>
+                                          disambiguate the job on a chosen runtime
+
+Deleting is irreversible. It removes every run and the logs those runs
+produced, every captured request and response payload, the job's stored state,
+every schedule, the job's configuration, and every release including the active
+one. Source files in the jobs directory are left in place; a workspace job's
+path is suppressed until an explicit register, and a job known only from its
+releases has no tombstone, so releasing the same id brings it back.
+
+The command asks for confirmation before it does any of that. --yes (or -y)
+skips the prompt and is what a script must pass: with no --yes and a stdin that
+is not a terminal the delete refuses instead of waiting for input, and a
+declined prompt deletes nothing and exits 1.
+
+With --cloud the credential comes from otter login, and <job> is resolved by id
+or label through the Cloud API.
+
+Flags:
+`)
+		fs.PrintDefaults()
+		fmt.Fprint(a.Stderr, `
+Examples:
+  otter delete counter
+  otter delete counter --yes
+  otter delete --cloud counter
+  otter delete --cloud counter --runtime rt_123 --yes
+`)
+	}
+
+	// The flag package stops at the first positional argument, so
+	// `otter delete counter --yes` would otherwise leave --yes as a second
+	// positional and fail. --runtime is the only flag that takes a value.
+	takesValue := func(arg string) bool {
+		name := strings.TrimLeft(arg, "-")
+		if i := strings.Index(name, "="); i >= 0 {
+			name = name[:i]
+		}
+		return name == "runtime"
+	}
+	args = flagsFirst(normalizeLongFlags(args), takesValue)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter delete <job>")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter delete <job> [--cloud] [--runtime <id>] [--yes]")
 		return 2
 	}
-	ref, err := daemonRef(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+	ref := fs.Arg(0)
+	assumeYes := *yes || *shortYes
+
+	if *cloudMode {
+		return a.cmdDeleteCloud(ctx, g, ref, *runtimeID, assumeYes)
+	}
+	if strings.TrimSpace(*runtimeID) != "" {
+		fmt.Fprintln(a.Stderr, "otter: --runtime selects a Cloud runtime; it needs --cloud")
 		return 2
 	}
 
 	// The daemon resolves the reference, so a retired identity can still be
 	// purged by id after its directory has been removed.
-	result, err := g.client().DeleteJob(ctx, ref)
+	daemonReference, err := daemonRef(ref)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: %v\n", err)
+		return 2
+	}
+
+	// The prompt is the last thing before the delete and the first thing after
+	// argument checking: declining it makes no request at all.
+	if proceed, code := a.confirmDelete(ref, assumeYes); !proceed {
+		return code
+	}
+
+	result, err := g.client().DeleteJob(ctx, daemonReference)
 	if err != nil {
 		return a.fail(err)
 	}

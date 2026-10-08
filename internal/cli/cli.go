@@ -34,6 +34,11 @@ type App struct {
 	Stderr  io.Writer
 	Version string
 
+	// Stdin is where an interactive prompt reads its answer. Nil means
+	// os.Stdin, which is what a real invocation uses; a test sets it to decide
+	// the answer without a terminal.
+	Stdin io.Reader
+
 	// traceWidthOverride, when set, is the column width the trace table is
 	// rendered for. It exists for terminals whose width cannot be read and for
 	// reproducible output in tests; zero means the default width.
@@ -94,7 +99,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	// Commands that act on a runtime need one to act on. There is deliberately
 	// no ambient default: falling back to a fixed port meant a command could
 	// silently answer for a different workspace, which is worse than refusing.
-	if !inProject && g.api == "" && needsDaemon(command) {
+	// A command whose flag retargets it at Otter Cloud is exempt: a pooled job
+	// has no local checkout, so `otter delete --cloud` must work outside one.
+	if !inProject && g.api == "" && needsDaemon(command) && !cloudScoped(command, commandArgs) {
 		fmt.Fprintf(a.Stderr, "otter: no workspace here (no .otter in this directory or above)\n")
 		fmt.Fprintf(a.Stderr, "otter: cd into a workspace, start one with otter start, or pass --api <url>\n")
 		return 2
@@ -1453,7 +1460,7 @@ Runtime:
 Identity:
   register [<path>|.]             give a source directory a durable identity
   reset <job>             retire its identity, mint a fresh one at the same path
-  delete <job>            purge its state, history, tokens and releases
+  delete <job> [--yes]    purge its state, history, payloads and releases (prompts first)
   move <job> <dest>       preserve its identity across a directory rename
   identity migrate [--apply]      move a name-keyed workspace onto the identity registry
 
@@ -1506,6 +1513,8 @@ Otter Cloud:
                                   verify a Cloud token and store it (prompted when omitted)
   login --status                  show the stored Cloud identity
   logout                          remove the stored Cloud credential (idempotent)
+  delete --cloud <job> [--runtime ID] [--yes]
+                                  delete a pooled job (prompts first; --yes skips)
 
 Global flags:
   --api <url>    daemon URL (default %s, or OTTER_API_URL)
@@ -1576,6 +1585,26 @@ func needsDaemon(command string) bool {
 	default:
 		return false
 	}
+}
+
+// cloudScoped reports whether an invocation targets Otter Cloud rather than a
+// local daemon; today only `otter delete --cloud` does. It is read before the
+// command's own flag set exists, which is what makes `otter delete --cloud`
+// work in a directory with no workspace: the job lives in the fleet, not in a
+// local checkout.
+func cloudScoped(command string, args []string) bool {
+	if command != "delete" {
+		return false
+	}
+	for _, arg := range args {
+		switch {
+		case arg == "--cloud", arg == "-cloud":
+			return true
+		case strings.HasPrefix(arg, "--cloud="), strings.HasPrefix(arg, "-cloud="):
+			return true
+		}
+	}
+	return false
 }
 
 func oneLine(s string) string {

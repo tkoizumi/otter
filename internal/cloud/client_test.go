@@ -231,3 +231,91 @@ func TestErrorBodyFallsBackToRawText(t *testing.T) {
 		t.Fatalf("err = %v, want the raw body text", err)
 	}
 }
+
+// The delete route refuses a request without an Idempotency-Key, so the client
+// must always send one, address the job by its durable id, and keep the
+// runtime's note rather than collapsing the answer to a boolean.
+func TestDeleteJobSendsAnIdempotencyKeyAndKeepsTheNote(t *testing.T) {
+	var gotMethod, gotPath, gotKey, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotKey, gotAuth = r.Header.Get("Idempotency-Key"), r.Header.Get("Authorization")
+		io.WriteString(w, `{"applied":true,`+
+			`"value":{"jobId":"job_abc","deleted":true,"note":"no tombstone was written"},`+
+			`"job":{"jobId":"job_abc","deleted":true,"note":"no tombstone was written"}}`)
+	}))
+	defer srv.Close()
+
+	result, err := NewClient(srv.URL, "otk_1_secret").DeleteJob(context.Background(), "job_abc")
+	if err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/api/jobs/job_abc" {
+		t.Errorf("request = %s %s, want DELETE /api/jobs/job_abc", gotMethod, gotPath)
+	}
+	if strings.TrimSpace(gotKey) == "" {
+		t.Error("no Idempotency-Key header was sent")
+	}
+	if gotAuth != "Bearer otk_1_secret" {
+		t.Errorf("Authorization = %q, want the bearer token", gotAuth)
+	}
+	if !result.Applied {
+		t.Error("applied = false, want true")
+	}
+	if result.Note() != "no tombstone was written" {
+		t.Errorf("Note() = %q, want the runtime's note", result.Note())
+	}
+}
+
+// Two deliberate deletes must not share an idempotency key, or the second would
+// replay as a no-op instead of deleting its own job.
+func TestIdempotencyKeysAreFresh(t *testing.T) {
+	first, second := NewIdempotencyKey(), NewIdempotencyKey()
+	if first == "" || second == "" {
+		t.Fatal("an empty idempotency key was minted")
+	}
+	if first == second {
+		t.Errorf("two keys collided: %q", first)
+	}
+}
+
+// The delete route's 404 for an id the fleet does not have stays a not-found so
+// a caller can report it as a missing job.
+func TestDeleteJobMissingIdIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"message":"job not found"}`)
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL, "tok").DeleteJob(context.Background(), "ghost")
+	if err == nil || !IsNotFound(err) {
+		t.Fatalf("err = %v, want a not-found", err)
+	}
+}
+
+// Jobs is the read that turns a label into the id the delete route takes, and
+// --runtime must scope it rather than filtering client-side.
+func TestJobsListsAndScopesByRuntime(t *testing.T) {
+	var gotPath, gotQuery, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		io.WriteString(w, `{"jobs":[{"id":"job_abc","name":"counter","runtimeId":"rt_1"}]}`)
+	}))
+	defer srv.Close()
+
+	jobs, err := NewClient(srv.URL, "otk_1_secret").Jobs(context.Background(), "rt_1")
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if gotPath != "/api/jobs" || gotQuery != "runtimeId=rt_1" {
+		t.Errorf("request = %s?%s, want /api/jobs?runtimeId=rt_1", gotPath, gotQuery)
+	}
+	if gotAuth != "Bearer otk_1_secret" {
+		t.Errorf("Authorization = %q, want the bearer token", gotAuth)
+	}
+	if len(jobs) != 1 || jobs[0].ID != "job_abc" || jobs[0].Name != "counter" {
+		t.Errorf("jobs = %+v", jobs)
+	}
+}
