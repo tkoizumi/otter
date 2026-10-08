@@ -18,6 +18,7 @@ type fakeRuntime struct {
 	enterErr    error
 	promoteErr  error
 	validateErr error
+	deleteErr   error
 	// gated tracks whether the runtime is currently in maintenance, so a test can
 	// assert it is never left gated by accident.
 	gated bool
@@ -56,6 +57,14 @@ func (f *fakeRuntime) Fetch(_ context.Context, r Release) error {
 func (f *fakeRuntime) Validate(_ context.Context, digest string) error {
 	f.calls = append(f.calls, "validate:"+digest)
 	return f.validateErr
+}
+
+func (f *fakeRuntime) DeleteJob(_ context.Context, job string) (string, error) {
+	f.calls = append(f.calls, "delete:"+job)
+	if f.deleteErr != nil {
+		return "", f.deleteErr
+	}
+	return "deleted " + job, nil
 }
 
 func want(gen int64) *Desired {

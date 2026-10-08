@@ -141,30 +141,39 @@ func (r *RuntimeHTTP) Observe(ctx context.Context) (Observed, error) {
 	// evidence -- which is why an operation could never be closed as applied and a
 	// deploy never completed.
 	//
-	// The active release is per JOB and a runtime manages several, so:
-	//   - exactly one active release: that is the runtime's release, reported.
-	//   - none: reported as empty, which is the honest answer for a runtime that
-	//     has never been given one.
-	//   - several: NOT reported, because a single field cannot say which. Guessing
-	//     would be worse than saying nothing, since the control plane treats a
-	//     reported digest as evidence.
+	// Reported as a SET now, because the active release is per JOB and a runtime
+	// manages several. A single field could not say which job was which, and
+	// guessing would be worse than saying nothing: the control plane treats a
+	// reported release as evidence. The single `release_digest` is kept for an
+	// older control plane, and is only filled when the answer is unambiguous.
+	//
+	// `managed_jobs` and `managed_reconciliation` are the runtime's own answer to
+	// "which releases does a control plane own here". Their ABSENCE is what tells
+	// a new agent that the runtime cannot reconcile removals, so it keeps the
+	// single-release behaviour instead of deleting releases nothing asked it to.
 	var active struct {
 		Active []struct {
 			Job    string `json:"job"`
 			Digest string `json:"digest"`
 		} `json:"active"`
+		ManagedJobs           []string `json:"managed_jobs"`
+		ManagedReconciliation bool     `json:"managed_reconciliation"`
 	}
+	releases := []ObservedRelease{}
 	digest := ""
 	if err := r.do(ctx, http.MethodGet, "/v1/runtime/releases/active", nil, &active); err == nil {
-		if len(active.Active) == 1 {
-			// Reported in the control plane's canonical `sha256:<hex>` form. The
-			// runtime's own store names directories by bare hex, but Cloud decides
-			// whether a deploy landed by comparing this value with the desired
-			// digest it stored -- and comparing spellings instead of identities
-			// leaves a landed deploy open forever.
-			if d, err := normalizeDigest(active.Active[0].Digest); err == nil {
-				digest = "sha256:" + d
+		// Reported in the control plane's canonical `sha256:<hex>` form. The
+		// runtime's own store names directories by bare hex, but Cloud decides
+		// whether a deploy landed by comparing this value with the desired
+		// digest it stored -- and comparing spellings instead of identities
+		// leaves a landed deploy open forever.
+		for _, a := range active.Active {
+			if d, err := normalizeDigest(a.Digest); err == nil {
+				releases = append(releases, ObservedRelease{Job: a.Job, Digest: "sha256:" + d})
 			}
+		}
+		if len(releases) == 1 && len(active.Active) == 1 {
+			digest = releases[0].Digest
 		}
 	}
 	// A failure to read the active release is not fatal: the cycle can still
@@ -173,10 +182,13 @@ func (r *RuntimeHTTP) Observe(ctx context.Context) (Observed, error) {
 	// closed automatically, which is the safe direction.
 
 	return Observed{
-		ReleaseDigest:  digest,
-		RuntimeVersion: health.Version,
-		Health:         health.Status,
-		Maintenance:    maint.Mode,
+		ReleaseDigest:         digest,
+		Releases:              releases,
+		ManagedJobs:           active.ManagedJobs,
+		ManagedReconciliation: active.ManagedReconciliation,
+		RuntimeVersion:        health.Version,
+		Health:                health.Status,
+		Maintenance:           maint.Mode,
 	}, nil
 }
 

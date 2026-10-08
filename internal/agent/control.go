@@ -106,6 +106,12 @@ func (c *HTTPControlPlane) Desired(ctx context.Context, observed Observed) (*Des
 		RuntimeID:  c.RuntimeID,
 		Observed:   observed,
 		Generation: 0,
+		// Declared on every request, because it is what selects the SHAPE of the
+		// answer. A control plane that does not know the capability replies with
+		// the single release, which this agent still understands and reconciles
+		// without removing anything -- so a Cloud deploy and an image rebuild can
+		// happen in either order.
+		Capabilities: []string{CapabilityDesiredSnapshot},
 	}
 	var out Desired
 	if err := c.post(ctx, "/agent/v1/desired", req, &out); err != nil {

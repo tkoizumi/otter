@@ -217,6 +217,11 @@ type DeployRequest struct {
 	DesiredDigest      string `json:"desired_digest"`
 	ExpectedGeneration int    `json:"expected_generation"`
 	Operator           string `json:"operator"`
+	// JobID names the job the release belongs to. It is required by a control
+	// plane that keeps per-job desired state: a deploy that did not name its job
+	// could never be matched against what the runtime reports, so the operation
+	// would sit unconfirmed forever. An older control plane ignores it.
+	JobID string `json:"job_id,omitempty"`
 }
 
 // Admission is the answer to a deploy operation.
@@ -233,7 +238,11 @@ type Admission struct {
 // own Message, alongside the parsed Admission. The caller prints the message
 // and exits non-zero; only a genuine protocol or transport failure is an
 // APIError.
-func (c *Client) Deploy(ctx context.Context, runtimeID, digest, operator string, expectedGeneration int) (*Admission, error) {
+//
+// jobID names the job the release belongs to and is sent so a control plane
+// keeping per-job desired state can address it. A control plane that does not
+// know the field ignores it.
+func (c *Client) Deploy(ctx context.Context, runtimeID, jobID, digest, operator string, expectedGeneration int) (*Admission, error) {
 	bare, err := release.NormalizeDigest(digest)
 	if err != nil {
 		return nil, fmt.Errorf("deploy: %w", err)
@@ -243,6 +252,7 @@ func (c *Client) Deploy(ctx context.Context, runtimeID, digest, operator string,
 		DesiredDigest:      bare,
 		ExpectedGeneration: expectedGeneration,
 		Operator:           operator,
+		JobID:              strings.TrimSpace(jobID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode deploy request: %w", err)
@@ -300,6 +310,14 @@ func (c *Client) Jobs(ctx context.Context, runtimeID string) ([]Job, error) {
 type JobDeleted struct {
 	JobID   string `json:"jobId"`
 	Deleted bool   `json:"deleted"`
+	// RemovedFromDesired reports whether Cloud's desired state no longer names
+	// the job. It is a POINTER because an older control plane does not send it,
+	// and "not reported" must fall back to the delete's own confirmation rather
+	// than being read as "not removed".
+	RemovedFromDesired *bool `json:"removedFromDesired,omitempty"`
+	// Pending reports that Cloud recorded the removal but the runtime has not
+	// confirmed it. It is deliberately distinct from `deleted`.
+	Pending bool   `json:"pending,omitempty"`
 	Note    string `json:"note,omitempty"`
 }
 
@@ -311,6 +329,30 @@ type DeleteJobResult struct {
 	Applied bool        `json:"applied"`
 	Value   JobDeleted  `json:"value"`
 	Job     *JobDeleted `json:"job,omitempty"`
+}
+
+// RemovedFromDesired reports whether the job left Cloud's desired state. An
+// older control plane does not report the field, so its absence inherits the
+// delete's own confirmation -- which for that version is the runtime's answer
+// and nothing weaker.
+func (r *DeleteJobResult) RemovedFromDesired() bool {
+	if r == nil {
+		return false
+	}
+	if r.Value.RemovedFromDesired != nil {
+		return *r.Value.RemovedFromDesired
+	}
+	return r.Value.Deleted
+}
+
+// Pending reports that the removal is recorded but unconfirmed by the runtime.
+func (r *DeleteJobResult) Pending() bool {
+	return r != nil && r.Value.Pending
+}
+
+// Deleted reports whether the runtime confirmed the removal.
+func (r *DeleteJobResult) Deleted() bool {
+	return r != nil && r.Value.Deleted
 }
 
 // Note is the runtime's account of what the delete actually removed, when it

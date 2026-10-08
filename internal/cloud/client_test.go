@@ -112,7 +112,7 @@ func TestDeploySendsTheDigestAndExpectedGeneration(t *testing.T) {
 	defer srv.Close()
 
 	admission, err := NewClient(srv.URL, "otk_1_secret").
-		Deploy(context.Background(), "rt_1", "sha256:"+digest, "ops@acme.example", 7)
+		Deploy(context.Background(), "rt_1", "job_abc", "sha256:"+digest, "ops@acme.example", 7)
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
@@ -128,6 +128,11 @@ func TestDeploySendsTheDigestAndExpectedGeneration(t *testing.T) {
 	if body.Operator != "ops@acme.example" {
 		t.Errorf("operator = %q", body.Operator)
 	}
+	// The job id must travel: a control plane keeping per-job desired state
+	// cannot place a release it cannot attribute.
+	if body.JobID != "job_abc" {
+		t.Errorf("job_id = %q, want job_abc", body.JobID)
+	}
 	if !admission.Admitted || admission.Operation == nil || admission.Operation.ID != "op_1" {
 		t.Errorf("admission = %+v", admission)
 	}
@@ -140,7 +145,7 @@ func TestDeployRefusalCarriesTheServerMessage(t *testing.T) {
 	defer srv.Close()
 
 	admission, err := NewClient(srv.URL, "otk_1_secret").
-		Deploy(context.Background(), "rt_1", digest, "ops", 3)
+		Deploy(context.Background(), "rt_1", "job_abc", digest, "ops", 3)
 	if err == nil {
 		t.Fatal("an admitted=false answer was treated as success")
 	}

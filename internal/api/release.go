@@ -28,7 +28,24 @@ func (s *Server) handleActiveReleases(w http.ResponseWriter, r *http.Request) {
 		// against a null that means the same thing.
 		views = []ReleaseView{}
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"active": views})
+	// The Cloud-managed set travels WITH the active releases rather than on its
+	// own endpoint, and `managed_reconciliation` is the capability marker: a
+	// runtime that does not send it cannot be asked to remove a managed job, and
+	// an agent that reads its absence keeps the single-release behaviour instead
+	// of removing releases nothing asked it to remove.
+	managed, err := s.backend.ManagedReleaseJobs(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, CodeInternal, err.Error())
+		return
+	}
+	if managed == nil {
+		managed = []string{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"active":                 views,
+		"managed_jobs":           managed,
+		"managed_reconciliation": true,
+	})
 }
 
 func (s *Server) handleActivateRelease(w http.ResponseWriter, r *http.Request) {

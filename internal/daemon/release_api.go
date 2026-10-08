@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/identity"
 	"github.com/tkoizumi/otter/internal/release"
 )
 
@@ -167,5 +170,56 @@ func (d *Daemon) ActiveReleases(ctx context.Context) ([]api.ReleaseView, error) 
 			Digest_: meta.Digest,
 		})
 	}
+	return out, nil
+}
+
+// ManagedReleaseJobs reports the jobs this runtime holds ONLY in its release
+// store: those with no source in the jobs directory.
+//
+// This is the discriminator an agent needs and must not guess at. A pooled
+// tenant runs with an empty jobs directory, so every job it knows about came
+// from a Cloud deploy and lives only as a release directory; a workspace job has
+// an identity row and a source, and reconciling it away because a control plane
+// did not name it would delete work the control plane never owned.
+//
+// The identity store is the same authority `deleteTarget` uses, deliberately:
+// two places deciding "is this job Cloud-managed" differently is how one of them
+// becomes wrong.
+func (d *Daemon) ManagedReleaseJobs(ctx context.Context) ([]string, error) {
+	m := release.Manager{DataDir: d.cfg.DataDir}
+	root, err := m.Root()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		// No release root yet is an empty answer, not a failure: a runtime that
+		// has never been given a release manages nothing.
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	out := []string{}
+	for _, e := range entries {
+		job := e.Name()
+		if !e.IsDir() || job == release.ActiveDirName {
+			continue
+		}
+		if _, err := identity.Parse(job); err != nil {
+			continue
+		}
+		// A row means the job's SOURCE exists in the jobs directory, so it is the
+		// workspace's and must not be reconciled away.
+		if _, rowErr := d.ident.Store().Instance(ctx, identity.ID(job)); rowErr == nil {
+			continue
+		} else if !errors.Is(rowErr, identity.ErrNotFound) {
+			// A store fault is not "no row": treating it as one would hand an
+			// operator's job to the control plane to delete.
+			return nil, rowErr
+		}
+		out = append(out, job)
+	}
+	sort.Strings(out)
 	return out, nil
 }

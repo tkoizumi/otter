@@ -187,7 +187,7 @@ func activeDigest(t *testing.T, manager release.Manager, dir string) string {
 func TestDeployCloudPromotesTheLatestLocalRelease(t *testing.T) {
 	cloudHome(t)
 	t.Setenv(cloud.TokenEnv, "otk_1_secret")
-	root, _, older, newer := twoReleases(t)
+	root, dir, older, newer := twoReleases(t)
 
 	fake := newCloudFake()
 	srv := fake.server(t)
@@ -204,6 +204,12 @@ func TestDeployCloudPromotesTheLatestLocalRelease(t *testing.T) {
 	}
 	if got := fake.deployedDigest(); got != newer {
 		t.Errorf("admitted %q, want the newer release %s", got, newer)
+	}
+	// The job id must travel with the digest. A control plane keeping per-job
+	// desired state cannot place a release it cannot attribute, and this is the
+	// only place the operator's `--job` choice reaches it.
+	if id := idFor(t, dir); fake.admitted.JobID != id {
+		t.Errorf("admitted job_id = %q, want %q", fake.admitted.JobID, id)
 	}
 	if !strings.Contains(stdout, newer) {
 		t.Errorf("output does not name the promoted release:\n%s", stdout)

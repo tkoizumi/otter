@@ -665,3 +665,89 @@ func TestDeleteCloudStillResolvesNameAndId(t *testing.T) {
 		})
 	}
 }
+
+// A delete the control plane says did NOT leave its desired state is not a
+// deletion. Reporting success here is the overclaim this path exists to stop:
+// the release is still desired, so the agent will converge the runtime back onto
+// it.
+func TestDeleteCloudReportsAJobStillDesiredAsNotRemoved(t *testing.T) {
+	cloudHome(t)
+	rec := &deleteRecorder{reply: func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/cloud/me":
+			io.WriteString(w, meJSON(`{"id":"rt_1","lifecycle":"running","placement":"aws"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/jobs":
+			io.WriteString(w, `{"jobs":[{"id":"job_abc","name":"counter","runtimeId":"rt_1"}]}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/jobs/job_abc":
+			io.WriteString(w, `{"applied":false,`+
+				`"value":{"jobId":"job_abc","deleted":false,"removedFromDesired":false,`+
+				`"note":"nothing was removed: operation op_0 is still pending"}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"message":"no route"}`)
+		}
+	}}
+	srv := rec.server(t)
+	defer srv.Close()
+	if err := cloud.SaveConfig(cloud.Config{CloudURL: srv.URL, Token: "otk_1_secret"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	stdout, stderr, code := runDelete(t, unreadableStdin{t: t}, "delete", "--cloud", "counter", "--yes")
+	if code == 0 {
+		t.Fatalf("a job still in desired state exited 0; stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "deleted     ") {
+		t.Errorf("a job still in desired state was reported deleted:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "still in Otter Cloud's desired state") {
+		t.Errorf("the refusal does not say the job is still desired:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "op_0") {
+		t.Errorf("the control plane's own reason was swallowed:\n%s", stderr)
+	}
+}
+
+// A removal Cloud recorded but the runtime has not CONFIRMED is reported
+// pending, not deleted. Cloud must not mark an operation successful without
+// runtime confirmation, and the CLI must not print one either.
+func TestDeleteCloudReportsAnUnconfirmedRemovalAsPending(t *testing.T) {
+	cloudHome(t)
+	rec := &deleteRecorder{reply: func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/cloud/me":
+			io.WriteString(w, meJSON(`{"id":"rt_1","lifecycle":"running","placement":"aws"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/jobs":
+			io.WriteString(w, `{"jobs":[{"id":"job_abc","name":"counter","runtimeId":"rt_1"}]}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/jobs/job_abc":
+			io.WriteString(w, `{"applied":true,`+
+				`"value":{"jobId":"job_abc","deleted":false,"removedFromDesired":true,"pending":true,`+
+				`"note":"removed from Cloud's desired state, but runtime rt_1 has not confirmed the removal yet"}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"message":"no route"}`)
+		}
+	}}
+	srv := rec.server(t)
+	defer srv.Close()
+	if err := cloud.SaveConfig(cloud.Config{CloudURL: srv.URL, Token: "otk_1_secret"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	stdout, stderr, code := runDelete(t, unreadableStdin{t: t}, "delete", "--cloud", "counter", "--yes")
+	if code == 0 {
+		t.Fatalf("an unconfirmed removal exited 0; stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "deleted     ") {
+		t.Errorf("an unconfirmed removal was reported deleted:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "pending     counter (job_abc)") {
+		t.Errorf("output does not report the removal as pending:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "has not confirmed the removal") {
+		t.Errorf("the runtime's note was swallowed:\n%s", stdout)
+	}
+	if strings.Contains(stderr, "still in Otter Cloud's desired state") {
+		t.Errorf("a job that DID leave desired state was reported as still desired:\n%s", stderr)
+	}
+}

@@ -98,13 +98,33 @@ func (a *App) cmdDeleteCloud(ctx context.Context, g globals, ref, runtimeFlag st
 	if name == "" {
 		name = job.ID
 	}
-	fmt.Fprintf(a.Stdout, "deleted     %s (%s)\n", name, job.ID)
-	if !result.Applied {
-		fmt.Fprintln(a.Stdout, "replayed    an identical delete had already been applied")
+	// THREE OUTCOMES, kept apart because they need different actions. A delete
+	// that removed nothing, and a delete the runtime has not confirmed, are both
+	// failures to report as success -- the release stayed in Cloud's desired
+	// state, or the agent has not converged yet, and each has its own fix.
+	if !result.Applied || !result.RemovedFromDesired() {
+		fmt.Fprintf(a.Stderr, "otter: %s (%s) is still in Otter Cloud's desired state; nothing was removed\n", name, job.ID)
+		if note := result.Note(); note != "" {
+			fmt.Fprintf(a.Stderr, "otter: %s\n", note)
+		}
+		return 1
 	}
+	if !result.Deleted() {
+		fmt.Fprintf(a.Stdout, "pending     %s (%s)\n", name, job.ID)
+		// The control plane's note is already the honest account -- what left
+		// desired state and why the runtime has not confirmed it -- so it is
+		// printed once rather than beside an invented summary.
+		if note := result.Note(); note != "" {
+			fmt.Fprintf(a.Stdout, "note        %s\n", note)
+		} else {
+			fmt.Fprintln(a.Stdout, "note        removed from Cloud's desired state, but the runtime has not confirmed the removal")
+		}
+		return 1
+	}
+	fmt.Fprintf(a.Stdout, "deleted     %s (%s)\n", name, job.ID)
 	// The runtime's note states what the delete actually removed and what it
-	// could not. A released-only job has no tombstone, so the id can come back;
-	// swallowing the note would hide exactly that.
+	// could not. Swallowing it would hide exactly the scope a caller must not
+	// have to infer.
 	if note := result.Note(); note != "" {
 		fmt.Fprintf(a.Stdout, "note        %s\n", note)
 	}

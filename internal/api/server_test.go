@@ -23,7 +23,8 @@ import (
 // exercised end to end through httptest.
 type fakeBackend struct {
 	// activeReleases is what GET /v1/runtime/releases/active reports.
-	activeReleases []ReleaseView
+	activeReleases  []ReleaseView
+	managedReleases []string
 	// installed records the bodies POST /v1/runtime/releases/install received.
 	installed  []string
 	installErr error
@@ -742,6 +743,20 @@ func (f *fakeBackend) ActiveReleases(_ context.Context) ([]ReleaseView, error) {
 	}
 	out := make([]ReleaseView, len(f.activeReleases))
 	copy(out, f.activeReleases)
+	return out, nil
+}
+
+// ManagedReleaseJobs mirrors the runtime's answer for the capability marker's
+// test: the set is configurable so a handler test can pin what travels beside
+// the active releases.
+func (f *fakeBackend) ManagedReleaseJobs(_ context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.managedReleases == nil {
+		return []string{}, nil
+	}
+	out := make([]string, len(f.managedReleases))
+	copy(out, f.managedReleases)
 	return out, nil
 }
 
@@ -1766,6 +1781,38 @@ func TestActiveReleasesWithNothingActiveIsAnEmptyList(t *testing.T) {
 	}
 	if !strings.Contains(string(res.body), `"active":[]`) {
 		t.Errorf("expected an empty array, got %s", res.body)
+	}
+}
+
+// The Cloud-MANAGED set travels with the active releases, and
+// `managed_reconciliation` is the marker that says the field can be trusted. An
+// agent reads its ABSENCE as "this runtime cannot say which jobs a control plane
+// owns", and keeps the single-release behaviour rather than removing releases
+// nothing asked it to remove.
+func TestActiveReleasesCarryTheManagedSetAndCapabilityMarker(t *testing.T) {
+	fb := newFakeBackend()
+	fb.activeReleases = []ReleaseView{{Job: "sync", Digest: "sha256:aaa", Digest_: "sha256:aaa"}}
+	fb.managedReleases = []string{"sync"}
+	srv := newTestServer(t, ServerConfig{APIToken: adminToken}, fb)
+
+	res := do(t, http.MethodGet, srv.URL+"/v1/runtime/releases/active", nil,
+		map[string]string{"Authorization": "Bearer " + adminToken})
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", res.status, res.body)
+	}
+	var out struct {
+		Active                []ReleaseView `json:"active"`
+		ManagedJobs           []string      `json:"managed_jobs"`
+		ManagedReconciliation bool          `json:"managed_reconciliation"`
+	}
+	if err := json.Unmarshal([]byte(res.body), &out); err != nil {
+		t.Fatalf("unexpected shape: %v (%s)", err, res.body)
+	}
+	if !out.ManagedReconciliation {
+		t.Error("the capability marker is missing, so an agent cannot tell it may remove a managed job")
+	}
+	if len(out.ManagedJobs) != 1 || out.ManagedJobs[0] != "sync" {
+		t.Errorf("managed set = %v, want [sync]", out.ManagedJobs)
 	}
 }
 

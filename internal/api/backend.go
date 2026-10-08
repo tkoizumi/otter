@@ -251,6 +251,16 @@ type Backend interface {
 	// answering with an arbitrary job's release would be worse than not answering.
 	ActiveReleases(ctx context.Context) ([]ReleaseView, error)
 
+	// ManagedReleaseJobs reports the jobs this runtime holds ONLY in its release
+	// store: those with no source in the jobs directory, which is the shape a
+	// Cloud deploy leaves behind on a pooled tenant.
+	//
+	// It is the runtime's own answer to "which jobs does a control plane own
+	// here", and it is what lets an agent reconcile a deleted job away WITHOUT
+	// touching a job whose source lives in the workspace. A job with a source is
+	// never in this list, so the agent never has to guess.
+	ManagedReleaseJobs(ctx context.Context) ([]string, error)
+
 	// ScheduleCounters reports the per-schedule missed-occurrence accounting:
 	// occurrences folded by coalesce, and occurrences a bounded catch-up
 	// declined to replay. Only schedules with a non-zero counter are returned.

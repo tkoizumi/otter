@@ -183,7 +183,10 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 		fmt.Fprintf(a.Stdout, "%s: uploaded release %s\n", target.Label(), shortDigest(digest))
 	}
 
-	admission, err := client.Deploy(ctx, runtime.ID, digest, cloud.Operator(), state.Generation)
+	// The job id travels with the digest. A control plane that keeps per-job
+	// desired state cannot place a release it cannot attribute, and the job the
+	// operator named is the only authority for that.
+	admission, err := client.Deploy(ctx, runtime.ID, target.ID, digest, cloud.Operator(), state.Generation)
 	if err != nil {
 		var refused *cloud.RefusedError
 		if errors.As(err, &refused) {
