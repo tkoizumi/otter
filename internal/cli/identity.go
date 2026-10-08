@@ -90,13 +90,23 @@ func (a *App) cmdReset(ctx context.Context, g globals, args []string) int {
 	return 0
 }
 
-// cmdDelete implements `otter delete <job>` and `otter delete --cloud <job>`.
+// cmdDelete implements `otter delete <name|id>` and
+// `otter delete --cloud <name|id>`.
 //
 // Both paths destroy data and neither can be undone, so both go through the one
 // confirmation in confirm.go before anything is sent: a declined prompt leaves
 // the local store and the Cloud command queue untouched. --yes (or -y) skips
 // the prompt, which is now what a script must pass -- a non-interactive stdin
 // without it refuses rather than waiting on a pipe or proceeding silently.
+//
+// The reference is a job name or id and never a directory. Every other command
+// that accepts a reference also accepts a path -- `otter run .` is the point --
+// but a delete has nothing to gain from one: the prompt would echo the raw
+// reference, so `otter delete .` read "deleting . destroys, irreversibly:",
+// which names no job a human can check. looksLikePath -- the same predicate
+// that decides whether the other commands read a manifest, so the rule cannot
+// drift -- refuses one here, before the cloud/local split, and therefore before
+// the prompt, before a credential is read and before any request is sent.
 func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -106,9 +116,9 @@ func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 	shortYes := fs.Bool("y", false, "shorthand for --yes")
 	fs.Usage = func() {
 		fmt.Fprint(a.Stderr, `Usage:
-  otter delete <job> [--yes]              purge a workspace job and everything it owns
-  otter delete --cloud <job> [--yes]      delete the job from Otter Cloud
-  otter delete --cloud <job> --runtime <id>
+  otter delete <name|id> [--yes]          purge a workspace job and everything it owns
+  otter delete --cloud <name|id> [--yes]  delete the job from Otter Cloud
+  otter delete --cloud <name|id> --runtime <id>
                                           disambiguate the job on a chosen runtime
 
 Deleting is irreversible. It removes every run and the logs those runs
@@ -118,13 +128,17 @@ one. Source files in the jobs directory are left in place; a workspace job's
 path is suppressed until an explicit register, and a job known only from its
 releases has no tombstone, so releasing the same id brings it back.
 
+The argument is a job name or id, never a directory: "otter delete ." and
+"otter delete jobs/counter" are refused, because the confirmation can only name
+a job the operator recognises.
+
 The command asks for confirmation before it does any of that. --yes (or -y)
 skips the prompt and is what a script must pass: with no --yes and a stdin that
 is not a terminal the delete refuses instead of waiting for input, and a
 declined prompt deletes nothing and exits 1.
 
-With --cloud the credential comes from otter login, and <job> is resolved by id
-or label through the Cloud API.
+With --cloud the credential comes from otter login, and the name or id is
+resolved by id or label through the Cloud API.
 
 Flags:
 `)
@@ -156,11 +170,21 @@ Examples:
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(a.Stderr, "otter: usage: otter delete <job> [--cloud] [--runtime <id>] [--yes]")
+		fmt.Fprintln(a.Stderr, "otter: usage: otter delete <name|id> [--cloud] [--runtime <id>] [--yes]")
 		return 2
 	}
 	ref := fs.Arg(0)
 	assumeYes := *yes || *shortYes
+
+	// A delete names a job, never a directory. This is a usage error and it is
+	// checked before the cloud/local split so that it is also checked before
+	// the prompt and before the first request on either path: a bad reference
+	// prints guidance, touches no daemon, reads no credential and calls no API.
+	if looksLikePath(ref) {
+		fmt.Fprintf(a.Stderr, "otter: delete takes a job name or id, not a path: %q\n", ref)
+		fmt.Fprintln(a.Stderr, "otter: pass the name otter jobs lists or the job's id")
+		return 2
+	}
 
 	if *cloudMode {
 		return a.cmdDeleteCloud(ctx, g, ref, *runtimeID, assumeYes)

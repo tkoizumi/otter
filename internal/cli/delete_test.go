@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -412,5 +413,255 @@ func TestDeleteCloudRefusesWithoutAStoredCredential(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "otter login") {
 		t.Errorf("the refusal does not point at otter login:\n%s", stderr)
+	}
+}
+
+// deletePathRefs are the references a delete must refuse: a directory (the
+// working directory, its parent, or a relative or absolute path) or the
+// manifest file itself. Every one of them is a reference the other commands
+// would happily read as a path, which is exactly why a destructive command
+// must not accept it.
+var deletePathRefs = []string{
+	".",
+	"..",
+	"./counter",
+	"../counter",
+	"jobs/counter",
+	`jobs\counter`,
+	"/abs/path",
+	"otter.yaml",
+}
+
+// deletePathGuidance is the one sentence both delete paths refuse a path with.
+const deletePathGuidance = "otter: delete takes a job name or id, not a path:"
+
+// A path reference is a usage error on the local path, and it is refused before
+// anything happens: exit 2, guidance naming the reference, no prompt, no
+// daemon request and no reported deletion.
+func TestDeleteLocalRefusesPathReferencesWithoutTouchingTheDaemon(t *testing.T) {
+	for _, ref := range deletePathRefs {
+		t.Run(ref, func(t *testing.T) {
+			rec := &deleteRecorder{reply: daemonDeleteReply}
+			srv := rec.server(t)
+			defer srv.Close()
+			// A terminal, so a prompt would be printed and answered if the
+			// guard had not run first.
+			stubTerminalInput(t, true)
+
+			stdout, stderr, code := runDelete(t, strings.NewReader("y\n"), "--api", srv.URL, "delete", ref)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2; stderr:\n%s", code, stderr)
+			}
+			if !strings.Contains(stderr, deletePathGuidance+" "+strconv.Quote(ref)) {
+				t.Errorf("the refusal does not quote %q:\n%s", ref, stderr)
+			}
+			if !strings.Contains(stderr, "pass the name otter jobs lists") {
+				t.Errorf("the refusal does not say what to do instead:\n%s", stderr)
+			}
+			if strings.Contains(stderr, "deleting ") || strings.Contains(stderr, "[y/N]") {
+				t.Errorf("a path reference reached the confirmation prompt:\n%s", stderr)
+			}
+			if strings.Contains(stdout, "deleted") {
+				t.Errorf("a refused delete reported a deletion:\n%s", stdout)
+			}
+			if calls := rec.recorded(); len(calls) != 0 {
+				t.Fatalf("a refused delete made %d daemon requests: %+v", len(calls), calls)
+			}
+		})
+	}
+}
+
+// The same references are refused on the cloud path, and before the credential
+// is even read: exit 2, guidance, no prompt and no API call at all.
+func TestDeleteCloudRefusesPathReferencesWithoutAnAPICall(t *testing.T) {
+	cloudHome(t)
+	for _, ref := range deletePathRefs {
+		t.Run(ref, func(t *testing.T) {
+			rec := &deleteRecorder{}
+			srv := rec.server(t)
+			defer srv.Close()
+			if err := cloud.SaveConfig(cloud.Config{CloudURL: srv.URL, Token: "otk_1_secret"}); err != nil {
+				t.Fatalf("SaveConfig: %v", err)
+			}
+			stubTerminalInput(t, true)
+
+			stdout, stderr, code := runDelete(t, strings.NewReader("y\n"), "delete", "--cloud", ref)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2; stderr:\n%s", code, stderr)
+			}
+			if !strings.Contains(stderr, deletePathGuidance+" "+strconv.Quote(ref)) {
+				t.Errorf("the refusal does not quote %q:\n%s", ref, stderr)
+			}
+			if strings.Contains(stderr, "deleting ") || strings.Contains(stderr, "[y/N]") {
+				t.Errorf("a path reference reached the confirmation prompt:\n%s", stderr)
+			}
+			if strings.Contains(stdout, "deleted") {
+				t.Errorf("a refused delete reported a deletion:\n%s", stdout)
+			}
+			if calls := rec.recorded(); len(calls) != 0 {
+				t.Fatalf("a refused cloud delete made %d API calls: %+v", len(calls), calls)
+			}
+		})
+	}
+}
+
+// promptReference extracts the reference the confirmation echoed, so a test can
+// assert on the thing the operator is asked to authorise.
+func promptReference(t *testing.T, stderr string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(stderr, "otter: deleting ")
+	if !ok {
+		t.Fatalf("no confirmation prompt in:\n%s", stderr)
+	}
+	ref, _, ok := strings.Cut(rest, " destroys, irreversibly:")
+	if !ok {
+		t.Fatalf("malformed confirmation prompt in:\n%s", stderr)
+	}
+	return ref
+}
+
+// The confirmation can no longer be pointed at a path. A reference that reaches
+// the prompt is the operator's name or id, and the prompt echoes it verbatim --
+// this pins that property on both delete paths, so a future refactor cannot
+// reintroduce "deleting . destroys, irreversibly:".
+func TestDeleteConfirmationNeverNamesAPath(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		rec := &deleteRecorder{reply: daemonDeleteReply}
+		srv := rec.server(t)
+		defer srv.Close()
+		stubTerminalInput(t, true)
+
+		_, stderr, code := runDelete(t, strings.NewReader("no\n"), "--api", srv.URL, "delete", "counter")
+		if code != 1 {
+			t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+		}
+		ref := promptReference(t, stderr)
+		if ref != "counter" {
+			t.Errorf("the prompt named %q, want the reference typed", ref)
+		}
+		if looksLikePath(ref) {
+			t.Errorf("the confirmation named a path: %q", ref)
+		}
+		if calls := rec.recorded(); len(calls) != 0 {
+			t.Fatalf("a declined delete sent %d requests: %+v", len(calls), calls)
+		}
+	})
+
+	t.Run("cloud", func(t *testing.T) {
+		cloudHome(t)
+		rec := &deleteRecorder{}
+		srv := rec.server(t)
+		defer srv.Close()
+		if err := cloud.SaveConfig(cloud.Config{CloudURL: srv.URL, Token: "otk_1_secret"}); err != nil {
+			t.Fatalf("SaveConfig: %v", err)
+		}
+		stubTerminalInput(t, true)
+
+		_, stderr, code := runDelete(t, strings.NewReader("no\n"), "delete", "--cloud", "counter")
+		if code != 1 {
+			t.Fatalf("exit = %d, want 1; stderr:\n%s", code, stderr)
+		}
+		ref := promptReference(t, stderr)
+		if ref != "counter" {
+			t.Errorf("the prompt named %q, want the reference typed", ref)
+		}
+		if looksLikePath(ref) {
+			t.Errorf("the confirmation named a path: %q", ref)
+		}
+		if calls := rec.recorded(); len(calls) != 0 {
+			t.Fatalf("a declined cloud delete sent %d requests: %+v", len(calls), calls)
+		}
+	})
+}
+
+// A valid name and a valid id still delete on the local path, exactly as before
+// the guard: --yes skips the prompt and the daemon receives the reference.
+func TestDeleteLocalStillDeletesByNameAndIdWithYes(t *testing.T) {
+	cases := []struct {
+		ref      string
+		wantPath string
+	}{
+		{"counter", "/v1/jobs/counter"},
+		{"job_1", "/v1/jobs/job_1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ref, func(t *testing.T) {
+			rec := &deleteRecorder{reply: daemonDeleteReply}
+			srv := rec.server(t)
+			defer srv.Close()
+
+			stdout, stderr, code := runDelete(t, unreadableStdin{t: t}, "--api", srv.URL, "delete", tc.ref, "--yes")
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
+			}
+			calls := rec.recorded()
+			if len(calls) != 1 {
+				t.Fatalf("requests = %d, want 1: %+v", len(calls), calls)
+			}
+			if calls[0].method != http.MethodDelete || calls[0].path != tc.wantPath {
+				t.Errorf("request = %s %s, want DELETE %s", calls[0].method, calls[0].path, tc.wantPath)
+			}
+			if !strings.Contains(stdout, "deleted     counter (job_1)") {
+				t.Errorf("output does not report the delete:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// The cloud path still resolves by case-insensitive label and exact id after
+// the guard, and still sends the DELETE for the resolved id.
+func TestDeleteCloudStillResolvesNameAndId(t *testing.T) {
+	cases := []struct {
+		ref    string
+		wantID string
+	}{
+		{"counter", "job_name"},
+		{"COUNTER", "job_name"},
+		{"job_wanted", "job_wanted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ref, func(t *testing.T) {
+			cloudHome(t)
+			rec := &deleteRecorder{reply: func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/api/cloud/me":
+					io.WriteString(w, meJSON(`{"id":"rt_1","lifecycle":"running","placement":"aws"}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/api/jobs":
+					io.WriteString(w, `{"jobs":[`+
+						`{"id":"job_name","name":"counter","runtimeId":"rt_1"},`+
+						`{"id":"job_wanted","name":"other","runtimeId":"rt_1"}]}`)
+				case r.Method == http.MethodDelete && r.URL.Path == "/api/jobs/"+tc.wantID:
+					io.WriteString(w, `{"applied":true,"value":{"jobId":"`+tc.wantID+`","deleted":true,"note":"purged"}}`)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+					io.WriteString(w, `{"message":"no route"}`)
+				}
+			}}
+			srv := rec.server(t)
+			defer srv.Close()
+			if err := cloud.SaveConfig(cloud.Config{CloudURL: srv.URL, Token: "otk_1_secret"}); err != nil {
+				t.Fatalf("SaveConfig: %v", err)
+			}
+
+			stdout, stderr, code := runDelete(t, unreadableStdin{t: t}, "delete", "--cloud", tc.ref, "--yes")
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr:\n%s", code, stderr)
+			}
+			deletes := 0
+			for _, call := range rec.recorded() {
+				if call.method == http.MethodDelete {
+					deletes++
+					if call.path != "/api/jobs/"+tc.wantID {
+						t.Errorf("DELETE path = %q, want /api/jobs/%s", call.path, tc.wantID)
+					}
+				}
+			}
+			if deletes != 1 {
+				t.Fatalf("DELETE requests = %d, want 1: %+v", deletes, rec.recorded())
+			}
+			if !strings.Contains(stdout, "deleted") {
+				t.Errorf("output does not report the delete:\n%s", stdout)
+			}
+		})
 	}
 }

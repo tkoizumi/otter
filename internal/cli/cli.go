@@ -1460,7 +1460,7 @@ Runtime:
 Identity:
   register [<path>|.]             give a source directory a durable identity
   reset <job>             retire its identity, mint a fresh one at the same path
-  delete <job> [--yes]    purge its state, history, payloads and releases (prompts first)
+  delete <name|id> [--yes] purge its state, history, payloads and releases (prompts first; a path is refused)
   move <job> <dest>       preserve its identity across a directory rename
   identity migrate [--apply]      move a name-keyed workspace onto the identity registry
 
@@ -1513,7 +1513,7 @@ Otter Cloud:
                                   verify a Cloud token and store it (prompted when omitted)
   login --status                  show the stored Cloud identity
   logout                          remove the stored Cloud credential (idempotent)
-  delete --cloud <job> [--runtime ID] [--yes]
+  delete --cloud <name|id> [--runtime ID] [--yes]
                                   delete a pooled job (prompts first; --yes skips)
 
 Global flags:
