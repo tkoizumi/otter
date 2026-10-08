@@ -72,26 +72,28 @@ func (l *Loop) base() time.Duration {
 	if l.backoffBase > 0 {
 		return l.backoffBase
 	}
-	// Two seconds -- a deliberate stopgap, not a considered default.
+	// Thirty seconds -- a pure cost/deploy-latency dial again.
 	//
 	// The interval is the price of asking "anything for me?" across a boundary
-	// that only opens one way: the agent dials out, Cloud cannot dial in. Polling
-	// is not free: at this rate two tenants make ~7.8M Worker requests and ~7.8M
-	// Durable Object requests a month, about a dollar over the paid allowances
-	// (~$6.50 in total once the jitter's 1.5s average is counted).
+	// that only opens one way: the agent dials out, Cloud cannot dial in. This
+	// loop asks whether a NEW RELEASE should be applied; it no longer carries
+	// dashboard reads.
 	//
-	// It is this short for ONE reason: every dashboard read of a POOLED runtime is
-	// a synchronous round trip that waits for this cycle, so page loads are only
-	// as fast as this number. At thirty seconds the job and run pages were
-	// unusable.
+	// It was two seconds as a stopgap for exactly one reason: every pooled
+	// runtime's dashboard read was a synchronous round trip that waited for this
+	// cycle, so page loads were only as fast as this number and thirty seconds
+	// made the job and run pages unusable. Reads no longer ride this number.
+	// They go over the separate control channel, whose idle request Cloud HOLDS
+	// open (`awaitControl` in `cloud/worker/control-store.ts`), and the agent
+	// re-requests immediately after any response that carried work. The apply
+	// loop's interval therefore no longer decides read latency at all.
 	//
-	// It does not scale. The cost is per tenant and linear -- the same two seconds
-	// at ten tenants is ~$5-6/month, at twenty ~$10-12 -- so the real fix is to
-	// stop making those reads round trips: serve the jobs list and job overview
-	// from the set the agent already reports, and leave only genuinely live data
-	// (logs, captures) on the wire. Then this number can be raised again, or the
-	// agent can hold a socket and it stops mattering at all.
-	return 2 * time.Second
+	// WHAT IT STILL DECIDES: how quickly a runtime picks up a new release --
+	// thirty seconds of deploy latency, accepted deliberately -- and its share
+	// of the request bill. It is a cost/deploy-latency dial and nothing else. Do
+	// not lower it again to make a read faster; fix the read's path instead. Do
+	// not raise it without deciding that a slower deploy is worth less spend.
+	return 30 * time.Second
 }
 
 func (l *Loop) applyJitter(d time.Duration) time.Duration {

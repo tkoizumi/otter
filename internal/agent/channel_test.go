@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fakeChannel records what the agent reported and hands back queued work.
@@ -314,5 +316,196 @@ func TestRuntimeHTTPDeleteJobRefusesAnUnconfirmedSuccess(t *testing.T) {
 	// A delete with no job is refused before any request is made.
 	if _, err := rt.DeleteJob(context.Background(), "  "); err == nil {
 		t.Error("DeleteJob must refuse an empty job reference")
+	}
+}
+
+// scriptedChannel answers a fixed script and records WHEN each call happened,
+// so a test can assert the SPACING between calls -- which is the whole question
+// of whether the loop sleeps after a response that carried work.
+type scriptedChannel struct {
+	mu    sync.Mutex
+	calls int
+	at    []time.Time
+	// work returns the answer for call n (1-based). Never nil.
+	work func(n int) *ControlWork
+	// after runs after the answer for call n has been recorded, if set.
+	after func(n int)
+}
+
+func (c *scriptedChannel) Control(context.Context) (*ControlWork, error) {
+	c.mu.Lock()
+	c.calls++
+	n := c.calls
+	c.at = append(c.at, time.Now())
+	c.mu.Unlock()
+	if c.after != nil {
+		c.after(n)
+	}
+	if c.work == nil {
+		return &ControlWork{}, nil
+	}
+	return c.work(n), nil
+}
+
+func (c *scriptedChannel) CommandResult(context.Context, CommandResult) error { return nil }
+func (c *scriptedChannel) ReadResult(context.Context, ReadResult) error       { return nil }
+
+func (c *scriptedChannel) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// gaps is the time between consecutive calls, in order.
+func (c *scriptedChannel) gaps() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]time.Duration, 0, len(c.at))
+	for i := 1; i < len(c.at); i++ {
+		out = append(out, c.at[i].Sub(c.at[i-1]))
+	}
+	return out
+}
+
+// A response that CARRIED work must be followed by another request immediately.
+// A dashboard page queues several reads as a burst and one poll leases up to
+// MAX_PER_POLL of them; sleeping the fallback interval between them is what made
+// a page cost several intervals.
+func TestControlLoopReasksImmediatelyAfterWork(t *testing.T) {
+	channel := &scriptedChannel{
+		work: func(n int) *ControlWork {
+			if n == 1 {
+				return &ControlWork{Commands: []Command{{ID: "c1", Action: "run", Job: "sync"}}}
+			}
+			return &ControlWork{}
+		},
+	}
+	loop := &ControlLoop{
+		Control: channel,
+		Runtime: &fakeCommandRuntime{runID: "run-1"},
+		// An hour, so if the loop sleeps at all after work it cannot reach a
+		// second call before the test's patience runs out.
+		Interval: time.Hour,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The second call is empty, and cancel after it so Run returns.
+	channel.after = func(n int) {
+		if n == 2 {
+			cancel()
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = loop.Run(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop did not re-request within 5s: it slept after a response that carried work")
+	}
+
+	gaps := channel.gaps()
+	if len(gaps) < 1 {
+		t.Fatalf("control calls = %d, want at least two", channel.callCount())
+	}
+	if gaps[0] > time.Second {
+		t.Fatalf("gap after a work-carrying response = %s, want an immediate re-request", gaps[0])
+	}
+}
+
+// The 2-second interval is the FALLBACK for a control plane that answers
+// immediately (a 204, or an older deployment with no hold). It must still be
+// honoured, or such a plane would be polled in a hot loop.
+func TestControlLoopKeepsTheFallbackIntervalWhenTheAnswerIsEmpty(t *testing.T) {
+	channel := &scriptedChannel{
+		work: func(int) *ControlWork { return &ControlWork{} },
+	}
+	fallback := 60 * time.Millisecond
+	loop := &ControlLoop{Control: channel, Runtime: &fakeCommandRuntime{}, Interval: fallback}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	channel.after = func(n int) {
+		if n == 3 {
+			cancel()
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = loop.Run(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop did not run")
+	}
+
+	gaps := channel.gaps()
+	if len(gaps) < 2 {
+		t.Fatalf("control calls = %d, want at least three", channel.callCount())
+	}
+	for i, gap := range gaps {
+		// Timers never fire early, so a correct sleep gives at least `fallback`.
+		// Half of it is a generous floor that still fails a hot loop outright.
+		if gap < fallback/2 {
+			t.Errorf("gap %d between empty answers = %s, want about the fallback interval %s", i, gap, fallback)
+		}
+	}
+}
+
+// The default fallback is two seconds, and an explicit interval wins.
+func TestControlLoopFallbackIntervalIsTwoSeconds(t *testing.T) {
+	if got := (&ControlLoop{}).interval(); got != 2*time.Second {
+		t.Fatalf("fallback interval = %s, want 2s for a control plane that answers immediately", got)
+	}
+	if got := (&ControlLoop{Interval: 5 * time.Second}).interval(); got != 5*time.Second {
+		t.Fatalf("explicit interval = %s, want 5s", got)
+	}
+}
+
+// The HTTP client timeout must comfortably exceed the hold, or every held poll
+// becomes a timeout error. The hold ceiling names the bound Cloud's 25s hold
+// must fit inside.
+func TestControlPlaneClientTimeoutExceedsTheHold(t *testing.T) {
+	timeout := (&HTTPControlPlane{}).client().Timeout
+	if timeout <= controlHoldCeiling {
+		t.Fatalf("client timeout = %s, must comfortably exceed the hold ceiling %s", timeout, controlHoldCeiling)
+	}
+}
+
+// The loop drains EVERYTHING one response carried -- all commands and all reads
+// -- before it decides whether to ask again. A response is a batch, not one item.
+func TestControlLoopDrainsEveryItemInOneResponse(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{
+		Commands: []Command{
+			{ID: "c1", Action: "pause", Job: "job-a"},
+			{ID: "c2", Action: "resume", Job: "job-b"},
+		},
+		Reads: []Read{
+			{ID: "r1", Op: "jobs.list", Limit: 5},
+			{ID: "r2", Op: "runs.list", Limit: 3},
+		},
+	}}
+	runtime := &fakeCommandRuntime{readBody: json.RawMessage(`{"ok":true}`)}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.paused) != 1 || runtime.paused[0] != "job-a" {
+		t.Fatalf("paused = %v, want job-a exactly once", runtime.paused)
+	}
+	if len(runtime.resumed) != 1 || runtime.resumed[0] != "job-b" {
+		t.Fatalf("resumed = %v, want job-b exactly once", runtime.resumed)
+	}
+	if len(channel.commands) != 2 {
+		t.Fatalf("command results = %d, want one per command", len(channel.commands))
+	}
+	if len(channel.reads) != 2 {
+		t.Fatalf("read results = %d, want one per read", len(channel.reads))
 	}
 }

@@ -321,22 +321,50 @@ func (l *ControlLoop) logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(discardWriter{}, nil))
 }
 
+// controlHoldCeiling is the longest a control plane may hold a request open
+// before answering empty. It is a ceiling, not the hold itself: Cloud's hold is
+// CONTROL_HOLD_MS (25s) in `lib/agent/control-types.ts`, and this side names a
+// bound so the fallback interval and the HTTP client timeout can be checked
+// against a number rather than a comment.
+//
+// It exists because the two sides are deployed independently. The cost of a
+// mismatch is asymmetric: a hold longer than the client timeout turns every idle
+// poll into a timeout error and a log line, while the agent's fallback interval
+// merely decides how long a read waits in the gap between holds.
+const controlHoldCeiling = 30 * time.Second
+
 func (l *ControlLoop) interval() time.Duration {
 	if l.Interval > 0 {
 		return l.Interval
 	}
-	// The control plane is expected to long-poll, so a short fixed interval is
-	// only the fallback for a control plane that answers immediately.
+	// Cloud DOES long-poll the control channel now: with nothing queued the
+	// request is held open (see `awaitControl` in worker/control-store.ts), and
+	// work queued during the hold is delivered on that request. This interval is
+	// therefore only the FALLBACK for a control plane that answers immediately
+	// -- an older deployment, or one with no control store bound -- so that such
+	// a plane still works exactly as it always did rather than being hammered.
 	return 2 * time.Second
 }
 
 // Run polls until the context is cancelled. A control-plane error is logged and
 // retried: a partition must not stop the runtime serving, and it must not stop
 // the agent asking again.
+//
+// A response that CARRIED work is not followed by a sleep. Work arrives in
+// bursts -- a dashboard page queues several reads, and one poll leases up to
+// MAX_PER_POLL of them -- so asking again at once is how the rest of a burst is
+// delivered without paying the fallback interval per item. An EMPTY response
+// still waits the interval: that is the fallback for a plane that answers
+// immediately, and against a plane that holds, the request it is about to make
+// simply becomes the next hold.
 func (l *ControlLoop) Run(ctx context.Context) error {
 	for {
-		if err := l.Once(ctx); err != nil {
+		work, err := l.poll(ctx)
+		if err != nil {
 			l.logger().Warn("agent_control_failed", "error", err.Error())
+		}
+		if work != nil && (len(work.Commands) > 0 || len(work.Reads) > 0) {
+			continue
 		}
 		select {
 		case <-ctx.Done():
@@ -349,12 +377,20 @@ func (l *ControlLoop) Run(ctx context.Context) error {
 // Once performs one poll and executes whatever it returned. It is exported so
 // `--once` and tests take the same path as the real loop.
 func (l *ControlLoop) Once(ctx context.Context) error {
+	_, err := l.poll(ctx)
+	return err
+}
+
+// poll is one request and the execution of everything it returned. It reports
+// the work as well as the error because `Run` decides from the work itself
+// whether to ask again immediately or to back off.
+func (l *ControlLoop) poll(ctx context.Context) (*ControlWork, error) {
 	if l.Control == nil || l.Runtime == nil {
-		return fmt.Errorf("agent: control loop needs a control plane and a runtime")
+		return nil, fmt.Errorf("agent: control loop needs a control plane and a runtime")
 	}
 	work, err := l.Control.Control(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, cmd := range work.Commands {
 		l.executeCommand(ctx, cmd)
@@ -362,7 +398,7 @@ func (l *ControlLoop) Once(ctx context.Context) error {
 	for _, read := range work.Reads {
 		l.executeRead(ctx, read)
 	}
-	return nil
+	return work, nil
 }
 
 // executeCommand runs one command and reports its acknowledgement. A failure to
