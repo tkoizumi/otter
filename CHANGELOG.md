@@ -6,6 +6,7 @@ This index links to them.
 
 | Version | Date | Headline | Notes |
 | --- | --- | --- | --- |
+| `v0.5.3` | 2026-10-08 | Delete a job from the CLI: `otter delete --cloud <name|id>` behind an irreversible-action confirmation that names the job and refuses a directory | [docs/releases/v0.5.3.md](docs/releases/v0.5.3.md) |
 | `v0.5.2` | 2026-10-07 | Deploy what you released: `otter deploy --cloud` promotes an existing release (`--build` restores packaging), and jobs can be deleted | [docs/releases/v0.5.2.md](docs/releases/v0.5.2.md) |
 | `v0.5.1` | 2026-10-07 | Ubuntu packages: a `.deb` per Linux architecture, so an install is `apt install ./otter_*.deb` rather than two binaries placed by hand | [docs/releases/v0.5.1.md](docs/releases/v0.5.1.md) |
 | `v0.5.0` | 2026-10-07 | Self-serve deploys to Otter Cloud: `otter login`, `otter deploy --cloud`, org-bound credentials, and one-container pooled tenants split across two uids | [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md) |
