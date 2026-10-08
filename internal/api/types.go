@@ -229,6 +229,13 @@ type DeletedView struct {
 	ID      string `json:"id"`
 	Name    string `json:"name,omitempty"`
 	Path    string `json:"path,omitempty"`
+
+	// Note is a one-line account of what the delete actually removed and what
+	// it did not. It is always set, because the two shapes of delete are not
+	// equivalent: a workspace job keeps its source files and its tombstone,
+	// while a released-only job has neither to keep and cannot be tombstoned.
+	// A caller must never have to infer the scope from an empty Path.
+	Note string `json:"note,omitempty"`
 }
 
 // RegisterRequest is the body of POST /v1/jobs.

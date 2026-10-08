@@ -12,6 +12,47 @@ import (
 	"github.com/tkoizumi/otter/internal/release"
 )
 
+// releasedTarget resolves a job that exists only in the release store: a
+// directory under the release root named by the durable job id.
+//
+// It is the delete-side counterpart of observeReleases, and it deliberately
+// does NOT require an ACTIVE release. observeReleases skips a job with no active
+// link because it is not runnable, but a delete must still be able to remove
+// staged releases for a job id, or a job whose active link went away would be
+// undeletable and its snapshots would sit in the store forever.
+//
+// The directory name is the identity, exactly as it is for discovery: it is what
+// runs, state and releases are keyed by, and it has to be a usable identity
+// before any of that can be true.
+func (d *Daemon) releasedTarget(job string) (identity.Instance, bool) {
+	id, err := identity.Parse(job)
+	if err != nil {
+		return identity.Instance{}, false
+	}
+	manager := release.Manager{DataDir: d.cfg.DataDir}
+	root, err := manager.Root()
+	if err != nil {
+		return identity.Instance{}, false
+	}
+	info, err := os.Stat(filepath.Join(root, job))
+	if err != nil || !info.IsDir() {
+		return identity.Instance{}, false
+	}
+
+	// The label and the snapshot directory are filled in when the release is
+	// active, because that is when they are knowable; a job with staged-only
+	// releases is still a legitimate delete target and reports its id.
+	name := job
+	canonical := ""
+	if sourceDir, _, ok, err := release.ActiveSourceDir(d.cfg.DataDir, job); err == nil && ok {
+		canonical = sourceDir
+		if m, err := config.LoadAndValidate(filepath.Join(sourceDir, config.ManifestFileName)); err == nil && m.Name != "" {
+			name = m.Name
+		}
+	}
+	return releasedInstance(id, name, canonical), true
+}
+
 // releasedJob is a job this runtime can run because a release for it is on
 // disk, even though no source for it sits in the jobs directory.
 type releasedJob struct {

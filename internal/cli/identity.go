@@ -119,7 +119,14 @@ func (a *App) cmdDelete(ctx context.Context, g globals, args []string) int {
 		name = result.ID
 	}
 	fmt.Fprintf(a.Stdout, "deleted     %s (%s)\n", name, result.ID)
-	fmt.Fprintln(a.Stdout, "note: source files were left in place; the path is suppressed until an explicit register")
+	// The daemon reports the scope of the delete, because it differs by job
+	// shape: a released-only job has no source to leave and no tombstone to
+	// write. An older daemon that does not report it gets the historical note.
+	note := result.Note
+	if note == "" {
+		note = "source files were left in place; the path is suppressed until an explicit register."
+	}
+	fmt.Fprintf(a.Stdout, "note        %s\n", note)
 	return 0
 }
 

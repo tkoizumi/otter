@@ -76,6 +76,11 @@ type CommandResult struct {
 	Status    string `json:"status"`
 	RunID     string `json:"run_id,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	// Note carries a successful command's outcome detail, when the action has
+	// something to say beyond "accepted". `delete` uses it to report exactly
+	// what the runtime removed and what it could not, so a control plane never
+	// records a bare success for a purge with a caveat.
+	Note string `json:"note,omitempty"`
 }
 
 // ReadResult is the answer to one read. Body is the runtime's own bounded JSON.
@@ -107,6 +112,11 @@ type RuntimeCommands interface {
 	CancelRun(ctx context.Context, runID string) error
 	PauseJob(ctx context.Context, job string) error
 	ResumeJob(ctx context.Context, job string) error
+	// DeleteJob removes a job through the SAME runtime endpoint `otter delete`
+	// uses, and reports what the runtime says it removed. It returns a note
+	// rather than nothing because a delete is not uniform: a released-only job
+	// cannot be tombstoned, and the control plane must be able to record that.
+	DeleteJob(ctx context.Context, job string) (string, error)
 	// Read performs one allowlisted read and returns the runtime's own bounded
 	// JSON body, unmodified.
 	Read(ctx context.Context, op, job, runID string, limit int, cursor string) (json.RawMessage, error)
@@ -188,6 +198,45 @@ func (r *RuntimeHTTP) ResumeJob(ctx context.Context, job string) error {
 		return fmt.Errorf("agent: resume command names no job")
 	}
 	return r.do(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(job)+"/resume", nil, nil)
+}
+
+// DeleteJob removes a job through DELETE /v1/jobs/{id}, the same route and
+// handler the operator's `otter delete` uses. It is deliberately not a separate
+// agent-only endpoint: an agent delete and a direct delete must be one
+// implementation, or the two could disagree about what a delete removes and
+// about the in-flight safety check.
+//
+// The runtime refuses a job with a queued, running or retrying run, and that
+// refusal arrives here as an error and is reported as a failed command with the
+// runtime's own reason. Nothing is removed by a refusal.
+func (r *RuntimeHTTP) DeleteJob(ctx context.Context, job string) (string, error) {
+	if strings.TrimSpace(job) == "" {
+		return "", fmt.Errorf("agent: delete command names no job")
+	}
+	var out struct {
+		Deleted bool   `json:"deleted"`
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		// Note is the runtime's own account of the delete's scope.
+		Note string `json:"note"`
+	}
+	if err := r.do(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(job), nil, &out); err != nil {
+		return "", err
+	}
+	if !out.Deleted {
+		// A 2xx that does not confirm a delete is not a successful delete, and
+		// reporting it as accepted would let a control plane close an operation
+		// that never happened.
+		return "", fmt.Errorf("agent: runtime answered the delete without confirming it")
+	}
+	if out.Note != "" {
+		return out.Note, nil
+	}
+	name := out.Name
+	if name == "" {
+		name = out.ID
+	}
+	return fmt.Sprintf("deleted %s (%s)", name, out.ID), nil
 }
 
 // Read performs one allowlisted read. An op outside the list is refused here, so
@@ -352,6 +401,20 @@ func (l *ControlLoop) executeCommand(ctx context.Context, cmd Command) {
 			result.Reason = err.Error()
 		} else {
 			result.Status = CommandAccepted
+		}
+	case "delete":
+		// The one irreversible action on this channel. It goes through the
+		// runtime's own delete path, so the in-flight refusal and the purge are
+		// the operator's, not a second implementation the agent owns. A refusal
+		// is a FAILED command carrying the runtime's reason, and nothing was
+		// removed.
+		note, err := l.Runtime.DeleteJob(ctx, cmd.Job)
+		if err != nil {
+			result.Status = CommandFailed
+			result.Reason = err.Error()
+		} else {
+			result.Status = CommandAccepted
+			result.Note = note
 		}
 	default:
 		// Refused rather than guessed. An unknown action is a control-plane bug,

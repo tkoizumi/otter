@@ -85,15 +85,22 @@ func (s *Server) Handler() http.Handler {
 	// be able to learn the shape before it authenticates to it.
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
-	// Admin-only: identity changes, daemon configuration and the tokens
-	// themselves. None of these is reachable with a scoped token. Capture
-	// payloads are not here: a capture-scoped credential may read them (see
-	// below), and nothing else on this block.
+	// Admin-only, with one deliberate exception: identity changes, daemon
+	// configuration and the tokens themselves. None of these is reachable with a
+	// scoped token except job delete, which the runtime's own agent also holds
+	// (see below). Capture payloads are not here: a capture-scoped credential may
+	// read them (see below), and nothing else on this block.
 	mux.Handle("GET /v1/jobs/resolve", s.admin(s.handleResolveJob))
 	mux.Handle("POST /v1/jobs", s.admin(s.handleRegisterJob))
 	mux.Handle("POST /v1/jobs/{id}/reset", s.admin(s.handleResetJob))
 	mux.Handle("POST /v1/jobs/{id}/move", s.admin(s.handleMoveJob))
-	mux.Handle("DELETE /v1/jobs/{id}", s.admin(s.handleDeleteJob))
+	// Delete is the ONE identity change the agent may make. A pooled tenant's
+	// control plane can only reach its runtime through the agent, so if delete
+	// were admin-only the control plane could never remove a job it deployed.
+	// It is registered with a gate that admits the agent scope rather than
+	// duplicated on the /v1/runtime block, so an agent delete and `otter delete`
+	// are the same route into the same handler and cannot drift apart.
+	mux.Handle("DELETE /v1/jobs/{id}", s.lifecycle(s.handleDeleteJob))
 	mux.Handle("POST /v1/reload", s.admin(s.handleReload))
 
 	// The deploy surface: maintenance in both directions, the active releases,
@@ -102,7 +109,8 @@ func (s *Server) Handler() http.Handler {
 	// of the agent's surface; the read and control halves are the `scoped` and
 	// `control` routes below, which also admit `agent` because the agent is the
 	// tenant's only control channel. What stays admin is capture payloads, job
-	// state, registration, configuration writes, reload and tokens.
+	// state, registration, configuration writes, reload and tokens; job delete
+	// is the one lifecycle action the agent also holds, on its own gate above.
 	mux.Handle("GET /v1/runtime/maintenance", s.deploy(s.handleGetMaintenance))
 	mux.Handle("POST /v1/runtime/maintenance", s.deploy(s.handleEnterMaintenance))
 	mux.Handle("DELETE /v1/runtime/maintenance", s.deploy(s.handleExitMaintenance))
@@ -272,8 +280,19 @@ func (p principal) canReadCapture() bool {
 // portable package, and activate a release. The `agent` scope is that surface,
 // plus the read and control surface (see canRead/canControl): the agent is the
 // tenant's only control channel. It still cannot read capture payloads or job
-// state, register or delete jobs, write configuration, reload, or manage tokens.
+// state, register, reset or move jobs, write configuration, reload, or manage
+// tokens. Deleting a job is the single lifecycle action it does hold, and
+// canDeleteJob is where that is decided.
 func (p principal) canDeploy() bool {
+	return p.Admin || p.Scope == ScopeAgent
+}
+
+// canDeleteJob reports whether the caller may delete a job: the admin token, or
+// the runtime's own agent. The agent needs it because a pooled runtime is
+// unreachable except through its outbound control channel, so a control plane
+// that cannot ask its agent to delete cannot remove a job at all. Everything
+// else that changes identity -- register, reset, move -- stays admin-only.
+func (p principal) canDeleteJob() bool {
 	return p.Admin || p.Scope == ScopeAgent
 }
 
@@ -323,6 +342,15 @@ func (s *Server) control(h http.HandlerFunc) http.Handler {
 // control- or capture-scoped token is refused: none of them is the agent.
 func (s *Server) deploy(h http.HandlerFunc) http.Handler {
 	return s.gate(h, principal.canDeploy,
+		"this endpoint requires the admin API token or an agent-scoped token")
+}
+
+// lifecycle is the gate on DELETE /v1/jobs/{id}: the admin token, or the
+// runtime's own agent. It is separate from deploy so the route table says which
+// lifecycle action the agent was granted, rather than implying it may register
+// or reset jobs because it may reach the deploy surface.
+func (s *Server) lifecycle(h http.HandlerFunc) http.Handler {
+	return s.gate(h, principal.canDeleteJob,
 		"this endpoint requires the admin API token or an agent-scoped token")
 }
 
@@ -934,6 +962,10 @@ func (s *Server) handleSetJobConfig(w http.ResponseWriter, r *http.Request) {
 // handleDeleteJob purges an identity's durable artifacts. It is a
 // distinct operation from removing the directory: the source files are left
 // alone and the path is suppressed so a scan cannot silently re-register it.
+//
+// It is the shared code path for `otter delete` and for the agent's `delete`
+// command. The daemon refuses a job with an in-flight run, so the agent inherits
+// that safety rather than reimplementing it.
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	result, err := s.backend.DeleteJob(r.Context(), r.PathValue("id"))
 	if err != nil {

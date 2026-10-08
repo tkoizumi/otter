@@ -513,10 +513,12 @@ func TestUnrelatedBearerIsRejected(t *testing.T) {
 // runtime's own credential. The agent is the tenant's only control channel, so
 // it reaches the deploy surface AND the read/control surface: gate, releases,
 // jobs, runs, output, timeline, capture metadata, run/cancel/pause/schedule.
-// It must not reach capture payloads, job state, job registration, configuration
-// writes, reload or token management -- those stay admin, and the tenant's own
-// Python cannot read the credential because the agent is a separate PID
-// namespace.
+// It also holds the ONE lifecycle action a pooled control plane can only
+// perform through it -- deleting a job -- on the same route `otter delete`
+// uses. It must not reach capture payloads, job state, job registration, job
+// reset/move, configuration writes, reload or token management -- those stay
+// admin, and the tenant's own Python cannot read the credential because the
+// agent is a separate PID namespace.
 func TestAgentTokenReachesTheAgentSurfaceAndNothingElse(t *testing.T) {
 	built := scopedFixtureAll(t)
 	agent := mintToken(t, built.srv, "runtime-agent", ScopeAgent)
@@ -538,6 +540,9 @@ func TestAgentTokenReachesTheAgentSurfaceAndNothingElse(t *testing.T) {
 		{"install a package", http.MethodPost, "/v1/runtime/releases/install", nil},
 		{"activate a release", http.MethodPost, "/v1/runtime/releases/activate",
 			[]byte(`{"digest":"sha256:` + strings.Repeat("a", 64) + `"}`)},
+		// Lifecycle: the one identity change the agent carries, so a pooled
+		// control plane can remove a job on a runtime it cannot reach directly.
+		{"delete a job", http.MethodDelete, "/v1/jobs/job-A", nil},
 		// Read.
 		{"list jobs", http.MethodGet, "/v1/jobs", nil},
 		{"read a job", http.MethodGet, "/v1/jobs/job-A", nil},
@@ -566,8 +571,8 @@ func TestAgentTokenReachesTheAgentSurfaceAndNothingElse(t *testing.T) {
 	}
 
 	// The surface the agent must NOT hold, even though it is the tenant's own
-	// credential: capture payloads (PII), job state, registration and identity,
-	// configuration writes, reload, and token management.
+	// credential: capture payloads (PII), job state, registration, reset and
+	// move, configuration writes, reload, and token management.
 	forbidden := []struct {
 		name   string
 		method string
@@ -584,7 +589,6 @@ func TestAgentTokenReachesTheAgentSurfaceAndNothingElse(t *testing.T) {
 		{"resolve a job reference", http.MethodGet, "/v1/jobs/resolve?ref=job-A", nil},
 		{"reset a job", http.MethodPost, "/v1/jobs/job-A/reset", nil},
 		{"move a job", http.MethodPost, "/v1/jobs/job-A/move", []byte(`{"destination":"/jobs/moved"}`)},
-		{"delete a job", http.MethodDelete, "/v1/jobs/job-A", nil},
 		{"reload the daemon", http.MethodPost, "/v1/reload", nil},
 		{"list tokens", http.MethodGet, "/v1/tokens", nil},
 		{"mint a token", http.MethodPost, "/v1/tokens", []byte(`{"name":"x","scope":"agent"}`)},

@@ -27,14 +27,17 @@ func (f *fakeChannel) ReadResult(_ context.Context, r ReadResult) error {
 
 // fakeCommandRuntime records the calls the control loop made.
 type fakeCommandRuntime struct {
-	runID     string
-	runErr    error
-	submitted []struct{ job, key string }
-	cancelled []string
-	paused    []string
-	resumed   []string
-	readBody  json.RawMessage
-	readErr   error
+	runID      string
+	runErr     error
+	submitted  []struct{ job, key string }
+	cancelled  []string
+	paused     []string
+	resumed    []string
+	deleted    []string
+	deleteErr  error
+	deleteNote string
+	readBody   json.RawMessage
+	readErr    error
 }
 
 func (f *fakeCommandRuntime) SubmitRun(_ context.Context, job, key string) (string, error) {
@@ -52,6 +55,10 @@ func (f *fakeCommandRuntime) PauseJob(_ context.Context, job string) error {
 func (f *fakeCommandRuntime) ResumeJob(_ context.Context, job string) error {
 	f.resumed = append(f.resumed, job)
 	return nil
+}
+func (f *fakeCommandRuntime) DeleteJob(_ context.Context, job string) (string, error) {
+	f.deleted = append(f.deleted, job)
+	return f.deleteNote, f.deleteErr
 }
 func (f *fakeCommandRuntime) Read(context.Context, string, string, string, int, string) (json.RawMessage, error) {
 	return f.readBody, f.readErr
@@ -97,6 +104,65 @@ func TestControlLoopRejectsAnUnknownAction(t *testing.T) {
 	}
 	if len(channel.commands) != 1 || channel.commands[0].Status != CommandRejected {
 		t.Fatalf("command results = %+v, want a rejection", channel.commands)
+	}
+}
+
+// The delete action reaches the runtime and its outcome is reported: accepted,
+// with the runtime's own account of what was removed carried as Note. It is the
+// first irreversible action on this channel, so a bare "accepted" would not be
+// enough -- the control plane has to be able to record the scope.
+func TestControlLoopExecutesADeleteCommandAndReportsItsNote(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-del", Action: "delete", Job: "sync"},
+	}}}
+	runtime := &fakeCommandRuntime{deleteNote: "released-only job: every release was removed"}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.deleted) != 1 || runtime.deleted[0] != "sync" {
+		t.Fatalf("DeleteJob calls = %+v, want one sync", runtime.deleted)
+	}
+	if len(channel.commands) != 1 {
+		t.Fatalf("command results = %+v, want one", channel.commands)
+	}
+	got := channel.commands[0]
+	if got.Status != CommandAccepted || got.CommandID != "cmd-del" || got.RuntimeID != "rt-a" {
+		t.Fatalf("command result = %+v, want accepted cmd-del", got)
+	}
+	if got.Note != runtime.deleteNote {
+		t.Errorf("note = %q, want the runtime's own %q", got.Note, runtime.deleteNote)
+	}
+	if got.Reason != "" {
+		t.Errorf("an accepted command carries no failure reason, got %q", got.Reason)
+	}
+}
+
+// A delete the runtime REFUSES -- an in-flight run, for instance -- is reported
+// as failed with the runtime's reason. Acceptance is never inferred from the
+// fact that the action is on the allowlist.
+func TestControlLoopReportsARefusedDeleteWithTheRuntimeReason(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-del", Action: "delete", Job: "sync"},
+	}}}
+	runtime := &fakeCommandRuntime{
+		deleteErr: context.DeadlineExceeded,
+	}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(channel.commands) != 1 {
+		t.Fatalf("command results = %+v, want one", channel.commands)
+	}
+	got := channel.commands[0]
+	if got.Status != CommandFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if got.Reason == "" || got.Note != "" {
+		t.Errorf("a refused delete must carry a reason and no note: %+v", got)
 	}
 }
 
@@ -202,5 +268,51 @@ func TestRuntimeHTTPReadReturnsRawBody(t *testing.T) {
 	}
 	if _, err := rt.Read(context.Background(), "tokens.list", "", "", 0, ""); err == nil {
 		t.Error("a read outside the allowlist must be refused before any request")
+	}
+}
+
+// The real runtime client deletes through the operator's own route -- DELETE
+// /v1/jobs/{id} -- and returns the runtime's note as the command's outcome.
+func TestRuntimeHTTPDeleteJobUsesTheOperatorRouteAndReturnsTheNote(t *testing.T) {
+	var sawMethod, sawPath, sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawMethod, sawPath, sawAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"deleted":true,"id":"job-7","name":"sync","note":"every release was removed"}`))
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "runtime-token"}
+	note, err := rt.DeleteJob(context.Background(), "job-7")
+	if err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+	if sawMethod != http.MethodDelete || sawPath != "/v1/jobs/job-7" {
+		t.Errorf("request = %s %s, want DELETE /v1/jobs/job-7", sawMethod, sawPath)
+	}
+	if sawAuth != "Bearer runtime-token" {
+		t.Errorf("Authorization = %q", sawAuth)
+	}
+	if note != "every release was removed" {
+		t.Errorf("note = %q, want the runtime's note", note)
+	}
+}
+
+// A 2xx that does not confirm a delete is not a successful delete. Reporting it
+// as accepted would let a control plane close an operation that never happened.
+func TestRuntimeHTTPDeleteJobRefusesAnUnconfirmedSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"deleted":false,"id":"job-7"}`))
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	if _, err := rt.DeleteJob(context.Background(), "job-7"); err == nil {
+		t.Fatal("DeleteJob accepted a response that did not confirm the delete")
+	}
+	// A delete with no job is refused before any request is made.
+	if _, err := rt.DeleteJob(context.Background(), "  "); err == nil {
+		t.Error("DeleteJob must refuse an empty job reference")
 	}
 }
