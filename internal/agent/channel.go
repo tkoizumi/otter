@@ -343,7 +343,27 @@ func (l *ControlLoop) interval() time.Duration {
 	// therefore only the FALLBACK for a control plane that answers immediately
 	// -- an older deployment, or one with no control store bound -- so that such
 	// a plane still works exactly as it always did rather than being hammered.
-	return 2 * time.Second
+	//
+	// For such a plane it is also the LATENCY OF EVERY LIVE READ: browser ->
+	// Cloud queues a read -> Cloud answers the agent's control request with
+	// "nothing queued" -> the read waits here for the next poll. That is why this
+	// is one second rather than the original two: halving the interval halves
+	// that wait.
+	//
+	// THE COST, HONESTLY. The control poll is ONE request per cycle, so at 1s it
+	// is 86,400/day, about 2.6M requests per tenant per month (about 5.2M for two
+	// tenants). That stays inside the Workers 10M request allowance. The Durable
+	// Objects allowance absorbs the first 1M of those requests, and the remaining
+	// ~4.2M cost roughly $0.65/month for two tenants -- as REQUESTS, not duration
+	// (Cloudflare rounds billable requests up to the next million, so at most
+	// ~$0.75; either way a rounding error next to the duration figure below).
+	//
+	// The alternative that makes a read instant is HOLDING the control request
+	// open until work arrives. That bills DO DURATION instead of requests, an
+	// order of magnitude more (~$3.84 per tenant per month), which is exactly why
+	// this interval is the cheap lever. If one second is not fast enough, the
+	// real fix is that held connection, not a smaller number here.
+	return time.Second
 }
 
 // Run polls until the context is cancelled. A control-plane error is logged and

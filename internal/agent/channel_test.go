@@ -370,7 +370,9 @@ func (c *scriptedChannel) gaps() []time.Duration {
 // A response that CARRIED work must be followed by another request immediately.
 // A dashboard page queues several reads as a burst and one poll leases up to
 // MAX_PER_POLL of them; sleeping the fallback interval between them is what made
-// a page cost several intervals.
+// a page cost several intervals. This is also what keeps a short interval (or a
+// warm hold) from turning the loop into a spin: the interval applies to an EMPTY
+// answer, never to work already in hand.
 func TestControlLoopReasksImmediatelyAfterWork(t *testing.T) {
 	channel := &scriptedChannel{
 		work: func(n int) *ControlWork {
@@ -416,7 +418,54 @@ func TestControlLoopReasksImmediatelyAfterWork(t *testing.T) {
 	}
 }
 
-// The 2-second interval is the FALLBACK for a control plane that answers
+// The same no-sleep-after-work property at the DEFAULT interval, which a short
+// interval must not break. The interval bounds the wait after an EMPTY answer;
+// a response that carried work is re-asked at once, so a 1s default cannot make
+// the loop spin or, conversely, insert a sleep before draining a burst.
+func TestControlLoopReasksImmediatelyAfterWorkAtTheDefaultInterval(t *testing.T) {
+	channel := &scriptedChannel{
+		work: func(n int) *ControlWork {
+			if n == 1 {
+				return &ControlWork{Reads: []Read{{ID: "r1", Op: "jobs.list"}}}
+			}
+			return &ControlWork{}
+		},
+	}
+	loop := &ControlLoop{
+		Control: channel,
+		Runtime: &fakeCommandRuntime{readBody: json.RawMessage(`{"ok":true}`)},
+		// No explicit Interval: the default fallback is under test.
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	channel.after = func(n int) {
+		if n == 2 {
+			cancel()
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = loop.Run(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop did not re-request within 5s at the default interval")
+	}
+
+	gaps := channel.gaps()
+	if len(gaps) < 1 {
+		t.Fatalf("control calls = %d, want at least two", channel.callCount())
+	}
+	// The default is 1s, so a sleep after work would put this gap near a second.
+	if gaps[0] > 500*time.Millisecond {
+		t.Fatalf("gap after a work-carrying response at the default interval = %s, want an immediate re-request", gaps[0])
+	}
+}
+
+// The one-second interval is the FALLBACK for a control plane that answers
 // immediately (a 204, or an older deployment with no hold). It must still be
 // honoured, or such a plane would be polled in a hot loop.
 func TestControlLoopKeepsTheFallbackIntervalWhenTheAnswerIsEmpty(t *testing.T) {
@@ -457,10 +506,10 @@ func TestControlLoopKeepsTheFallbackIntervalWhenTheAnswerIsEmpty(t *testing.T) {
 	}
 }
 
-// The default fallback is two seconds, and an explicit interval wins.
-func TestControlLoopFallbackIntervalIsTwoSeconds(t *testing.T) {
-	if got := (&ControlLoop{}).interval(); got != 2*time.Second {
-		t.Fatalf("fallback interval = %s, want 2s for a control plane that answers immediately", got)
+// The default fallback is one second, and an explicit interval wins.
+func TestControlLoopFallbackIntervalIsOneSecond(t *testing.T) {
+	if got := (&ControlLoop{}).interval(); got != time.Second {
+		t.Fatalf("fallback interval = %s, want 1s for a control plane that answers immediately", got)
 	}
 	if got := (&ControlLoop{Interval: 5 * time.Second}).interval(); got != 5*time.Second {
 		t.Fatalf("explicit interval = %s, want 5s", got)
