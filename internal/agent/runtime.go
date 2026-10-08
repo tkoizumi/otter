@@ -159,9 +159,25 @@ func (r *RuntimeHTTP) Observe(ctx context.Context) (Observed, error) {
 		ManagedJobs           []string `json:"managed_jobs"`
 		ManagedReconciliation bool     `json:"managed_reconciliation"`
 	}
-	releases := []ObservedRelease{}
+	// releases and managed BOTH stay nil unless the runtime actually answered.
+	//
+	// That distinction is the whole fix for a removal that could never close.
+	// The report carries `releases`: nil marshals as `null` ("this report has no
+	// set"), while a NON-NIL EMPTY slice marshals as `[]` ("reported, and the
+	// runtime serves nothing"). A removal is confirmed by the job's ABSENCE, so
+	// only the second may confirm one.
+	//
+	// Initialising these BEFORE the call -- as this used to -- made a FAILED read
+	// of the active release set indistinguishable from a successful empty one,
+	// which would let a removal be confirmed by a report whose runtime never
+	// answered the question. A failed read is left as nil, i.e. "not reported".
+	var releases []ObservedRelease
+	var managed []string
 	digest := ""
 	if err := r.do(ctx, http.MethodGet, "/v1/runtime/releases/active", nil, &active); err == nil {
+		// The read SUCCEEDED. From here an empty set is a fact, not silence.
+		releases = []ObservedRelease{}
+		managed = active.ManagedJobs
 		// Reported in the control plane's canonical `sha256:<hex>` form. The
 		// runtime's own store names directories by bare hex, but Cloud decides
 		// whether a deploy landed by comparing this value with the desired
@@ -184,7 +200,7 @@ func (r *RuntimeHTTP) Observe(ctx context.Context) (Observed, error) {
 	return Observed{
 		ReleaseDigest:         digest,
 		Releases:              releases,
-		ManagedJobs:           active.ManagedJobs,
+		ManagedJobs:           managed,
 		ManagedReconciliation: active.ManagedReconciliation,
 		RuntimeVersion:        health.Version,
 		Health:                health.Status,

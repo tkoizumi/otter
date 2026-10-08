@@ -109,11 +109,30 @@ type Reported struct {
 	Observed   map[string]string `json:"observed,omitempty"`
 	// Releases is the full active set after the cycle. It is the EVIDENCE a
 	// per-job operation closes on: a deploy on its target job's presence, a
-	// removal on its target job's absence. Omitted by an agent that only speaks
-	// the single-release shape, whose evidence is the digest above.
-	Releases []ObservedRelease `json:"releases,omitempty"`
-	// ManagedJobs is the released-only set the runtime manages.
-	ManagedJobs []string `json:"managed_jobs,omitempty"`
+	// removal on its target job's absence.
+	//
+	// It is deliberately NOT omitempty, and nil is kept DISTINCT from empty:
+	//
+	//   - a NON-NIL, EMPTY slice marshals as `[]`: "I am reporting, and the
+	//     runtime serves nothing". This is the only shape that can confirm the
+	//     LAST removal on a runtime, because a removal is confirmed by the job's
+	//     absence -- and a report that never mentioned the set cannot be read as
+	//     evidence that the job is gone;
+	//   - a nil slice marshals as `null`: "this report carries no set at all",
+	//     which is what an agent that only speaks the single-release shape sends
+	//     (its evidence is the digest above). Cloud reads that as no evidence.
+	//
+	// `omitempty` collapsed both of those into an absent field, so the last
+	// removal on a runtime could never be confirmed: its operation stayed
+	// pending forever and refused every later deploy with `operation_open`. The
+	// field must be present-with-`[]`, not omitted and not `null`.
+	Releases []ObservedRelease `json:"releases"`
+	// ManagedJobs is the released-only set the runtime manages. Kept present for
+	// the same reason as Releases: `[]` is "reported, and the runtime manages
+	// none", a list is "reported, here they are", and nil (`null`) is "not
+	// reported". Emptiness is meaningful here -- it is what makes a stale
+	// managed-set record clearable -- so it must not be omitted.
+	ManagedJobs []string `json:"managed_jobs"`
 }
 
 // Outcomes. These are a closed set: the control plane decides what to do based on
@@ -139,6 +158,16 @@ type ControlPlane interface {
 // Observed is what the agent reports about the runtime it is managing. Cloud
 // records these as observations, never as confirmation that a command executed,
 // because under a pull model no command is sent.
+//
+// `omitempty` on the two collections below is DELIBERATE, and it is the one
+// place on this path where it is correct: `Releases`/`ManagedJobs` here travel
+// on the DESIRED request, and that route reads them with `?? []` -- an absent
+// set and an empty one are answered identically. The question that must not be
+// conflated -- "did the runtime actually answer, or did the read fail?" -- is
+// carried by ManagedReconciliation, which is false (and so omitted) on a failed
+// read and gates the only consumer of the set (`declareSnapshot`). The REPORT,
+// by contrast, closes operations on the set itself, so its `Reported.Releases`
+// must NOT be omitted; see the comment there.
 type Observed struct {
 	ReleaseDigest string `json:"release_digest,omitempty"`
 	// Releases is every release the runtime serves, per job. A SET because a
