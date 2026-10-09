@@ -171,6 +171,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		// The pooled-runtime agent: outbound to the control plane, loopback to
 		// the runtime, and never an inbound connection from Cloud.
 		return a.cmdAgent(ctx, commandArgs)
+	case "pool":
+		// The POOL HOST agent, which is a different thing from `otter agent`: it is
+		// host-scoped, runs before any runtime exists, and is what creates them.
+		return a.cmdPool(ctx, commandArgs)
 	case "stop":
 		return a.cmdStop(ctx, commandArgs)
 	case "serve":
