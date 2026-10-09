@@ -104,6 +104,15 @@ func (c *Client) Report(ctx context.Context, report Report) error {
 	return c.post(ctx, "/agent/v1/host/report", report, nil)
 }
 
+// Release hands a claim back without an outcome.
+//
+// Used by a dry run, which must not consume the work it is rehearsing: an agent that
+// claims and then skips execution would leave the request in `provisioning` until the
+// lease lapsed, and the user would watch a runtime nobody was creating.
+func (c *Client) Release(ctx context.Context, runtimeID string) error {
+	return c.post(ctx, "/agent/v1/host/release", map[string]string{"runtime_id": runtimeID}, nil)
+}
+
 // post sends one JSON body to the host channel.
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	encoded, err := json.Marshal(body)

@@ -115,6 +115,19 @@ func (a *Agent) Step(ctx context.Context) error {
 	plan := *work.Work
 	o.Logger("pool agent: provisioning %s as %s (attempt %d)", plan.RuntimeID, plan.Tenant, plan.Attempts)
 
+	if o.DryRun {
+		// Hand the claim straight back and STOP. A rehearsal must not hold a slot and
+		// must not report an outcome it never produced: the first version of this
+		// checked the dry run inside the executor, so the cycle fell through to the
+		// report and told the control plane a runtime was `active` when nothing had
+		// been created. The user saw a runtime that did not exist.
+		if err := a.Client.Release(ctx, plan.RuntimeID); err != nil {
+			return fmt.Errorf("release dry-run claim for %s: %w", plan.RuntimeID, err)
+		}
+		o.Logger("pool agent: %s dry run: claim released, nothing reported", plan.RuntimeID)
+		return nil
+	}
+
 	outcome, execErr := Execute(ctx, plan, o)
 
 	report := Report{RuntimeID: plan.RuntimeID}
@@ -127,11 +140,9 @@ func (a *Agent) Step(ctx context.Context) error {
 	} else {
 		report.State = "active"
 		report.Note = outcome.Detail
-		if outcome.AlreadyPresent {
-			report.TenantState = "running"
-		} else {
-			report.TenantState = "running"
-		}
+		// A completed attempt leaves a running container whether it was created now or
+		// reconciled from an earlier attempt, so the observed state is the same.
+		report.TenantState = "running"
 		o.Logger("pool agent: %s %s", plan.RuntimeID, outcome.Detail)
 	}
 

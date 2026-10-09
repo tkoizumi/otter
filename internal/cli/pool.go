@@ -79,7 +79,7 @@ func (a *App) cmdPoolAgent(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	base := strings.TrimSpace(firstNonEmptyString(*cloudURL, os.Getenv("OTTER_POOL_CLOUD_URL")))
+	base := strings.TrimSpace(firstNonEmptyString(*cloudURL, pool.ResolveCloudURL()))
 	if base == "" {
 		fmt.Fprintln(a.Stderr, "otter: no control plane URL: pass --cloud <url> or set OTTER_POOL_CLOUD_URL")
 		fmt.Fprintln(a.Stderr, "otter: the tenant's agent must reach this plane over the public internet; a loopback address will not work")

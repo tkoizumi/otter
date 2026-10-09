@@ -49,6 +49,7 @@ const (
 	DefaultStatePath       = "/var/lib/otter/pool-agent/state.json"
 	DefaultVolumeRoot      = "/var/lib/otter/tenants"
 	DefaultTokenPath       = "/etc/otter/pool-token"
+	DefaultAgentEnvPath    = "/etc/otter/pool-agent.env"
 	DefaultImage           = "otter-runtime:local"
 )
 
@@ -141,7 +142,7 @@ type Options struct {
 func (o *Options) withDefaults() Options {
 	out := *o
 	if out.CloudURL == "" {
-		out.CloudURL = os.Getenv("OTTER_POOL_CLOUD_URL")
+		out.CloudURL = ResolveCloudURL()
 	}
 	if out.TokenPath == "" {
 		out.TokenPath = firstNonEmpty(os.Getenv("OTTER_POOL_TOKEN_FILE"), DefaultTokenPath)
@@ -380,4 +381,49 @@ func trimOutput(out string) string {
 		return trimmed
 	}
 	return "…" + trimmed[len(trimmed)-limit:]
+}
+
+// ResolveCloudURL finds the control plane address, in the order an operator would
+// expect: an explicit value (handled by the caller), then the environment, then the
+// file the systemd unit reads.
+//
+// THE FILE MATTERS because systemd passes `EnvironmentFile=/etc/otter/pool-agent.env`
+// while a manual run does not, so without this the documented first check —
+// `otter pool agent --once --dry-run` — reported "no control plane URL" on a host
+// whose service was configured correctly. That is a documentation trap: the check
+// that is supposed to reassure an operator fails for a reason that has nothing to do
+// with the host.
+func ResolveCloudURL() string {
+	if value := strings.TrimSpace(os.Getenv("OTTER_POOL_CLOUD_URL")); value != "" {
+		return value
+	}
+	return EnvFileValue(DefaultAgentEnvPath, "OTTER_POOL_CLOUD_URL")
+}
+
+// envFileValue reads one KEY=value from an environment file.
+//
+// Deliberately minimal: no quotes, no escapes, no `export` prefix, no variable
+// expansion. The only file this reads is one this project tells operators to write,
+// and a general-purpose shell parser here would be a second, subtly different
+// interpretation of a file the shell also reads.
+//
+// A missing or unreadable file is not an error: the caller falls back to asking the
+// operator for the value, which is the behaviour that already existed.
+func EnvFileValue(path, key string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		return strings.TrimSpace(strings.Trim(strings.TrimPrefix(line, prefix), `"'`))
+	}
+	return ""
 }
