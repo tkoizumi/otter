@@ -212,10 +212,11 @@ type IngestResult struct {
 
 // Store persists capture summaries and HTTP exchanges.
 type Store struct {
-	db       *sql.DB
-	redactor *Redactor
-	limits   Limits
-	exporter Exporter
+	db        *sql.DB
+	redactor  *Redactor
+	limits    Limits
+	exporter  Exporter
+	runtimeID string
 }
 
 // NewStore wraps a database handle. A nil redactor means the mandatory default

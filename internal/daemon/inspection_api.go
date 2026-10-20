@@ -41,6 +41,24 @@ func (d *Daemon) IngestCaptureEvents(ctx context.Context, runID string, batch in
 	return result, err
 }
 
+// PullCaptureExports implements api.Backend. The agent pulls over loopback; the
+// documents are assembled in the inspection store.
+func (d *Daemon) PullCaptureExports(ctx context.Context, after int64, limit int) (*inspection.ExportBatch, error) {
+	if d.inspection == nil {
+		return nil, fmt.Errorf("http capture is not available: %w", api.ErrConflict)
+	}
+	return d.inspection.PullExports(ctx, after, limit)
+}
+
+// AckCaptureExports implements api.Backend. A retry carries the reason so the
+// next attempt has an operator-readable history.
+func (d *Daemon) AckCaptureExports(ctx context.Context, refs []inspection.ExportRef, state, message string) error {
+	if d.inspection == nil {
+		return fmt.Errorf("http capture is not available: %w", api.ErrConflict)
+	}
+	return d.inspection.AckExports(ctx, refs, state, message)
+}
+
 // CaptureSummary implements api.Backend. A run that exists but was never
 // configured for capture reports "unavailable" rather than an empty history.
 func (d *Daemon) CaptureSummary(ctx context.Context, runID string) (*inspection.RunCapture, error) {

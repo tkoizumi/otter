@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tkoizumi/otter/internal/inspection"
 	"github.com/tkoizumi/otter/internal/logging"
 	"github.com/tkoizumi/otter/internal/runs"
 	"github.com/tkoizumi/otter/internal/timeline"
@@ -79,6 +80,14 @@ type fakeBackend struct {
 
 	// capture is the in-memory HTTP capture fake, defined in capture_test.go.
 	capture *fakeCapture
+
+	// Capture export relay seam, defined in export_test.go.
+	exportBatch *inspection.ExportBatch
+	exportErr   error
+	ackRefs     []inspection.ExportRef
+	ackState    string
+	ackMessage  string
+	ackErr      error
 
 	// timeline seam for the API contract tests, defined in timeline_test.go.
 	timelinePage     *timeline.Page

@@ -180,6 +180,14 @@ type Backend interface {
 	// the id, because the id alone does not identify a run.
 	GetCaptureRequestByID(ctx context.Context, requestID string) (*inspection.Exchange, error)
 
+	// PullCaptureExports returns pending, due export rows assembled into the
+	// frozen document shape. The agent pulls them over loopback.
+	PullCaptureExports(ctx context.Context, after int64, limit int) (*inspection.ExportBatch, error)
+
+	// AckCaptureExports records what the agent did with the rows it was given:
+	// sent, abandoned, or retry with a reason.
+	AckCaptureExports(ctx context.Context, refs []inspection.ExportRef, state, message string) error
+
 	// TimelinePage assembles one page of a finished run's merged timeline. It
 	// refuses an attempt that has not finished, so a reader is never handed a
 	// chronology that is still changing underneath it.

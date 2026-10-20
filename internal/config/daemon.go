@@ -482,6 +482,9 @@ func (c *DaemonConfig) Validate() error {
 	if _, err := inspection.ParseExportMode(c.CaptureExport); err != nil {
 		return fmt.Errorf("--capture-export %w", err)
 	}
+	if c.CaptureExportMode() == inspection.ExportModeOutbox && strings.TrimSpace(c.SecretBroker.RuntimeID) == "" {
+		return fmt.Errorf("--capture-export outbox requires a runtime id; set OTTER_RUNTIME_ID")
+	}
 
 	if c.Notify.Enabled() {
 		parsed, err := url.Parse(c.Notify.URL)

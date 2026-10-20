@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/tkoizumi/otter/internal/database"
 )
 
 // ExportKind is the kind of capture record that leaves the runtime.
@@ -97,7 +95,7 @@ func (e OutboxExporter) Export(ctx context.Context, tx DBTX, records []ExportRec
 		return fmt.Errorf("inspection: count capture outbox: %w", err)
 	}
 
-	now := database.FormatTime(time.Now().UTC())
+	now := time.Now().UTC().UnixMilli()
 	for _, record := range records {
 		if err := record.validate(); err != nil {
 			return err

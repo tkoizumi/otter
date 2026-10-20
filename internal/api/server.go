@@ -129,6 +129,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runs/{id}/requests/{request_id}", s.capture(s.handleGetCaptureRequest))
 	mux.Handle("GET /v1/requests/{request_id}", s.capture(s.handleGetCaptureRequestByID))
 
+	// The capture export relay: the agent pulls pending documents and acks what
+	// it delivered. Agent-scoped (deploy admits the agent but not a control
+	// token), and loopback-only because these move tenant data. Cloud still
+	// derives the tenant prefix from the agent credential.
+	mux.Handle("GET /v1/capture/exports", s.local(s.deploy(s.handlePullCaptureExports)))
+	mux.Handle("POST /v1/capture/exports/ack", s.local(s.deploy(s.handleAckCaptureExports)))
+
 	// The operator read surface: metadata, run output, the merged timeline and
 	// capture summaries, reachable with a read-, control- or capture-scoped
 	// token or the admin token. Capture *payloads* are not here; they need the

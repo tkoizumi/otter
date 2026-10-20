@@ -282,7 +282,8 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	inspectionStore = inspectionStore.WithExporter(exporter)
+	inspectionStore = inspectionStore.WithExporter(exporter).
+		WithRuntimeID(cfg.SecretBroker.RuntimeID)
 	// The pause table is read once here and mirrored in memory, so a cron tick
 	// can ask whether it may fire without a database read.
 	pauseStore, err := pause.NewStore(ctx, db.DB)

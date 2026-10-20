@@ -142,6 +142,14 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		RuntimeID: *runtimeID,
 		Logger:    logger,
 	}
+	// The capture relay is a THIRD loop, for the same reason the control channel
+	// is separate from apply: a stopped Cloud must back up capture in the local
+	// outbox without delaying a deploy, and a drain must not delay export.
+	exportLoop := &agent.ExportLoop{
+		Source:   runtime,
+		Uploader: control,
+		Logger:   logger,
+	}
 
 	if *once {
 		// One iteration with a short deadline, so an operator can answer "can
@@ -159,6 +167,9 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		if err := controlLoop.Once(runCtx); err != nil {
 			fmt.Fprintf(a.Stderr, "otter agent: control channel: %v\n", err)
 		}
+		if err := exportLoop.Once(runCtx); err != nil {
+			fmt.Fprintf(a.Stderr, "otter agent: capture export: %v\n", err)
+		}
 		fmt.Fprintln(a.Stdout, "otter agent: one iteration completed")
 		return 0
 	}
@@ -174,6 +185,11 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 	go func() {
 		if err := controlLoop.Run(runCtx); err != nil {
 			fmt.Fprintf(a.Stderr, "otter agent: control channel: %v\n", err)
+		}
+	}()
+	go func() {
+		if err := exportLoop.Run(runCtx); err != nil {
+			fmt.Fprintf(a.Stderr, "otter agent: capture export: %v\n", err)
 		}
 	}()
 

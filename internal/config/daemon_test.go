@@ -651,6 +651,7 @@ func TestCaptureExportMode(t *testing.T) {
 	}
 
 	t.Setenv("OTTER_CAPTURE_EXPORT", "outbox")
+	t.Setenv("OTTER_RUNTIME_ID", "rt_demo_01")
 	outbox := DefaultDaemonConfig("test")
 	if err := outbox.ApplyEnv(); err != nil {
 		t.Fatalf("ApplyEnv: %v", err)
@@ -687,5 +688,17 @@ func TestCaptureExportFlag(t *testing.T) {
 	}
 	if got := c.CaptureExportMode(); got != inspection.ExportModeOutbox {
 		t.Fatalf("flag export mode = %q, want outbox", got)
+	}
+}
+
+func TestCaptureExportOutboxRequiresARuntimeID(t *testing.T) {
+	c := DefaultDaemonConfig("test")
+	c.CaptureExport = inspection.ExportModeOutbox
+	if err := c.Validate(); err == nil {
+		t.Fatal("outbox export passed validation without a runtime id")
+	}
+	c.SecretBroker.RuntimeID = "rt_demo_01"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("outbox export with a runtime id: %v", err)
 	}
 }
