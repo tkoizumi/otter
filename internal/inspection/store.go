@@ -206,6 +206,7 @@ type Store struct {
 	db       *sql.DB
 	redactor *Redactor
 	limits   Limits
+	exporter Exporter
 }
 
 // NewStore wraps a database handle. A nil redactor means the mandatory default
@@ -217,7 +218,17 @@ func NewStore(db *sql.DB, redactor *Redactor, limits Limits) *Store {
 	if limits.MaxBodyBytes == 0 {
 		limits = DefaultLimits()
 	}
-	return &Store{db: db, redactor: redactor, limits: limits}
+	return &Store{db: db, redactor: redactor, limits: limits, exporter: NoopExporter{}}
+}
+
+// WithExporter sets the sink for capture records. A nil exporter means the
+// no-op, so a caller that has not configured an export path changes nothing.
+func (s *Store) WithExporter(exporter Exporter) *Store {
+	if exporter == nil {
+		exporter = NoopExporter{}
+	}
+	s.exporter = exporter
+	return s
 }
 
 // Limits returns the limits this store enforces.

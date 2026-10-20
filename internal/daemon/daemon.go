@@ -274,6 +274,15 @@ func New(ctx context.Context, opts Options) (*Daemon, error) {
 	inspectionStore := inspection.NewStore(db.DB,
 		inspection.NewRedactor(cfg.CaptureRedactHeaders, cfg.CaptureRedactQuery, cfg.CaptureRedactFields),
 		inspection.DefaultLimits())
+	// The exporter is a seam, not a feature: the default no-op leaves every
+	// existing behaviour unchanged. A mode this build does not implement fails
+	// startup rather than silently replacing the operator's choice.
+	exporter, err := inspection.NewExporter(cfg.CaptureExportMode())
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	inspectionStore = inspectionStore.WithExporter(exporter)
 	// The pause table is read once here and mirrored in memory, so a cron tick
 	// can ask whether it may fire without a database read.
 	pauseStore, err := pause.NewStore(ctx, db.DB)

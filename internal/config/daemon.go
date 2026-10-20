@@ -103,6 +103,13 @@ type DaemonConfig struct {
 	CaptureRedactQuery   []string
 	CaptureRedactFields  []string
 
+	// CaptureExport selects the sink for completed exchanges. "none" (the
+	// default) leaves a runtime behaving exactly as it did before export
+	// existed: nothing leaves the host. "outbox" writes export records to the
+	// local relay queue; the agent uploads them later. An unconfigured runtime
+	// must never phone home by accident, so the safe value is the default.
+	CaptureExport string
+
 	// SDKPath overrides the directory prepended to the child process
 	// PYTHONPATH. When empty the daemon extracts its embedded Python SDK into
 	// the data directory and uses that.
@@ -266,6 +273,7 @@ func DefaultDaemonConfig(version string) DaemonConfig {
 
 		CaptureRetention: DefaultCaptureRetention,
 		CaptureDefault:   DefaultCapturePolicy,
+		CaptureExport:    inspection.ExportModeNone,
 		LogRetention:     DefaultLogRetention,
 		RunRetention:     DefaultRunRetention,
 		Version:          version,
@@ -360,6 +368,9 @@ func (c *DaemonConfig) ApplyEnv() error {
 	if v, ok := os.LookupEnv("OTTER_CAPTURE_DEFAULT"); ok && strings.TrimSpace(v) != "" {
 		c.CaptureDefault = inspection.Policy(strings.ToLower(strings.TrimSpace(v)))
 	}
+	if v, ok := os.LookupEnv("OTTER_CAPTURE_EXPORT"); ok && strings.TrimSpace(v) != "" {
+		c.CaptureExport = strings.ToLower(strings.TrimSpace(v))
+	}
 	if v, ok := os.LookupEnv("OTTER_CAPTURE_REDACT_HEADERS"); ok && strings.TrimSpace(v) != "" {
 		c.CaptureRedactHeaders = SplitList(v)
 	}
@@ -431,6 +442,8 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.DurationVar(&c.RunRetention, "run-retention", c.RunRetention, "how long terminal run history is kept (0 retains runs forever)")
 	fs.Var(policyFlag{target: &c.CaptureDefault}, "capture-default",
 		"HTTP capture policy for runs that do not choose one: "+policyNames())
+	fs.StringVar(&c.CaptureExport, "capture-export", c.CaptureExport,
+		"capture export sink: "+inspection.ExportModeNone+" (outbox is added with S2)")
 	fs.StringVar(&c.SDKPath, "sdk-path", c.SDKPath, "directory prepended to the child PYTHONPATH (defaults to the embedded SDK extracted into the data directory)")
 	fs.StringVar(&c.Notify.URL, "notify-url", c.Notify.URL, "POST failed runs to this URL (empty disables notification)")
 	fs.StringVar(&c.Notify.Format, "notify-format", c.Notify.Format,
@@ -465,6 +478,9 @@ func (c *DaemonConfig) Validate() error {
 	}
 	if c.CaptureDefault != "" && !c.CaptureDefault.Valid() {
 		return fmt.Errorf("--capture-default must be one of off, metadata, full; got %q", c.CaptureDefault)
+	}
+	if _, err := inspection.ParseExportMode(c.CaptureExport); err != nil {
+		return fmt.Errorf("--capture-export %w", err)
 	}
 
 	if c.Notify.Enabled() {
@@ -520,6 +536,17 @@ func (c *DaemonConfig) Validate() error {
 	}
 
 	return nil
+}
+
+// CaptureExportMode is the normalized export sink name. Validation has already
+// refused an unknown value; a zero value still means "none", so a config built
+// without Validate cannot accidentally export.
+func (c DaemonConfig) CaptureExportMode() string {
+	mode, err := inspection.ParseExportMode(c.CaptureExport)
+	if err != nil {
+		return inspection.ExportModeNone
+	}
+	return mode
 }
 
 // CaptureDefaultPolicy is the capture policy for a run whose job does

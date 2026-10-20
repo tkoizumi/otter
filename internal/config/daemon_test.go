@@ -32,6 +32,9 @@ func TestDefaultDaemonConfig(t *testing.T) {
 	if !c.ListenIsLoopback() {
 		t.Errorf("the default listen address %q should be loopback", c.Listen)
 	}
+	if c.CaptureExport != inspection.ExportModeNone {
+		t.Errorf("CaptureExport = %q, want %q: an unconfigured runtime must not export", c.CaptureExport, inspection.ExportModeNone)
+	}
 	// Notification is opt-in: the default must not reach out anywhere.
 	if c.Notify.Enabled() {
 		t.Error("the default configuration enables notification")
@@ -629,5 +632,48 @@ func TestCaptureDefaultFlag(t *testing.T) {
 	bad.RegisterFlags(badFlags)
 	if err := badFlags.Parse([]string{"--capture-default", "everything"}); err == nil {
 		t.Error("an invalid --capture-default was accepted by the flag parser")
+	}
+}
+
+func TestCaptureExportMode(t *testing.T) {
+	c := DefaultDaemonConfig("test")
+	if got := c.CaptureExportMode(); got != inspection.ExportModeNone {
+		t.Fatalf("default export mode = %q, want none", got)
+	}
+
+	t.Setenv("OTTER_CAPTURE_EXPORT", " NONE ")
+	env := DefaultDaemonConfig("test")
+	if err := env.ApplyEnv(); err != nil {
+		t.Fatalf("ApplyEnv: %v", err)
+	}
+	if got := env.CaptureExportMode(); got != inspection.ExportModeNone {
+		t.Fatalf("env export mode = %q, want none", got)
+	}
+
+	t.Setenv("OTTER_CAPTURE_EXPORT", "sink")
+	bad := DefaultDaemonConfig("test")
+	if err := bad.ApplyEnv(); err != nil {
+		t.Fatalf("ApplyEnv: %v", err)
+	}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("an unknown capture export mode passed validation")
+	}
+
+	var zero DaemonConfig
+	if got := zero.CaptureExportMode(); got != inspection.ExportModeNone {
+		t.Fatalf("zero-value export mode = %q, want none", got)
+	}
+}
+
+func TestCaptureExportFlag(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	c := DefaultDaemonConfig("test")
+	c.RegisterFlags(fs)
+	if err := fs.Parse([]string{"--capture-export", "none"}); err != nil {
+		t.Fatalf("parse --capture-export: %v", err)
+	}
+	if got := c.CaptureExportMode(); got != inspection.ExportModeNone {
+		t.Fatalf("flag export mode = %q, want none", got)
 	}
 }
