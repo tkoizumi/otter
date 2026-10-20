@@ -142,7 +142,10 @@ func (l *ExportLoop) batchSize() int {
 	if l.BatchSize > 0 {
 		return l.BatchSize
 	}
-	return 100
+	// Twenty documents at the schema's 256 KiB body cap is about 5 MiB, inside
+	// the Worker's 16 MiB capture-batch ceiling. The count alone would let a
+	// full-bodied run exceed the transport limit before Cloud ever sees it.
+	return 20
 }
 
 func (l *ExportLoop) applyJitter(d time.Duration) time.Duration {
