@@ -1,0 +1,11 @@
+-- Whether a captured URL had a sensitive query value removed.
+--
+-- Replay refuses an exchange whose URL was redacted: the value is gone, so the
+-- original request cannot be reconstructed. Recording the fact at ingest is
+-- what lets the replay guard refuse with a reason instead of sending a URL
+-- containing the redaction marker.
+--
+-- Existing rows default to 0. Their sanitized URLs are still visible; the flag
+-- is not backfilled from the marker, because "REDACTED" can be a real value and
+-- guessing would turn a maybe into a fact.
+ALTER TABLE http_exchanges ADD COLUMN query_redacted INTEGER NOT NULL DEFAULT 0;

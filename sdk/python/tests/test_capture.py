@@ -620,3 +620,75 @@ class InstallationTests(CaptureTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecretPlaceholderTests(unittest.TestCase):
+    """A declared secret becomes a NAME before the generic redactor runs."""
+
+    def setUp(self):
+        self.index = _capture.SecretIndex(
+            ["B_TOKEN", "A_TOKEN", "EMPTY"],
+            {"A_TOKEN": "one", "B_TOKEN": "two", "EMPTY": ""},
+        )
+
+    def test_the_index_replaces_exact_values_only(self):
+        self.assertEqual("{{secret:A_TOKEN}}", self.index.placeholder("one"))
+        self.assertEqual("{{secret:B_TOKEN}}", self.index.placeholder("two"))
+        self.assertEqual("one-and-more", self.index.placeholder("one-and-more"))
+        self.assertEqual("", self.index.placeholder(""))
+        self.assertEqual(
+            [("authorization", "{{secret:A_TOKEN}}"), ("accept", "json")],
+            self.index.replace_headers([("authorization", "one"), ("accept", "json")]),
+        )
+        self.assertEqual(
+            {"access_token": "{{secret:B_TOKEN}}", "items": ["{{secret:A_TOKEN}}", "x"]},
+            self.index.replace_value(
+                {"access_token": "two", "items": ["one", "x"]}
+            ),
+        )
+
+    def test_the_redactor_keeps_a_placeholder_and_still_drops_a_literal(self):
+        redactor = _capture.Redactor()
+        pairs, count = redactor.sanitize_headers([
+            ("authorization", "{{secret:A_TOKEN}}"),
+            ("authorization", "literal-value"),
+        ])
+        self.assertEqual(1, count)
+        self.assertEqual("{{secret:A_TOKEN}}", pairs[0]["value"])
+        self.assertEqual(_capture.REDACTED, pairs[1]["value"])
+
+    def test_a_sensitive_json_field_keeps_its_placeholder(self):
+        redactor = _capture.Redactor()
+        sanitized, count = redactor.sanitize_json(
+            b'{"access_token":"{{secret:A_TOKEN}}","password":"literal"}'
+        )
+        self.assertEqual(1, count)
+        self.assertIn(b'"access_token":"{{secret:A_TOKEN}}"', sanitized)
+        self.assertIn(b'"password":"REDACTED"', sanitized)
+
+    def test_a_captured_auth_header_is_a_placeholder_and_the_value_is_absent(self):
+        capture = _capture.Capture(
+            run_id="run-1",
+            api_url="http://127.0.0.1:1",
+            token=None,
+            policy=_capture.POLICY_FULL,
+            secrets=self.index,
+        )
+        capture.begin(
+            "POST",
+            "https://api.example.com/v1/charge",
+            [("authorization", "one")],
+            b'{"access_token":"two","note":"ordinary"}',
+        )
+        event = capture._queue[0][0]
+        self.assertEqual(
+            [{"name": "authorization", "value": "{{secret:A_TOKEN}}"}],
+            event["request_headers"],
+        )
+        self.assertEqual(
+            {"access_token": "{{secret:B_TOKEN}}", "note": "ordinary"},
+            event["request_body"]["json"],
+        )
+        serialized = json.dumps(event)
+        self.assertNotIn('"one"', serialized)
+        self.assertNotIn('"two"', serialized)

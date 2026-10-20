@@ -759,3 +759,63 @@ func TestIngestWithoutBodyStoresNoSummary(t *testing.T) {
 			exchange.ErrorCode, exchange.ErrorMessage)
 	}
 }
+
+func TestSensitiveQueryMarksTheExchangeNotReplayable(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, Limits{})
+	beginTestCapture(t, store, "run-1", PolicyMetadata)
+
+	if _, err := store.Ingest(ctx, "run-1", EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyMetadata,
+		Events: []RequestEvent{
+			startedEvent("req-1", 1),
+			completedEvent("req-1", 2, 200),
+		},
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	exchange, err := store.Get(ctx, "run-1", "req-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !exchange.QueryRedacted {
+		t.Fatal("a URL with a redacted query value is still marked replayable")
+	}
+	if strings.Contains(exchange.URL, "access_token=secret") {
+		t.Fatalf("the raw query value survived in %q", exchange.URL)
+	}
+
+	list, err := store.List(ctx, "run-1", 0, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || !list[0].QueryRedacted {
+		t.Fatalf("list summary = %+v, want query_redacted", list)
+	}
+}
+
+func TestANonSensitiveQueryIsReplayable(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, Limits{})
+	beginTestCapture(t, store, "run-1", PolicyMetadata)
+
+	started := startedEvent("req-1", 1)
+	started.URL = "https://api.example.com/v1/items?limit=50&page=2"
+	if _, err := store.Ingest(ctx, "run-1", EventBatch{
+		SchemaVersion: SchemaVersion,
+		Policy:        PolicyMetadata,
+		Events:        []RequestEvent{started, completedEvent("req-1", 2, 200)},
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	exchange, err := store.Get(ctx, "run-1", "req-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if exchange.QueryRedacted {
+		t.Fatal("a non-sensitive query was marked un-replayable")
+	}
+}

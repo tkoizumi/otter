@@ -212,3 +212,42 @@ func equalJSON(t *testing.T, got, want []byte) bool {
 	t.Helper()
 	return bytes.Equal(compact(t, got), compact(t, want))
 }
+
+// A placeholder is a secret NAME, not a secret value. Redacting it would make
+// replay impossible while proving nothing: the value was already replaced at
+// the source. A literal value in the same field is still redacted.
+func TestSecretPlaceholdersSurviveRedaction(t *testing.T) {
+	r := DefaultRedactor()
+
+	headers, redactions := r.SanitizeHeaders([]HeaderPair{
+		{Name: "authorization", Value: "{{secret:SHOPIFY_TOKEN}}"},
+	})
+	if redactions != 0 {
+		t.Fatalf("header placeholder counted as a redaction: %d", redactions)
+	}
+	if headers[0].Value != "{{secret:SHOPIFY_TOKEN}}" {
+		t.Fatalf("header placeholder was rewritten to %q", headers[0].Value)
+	}
+
+	headers, redactions = r.SanitizeHeaders([]HeaderPair{
+		{Name: "authorization", Value: "Bearer sk_live_real"},
+	})
+	if redactions != 1 || headers[0].Value != RedactedPlaceholder {
+		t.Fatalf("literal header = %q, redactions = %d; want REDACTED, 1", headers[0].Value, redactions)
+	}
+
+	sanitized, redactions, err := r.SanitizeJSON([]byte(
+		`{"access_token":"{{secret:API_TOKEN}}","password":"real"}`))
+	if err != nil {
+		t.Fatalf("SanitizeJSON: %v", err)
+	}
+	if redactions != 1 {
+		t.Fatalf("redactions = %d, want 1: only the literal value is a redaction", redactions)
+	}
+	if !strings.Contains(string(sanitized), `"access_token":"{{secret:API_TOKEN}}"`) {
+		t.Fatalf("placeholder did not survive: %s", sanitized)
+	}
+	if !strings.Contains(string(sanitized), `"password":"REDACTED"`) {
+		t.Fatalf("literal secret was not redacted: %s", sanitized)
+	}
+}

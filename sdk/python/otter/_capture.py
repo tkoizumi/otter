@@ -229,6 +229,60 @@ def _dump_json(value: Any) -> str:
     raise TypeError("unsupported JSON value: %r" % (type(value),))
 
 
+#: A secret NAME, not a secret value. The daemon preserves this form; the
+#: value it names is resolved only on the runtime, at replay time.
+_SECRET_PLACEHOLDER_RE = re.compile(r"^\{\{secret:[A-Za-z_][A-Za-z0-9_]*\}\}$")
+
+
+def _is_secret_placeholder(value: str) -> bool:
+    return bool(_SECRET_PLACEHOLDER_RE.match(value))
+
+
+class SecretIndex:
+    """Map the declared secret VALUES to their NAMES for capture.
+
+    The child already holds its secret values. This class lets the capture layer
+    write ``{{secret:NAME}}`` where it sees one, so the document need not carry
+    the value and replay can resolve the name later.
+
+    Matching is whole-value. A header whose value is exactly a secret, or a JSON
+    string that is exactly one, is replaced. A secret embedded inside a larger
+    string is left to the ordinary redactor, which will drop the whole value:
+    embedding a placeholder in text replay would then send as literal text is
+    worse than losing the ability to replay that exchange.
+    """
+
+    def __init__(self, names: List[str], environ: Dict[str, str]) -> None:
+        self._by_value: Dict[str, str] = {}
+        for name in sorted({name for name in names if name}):
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                continue
+            value = environ.get(name, "")
+            if value and value not in self._by_value:
+                self._by_value[value] = name
+
+    def __bool__(self) -> bool:
+        return bool(self._by_value)
+
+    def placeholder(self, value: str) -> str:
+        name = self._by_value.get(value)
+        return "{{secret:%s}}" % name if name else value
+
+    def replace_headers(self, pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        return [(name, self.placeholder(value)) for name, value in pairs]
+
+    def replace_value(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self.placeholder(value)
+        if isinstance(value, list):
+            return [self.replace_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self.replace_value(item) for item in value)
+        if isinstance(value, dict):
+            return {key: self.replace_value(item) for key, item in value.items()}
+        return value
+
+
 class Redactor:
     """Applies the capture redaction policy.
 
@@ -308,7 +362,9 @@ class Redactor:
                 break
             clean_name = _clean_text(name)
             clean_value = _clean_text(value)
-            if _matches(clean_name, self.headers):
+            if _is_secret_placeholder(clean_value):
+                pass
+            elif _matches(clean_name, self.headers):
                 clean_value = REDACTED
                 count += 1
             total += len(clean_name) + len(clean_value)
@@ -319,8 +375,12 @@ class Redactor:
 
     # -- json -----------------------------------------------------------
 
-    def sanitize_json(self, raw: bytes) -> Tuple[bytes, int]:
+    def sanitize_json(self, raw: bytes, secrets: Optional["SecretIndex"] = None) -> Tuple[bytes, int]:
         """Return a redacted copy of a JSON document.
+
+        ``secrets`` replaces exact string values with their ``{{secret:NAME}}``
+        placeholders first, so a declared value is never mistaken for an
+        ordinary sensitive field and replaced with the generic marker.
 
         Raises :class:`ValueError` when the bytes are not a single valid JSON
         document, so the caller can omit the body rather than store a fragment.
@@ -333,6 +393,8 @@ class Redactor:
             raise ValueError("empty JSON document")
 
         value = json.loads(text, parse_float=_RawNumber, parse_int=_RawNumber)
+        if secrets:
+            value = secrets.replace_value(value)
         counter = [0]
         redacted = self._redact_value(value, counter)
         return _dump_json(redacted).encode("utf-8"), counter[0]
@@ -342,8 +404,11 @@ class Redactor:
             out: Dict[str, Any] = {}
             for key, item in value.items():
                 if _matches(key, self.fields):
-                    out[key] = REDACTED
-                    counter[0] += 1
+                    if isinstance(item, str) and _is_secret_placeholder(item):
+                        out[key] = item
+                    else:
+                        out[key] = REDACTED
+                        counter[0] += 1
                 else:
                     out[key] = self._redact_value(item, counter)
             return out
@@ -526,6 +591,7 @@ class Capture:
         token: Optional[str],
         policy: str,
         redactor: Optional[Redactor] = None,
+        secrets: Optional[SecretIndex] = None,
         queue_max: int = QUEUE_MAX_EVENTS,
     ) -> None:
         self.run_id = run_id
@@ -533,6 +599,7 @@ class Capture:
         self.token = token
         self.policy = policy
         self.redactor = redactor or Redactor()
+        self.secrets = secrets
         self._queue: "deque[Tuple[Dict[str, Any], int]]" = deque()
         self._queue_max = queue_max
         self._lock = threading.Lock()
@@ -656,8 +723,11 @@ class Capture:
         redactions = url_redactions
 
         if self.policy == POLICY_FULL:
+            header_pairs = list(request_headers or [])
+            if self.secrets:
+                header_pairs = self.secrets.replace_headers(header_pairs)
             record.request_headers, header_redactions = self.redactor.sanitize_headers(
-                list(request_headers or [])
+                header_pairs
             )
             redactions += header_redactions
             record.request_body = self._request_body_descriptor(request_data)
@@ -698,8 +768,11 @@ class Capture:
             else:
                 redactions = 0
             if self.policy == POLICY_FULL:
+                header_pairs = list(headers or [])
+                if self.secrets:
+                    header_pairs = self.secrets.replace_headers(header_pairs)
                 record.response_headers, header_redactions = self.redactor.sanitize_headers(
-                    list(headers or [])
+                    header_pairs
                 )
                 redactions += header_redactions
 
@@ -788,7 +861,7 @@ class Capture:
         if len(raw) > MAX_BODY_BYTES:
             return {"state": BODY_OMITTED, "reason": REASON_OVERSIZED, "bytes_observed": len(raw)}
         try:
-            sanitized, redactions = self.redactor.sanitize_json(raw)
+            sanitized, redactions = self.redactor.sanitize_json(raw, self.secrets)
         except (ValueError, UnicodeDecodeError, TypeError):
             return {"state": BODY_OMITTED, "reason": REASON_UNPARSEABLE, "bytes_observed": len(raw)}
         if len(sanitized) > MAX_BODY_BYTES:
@@ -824,7 +897,7 @@ class Capture:
             return {"state": BODY_OMITTED, "reason": REASON_UNSUPPORTED,
                     "content_type": record.response_type, "bytes_observed": len(raw)}
         try:
-            sanitized, redactions = self.redactor.sanitize_json(raw)
+            sanitized, redactions = self.redactor.sanitize_json(raw, self.secrets)
         except (ValueError, UnicodeDecodeError, TypeError):
             return {"state": BODY_OMITTED, "reason": REASON_UNPARSEABLE,
                     "content_type": record.response_type, "bytes_observed": len(raw)}
@@ -1016,7 +1089,18 @@ def install_from_environment(environ: Optional[Dict[str, str]] = None) -> Option
     with _ACTIVE_LOCK:
         if _ACTIVE is not None:
             return _ACTIVE
-        capture = Capture(run_id=run_id, api_url=api_url, token=token, policy=policy)
+        names = [
+            name.strip()
+            for name in (env.get("OTTER_CAPTURE_SECRET_NAMES") or "").split(",")
+            if name.strip()
+        ]
+        capture = Capture(
+            run_id=run_id,
+            api_url=api_url,
+            token=token,
+            policy=policy,
+            secrets=SecretIndex(names, env),
+        )
         try:
             capture.start()
         except BaseException:

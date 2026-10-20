@@ -128,6 +128,10 @@ type Exchange struct {
 	InitialURL string `json:"initial_url,omitempty"`
 	FinalURL   string `json:"final_url,omitempty"`
 	CallSite   string `json:"call_site,omitempty"`
+	// QueryRedacted is true when a sensitive query value was removed from the
+	// URL. Replay refuses such an exchange because the original request cannot
+	// be reconstructed from what remains.
+	QueryRedacted bool `json:"query_redacted"`
 
 	StatusCode     *int   `json:"status_code,omitempty"`
 	TransportError string `json:"transport_error,omitempty"`
@@ -172,6 +176,7 @@ type ExchangeSummary struct {
 	Complete        bool      `json:"complete"`
 	Method          string    `json:"method"`
 	URL             string    `json:"url"`
+	QueryRedacted   bool      `json:"query_redacted"`
 	StatusCode      *int      `json:"status_code,omitempty"`
 	TransportClass  string    `json:"transport_error_class,omitempty"`
 	DurationTotalMS *int64    `json:"duration_total_ms,omitempty"`
@@ -329,7 +334,8 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 	)
 
 	for _, raw := range batch.Events {
-		event, redactions := SanitizeEvent(raw, s.redactor, s.limits)
+		event, report := SanitizeEventReport(raw, s.redactor, s.limits)
+		redactions := report.Redactions
 
 		existing, found, err := loadExchangeTx(ctx, tx, runID, event.RequestID)
 		if err != nil {
@@ -349,6 +355,7 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 		}
 
 		merged, isNew := mergeExchange(existing, event, capture, now, s.redactor)
+		merged.QueryRedacted = merged.QueryRedacted || report.URLRedacted
 		rowBytes := exchangeRowBytes(merged)
 
 		if isNew {
@@ -470,7 +477,7 @@ func (s *Store) List(ctx context.Context, runID string, afterID int64, limit int
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, request_id, phase, complete, method, sanitized_url,
+		`SELECT id, request_id, phase, complete, method, sanitized_url, query_redacted,
 		        status_code, transport_error_class, duration_total_ms, occurred_at, payloads
 		   FROM http_exchanges
 		  WHERE run_id = ? AND id > ?
@@ -484,19 +491,21 @@ func (s *Store) List(ctx context.Context, runID string, afterID int64, limit int
 	out := make([]ExchangeSummary, 0, 16)
 	for rows.Next() {
 		var (
-			item     ExchangeSummary
-			phase    string
-			complete int
-			status   sql.NullInt64
-			duration sql.NullInt64
-			occurred database.NullableTime
+			item          ExchangeSummary
+			phase         string
+			complete      int
+			queryRedacted int
+			status        sql.NullInt64
+			duration      sql.NullInt64
+			occurred      database.NullableTime
 		)
 		if err := rows.Scan(&item.ID, &item.RequestID, &phase, &complete, &item.Method,
-			&item.URL, &status, &item.TransportClass, &duration, &occurred, &item.Payloads); err != nil {
+			&item.URL, &queryRedacted, &status, &item.TransportClass, &duration, &occurred, &item.Payloads); err != nil {
 			return nil, fmt.Errorf("inspection: scan exchange for %s: %w", runID, err)
 		}
 		item.Phase = Phase(phase)
 		item.Complete = complete != 0
+		item.QueryRedacted = queryRedacted != 0
 		if status.Valid {
 			v := int(status.Int64)
 			item.StatusCode = &v
@@ -755,7 +764,7 @@ const captureColumns = `run_id, job_id, policy, schema_version, policy_version,
 
 const exchangeColumns = `id, run_id, request_id, job_id, producer_seq,
 	occurred_at, ingested_at, updated_at, phase, complete,
-	method, sanitized_url, initial_url, final_url, call_site,
+	method, sanitized_url, initial_url, final_url, call_site, query_redacted,
 	status_code, transport_error, transport_error_class,
 	duration_to_headers_ms, duration_body_ms, duration_total_ms,
 	request_headers, response_headers, request_body, response_body, payloads,
@@ -800,24 +809,25 @@ func scanCapture(sc interface{ Scan(...any) error }) (*RunCapture, error) {
 
 func scanExchange(sc interface{ Scan(...any) error }) (*Exchange, error) {
 	var (
-		e          Exchange
-		occurred   database.NullableTime
-		ingested   database.NullableTime
-		updated    database.NullableTime
-		phase      string
-		complete   int
-		status     sql.NullInt64
-		toHeaders  sql.NullInt64
-		bodyMS     sql.NullInt64
-		totalMS    sql.NullInt64
-		reqHeaders string
-		resHeaders string
-		reqBody    string
-		resBody    string
+		e             Exchange
+		occurred      database.NullableTime
+		ingested      database.NullableTime
+		updated       database.NullableTime
+		phase         string
+		complete      int
+		queryRedacted int
+		status        sql.NullInt64
+		toHeaders     sql.NullInt64
+		bodyMS        sql.NullInt64
+		totalMS       sql.NullInt64
+		reqHeaders    string
+		resHeaders    string
+		reqBody       string
+		resBody       string
 	)
 	err := sc.Scan(&e.ID, &e.RunID, &e.RequestID, &e.JobID, &e.ProducerSeq,
 		&occurred, &ingested, &updated, &phase, &complete,
-		&e.Method, &e.URL, &e.InitialURL, &e.FinalURL, &e.CallSite,
+		&e.Method, &e.URL, &e.InitialURL, &e.FinalURL, &e.CallSite, &queryRedacted,
 		&status, &e.TransportError, &e.TransportClass,
 		&toHeaders, &bodyMS, &totalMS,
 		&reqHeaders, &resHeaders, &reqBody, &resBody, &e.Payloads,
@@ -827,6 +837,7 @@ func scanExchange(sc interface{ Scan(...any) error }) (*Exchange, error) {
 	}
 	e.Phase = Phase(phase)
 	e.Complete = complete != 0
+	e.QueryRedacted = queryRedacted != 0
 	if occurred.Valid {
 		e.OccurredAt = occurred.Time
 	}
@@ -1000,15 +1011,15 @@ func insertExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		`INSERT INTO http_exchanges
 		   (run_id, request_id, job_id, producer_seq, occurred_at, ingested_at, updated_at,
 		    phase, complete, method, sanitized_url, initial_url, final_url, call_site,
-		    status_code, transport_error, transport_error_class,
+		    query_redacted, status_code, transport_error, transport_error_class,
 		    duration_to_headers_ms, duration_body_ms, duration_total_ms,
 		    request_headers, response_headers, request_body, response_body, payloads,
 		    response_error_code, response_error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.RunID, e.RequestID, e.JobID, e.ProducerSeq,
 		database.FormatTime(e.OccurredAt), database.FormatTime(e.IngestedAt), database.FormatTime(e.UpdatedAt),
 		string(e.Phase), boolInt(e.Complete), e.Method, e.URL, e.InitialURL, e.FinalURL, e.CallSite,
-		database.NullableInt(e.StatusCode), e.TransportError, e.TransportClass,
+		boolInt(e.QueryRedacted), database.NullableInt(e.StatusCode), e.TransportError, e.TransportClass,
 		nullableInt64(e.DurationToHeadersMS), nullableInt64(e.DurationBodyMS), nullableInt64(e.DurationTotalMS),
 		reqHeaders, resHeaders, reqBody, resBody, e.Payloads,
 		e.ErrorCode, e.ErrorMessage)
@@ -1040,7 +1051,7 @@ func updateExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		`UPDATE http_exchanges SET
 		   job_id = ?, producer_seq = ?, occurred_at = ?, updated_at = ?,
 		   phase = ?, complete = ?, method = ?, sanitized_url = ?, initial_url = ?,
-		   final_url = ?, call_site = ?, status_code = ?, transport_error = ?,
+		   final_url = ?, call_site = ?, query_redacted = ?, status_code = ?, transport_error = ?,
 		   transport_error_class = ?, duration_to_headers_ms = ?, duration_body_ms = ?,
 		   duration_total_ms = ?, request_headers = ?, response_headers = ?,
 		   request_body = ?, response_body = ?, payloads = ?,
@@ -1048,7 +1059,7 @@ func updateExchangeTx(ctx context.Context, tx *sql.Tx, e *Exchange) error {
 		 WHERE run_id = ? AND request_id = ?`,
 		e.JobID, e.ProducerSeq, database.FormatTime(e.OccurredAt), database.FormatTime(e.UpdatedAt),
 		string(e.Phase), boolInt(e.Complete), e.Method, e.URL, e.InitialURL,
-		e.FinalURL, e.CallSite, database.NullableInt(e.StatusCode), e.TransportError,
+		e.FinalURL, e.CallSite, boolInt(e.QueryRedacted), database.NullableInt(e.StatusCode), e.TransportError,
 		e.TransportClass, nullableInt64(e.DurationToHeadersMS), nullableInt64(e.DurationBodyMS),
 		nullableInt64(e.DurationTotalMS), reqHeaders, resHeaders,
 		reqBody, resBody, e.Payloads,

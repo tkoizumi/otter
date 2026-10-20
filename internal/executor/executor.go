@@ -340,6 +340,13 @@ func (e *Executor) buildEnv(req *Request) ([]string, error) {
 	// installs no instrumentation at all.
 	if req.CapturePolicy != "" {
 		inherited = append(inherited, "OTTER_CAPTURE_POLICY="+req.CapturePolicy)
+		// The SDK needs to know which of the values it already holds are
+		// declared secrets, so it can write {{secret:NAME}} instead of the
+		// value. Only the names travel: the values are already in the child's
+		// environment, and a name is not a credential.
+		if names := sortedKeys(req.ExtraEnv); len(names) > 0 {
+			inherited = append(inherited, "OTTER_CAPTURE_SECRET_NAMES="+strings.Join(names, ","))
+		}
 	}
 	if req.Managed {
 		inherited = append(inherited, "PYTHONNOUSERSITE=1")

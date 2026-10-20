@@ -433,3 +433,47 @@ func TestBuildEnvIgnoresNonStringKeys(t *testing.T) {
 		t.Errorf("OTTER_TRIGGER_TYPE = %q, want manual", seen["OTTER_TRIGGER_TYPE"])
 	}
 }
+
+func TestCaptureSecretNamesReachTheChild(t *testing.T) {
+	e := New(testLogger(), "/tmp/fake-sdk")
+	m := &config.Manifest{Dir: t.TempDir()}
+
+	env, err := e.buildEnv(&Request{
+		Manifest:      m,
+		JobID:         "job-1",
+		JobName:       "fixture",
+		RunID:         "run-1",
+		CapturePolicy: "full",
+		ExtraEnv:      map[string]string{"B_TOKEN": "two", "A_TOKEN": "one"},
+	})
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	got := envValue(env, "OTTER_CAPTURE_SECRET_NAMES")
+	if got != "A_TOKEN,B_TOKEN" {
+		t.Fatalf("OTTER_CAPTURE_SECRET_NAMES = %q, want the sorted declared names", got)
+	}
+
+	withoutCapture, err := e.buildEnv(&Request{
+		Manifest: m,
+		JobID:    "job-1",
+		RunID:    "run-1",
+		ExtraEnv: map[string]string{"A_TOKEN": "one"},
+	})
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	if got := envValue(withoutCapture, "OTTER_CAPTURE_SECRET_NAMES"); got != "" {
+		t.Fatalf("capture off still passed secret names: %q", got)
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}

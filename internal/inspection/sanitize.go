@@ -14,20 +14,42 @@ import (
 //
 // It returns the sanitized event and how many values were redacted.
 func SanitizeEvent(e RequestEvent, r *Redactor, limits Limits) (RequestEvent, int) {
+	out, report := SanitizeEventReport(e, r, limits)
+	return out, report.Redactions
+}
+
+// SanitizeReport describes what sanitizing one event changed.
+type SanitizeReport struct {
+	// Redactions counts every value replaced, across headers and bodies too.
+	Redactions int
+	// URLRedacted is true when at least one URL had a sensitive query value
+	// removed. Replay refuses those exchanges: the value is gone, so the
+	// original request cannot be reconstructed.
+	URLRedacted bool
+}
+
+// SanitizeEventReport is SanitizeEvent with the URL-specific fact the replay
+// guard needs. Keeping the older wrapper means callers that only count
+// redactions do not have to change.
+func SanitizeEventReport(e RequestEvent, r *Redactor, limits Limits) (RequestEvent, SanitizeReport) {
 	if r == nil {
 		r = DefaultRedactor()
 	}
 	out := e
 	redactions := 0
+	urlRedacted := false
 
 	var n int
 	out.Method = bound(cleanText(e.Method), 32)
 	out.URL, n = r.SanitizeURL(e.URL)
 	redactions += n
+	urlRedacted = urlRedacted || n > 0
 	out.InitialURL, n = r.SanitizeURL(e.InitialURL)
 	redactions += n
+	urlRedacted = urlRedacted || n > 0
 	out.FinalURL, n = r.SanitizeURL(e.FinalURL)
 	redactions += n
+	urlRedacted = urlRedacted || n > 0
 
 	out.CallSite = bound(cleanText(e.CallSite), limits.MaxCallSiteLength)
 	out.TransportClass = bound(cleanText(e.TransportClass), 128)
@@ -43,7 +65,7 @@ func SanitizeEvent(e RequestEvent, r *Redactor, limits Limits) (RequestEvent, in
 	out.ResponseBody, n = sanitizeBody(e.ResponseBody, r, limits)
 	redactions += n
 
-	return out, redactions
+	return out, SanitizeReport{Redactions: redactions, URLRedacted: urlRedacted}
 }
 
 // sanitizeBody sanitizes one body descriptor. A body that cannot be safely

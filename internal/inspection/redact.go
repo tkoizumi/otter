@@ -16,6 +16,16 @@ import (
 // was here" apart from "the field was absent".
 const RedactedPlaceholder = "REDACTED"
 
+// secretPlaceholderPattern is the one value a sensitive header or field may
+// carry instead of being redacted. The SDK writes it when it recognises a
+// declared secret, and the replay path resolves it. It is a NAME, never a value.
+var secretPlaceholderPattern = regexp.MustCompile(`^\{\{secret:[A-Za-z_][A-Za-z0-9_]*\}\}$`)
+
+// IsSecretPlaceholder reports whether value is a {{secret:NAME}} reference.
+func IsSecretPlaceholder(value string) bool {
+	return secretPlaceholderPattern.MatchString(value)
+}
+
 // sensitiveHeaders are matched after normalization, so case, underscores and
 // hyphens do not matter.
 var sensitiveHeaders = []string{
@@ -119,7 +129,7 @@ func (r *Redactor) SanitizeHeaders(pairs []HeaderPair) ([]HeaderPair, int) {
 	count := 0
 	for _, pair := range pairs {
 		clean := HeaderPair{Name: cleanText(pair.Name), Value: cleanText(pair.Value)}
-		if r.isSensitiveHeader(clean.Name) {
+		if r.isSensitiveHeader(clean.Name) && !IsSecretPlaceholder(clean.Value) {
 			clean.Value = RedactedPlaceholder
 			count++
 		}
@@ -361,7 +371,19 @@ func (r *Redactor) writeObject(dec *json.Decoder, buf *bytes.Buffer) (int, error
 		buf.WriteByte(':')
 
 		if r.isSensitiveField(key) {
-			if _, err := skipValue(dec); err != nil {
+			// A placeholder is a name, not a value, so it is the one thing a
+			// sensitive field may keep. Everything else is redacted whole.
+			tok, err := dec.Token()
+			if err != nil {
+				return count, err
+			}
+			if placeholder, ok := tok.(string); ok && IsSecretPlaceholder(placeholder) {
+				if err := writeJSONString(buf, placeholder); err != nil {
+					return count, err
+				}
+				continue
+			}
+			if err := skipAfterToken(dec, tok); err != nil {
 				return count, err
 			}
 			if err := writeJSONString(buf, RedactedPlaceholder); err != nil {
@@ -423,6 +445,30 @@ func writeScalar(buf *bytes.Buffer, v any) error {
 }
 
 // skipValue consumes one complete JSON value without emitting it.
+// skipAfterToken consumes the rest of a composite value whose opening token has
+// already been read. A scalar is already complete.
+func skipAfterToken(dec *json.Decoder, tok json.Token) error {
+	if _, ok := tok.(json.Delim); !ok {
+		return nil
+	}
+	depth := 1
+	for depth > 0 {
+		next, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if delim, ok := next.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		}
+	}
+	return nil
+}
+
 func skipValue(dec *json.Decoder) (int, error) {
 	tok, err := dec.Token()
 	if err != nil {
