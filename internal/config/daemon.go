@@ -443,7 +443,7 @@ func (c *DaemonConfig) RegisterFlags(fs *flag.FlagSet) {
 	fs.Var(policyFlag{target: &c.CaptureDefault}, "capture-default",
 		"HTTP capture policy for runs that do not choose one: "+policyNames())
 	fs.StringVar(&c.CaptureExport, "capture-export", c.CaptureExport,
-		"capture export sink: "+inspection.ExportModeNone+" (outbox is added with S2)")
+		"capture export sink: "+inspection.ExportModeNone+" or "+inspection.ExportModeOutbox)
 	fs.StringVar(&c.SDKPath, "sdk-path", c.SDKPath, "directory prepended to the child PYTHONPATH (defaults to the embedded SDK extracted into the data directory)")
 	fs.StringVar(&c.Notify.URL, "notify-url", c.Notify.URL, "POST failed runs to this URL (empty disables notification)")
 	fs.StringVar(&c.Notify.Format, "notify-format", c.Notify.Format,

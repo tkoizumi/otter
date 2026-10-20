@@ -650,6 +650,18 @@ func TestCaptureExportMode(t *testing.T) {
 		t.Fatalf("env export mode = %q, want none", got)
 	}
 
+	t.Setenv("OTTER_CAPTURE_EXPORT", "outbox")
+	outbox := DefaultDaemonConfig("test")
+	if err := outbox.ApplyEnv(); err != nil {
+		t.Fatalf("ApplyEnv: %v", err)
+	}
+	if err := outbox.Validate(); err != nil {
+		t.Fatalf("outbox export mode should be valid: %v", err)
+	}
+	if got := outbox.CaptureExportMode(); got != inspection.ExportModeOutbox {
+		t.Fatalf("env export mode = %q, want outbox", got)
+	}
+
 	t.Setenv("OTTER_CAPTURE_EXPORT", "sink")
 	bad := DefaultDaemonConfig("test")
 	if err := bad.ApplyEnv(); err != nil {
@@ -670,10 +682,10 @@ func TestCaptureExportFlag(t *testing.T) {
 	fs.SetOutput(io.Discard)
 	c := DefaultDaemonConfig("test")
 	c.RegisterFlags(fs)
-	if err := fs.Parse([]string{"--capture-export", "none"}); err != nil {
+	if err := fs.Parse([]string{"--capture-export", "outbox"}); err != nil {
 		t.Fatalf("parse --capture-export: %v", err)
 	}
-	if got := c.CaptureExportMode(); got != inspection.ExportModeNone {
-		t.Fatalf("flag export mode = %q, want none", got)
+	if got := c.CaptureExportMode(); got != inspection.ExportModeOutbox {
+		t.Fatalf("flag export mode = %q, want outbox", got)
 	}
 }

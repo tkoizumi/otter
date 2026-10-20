@@ -31,7 +31,14 @@ func (d *Daemon) IngestCaptureEvents(ctx context.Context, runID string, batch in
 	if _, err := d.runs.Get(ctx, runID); err != nil {
 		return nil, err
 	}
-	return d.inspection.Ingest(ctx, runID, batch)
+	result, err := d.inspection.Ingest(ctx, runID, batch)
+	if err == nil && result.ExportError != "" {
+		// The batch committed; only the export queue rejected a record. Say so
+		// once per batch rather than turning it into a failed ingest the SDK
+		// would retry, which would re-deliver events for no benefit.
+		d.log.Warn("capture_export_failed", "run_id", runID, "error", result.ExportError)
+	}
+	return result, err
 }
 
 // CaptureSummary implements api.Backend. A run that exists but was never

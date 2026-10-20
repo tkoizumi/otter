@@ -199,6 +199,10 @@ type IngestResult struct {
 	QuotaRejected int          `json:"quota_rejected"`
 	DroppedBytes  int64        `json:"dropped_bytes"`
 	Finalization  Finalization `json:"finalization"`
+	// ExportError reports that the outbox could not take some records. The
+	// batch still commits: capture is diagnostic, and losing an export must
+	// never fail the job that produced it.
+	ExportError string `json:"export_error,omitempty"`
 }
 
 // Store persists capture summaries and HTTP exchanges.
@@ -318,9 +322,10 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 	}
 
 	var (
-		pendingBytes   int64
-		newRequests    int
-		redactionDelta int64
+		pendingBytes     int64
+		newRequests      int
+		redactionDelta   int64
+		completedExports []ExportRecord
 	)
 
 	for _, raw := range batch.Events {
@@ -374,6 +379,13 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 		pendingBytes += delta
 		redactionDelta += int64(redactions)
 		result.Accepted++
+		if merged.Complete {
+			completedExports = append(completedExports, ExportRecord{
+				Kind:      ExportExchange,
+				RunID:     runID,
+				RequestID: merged.RequestID,
+			})
+		}
 	}
 
 	finalization := nextFinalization(capture.Finalization, batch.Finalization)
@@ -409,6 +421,39 @@ func (s *Store) Ingest(ctx context.Context, runID string, batch EventBatch) (*In
 		adapters:       adaptersUpdate,
 	}); err != nil {
 		return nil, err
+	}
+
+	// Export is written in the same transaction as the exchange, so the two
+	// cannot disagree about what exists. A failure here is recorded and
+	// swallowed: the batch still commits and the job is unaffected.
+	if capture.Policy.Enabled() {
+		records := completedExports
+		if finalization != FinalizationPending {
+			ids, listErr := listRequestIDs(ctx, tx, runID)
+			if listErr != nil {
+				if result.ExportError == "" {
+					result.ExportError = listErr.Error()
+				}
+			} else {
+				for _, id := range ids {
+					records = append(records, ExportRecord{
+						Kind:      ExportExchange,
+						RunID:     runID,
+						RequestID: id,
+					})
+				}
+			}
+			records = append(records, ExportRecord{Kind: ExportManifest, RunID: runID})
+		}
+		if len(records) > 0 {
+			exporter := s.exporter
+			if exporter == nil {
+				exporter = NoopExporter{}
+			}
+			if exportErr := exporter.Export(ctx, tx, records); exportErr != nil {
+				result.ExportError = exportErr.Error()
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
