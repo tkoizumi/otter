@@ -107,6 +107,53 @@ func TestCreateRejectsAnInvalidStatus(t *testing.T) {
 	}
 }
 
+// TestMarkLogLossAccumulatesAndSurvivesAFinish pins the storage half of the
+// OT-020 fix: a fresh run reports nothing lost, each failure adds its lines
+// rather than replacing them, and a later Finish -- the run's honest outcome --
+// leaves the loss in place. A status write that cleared the flag would hide the
+// very loss the operator is looking for.
+func TestMarkLogLossAccumulatesAndSurvivesAFinish(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.Create(ctx, sampleRun("lossy", StatusRunning, 1)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if run, err := store.Get(ctx, "lossy"); err != nil {
+		t.Fatalf("get: %v", err)
+	} else if run.LogLost || run.LogLinesDropped != 0 {
+		t.Errorf("a fresh run reports loss: lost=%t dropped=%d", run.LogLost, run.LogLinesDropped)
+	}
+
+	if err := store.MarkLogLoss(ctx, "lossy", 50); err != nil {
+		t.Fatalf("mark 50: %v", err)
+	}
+	if err := store.MarkLogLoss(ctx, "lossy", 200); err != nil {
+		t.Fatalf("mark 200: %v", err)
+	}
+
+	exitCode := 0
+	if err := store.Finish(ctx, "lossy", Finish{
+		Status: StatusSucceeded, ExitCode: &exitCode, FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	run, err := store.Get(ctx, "lossy")
+	if err != nil {
+		t.Fatalf("get after finish: %v", err)
+	}
+	if !run.LogLost {
+		t.Error("log_lost was cleared or never set")
+	}
+	if run.LogLinesDropped != 250 {
+		t.Errorf("log_lines_dropped = %d, want 250 (50 + 200)", run.LogLinesDropped)
+	}
+	if run.Status != StatusSucceeded {
+		t.Errorf("status = %s, want the honest succeeded outcome", run.Status)
+	}
+}
+
 func TestMarkRunningOnlyTransitionsClaimableRuns(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()
@@ -172,9 +219,10 @@ func TestFinishRecordsOutcome(t *testing.T) {
 
 	code := 3
 	if err := store.Finish(ctx, "run-1", Finish{
-		Status:   StatusFailed,
-		ExitCode: &code,
-		Error:    "process exited with code 3",
+		Status:      StatusFailed,
+		ExitCode:    &code,
+		Error:       "process exited with code 3",
+		Attribution: AttributionJob,
 	}); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -188,6 +236,9 @@ func TestFinishRecordsOutcome(t *testing.T) {
 	}
 	if run.ExitCode == nil || *run.ExitCode != 3 {
 		t.Errorf("exit code = %v, want 3", run.ExitCode)
+	}
+	if run.Attribution != AttributionJob {
+		t.Errorf("attribution = %q, want %q", run.Attribution, AttributionJob)
 	}
 	if run.ErrorString() != "process exited with code 3" {
 		t.Errorf("error = %q", run.ErrorString())
@@ -908,5 +959,42 @@ func TestIdempotencyKeyBindsToOneRun(t *testing.T) {
 	}
 	if _, found, _ := store.FindIdempotencyTx(ctx, nil, first.JobID, "key-1"); found {
 		t.Error("deleting a job must remove its idempotency keys")
+	}
+}
+
+// The attribution has to survive both paths into the table, because the schema is
+// where a field like this is most easily lost: a column list, a placeholder count
+// and a scan destination all have to agree, and a mismatch is a runtime bug rather
+// than a compile error.
+func TestAttributionSurvivesCreateAndDefaultsToUnknown(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	ended := sampleRun("run-runtime-ended", StatusFailed, 1)
+	ended.Attribution = AttributionRuntime
+	if err := store.Create(ctx, ended); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := store.Get(ctx, "run-runtime-ended")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Attribution != AttributionRuntime {
+		t.Errorf("attribution after create = %q, want %q", got.Attribution, AttributionRuntime)
+	}
+
+	// A run with no attribution keeps the column's empty default. It must not
+	// acquire one by being read: the field records what the runtime proved, and a
+	// run that has not ended has proved nothing.
+	running := sampleRun("run-still-going", StatusRunning, 1)
+	if err := store.Create(ctx, running); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err = store.Get(ctx, "run-still-going")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Attribution != "" {
+		t.Errorf("attribution on an unfinished run = %q, want empty", got.Attribution)
 	}
 }

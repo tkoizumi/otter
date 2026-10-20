@@ -92,6 +92,13 @@ func (c *Client) Work(ctx context.Context, cloudURL string, report Report) (*Wor
 	if report.TenantCount != nil {
 		body["tenant_count"] = *report.TenantCount
 	}
+	// The placements ride along with the heartbeat so the control plane knows what this host
+	// can SEE. Without them the only fact it had about a tenant's presence was the host's
+	// enabled flag, so retiring one gone tenant meant draining every other tenant on the
+	// machine. Observed state is the fact the question actually needs.
+	if len(report.Placements) > 0 {
+		body["placements"] = report.Placements
+	}
 	var out WorkResponse
 	if err := c.post(ctx, "/agent/v1/host/work", body, &out); err != nil {
 		return nil, err

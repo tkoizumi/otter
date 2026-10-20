@@ -435,6 +435,90 @@ func TestSplitList(t *testing.T) {
 	}
 }
 
+func TestApplyEnvSecretBroker(t *testing.T) {
+	t.Setenv("OTTER_SECRET_BROKER_URL", "http://127.0.0.1:9000")
+	t.Setenv("OTTER_RUNTIME_ID", "rt_abc")
+	t.Setenv("OTTER_BROKER_CREDENTIAL", "host-local-credential")
+
+	c := DefaultDaemonConfig("test")
+	if err := c.ApplyEnv(); err != nil {
+		t.Fatalf("apply env: %v", err)
+	}
+	if !c.SecretBroker.Enabled() {
+		t.Fatal("a broker URL should enable the broker")
+	}
+	if c.SecretBroker.URL != "http://127.0.0.1:9000" {
+		t.Errorf("URL = %q", c.SecretBroker.URL)
+	}
+	if c.SecretBroker.RuntimeID != "rt_abc" {
+		t.Errorf("RuntimeID = %q", c.SecretBroker.RuntimeID)
+	}
+	if c.SecretBroker.Credential != "host-local-credential" {
+		t.Errorf("Credential = %q", c.SecretBroker.Credential)
+	}
+}
+
+// A broker without a runtime id or a credential can never mint a token, so
+// every run would fail at resolution. Refusing to start names the cause once
+// instead of once per run.
+func TestValidateRefusesAHalfConfiguredSecretBroker(t *testing.T) {
+	valid := func() DaemonConfig {
+		c := DefaultDaemonConfig("test")
+		c.Listen = "127.0.0.1:7337"
+		return c
+	}
+
+	tests := []struct {
+		name   string
+		broker SecretBrokerConfig
+	}{
+		{"no runtime id", SecretBrokerConfig{URL: "http://127.0.0.1:9000", Credential: "c"}},
+		{"no credential", SecretBrokerConfig{URL: "http://127.0.0.1:9000", RuntimeID: "rt"}},
+		{"not an http url", SecretBrokerConfig{URL: "ftp://example.com", RuntimeID: "rt", Credential: "c"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := valid()
+			c.SecretBroker = tc.broker
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate accepted %+v", tc.broker)
+			}
+		})
+	}
+
+	// A complete broker configuration is valid.
+	c := valid()
+	c.SecretBroker = SecretBrokerConfig{URL: "https://broker.internal:9000", RuntimeID: "rt", Credential: "c"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("a complete broker configuration should be valid: %v", err)
+	}
+}
+
+// The credential is never echoed, even when it is the thing that is missing:
+// an error message is a log line, and a log line is a place a secret leaks.
+func TestSecretBrokerValidationNeverEchoesTheCredential(t *testing.T) {
+	c := DefaultDaemonConfig("test")
+	c.Listen = "127.0.0.1:7337"
+	c.SecretBroker = SecretBrokerConfig{
+		URL:        "http://127.0.0.1:9000",
+		RuntimeID:  "rt",
+		Credential: "super-secret-credential-value",
+	}
+	// A valid config, plus one that is invalid for a reason near the credential.
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+
+	c.SecretBroker.URL = "not-a-url"
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), "super-secret-credential-value") {
+		t.Errorf("validation error leaked the credential: %v", err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }

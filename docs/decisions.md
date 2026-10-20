@@ -98,3 +98,26 @@ observability fields (`refused_total`, `coalesced_total`,
 `catch_up_skipped_total`); the manifest reference text for the three keys (WS6);
 and whether a daemon-wide queue ceiling is ever needed at all (named out of scope
 in WS2).
+
+
+## 2026-10-15 — Secrets have a tenant tier
+
+**Committed path.** `D2`'s namespace was one secret per `(runtime, job, name)`, so a
+credential shared by every job was still stored per job. Rotating one across forty
+jobs was forty writes, and every job id had to be known and named. The runtime id
+was already the tenant boundary, so a shared tier inside it costs nothing that the
+boundary was providing — and the design's own reason for per-name storage (a
+write-only control plane, `CL-13`) is about *name* granularity, not the job segment.
+
+| Decision | Answer | Consequence |
+| --- | --- | --- |
+| Tier | **Tenant-level secrets exist, as a fallback under a job's own** | `otter/{runtime_id}/_tenant/{NAME}` holds the shared values; the broker resolves them first and the job's over names. A rotation is one write, and per-job override survives because precedence is job-first. |
+| Reservation | **Underscore-prefixed segments belong to the broker** | `validSegment` refuses them for every identity segment, so a job named `_tenant` is refused rather than served the shared document as its own. Enforced in the builder and at the endpoint. |
+| Unchanged | **`CL-13`'s write-only property and `D2`'s audience** | Per-name storage and the runtime prefix are untouched. The tenant segment comes from the token's runtime id and never from the request, so a job reaches its own tenant's shared secrets and no other's; a sibling's own namespace stays unreadable. |
+| The cost | **Every job on a tenant can read that tenant's shared values** | A compromised job has a wider read, bounded by the tenant. Accepted over fanning writes out per job, which leaves copies an out-of-band rotation diverges silently. |
+| Live state | **One tenant, six secrets, not eighteen** | `otter/rt_e924c393ffdd/_tenant/` holds all six. The per-job copies were removed: a stale one would silently win over the shared value. |
+
+**Still open**: which scope the Cloud's write-through saves to. The storage and the
+resolution are done and tested; a UI that cannot choose the tenant scope can still
+only write per job, so the operator experience this decision is about is not yet
+delivered end to end.

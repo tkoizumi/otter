@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/tkoizumi/otter/internal/awscreds"
 )
 
 // AWSInstanceRole proves host identity using the EC2 instance role.
@@ -36,7 +38,7 @@ type AWSInstanceRole struct {
 	HTTPClient *http.Client
 }
 
-const defaultMetadataBase = "http://169.254.169.254"
+const defaultMetadataBase = awscreds.DefaultBase
 
 func (p *AWSInstanceRole) Provider() string { return "aws-instance-role" }
 
@@ -54,53 +56,41 @@ func (p *AWSInstanceRole) base() string {
 	return defaultMetadataBase
 }
 
-// imdsGet performs an IMDSv2 GET: a token first, then the value. IMDSv1 is not
-// used even as a fallback, because falling back to the weaker mode would make
-// the stronger mode optional and an attacker able to suppress the token request
-// could force the downgrade.
+// imdsGet reads one metadata path.
+//
+// The IMDSv2 flow itself lives in `internal/awscreds`, which the host broker
+// also uses; this is the agent's injection seam and its error translation.
 func (p *AWSInstanceRole) imdsGet(ctx context.Context, path string) (string, error) {
-	base := p.base()
-	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPut, base+"/latest/api/token", nil)
+	value, err := p.metadata().Get(ctx, path)
 	if err != nil {
-		return "", err
+		return "", mapIMDSError(err)
 	}
-	tokenReq.Header.Set("X-aws-ec2-metadata-token-ttl-seconds", "300")
-	tokenResp, err := p.client().Do(tokenReq)
-	if err != nil {
-		return "", fmt.Errorf("%w: IMDS token: %v", ErrBootstrapUnavailable, err)
-	}
-	defer tokenResp.Body.Close()
-	if tokenResp.StatusCode == http.StatusUnauthorized || tokenResp.StatusCode == http.StatusForbidden {
-		// IMDSv2 is disabled on this instance. That is a configuration refusal,
-		// not a transient failure: retrying will not enable it.
-		return "", fmt.Errorf("%w: IMDSv2 is not available (status %d)", ErrBootstrapRefused, tokenResp.StatusCode)
-	}
-	if tokenResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: IMDS token status %d", ErrBootstrapUnavailable, tokenResp.StatusCode)
-	}
-	token, err := io.ReadAll(io.LimitReader(tokenResp.Body, 4096))
-	if err != nil {
-		return "", fmt.Errorf("%w: IMDS token read: %v", ErrBootstrapUnavailable, err)
-	}
+	return value, nil
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
-	if err != nil {
-		return "", err
+// metadata is the shared IMDS reader, configured from this type's seams.
+func (p *AWSInstanceRole) metadata() *awscreds.IMDS {
+	return &awscreds.IMDS{Base: p.base(), HTTP: p.HTTPClient}
+}
+
+// mapIMDSError translates the metadata package's sentinels into this package's
+// bootstrap ones, which the retry loop already understands.
+//
+// The distinction is the one that matters operationally: a refusal is a
+// configuration an operator must change and retrying cannot fix, while an
+// unavailable service is worth another attempt. A path that is not attached to
+// the instance (404) is a refusal -- there is no role to wait for.
+func mapIMDSError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, awscreds.ErrRefused):
+		return fmt.Errorf("%w: %v", ErrBootstrapRefused, err)
+	case errors.Is(err, awscreds.ErrUnavailable):
+		return fmt.Errorf("%w: %v", ErrBootstrapUnavailable, err)
+	default:
+		return err
 	}
-	req.Header.Set("X-aws-ec2-metadata-token", string(token))
-	resp, err := p.client().Do(req)
-	if err != nil {
-		return "", fmt.Errorf("%w: IMDS %s: %v", ErrBootstrapUnavailable, path, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: IMDS %s status %d", ErrBootstrapUnavailable, path, resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
-	if err != nil {
-		return "", fmt.Errorf("%w: IMDS %s read: %v", ErrBootstrapUnavailable, path, err)
-	}
-	return string(body), nil
 }
 
 // describeInstanceIdentity returns the instance's own view of who it is. The
@@ -166,7 +156,11 @@ func (p *AWSInstanceRole) Identity(ctx context.Context) (Identity, error) {
 	}
 	creds, err := p.imdsGet(ctx, "/latest/meta-data/iam/security-credentials/"+claims["role"])
 	if err != nil {
-		return Identity{}, fmt.Errorf("%w: instance role credentials: %v", ErrBootstrapUnavailable, err)
+		// `imdsGet` has already classified this as a refusal or an outage.
+		// Re-wrapping it as "unavailable" would discard that: a host with no
+		// role attached would be retried forever instead of reported as the
+		// configuration fault it is.
+		return Identity{}, fmt.Errorf("instance role credentials: %w", err)
 	}
 	var parsed struct {
 		AccessKeyID     string `json:"AccessKeyId"`

@@ -107,7 +107,12 @@ func TestStepReportsActiveAfterVerifiedWork(t *testing.T) {
 	agent := &Agent{
 		Client:   NewClient(server.URL, "otk_test_token"),
 		CloudURL: server.URL,
-		Options:  Options{CommandRunner: runner, StatePath: filepath.Join(t.TempDir(), "state.json")},
+		Options: Options{
+			CommandRunner: runner,
+			StatePath:     filepath.Join(t.TempDir(), "state.json"),
+			// Execute records a broker credential; the default is a real host path.
+			BrokerCredentialsPath: filepath.Join(t.TempDir(), "broker-credentials.json"),
+		},
 	}
 	if err := agent.Step(context.Background()); err != nil {
 		t.Fatalf("cycle: %v", err)

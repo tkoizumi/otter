@@ -182,24 +182,33 @@ type Daemon struct {
 	// say -- an alert without it does not say which one is broken.
 	hostname string
 
-	// depthRefusals counts, per job, the autonomous triggers refused because
-	// the job's max_queue_depth was reached, and remembers when the last one
-	// happened. A refusal is a run that did not happen, so it has to be
-	// visible somewhere the operator already looks rather than only in a log
-	// line that scrolls away.
-	depthMu       sync.Mutex
-	depthRefusals map[string]*depthRefusal
+	// admissionRefusals counts, per job, the autonomous triggers this runtime
+	// refused, and remembers when the last one happened and why. A refusal is a
+	// run that did not happen, so it has to be visible somewhere the operator
+	// already looks rather than only in a log line that scrolls away.
+	//
+	// This was `depthRefusals` when max_queue_depth was the only thing that could
+	// refuse a trigger. A scheduled occurrence refused because its job has no
+	// active release was silent -- no run, no queue entry, nothing but a log line
+	// on a host nobody watches -- which is the same class of failure the depth
+	// counter exists to prevent. It belongs in the same accounting rather than in
+	// a second one.
+	admissionMu       sync.Mutex
+	admissionRefusals map[string]*admissionRefusal
 }
 
-// depthRefusal is one job's overload accounting.
-type depthRefusal struct {
+// admissionRefusal is one job's refusal accounting.
+type admissionRefusal struct {
 	// Total is every refusal since the daemon started. It is deliberately not
-	// persisted: a restart means a new process, and the queue it was protecting
-	// may have drained in between.
+	// persisted: a restart means a new process, and whatever was refusing work
+	// may have been fixed in between.
 	Total int64
 	// LastAt is when the most recent refusal happened, so an operator can tell
 	// "this is happening now" from "this happened once, hours ago".
 	LastAt time.Time
+	// LastReason is why the most recent one happened. A count without a reason
+	// says "something was refused" and leaves the operator to guess what to fix.
+	LastReason string
 }
 
 // Compile-time proof that the daemon satisfies the API's backend contract.

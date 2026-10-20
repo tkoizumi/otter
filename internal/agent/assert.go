@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/tkoizumi/otter/internal/awsv4"
 )
 
 // Identity is what a provider knows: a key and the claims it makes. It is not an
@@ -59,7 +61,7 @@ func signAssertion(id Identity, method, host, path, body string, now time.Time) 
 	if service == "" {
 		service = "otter-agent"
 	}
-	h, err := sigV4Input{
+	h, err := awsv4.Input{
 		AccessKeyID:     id.AccessKeyID,
 		SecretAccessKey: id.SecretAccessKey,
 		SessionToken:    id.SessionToken,
@@ -74,7 +76,7 @@ func signAssertion(id Identity, method, host, path, body string, now time.Time) 
 	if err != nil {
 		return nil, err
 	}
-	return normaliseHeaderNames(h), nil
+	return awsv4.NormaliseHeaderNames(h), nil
 }
 
 // hostOf extracts the authority a signature must cover. Signing a different host

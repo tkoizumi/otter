@@ -474,6 +474,70 @@ func RecordedIdentity(job, python, digest, policy string) Spec {
 	return Spec{Job: job, Python: python, Digest: digest, Policy: policy}
 }
 
+// managedPythonDirEnv is where uv looks for the interpreters it manages, and so
+// the variable that says whether a host already provides the pinned one.
+const managedPythonDirEnv = "UV_PYTHON_INSTALL_DIR"
+
+// hasManagedPython reports whether dir already holds a uv-managed interpreter for
+// version, in the layout `uv python install` produces:
+//
+//	<dir>/cpython-<version>-<platform>-<libc>/bin/python3.<minor>
+//
+// A directory with no interpreter in bin/ is not counted, so a half-removed
+// install does not read as usable.
+func hasManagedPython(dir, version string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "cpython-") {
+			continue
+		}
+		if !managedVersionMatches(strings.TrimPrefix(name, "cpython-"), version) {
+			continue
+		}
+		bins, err := os.ReadDir(filepath.Join(dir, name, "bin"))
+		if err != nil {
+			continue
+		}
+		for _, bin := range bins {
+			if strings.HasPrefix(bin.Name(), "python3") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// managedVersionMatches reports whether an install directory's version suffix
+// belongs to the pinned version. uv names them "3.13.5-linux-x86_64-gnu", so the
+// pin has to match up to a boundary: "3.13" is any 3.13.x, but a bare prefix test
+// would let a pin of "3.1" accept "3.130".
+func managedVersionMatches(rest, version string) bool {
+	if version == "" {
+		return false
+	}
+	if rest == version {
+		return true
+	}
+	if !strings.HasPrefix(rest, version) {
+		return false
+	}
+	// A pin may name fewer components than the install does: "3.13" is any 3.13.x,
+	// so a dot continues the version rather than ending it. A digit does not, or
+	// a pin of "3.1" would accept "3.130".
+	switch rest[len(version)] {
+	case '-', '+', '.':
+		return true
+	}
+	return false
+}
+
 // Prepare downloads the pinned interpreter and syncs locked production
 // dependencies. A crashed preparation leaves no readiness marker; retrying
 // safely reconstructs the incomplete directory under an advisory lock.
@@ -533,23 +597,64 @@ func (m Manager) Prepare(ctx context.Context, dir, job, uvPath string) (Ready, e
 	// as a route problem rather than as whatever uv was doing when it noticed.
 	// A skipped check is recorded: it is what stops a later interpreter failure
 	// from being misreported as a platform/patch-version problem.
+	// An interpreter the host ALREADY provides is used, not copied.
+	//
+	// The pooled runtime image bakes the interpreter it pins into a read-only
+	// directory and points UV_PYTHON_INSTALL_DIR at it. Installing a second copy
+	// under the data directory fetches over the network what is already on disk,
+	// so on a host without egress the environment could not be prepared at all
+	// while the interpreter sat right there, and on a host with egress every
+	// tenant downloaded its own copy. The interpreter is not tenant state: only
+	// the environment built from it is, and that still lives under the data
+	// directory.
+	//
+	// This is settled BEFORE the egress preflight, because whether the host
+	// already provides the interpreter is what decides how much the preflight
+	// still has to say.
+	pythonDir := filepath.Join(root, "python")
+	reused := ""
+	if shared := strings.TrimSpace(os.Getenv(managedPythonDirEnv)); shared != "" {
+		if abs, err := filepath.Abs(shared); err == nil && abs != root && hasManagedPython(abs, spec.Python) {
+			pythonDir, reused = abs, abs
+		}
+	}
+
 	egressChecked := false
 	if !m.SkipEgressCheck {
 		if err := m.checkEgress(ctx, dir, spec); err != nil {
-			return Ready{}, err
+			if reused == "" {
+				return Ready{}, err
+			}
+			// The preflight asks whether preparation CAN reach what it needs. It
+			// is a clearer error for a host with no route, not a requirement in
+			// its own right -- and the one input a cache cannot stand in for, the
+			// pinned interpreter, is already on this host. Whether the rest can be
+			// satisfied is uv's question, and it answers precisely when a fetch is
+			// impossible.
+			//
+			// The image's design depends on this: it bakes the interpreter into a
+			// read-only directory "so that an offline preparation is possible at
+			// all", and a preflight that refuses regardless defeats that.
+			m.logf("egress preflight failed, continuing because %s provides the pinned Python: %v\n", reused, err)
+		} else {
+			egressChecked = true
+			m.logf("egress preflight ok for environment %s: %s\n", spec.Digest[:12], describeEgress(m.endpoints(dir)))
 		}
-		egressChecked = true
-		m.logf("egress preflight ok for environment %s: %s\n", spec.Digest[:12], describeEgress(m.endpoints(dir)))
 	}
-	baseEnv := append(os.Environ(), "UV_PYTHON_INSTALL_DIR="+filepath.Join(root, "python"), "UV_CACHE_DIR="+filepath.Join(root, "cache", "uv"), "UV_PROJECT_ENVIRONMENT="+envDir, "UV_PYTHON_PREFERENCE=only-managed", "UV_NO_CONFIG=1")
-	installArgs := []string{"python", "install", "--install-dir", filepath.Join(root, "python")}
-	if mirror := strings.TrimSpace(m.PythonMirror); mirror != "" {
-		installArgs = append(installArgs, "--mirror", mirror)
-	}
-	install := exec.CommandContext(ctx, uv, append(installArgs, spec.Python)...)
-	install.Env = baseEnv
-	if out, err := install.CombinedOutput(); err != nil {
-		return Ready{}, installError(spec, err, strings.TrimSpace(string(out)), egressChecked)
+
+	baseEnv := append(os.Environ(), managedPythonDirEnv+"="+pythonDir, "UV_CACHE_DIR="+filepath.Join(root, "cache", "uv"), "UV_PROJECT_ENVIRONMENT="+envDir, "UV_PYTHON_PREFERENCE=only-managed", "UV_NO_CONFIG=1")
+	if reused == "" {
+		installArgs := []string{"python", "install", "--install-dir", pythonDir}
+		if mirror := strings.TrimSpace(m.PythonMirror); mirror != "" {
+			installArgs = append(installArgs, "--mirror", mirror)
+		}
+		install := exec.CommandContext(ctx, uv, append(installArgs, spec.Python)...)
+		install.Env = baseEnv
+		if out, err := install.CombinedOutput(); err != nil {
+			return Ready{}, installError(spec, err, strings.TrimSpace(string(out)), egressChecked)
+		}
+	} else {
+		m.logf("python %s reused from %s\n", spec.Python, reused)
 	}
 	syncArgs := []string{"sync", "--locked", "--no-install-project", "--no-build", "--no-config", "--no-python-downloads", "--python", spec.Python, "--python-preference", "only-managed"}
 	if index := strings.TrimSpace(m.Index); index != "" {

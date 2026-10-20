@@ -276,6 +276,19 @@ func TestRefusalLineLeadsWithTheBusiestJob(t *testing.T) {
 	}
 }
 
+// The reason is the part an operator acts on: a count says something is being
+// held back, the reason says what to fix. It has to survive to the line.
+func TestRefusalLineCarriesTheReason(t *testing.T) {
+	got := refusalLine(map[string]api.AdmissionRefusal{
+		"a": {Total: 3, Reason: "no_active_release"},
+		"b": {Total: 1, Reason: "max_queue_depth"},
+		"c": {Total: 1},
+	})
+	if want := "5 refused: a x3 (no_active_release), b x1 (max_queue_depth), c x1"; got != want {
+		t.Errorf("refusalLine() = %q, want %q", got, want)
+	}
+}
+
 func TestScheduleCounterLineOmitsZeroCounters(t *testing.T) {
 	if got := scheduleCounterLine(nil); got != "" {
 		t.Errorf("no schedules = %q, want empty", got)

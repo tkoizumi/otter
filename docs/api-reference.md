@@ -1004,7 +1004,9 @@ curl -s -H "$(auth)" "$OTTER_API_URL/v1/runs?job_id=shopify-to-erp&status=failed
 `created_at` is when the run record was created, which for a queued run is
 equivalently when it was enqueued. The trigger payload, the effective timeout and
 the scheduled time live inside `metadata`. A run that has not started yet has
-`started_at: null` and `exit_code: null`.
+`started_at: null` and `exit_code: null`. `log_lost` and `log_lines_dropped`
+appear only on a run whose captured output could not be written to the
+database; see the field notes under `GET /v1/runs/{id}`.
 
 Errors: `400 invalid_request` for an unknown `status` value or a non-numeric
 `limit`; `404 not_found` when `job_id` names no job.
@@ -1066,6 +1068,25 @@ Field notes:
 - `exit_code` is `null` while queued/running; when a process is killed by a
   signal the exit code is whatever the OS reports.
 - `metadata` is `null` when the run was created without a trigger payload.
+- `log_lost` and `log_lines_dropped` are **added only when** captured output
+  could not be written to the database — a full disk, typically. `log_lost` is
+  `true` when at least one line was lost and `log_lines_dropped` counts how
+  many. An ordinary run omits both, so their presence is itself the signal. A
+  run can be `succeeded` and still carry them: `status` and `exit_code` describe
+  the child, which finished honestly, while the output is a separate fact. The
+  daemon journal carries a `run_log_write_failed` line for the same event.
+- `attribution` says which side of the system ended the run: `runtime`, `job` or
+  `operator`. It is **omitted** when nothing recorded it — a run that has not
+  finished, a success, or a row written before migration
+  `0021_run_attribution.sql` — and it is never inferred from `error`, because an
+  ending guessed from a message is not a fact. `runtime` means the runtime's own
+  machinery ended the run: it could not start the job, it shut down mid-run, or it
+  could not reap the child. That is the case the pilot's reliability window counts,
+  so it is the one worth alerting on. `job` covers a non-zero exit, a signal, or an
+  overrun of the manifest's timeout; `operator` covers a cancellation. A job that
+  failed on an upstream error and a job with a bug in it **both** report `job`: only
+  the job's own output distinguishes them, and this field does not pretend
+  otherwise.
 
 Errors: `404 not_found`.
 

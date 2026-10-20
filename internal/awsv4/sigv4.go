@@ -1,4 +1,12 @@
-package agent
+// Package awsv4 signs AWS API requests with Signature Version 4.
+//
+// Implemented rather than imported because an SDK would bring a dependency
+// chain into binaries that run on every pool host. It has two callers with
+// different needs — the agent's bootstrap assertion, and the host broker's read
+// of AWS Secrets Manager — which is why it lives here rather than inside either
+// one. The canonicalisation rules are the part that must be exactly right, so
+// they are separated and tested.
+package awsv4
 
 import (
 	"crypto/hmac"
@@ -11,10 +19,10 @@ import (
 	"time"
 )
 
-// sigV4Input is everything the signature depends on. It is a struct rather than
-// a parameter list so a caller cannot silently omit a field that changes the
+// Input is everything the signature depends on. It is a struct rather than a
+// parameter list so a caller cannot silently omit a field that changes the
 // signature's meaning.
-type sigV4Input struct {
+type Input struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
@@ -23,35 +31,39 @@ type sigV4Input struct {
 	Method          string
 	Host            string
 	Path            string
-	Payload         []byte
-	Now             time.Time
+	// Query is the canonical query string, already sorted and encoded. Empty
+	// means no query, which is the case for every caller today.
+	Query   string
+	Payload []byte
+	Now     time.Time
+
+	// Headers are extra headers to sign, keyed by any case. The signer always
+	// signs host, x-amz-date and x-amz-content-sha256, plus
+	// x-amz-security-token when a session token is present.
+	//
+	// A caller adding a header here is promising the request will actually send
+	// it: a signed header that is absent makes the signature unreproducible, and
+	// a verifier reports it as a missing header rather than as a mismatch.
+	Headers map[string]string
 }
 
-// signSigV4 produces the Authorization header value for a request.
-//
-// Implemented rather than imported because the agent is the only component that
-// needs it and an SDK would bring a dependency chain into a binary that runs on
-// every pool host. The canonicalisation rules are the part that must be exactly
-// right, so they are separated and tested.
-func signSigV4(in sigV4Input) (string, error) {
+// Sign produces the Authorization header value for a request.
+func Sign(in Input) (string, error) {
 	if in.AccessKeyID == "" || in.SecretAccessKey == "" {
-		return "", fmt.Errorf("agent: sigv4 needs credentials")
+		return "", fmt.Errorf("awsv4: sigv4 needs credentials")
 	}
 	if in.Region == "" || in.Service == "" {
-		return "", fmt.Errorf("agent: sigv4 needs a region and service")
+		return "", fmt.Errorf("awsv4: sigv4 needs a region and service")
 	}
 	if in.Now.IsZero() {
-		return "", fmt.Errorf("agent: sigv4 needs a signing time")
+		return "", fmt.Errorf("awsv4: sigv4 needs a signing time")
 	}
 
 	amzDate := in.Now.UTC().Format("20060102T150405Z")
 	dateStamp := in.Now.UTC().Format("20060102")
 
-	payloadHash := sha256Hex(in.Payload)
+	payloadHash := Sha256Hex(in.Payload)
 
-	// Canonical headers must be lowercase, sorted, and trimmed. Content-type is
-	// included because the control plane will sign the same set; a mismatch here
-	// is the most common cause of a signature that cannot be reproduced.
 	headers := map[string]string{
 		"host":                 in.Host,
 		"x-amz-date":           amzDate,
@@ -60,6 +72,14 @@ func signSigV4(in sigV4Input) (string, error) {
 	if in.SessionToken != "" {
 		headers["x-amz-security-token"] = in.SessionToken
 	}
+	for name, value := range in.Headers {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		if lower == "" {
+			continue
+		}
+		headers[lower] = value
+	}
+
 	names := make([]string, 0, len(headers))
 	for k := range headers {
 		names = append(names, k)
@@ -76,8 +96,8 @@ func signSigV4(in sigV4Input) (string, error) {
 
 	canonicalRequest := strings.Join([]string{
 		in.Method,
-		canonicalURI(in.Path),
-		"", // query string: the bootstrap request carries none
+		CanonicalURI(in.Path),
+		in.Query,
 		canonicalHeaders.String(),
 		signedHeaders,
 		payloadHash,
@@ -88,7 +108,7 @@ func signSigV4(in sigV4Input) (string, error) {
 		"AWS4-HMAC-SHA256",
 		amzDate,
 		scope,
-		sha256Hex([]byte(canonicalRequest)),
+		Sha256Hex([]byte(canonicalRequest)),
 	}, "\n")
 
 	kDate := hmacSHA256([]byte("AWS4"+in.SecretAccessKey), dateStamp)
@@ -102,43 +122,44 @@ func signSigV4(in sigV4Input) (string, error) {
 		in.AccessKeyID, scope, signedHeaders, signature), nil
 }
 
-// canonicalURI applies the SigV4 rule: each path segment is URI-encoded, and "/"
+// CanonicalURI applies the SigV4 rule: each path segment is URI-encoded, and "/"
 // separators are preserved.
-func canonicalURI(p string) string {
+func CanonicalURI(p string) string {
 	if p == "" {
 		return "/"
 	}
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
-	segs := strings.Split(p, "/")
-	for i, s := range segs {
-		segs[i] = awsURIEncode(s, false)
+	segments := strings.Split(p, "/")
+	for i, segment := range segments {
+		segments[i] = awsURIEncode(segment, false)
 	}
-	return strings.Join(segs, "/")
+	return strings.Join(segments, "/")
 }
 
 // awsURIEncode encodes per SigV4: unreserved characters pass through, everything
 // else is percent-encoded uppercase-hex, and a space becomes %20 rather than +.
 func awsURIEncode(s string, encodeSlash bool) string {
-	const unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if strings.IndexByte(unreserved, c) >= 0 {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.', c == '~':
 			b.WriteByte(c)
-			continue
-		}
-		if c == '/' && !encodeSlash {
+		case c == '/' && !encodeSlash:
 			b.WriteByte(c)
-			continue
+		default:
+			b.WriteString(fmt.Sprintf("%%%02X", c))
 		}
-		fmt.Fprintf(&b, "%%%02X", c)
 	}
 	return b.String()
 }
 
-func sha256Hex(b []byte) string {
+// Sha256Hex is the lowercase hex SHA-256 of b, which is what SigV4 signs in
+// place of a payload.
+func Sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
@@ -149,10 +170,10 @@ func hmacSHA256(key []byte, data string) []byte {
 	return m.Sum(nil)
 }
 
-// normaliseHeaderNames lowercases header names, because a signature covers
+// NormaliseHeaderNames lowercases header names, because a signature covers
 // lowercase names and a verifier reading "X-Amz-Date" would not find the
 // "x-amz-date" it signed.
-func normaliseHeaderNames(h http.Header) map[string]string {
+func NormaliseHeaderNames(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, v := range h {
 		if len(v) > 0 {
@@ -162,10 +183,10 @@ func normaliseHeaderNames(h http.Header) map[string]string {
 	return out
 }
 
-// Header renders the signed values as request headers, so the agent and any test
+// Header renders the signed values as request headers, so a caller and any test
 // client send exactly what was signed.
-func (in sigV4Input) Header() (http.Header, error) {
-	auth, err := signSigV4(in)
+func (in Input) Header() (http.Header, error) {
+	auth, err := Sign(in)
 	if err != nil {
 		return nil, err
 	}
@@ -177,9 +198,12 @@ func (in sigV4Input) Header() (http.Header, error) {
 	h.Set("Host", in.Host)
 	h.Set("Authorization", auth)
 	h.Set("X-Amz-Date", in.Now.UTC().Format("20060102T150405Z"))
-	h.Set("X-Amz-Content-Sha256", sha256Hex(in.Payload))
+	h.Set("X-Amz-Content-Sha256", Sha256Hex(in.Payload))
 	if in.SessionToken != "" {
 		h.Set("X-Amz-Security-Token", in.SessionToken)
+	}
+	for name, value := range in.Headers {
+		h.Set(name, value)
 	}
 	return h, nil
 }

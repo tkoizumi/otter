@@ -109,6 +109,19 @@ an outcome.
 `queued`, `running` and `retrying` are the non-terminal set; the other four are
 terminal and are the only values `runs.Finish` accepts.
 
+**A status describes the child, not the durability of its output.** Captured
+lines are written to `run_logs` as they arrive, and that write can fail — a full
+disk is the observed case (`runs: commit log batch: database or disk is full
+(13)`, found by the HW-6b host disk-fill, `OT-020`). The run still finishes with
+the exit code its child actually produced, so `succeeded` alone does not mean
+the output survived. When a captured batch or a lifecycle line cannot be
+written, the attempt records the loss and the run view exposes it as `log_lost`,
+with `log_lines_dropped` when the count is known, while the daemon logs
+`run_log_write_failed`. An operator therefore sees `succeeded` and
+`log_lost: true` together instead of an empty `otter logs` that could be read as
+"printed nothing". `TestCapturedOutputWriteFailureIsReportedOnTheRun` and
+`TestOtterNarrationWriteFailureIsReportedOnTheRun` pin the two writers.
+
 ### Legal transitions
 
 The daemon only ever produces these transitions. Anything else is a defect.
@@ -633,7 +646,7 @@ which is this document's. Evidence status is deliberately literal:
 | FM-05 | Cancel a running run; process group dies, status `cancelled`, not retried | **Partial** | `TestCancelRunningRunIsNotRetried`, `TestCancelQueuedRunRemovesItFromTheQueue`. Process-group death under cancel: none. |
 | FM-06 | Two processes claim concurrently; no run executed twice | **Simulated** | `TestClaimConcurrentNoDoubleExecution` (8 goroutines, one `MaxOpenConns(1)` connection). A second process or connection: none. |
 | FM-07 | `concurrency: N` state updates match documented behavior | **Partial** | Parallelism observed: `TestConcurrencyLimitSerializesRuns`, `TestConcurrencyAboveOneRunsInParallel`, `TestWorkerPoolLimitCapsGlobalConcurrency`, `TestCapacityReserveRelease`, `TestClaimCapacityIsPerJob`. State: `TestConcurrentWriters` (distinct keys), `TestStateEndpoints`, `TestStateWriteRefusesAStaleGeneration`, `TestStateAPIRoundTripAndNamespacing`. A same-key read-modify-write race: none. |
-| FM-08 | Disk exhaustion / oversized output; failures visible, bounded, recoverable | **Partial** | Bounded output/input: `TestRunTruncatesVeryLongLines` (`internal/executor`), `TestRequestBodyTooLarge`. Disk exhaustion (ENOSPC) and recovery: none. |
+| FM-08 | Disk exhaustion / oversized output; failures visible, bounded, recoverable | **Partial** | Bounded output/input: `TestRunTruncatesVeryLongLines` (`internal/executor`), `TestRequestBodyTooLarge`. A lost log write is visible on the run: `log_lost` / `log_lines_dropped` are set on both failure paths and read back through the run view (`TestCapturedOutputWriteFailureIsReportedOnTheRun`, `TestOtterNarrationWriteFailureIsReportedOnTheRun`), which closes the visibility half of `OT-020`. A real ENOSPC disk-fill drill and recovery are still to come. |
 | FM-09 | The attempt state machine admits only legal transitions; a terminal attempt is never resurrected | **Partial** | Classification: `TestStatusSemantics`, `TestCreateRejectsAnInvalidStatus`, `TestSetStatus`. Guards: `TestMarkRunningOnlyTransitionsClaimableRuns` (terminal and `running` not claimable), `TestFinishRecordsOutcome`, `TestFinishTxJoinsTheCallersTransaction` (non-terminal finish rejected). A terminal row being overwritten: none — the store primitive is unguarded (see the caveat in §1). |
 
 ### What Appendix A means for the guarantees

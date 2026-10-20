@@ -90,6 +90,10 @@ func clearRouteEnv(t *testing.T) {
 	for _, name := range []string{
 		"UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR",
 		"UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS", "UV_NO_INDEX",
+		// Preparation reads this one to decide whether the host already provides
+		// the pinned interpreter, so a test that inherited it from the ambient
+		// shell would take a different path.
+		managedPythonDirEnv,
 	} {
 		t.Setenv(name, "")
 	}
@@ -443,5 +447,81 @@ func TestHTTPProbeAcceptsAnyAnswerAndRejectsNoRoute(t *testing.T) {
 	listener.Close()
 	if err := HTTPProbe(context.Background(), "http://"+addr+"/simple/"); err == nil {
 		t.Error("a refused connection was reported as reachable")
+	}
+}
+
+// The runtime image bakes the interpreter its jobs pin into a read-only
+// directory, and says why: so that "an offline preparation is possible at all".
+// A preflight that refuses regardless defeats that -- it fails the preparation
+// over an input the host has ALREADY supplied, and the interpreter is the one
+// input a package cache cannot stand in for.
+func TestPrepareProceedsWithoutEgressWhenTheHostProvidesTheInterpreter(t *testing.T) {
+	clearRouteEnv(t)
+	python, pin := localPython(t)
+	t.Setenv(managedPythonDirEnv, hostPython(t, pin, python))
+
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, pin)
+	uv, logPath := fakeUV(t, data, python, "")
+
+	probe := &probeRecorder{fail: map[string]error{
+		DefaultPackageIndex: errors.New("dial tcp 8.8.8.8:53: network is unreachable"),
+	}}
+	var logs []string
+	m := Manager{
+		DataDir: data,
+		Probe:   probe.probe,
+		Logf:    func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+	}
+
+	ready, err := m.Prepare(context.Background(), dir, "one", uv)
+	if err != nil {
+		t.Fatalf("preparation refused although the host provides the pinned interpreter: %v", err)
+	}
+	if ready.Interpreter == "" {
+		t.Fatal("no interpreter was published")
+	}
+
+	// It is RECORDED rather than swallowed: an operator has to be able to tell
+	// that this environment was prepared without a verified route.
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "egress preflight failed") {
+		t.Errorf("the preflight failure was not logged:\n%s", joined)
+	}
+
+	// And the host's copy was USED, not replaced by a download of the same
+	// version -- which is the whole point of preferring it.
+	invocations, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(invocations), "python install") {
+		t.Errorf("uv was asked to install an interpreter the host already provides:\n%s", invocations)
+	}
+}
+
+// The concession is bounded by the PIN, not by "some interpreter exists". A host
+// offering a different version has not supplied what the job asked for, so the
+// preflight keeps its original force.
+func TestPrepareStillRefusesWithoutEgressForAVersionTheHostDoesNotProvide(t *testing.T) {
+	clearRouteEnv(t)
+	python, pin := localPython(t)
+	t.Setenv(managedPythonDirEnv, hostPython(t, "3.99.99", python))
+
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, pin)
+	uv, _ := fakeUV(t, data, python, "")
+
+	probe := &probeRecorder{fail: map[string]error{
+		DefaultPackageIndex: errors.New("network is unreachable"),
+	}}
+	m := Manager{DataDir: data, Probe: probe.probe}
+
+	_, err := m.Prepare(context.Background(), dir, "one", uv)
+	if err == nil {
+		t.Fatal("preparation succeeded with no route and no interpreter for the pin")
+	}
+	if !errors.Is(err, ErrEgressUnreachable) {
+		t.Fatalf("failure is not a preflight failure: %v", err)
 	}
 }

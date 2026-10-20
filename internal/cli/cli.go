@@ -448,13 +448,14 @@ func (a *App) cmdStatus(ctx context.Context, g globals) int {
 // single noisy job is not buried in a list.
 func refusalLine(byJob map[string]api.AdmissionRefusal) string {
 	type entry struct {
-		id    string
-		total int64
+		id     string
+		total  int64
+		reason string
 	}
 	entries := make([]entry, 0, len(byJob))
 	var sum int64
 	for id, rec := range byJob {
-		entries = append(entries, entry{id: id, total: rec.Total})
+		entries = append(entries, entry{id: id, total: rec.Total, reason: rec.Reason})
 		sum += rec.Total
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -465,6 +466,13 @@ func refusalLine(byJob map[string]api.AdmissionRefusal) string {
 	})
 	parts := make([]string, 0, len(entries))
 	for _, e := range entries {
+		// The REASON is what an operator acts on. "3 refused" says something is
+		// being held back; "3 refused (no_active_release)" says the job has never
+		// been made live and no amount of waiting will change it.
+		if e.reason != "" {
+			parts = append(parts, fmt.Sprintf("%s x%d (%s)", shortJobID(e.id), e.total, e.reason))
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s x%d", shortJobID(e.id), e.total))
 	}
 	return fmt.Sprintf("%d refused: %s", sum, strings.Join(parts, ", "))
@@ -1046,17 +1054,71 @@ func runsListNextLimit(current int) int {
 
 func (a *App) writeRunTable(list []*runs.Run) {
 	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN ID\tJOB\tTRIGGER\tSTATUS\tATTEMPT\tSTARTED\tDURATION")
+	fmt.Fprintln(tw, "RUN ID\tJOB\tTRIGGER\tSTATUS\tATTEMPT\tSTARTED\tDURATION\tLOG\tENDED BY")
 	for _, r := range list {
 		started := "-"
 		if r.StartedAt != nil {
 			started = r.StartedAt.Format("2006-01-02T15:04:05Z")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			r.ID, jobDisplayName(r), r.TriggerType, r.Status, r.Attempt, started,
-			r.Duration().Round(time.Millisecond))
+			r.Duration().Round(time.Millisecond), logLossColumn(r), attributionColumn(r))
 	}
 	_ = tw.Flush()
+}
+
+// logLossColumn is the run table's one-word answer to "did its output survive?".
+// It is `-` for the ordinary run, so the column only draws the eye on a row
+// where something was actually lost.
+func logLossColumn(r *runs.Run) string {
+	if !r.LogLost {
+		return "-"
+	}
+	if r.LogLinesDropped > 0 {
+		return fmt.Sprintf("lost %d", r.LogLinesDropped)
+	}
+	return "lost"
+}
+
+// attributionColumn is the run table's one-word answer to "did the RUNTIME end
+// this run?". It is `-` for every other ending, so the column draws the eye only
+// on the runs a reliability window counts: the pilot gate asks for 30 consecutive
+// days without a runtime-caused incident, and this is that column.
+func attributionColumn(r *runs.Run) string {
+	if r.Attribution == runs.AttributionRuntime {
+		return "runtime"
+	}
+	return "-"
+}
+
+// attributionNote is the full sentence for a run-detail view. Empty when nothing
+// recorded an ending -- a run that has not finished, a success, or a row written
+// before the column existed -- so the caller omits the line rather than printing
+// a reassuring "unknown".
+func attributionNote(r *runs.Run) string {
+	switch r.Attribution {
+	case runs.AttributionRuntime:
+		return "the runtime ended this run, which is what a reliability window counts"
+	case runs.AttributionJob:
+		return "the job's own execution ended it (an upstream failure looks the same here)"
+	case runs.AttributionOperator:
+		return "an operator ended it"
+	default:
+		return ""
+	}
+}
+
+// logLossNote is the full sentence for a run-detail view. Empty when nothing was
+// lost, so the caller can omit the line entirely rather than print a reassuring
+// "none".
+func logLossNote(r *runs.Run) string {
+	if !r.LogLost {
+		return ""
+	}
+	if r.LogLinesDropped > 0 {
+		return fmt.Sprintf("output was lost: %d captured line(s) could not be written", r.LogLinesDropped)
+	}
+	return "output was lost: captured lines could not be written"
 }
 
 // jobDisplayName is the label a run was submitted under, which is what
@@ -1133,6 +1195,18 @@ func (a *App) cmdRunStatus(ctx context.Context, g globals, args []string) int {
 	}
 	if r.Error != nil && *r.Error != "" {
 		fmt.Fprintf(a.Stdout, "error:         %s\n", oneLine(*r.Error))
+	}
+	// A run can succeed with an honest exit code and still have lost its output;
+	// this is the line that stops the reader treating an empty `otter logs` as
+	// "the job printed nothing".
+	if note := logLossNote(r); note != "" {
+		fmt.Fprintf(a.Stdout, "log:           %s\n", note)
+	}
+	// The status says a run ended badly; it does not say whether the runtime ended
+	// it. That distinction is the whole of the pilot gate's reliability row, so it
+	// is stated here rather than left to be inferred from the error text.
+	if note := attributionNote(r); note != "" {
+		fmt.Fprintf(a.Stdout, "ended by:      %s\n", note)
 	}
 
 	if len(view.Attempts) > 1 {

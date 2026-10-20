@@ -111,6 +111,25 @@ Consequences that followed from that single decision:
   "every five minutes" while the products job ran every fifteen — the same drift
   problem, in the one field a person actually reads.
 
+  **The `trigger.cron` values carried the same drift until 2026-10-15**, in the
+  manifests rather than the descriptions: all three had a copied comment reading
+  `otter schedule set '*/15 * * * *'`, and products had `cron: "*/5 * * * *"`
+  underneath it, while this document, section 9 and the job's own history all say
+  products runs every fifteen. Because a manifest's cron is only a job's *first*
+  value, the drift was invisible on every runtime that had already registered the
+  job — and would have become real on the first **fresh** deployment, registering
+  products at three times its cadence. Corrected: products is `*/15`, orders and
+  customers are `*/5`, and each comment now names its own job's cadence. A job
+  already registered keeps its runtime schedule; correcting a live runtime needs
+  `otter schedule set`, not a redeploy.
+
+  The same manifests now declare `destination_tables`, which is a **second** place
+  the destination tables are named — the first being each job's
+  `CLICKHOUSE_*_TABLE` env. Nothing verifies the two agree, so they are a seam of
+  the same kind as the dataset-id map: a mismatch shows the wrong table in the
+  Cloud and checks the wrong table in
+  `scripts/soak/check-destinations.py`, and neither fails loudly.
+
 ## 6. Coverage
 
 | dataset | before the migration | after |
@@ -149,6 +168,28 @@ rather than by a check. Each is a place to look first when something is wrong.
    nothing in either repository performs. `shopify_customers`'s DDL lives in
    castor-app's `infra/README.md` because the importer never implemented it and
    it has nowhere else to live.
+
+   **Run against a live instance on 2026-10-15, which found two things the fake
+   never could.** The first: `shopify_customers` is not in
+   `infra/clickhouse/init/001-shopify-tables.sql` at all — a ClickHouse started
+   from castor-app's own Compose has products, variants and orders and **no
+   customers**, and the customers DDL exists only in
+   castor-app's `infra/README.md`. A job cannot write to a table that does not
+   exist, so that DDL is an operator step in the same sense the tables themselves
+   are. The second: the checker quoted identifiers with single quotes
+   (`FROM 'castor'.'shopify_products'`), which ClickHouse reads as string literals
+   and rejects, so it would have failed on its first real run. Its stand-in answers
+   whatever it is asked, which is exactly why it could not catch that — a standing
+   reminder that a fake proves the logic and not the query.
+
+   `scripts/soak/check-destinations.py` now checks the other side of this. It
+   asks ClickHouse directly -- the same endpoint, the same credential headers --
+   whether each destination table exists, whether it holds rows for the job's own
+   dataset id, and whether its newest `synced_at` is recent. That covers seam 1 as
+   well: rows filed under the wrong dataset are invisible in a run log and
+   obvious in a count. The check is what the roadmap asks for when it says a
+   successful Python exit does not prove correct business effects, and it shares
+   no code with the runtime, so it cannot inherit the runtime's optimism.
 3. **The shared library is snapshotted per release, so it has per-job versions.**
    Each job declares `python.path: ../lib/python`, and the release **copies**
    that tree in. Deploying one job therefore ships the current library into that

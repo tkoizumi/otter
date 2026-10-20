@@ -1,0 +1,50 @@
+{
+  "comment": [
+    "What each Castor sync job must leave behind in ClickHouse.",
+    "",
+    "The tables and dataset ids come from docs/p0-13-castor-import-migration-record.md.",
+    "The dataset id is the tenancy key that leads the destination table's sort key, so",
+    "rows for a job's dataset are that job's rows -- which is what makes counting them",
+    "a check rather than a coincidence.",
+    "",
+    "max_age_seconds is deliberately a DAY, not three schedules.",
+    "",
+    "These importers are watermark-based: a run fetches only what changed upstream, so a",
+    "quiet store means a run that succeeds and writes NOTHING. Measured on the live",
+    "tenant, orders and customers succeeded every five minutes with",
+    "orders_written=0 while their newest synced_at stayed put. A bound of three",
+    "schedules called that a failure, which is a false positive -- and a soak read",
+    "through a noisy check is worthless.",
+    "",
+    "So this bound answers one question only: has this destination stopped receiving",
+    "data for long enough that it cannot be a quiet upstream? 'Did the job run' is a",
+    "different question, answered by the runtime's run record. Neither signal is",
+    "sufficient alone, and this one deliberately does not claim to be the other."
+  ],
+  "destinations": [
+    {
+      "job": "shopify-products-to-clickhouse",
+      "table": "shopify_products",
+      "dataset_id": "01623354-3556-442a-b4ad-7dfe8123b3e2",
+      "max_age_seconds": 86400
+    },
+    {
+      "job": "shopify-products-to-clickhouse",
+      "table": "shopify_product_variants",
+      "dataset_id": "01623354-3556-442a-b4ad-7dfe8123b3e2",
+      "max_age_seconds": 86400
+    },
+    {
+      "job": "shopify-orders-to-clickhouse",
+      "table": "shopify_orders",
+      "dataset_id": "d13707a7-30a6-46fa-b71c-13594d943153",
+      "max_age_seconds": 86400
+    },
+    {
+      "job": "shopify-customers-to-clickhouse",
+      "table": "shopify_customers",
+      "dataset_id": "f6651490-b524-4f7f-ba9f-855f692d4c08",
+      "max_age_seconds": 86400
+    }
+  ]
+}

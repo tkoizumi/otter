@@ -29,12 +29,15 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tkoizumi/otter/internal/secretbroker"
 )
 
 // Default paths, matching `pool/host-bootstrap.sh` and `pool/pool-host.sh`.
@@ -49,8 +52,14 @@ const (
 	DefaultStatePath       = "/var/lib/otter/pool-agent/state.json"
 	DefaultVolumeRoot      = "/var/lib/otter/tenants"
 	DefaultTokenPath       = "/etc/otter/pool-token"
-	DefaultAgentEnvPath    = "/etc/otter/pool-agent.env"
-	DefaultImage           = "otter-runtime:local"
+	// DefaultCredentialName is the systemd `LoadCredential=` name the unit uses.
+	DefaultCredentialName = "pool-token"
+	DefaultAgentEnvPath   = "/etc/otter/pool-agent.env"
+	DefaultImage          = "otter-runtime:local"
+	// DefaultBrokerCredentialsPath is where the agent records one credential per
+	// runtime, and where `otter pool broker` reads them. The same file, because a
+	// second copy is a second thing that can disagree.
+	DefaultBrokerCredentialsPath = "/var/lib/otter/pool-agent/broker-credentials.json"
 )
 
 // TenantLimits is what the plan asks the container to be allowed.
@@ -103,22 +112,22 @@ type Placement struct {
 
 // Report is the outcome of an attempt plus whatever the host observed.
 type Report struct {
-	RuntimeID  string      `json:"runtime_id,omitempty"`
-	State      string      `json:"state,omitempty"`
-	Reason     string      `json:"reason,omitempty"`
-	Note       string      `json:"note,omitempty"`
-	TenantState string     `json:"tenant_state,omitempty"`
-	Placements []Placement `json:"placements,omitempty"`
-	FreeDiskMB *int        `json:"free_disk_mb,omitempty"`
-	TenantCount *int       `json:"tenant_count,omitempty"`
+	RuntimeID   string      `json:"runtime_id,omitempty"`
+	State       string      `json:"state,omitempty"`
+	Reason      string      `json:"reason,omitempty"`
+	Note        string      `json:"note,omitempty"`
+	TenantState string      `json:"tenant_state,omitempty"`
+	Placements  []Placement `json:"placements,omitempty"`
+	FreeDiskMB  *int        `json:"free_disk_mb,omitempty"`
+	TenantCount *int        `json:"tenant_count,omitempty"`
 }
 
 // Options is how the agent is configured. Every field has a default, so the
 // systemd unit passes only what it must.
 type Options struct {
-	CloudURL   string
-	TokenPath  string
-	StatePath  string
+	CloudURL    string
+	TokenPath   string
+	StatePath   string
 	Provisioner string
 	Tenant      string
 	// VolumeRoot is where tenant volumes live, for the free-space report. It is the
@@ -134,6 +143,9 @@ type Options struct {
 	DryRun bool
 	// CommandRunner is injectable so the executor is testable without Docker.
 	CommandRunner Runner
+	// BrokerCredentialsPath is where this runtime's broker credential is
+	// recorded, for `otter pool broker` to verify against.
+	BrokerCredentialsPath string
 	// Clock is injectable so a test does not sleep.
 	Clock  func() time.Time
 	Logger func(format string, args ...any)
@@ -158,6 +170,9 @@ func (o *Options) withDefaults() Options {
 	}
 	if out.VolumeRoot == "" {
 		out.VolumeRoot = firstNonEmpty(os.Getenv("OTTER_TENANTS_DIR"), DefaultVolumeRoot)
+	}
+	if out.BrokerCredentialsPath == "" {
+		out.BrokerCredentialsPath = firstNonEmpty(os.Getenv("OTTER_BROKER_CREDENTIALS_FILE"), DefaultBrokerCredentialsPath)
 	}
 	if out.PollInterval <= 0 {
 		out.PollInterval = 15 * time.Second
@@ -301,15 +316,41 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 		return Outcome{}, fmt.Errorf("write %s: %w", configPath, err)
 	}
 
+	// The dry-run check comes BEFORE the credential is minted. A preview that
+	// minted and persisted a credential would be a dry run with a side effect on
+	// the host's most sensitive file, and it would fail outright on a machine
+	// where that file's directory is not writable -- which is exactly the machine
+	// an operator is most likely to be previewing from.
 	if o.DryRun {
 		return Outcome{Detail: "dry run: provisioner not invoked"}, nil
 	}
+
+	// Mint or reuse this runtime's broker credential, and put it where BOTH sides
+	// read it: the persistent file the broker verifies against, and a 0600 file
+	// the provisioner hands to the tenant.
+	//
+	// Minting here rather than taking a value from the plan is the point. The
+	// credential is what proves which runtime is asking, so a control plane that
+	// could supply it could mint an identity and read any tenant's secrets --
+	// which is exactly what CL-13 forbids. Keeping it host-local is what makes
+	// that impossible rather than merely unimplemented.
+	brokerCredential, err := secretbroker.EnsureCredentialFile(o.BrokerCredentialsPath, plan.RuntimeID)
+	if err != nil {
+		return Outcome{}, err
+	}
+	brokerPath, brokerCleanup, err := writeSecretFile(
+		"the broker credential is empty, so the tenant could never prove its identity", brokerCredential)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer brokerCleanup()
 
 	// `sh <script> --config` rather than executing the script directly: the pool
 	// scripts are installed mode 0755 by `pool-host.sh`, but an operator who copied
 	// them without the bit would otherwise get a confusing EACCES, and `sh` also
 	// means this works from a checkout with no packaging step.
-	out, err := o.CommandRunner.Run(ctx, "sh", o.Provisioner, "--config", configPath, "--bootstrap-secret-file", secretPath)
+	out, err := o.CommandRunner.Run(ctx, "sh", o.Provisioner, "--config", configPath,
+		"--bootstrap-secret-file", secretPath, "--broker-credential-file", brokerPath)
 	if err != nil {
 		// The provisioner refuses an existing container (`provision-tenant.sh:552`).
 		// A retry can race a slow first attempt, so re-inspect before believing the
@@ -344,9 +385,14 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 // The file is removed even on failure, and it is deliberately NOT written into the
 // agent's state directory: a secret that outlives the attempt that needed it is a
 // liability, and the provisioner only reads it once.
-func writeSecret(secret string) (string, func(), error) {
+// writeSecretFile writes a secret to a 0600 temporary file and returns its path
+// and a cleanup function.
+//
+// A FILE rather than a command line: an argv is visible to every process on the
+// host, and these values can claim a tenant.
+func writeSecretFile(emptyMessage, secret string) (string, func(), error) {
 	if strings.TrimSpace(secret) == "" {
-		return "", func() {}, fmt.Errorf("the plan carries no bootstrap secret, so the tenant's agent could never authenticate")
+		return "", func() {}, errors.New(emptyMessage)
 	}
 	file, err := os.CreateTemp("", "otter-pool-secret-*")
 	if err != nil {
@@ -369,6 +415,14 @@ func writeSecret(secret string) (string, func(), error) {
 		return "", func() {}, fmt.Errorf("close secret file: %w", err)
 	}
 	return path, cleanup, nil
+}
+
+// writeSecret writes the plan's bootstrap secret, which the tenant's agent uses
+// to authenticate to the control plane.
+func writeSecret(secret string) (string, func(), error) {
+	return writeSecretFile(
+		"the plan carries no bootstrap secret, so the tenant's agent could never authenticate",
+		secret)
 }
 
 // trimOutput bounds a command's output for an error message. A provisioner failure

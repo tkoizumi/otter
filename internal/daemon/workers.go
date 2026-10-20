@@ -257,7 +257,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 
 	// Resolve secrets before launching Python so a missing secret is a clear
 	// configuration failure rather than a crash inside the job.
-	env, err := secrets.Resolve(context.Background(), d.secrets, m.Name, m.Secrets)
+	env, err := secrets.Resolve(context.Background(), d.secretsForRun(run), m.Name, m.Secrets)
 	if err != nil {
 		message := err.Error()
 		d.appendOtterLog(run.ID, "not started: "+message)
@@ -269,7 +269,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 		return
 	}
 
-	sink := newRunLogSink(d.logs, run.ID, d.log)
+	sink := newRunLogSink(d.logs, d.runs, run.ID, d.log)
 	result := d.exec.Run(runCtx, &executor.Request{
 		Manifest:       m,
 		JobID:          run.JobID,
@@ -293,14 +293,40 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	// still be visible as incomplete rather than silently pending.
 	d.finalizeCapture(run.ID, result, ctl.getReason())
 
-	status, message, retryable := classifyOutcome(result, ctl.getReason(), m)
+	status, message, retryable, attribution := classifyOutcome(result, ctl.getReason(), m)
 	message = withFailureHint(message, status, sink.FailureHint())
 	d.finishRun(run, m, runs.Finish{
-		Status:     status,
-		ExitCode:   result.ExitCode,
-		Error:      message,
-		FinishedAt: result.FinishedAt,
+		Status:      status,
+		ExitCode:    result.ExitCode,
+		Error:       message,
+		FinishedAt:  result.FinishedAt,
+		Attribution: attribution,
 	}, retryable)
+}
+
+// secretsForRun returns the provider one run resolves its declared secrets from.
+//
+// A configured broker means a provider built per run: the workload identity it
+// mints is bound to (runtime_id, job_id), and the job's document is fetched once
+// for that run. Fetching per run is what makes a rotated secret visible to the
+// next run with no release and no restart (D2). A provider shared across runs
+// would pin the first values it saw, so it must not be hoisted into a field.
+//
+// With no broker configured this returns the daemon-wide provider, so an
+// ordinary deployment resolves exactly as it did before.
+func (d *Daemon) secretsForRun(run *runs.Run) secrets.Provider {
+	if !d.cfg.SecretBroker.Enabled() {
+		return d.secrets
+	}
+	return secrets.NewBrokerProvider(
+		d.cfg.SecretBroker.URL,
+		d.cfg.SecretBroker.Credential,
+		secrets.WorkloadIdentity{
+			RuntimeID: d.cfg.SecretBroker.RuntimeID,
+			JobID:     run.JobID,
+		},
+		secrets.BrokerOptions{},
+	)
 }
 
 // requeueClaimed returns a claimed run to the queue after its attempt could not
@@ -368,27 +394,53 @@ func withFailureHint(message string, status runs.Status, hint string) string {
 	}
 }
 
-// classifyOutcome maps an execution result onto a run status, an error
-// message and whether the retry policy applies.
-func classifyOutcome(res *executor.Result, reason cancelReason, m *config.Manifest) (runs.Status, string, bool) {
+// classifyOutcome maps an execution result onto a run status, an error message,
+// whether the retry policy applies, and which side of the system ended the run.
+//
+// The attribution is decided here because this is the only place that knows: the
+// stored run keeps a status and a sentence, and neither says whether the runtime
+// ended it. The gate's Reliability row is written in exactly those terms -- 30
+// consecutive days "without a runtime-caused incident requiring manual repair",
+// and "track runtime failures separately from job bugs and upstream failures" --
+// so a classification that exists and is discarded makes the claim unverifiable.
+func classifyOutcome(res *executor.Result, reason cancelReason, m *config.Manifest) (runs.Status, string, bool, string) {
 	switch {
 	case res.StartError != nil:
-		// Configuration failure: the same thing would fail again.
-		return runs.StatusFailed, res.StartError.Error(), false
+		// Configuration failure: the same thing would fail again. The runtime could
+		// not put the job on the machine at all.
+		return runs.StatusFailed, res.StartError.Error(), false, runs.AttributionRuntime
 	case reason == reasonUser:
-		return runs.StatusCancelled, "cancelled by operator", false
+		return runs.StatusCancelled, "cancelled by operator", false, runs.AttributionOperator
 	case res.TimedOut:
+		// The bound is the operator's, but the run overran it on the job's side.
 		return runs.StatusTimedOut,
-			fmt.Sprintf("execution exceeded the %s timeout", m.TimeoutDuration()), true
+			fmt.Sprintf("execution exceeded the %s timeout", m.TimeoutDuration()), true,
+			runs.AttributionJob
 	case reason == reasonShutdown:
-		return runs.StatusFailed, "otter daemon shut down during execution", true
+		return runs.StatusFailed, "otter daemon shut down during execution", true,
+			runs.AttributionRuntime
 	case res.Cancelled:
-		return runs.StatusCancelled, "cancelled", false
+		// Not a user cancellation, or the case above would have taken it: a
+		// maintenance drain or an operator command ended it.
+		return runs.StatusCancelled, "cancelled", false, runs.AttributionOperator
 	case res.Succeeded():
-		return runs.StatusSucceeded, "", false
+		return runs.StatusSucceeded, "", false, ""
 	default:
-		return runs.StatusFailed, describeExit(res), true
+		return runs.StatusFailed, describeExit(res), true, exitAttribution(res)
 	}
+}
+
+// exitAttribution separates a job that ended on its own terms from a run the
+// runtime failed to observe ending.
+//
+// A non-zero exit or a signal is the job's own ending. A WaitError -- or no ending
+// recorded at all -- is the runtime failing to reap a child, which is the only
+// case here the reliability window counts as a runtime incident.
+func exitAttribution(res *executor.Result) string {
+	if res.ExitCode != nil || res.Signal != "" {
+		return runs.AttributionJob
+	}
+	return runs.AttributionRuntime
 }
 
 func describeExit(res *executor.Result) string {
@@ -769,7 +821,40 @@ func (d *Daemon) appendOtterLog(runID, message string) {
 	})
 	if err != nil {
 		d.log.Error("run_log_write_failed", err, "run_id", runID)
+		d.recordLogLoss(runID, 1)
 	}
+}
+
+// recordLogLoss marks a run's output as lost. It is best effort by design: the
+// caller is already reporting the write failure that caused the loss, and a
+// failure to record the loss must not replace or mask it. The disk that refused
+// the log line may well refuse this too, which is why the marker's own failure
+// is a separate, lower-severity event.
+func (d *Daemon) recordLogLoss(runID string, lines int) {
+	if d.runs == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := d.runs.MarkLogLoss(ctx, runID, lines); err != nil {
+		d.log.Error("run_log_loss_unrecorded", err, "run_id", runID, "lines", lines)
+	}
+}
+
+// logBatchAppender is the slice of runs.LogStore the sink writes through. It is
+// an interface so a test can make the write fail on demand: an ENOSPC disk
+// cannot be produced in a unit test, and the loss marker is exactly the
+// behaviour that must survive that failure.
+type logBatchAppender interface {
+	AppendBatch(ctx context.Context, entries []runs.LogEntry) error
+}
+
+// logLossMarker records that a run's captured output was not stored. It is
+// separate from logBatchAppender because sink and daemon narration fail
+// differently but must set the same flag.
+type logLossMarker interface {
+	MarkLogLoss(ctx context.Context, runID string, lines int) error
 }
 
 // runLogSink batches captured lines so a chatty job does not cause one
@@ -780,7 +865,8 @@ func (d *Daemon) appendOtterLog(runID, message string) {
 // actual error instead of only "process exited with code 1". Without that,
 // diagnosing a failure means digging the reason out of run_logs by hand.
 type runLogSink struct {
-	logs   *runs.LogStore
+	logs   logBatchAppender
+	loss   logLossMarker
 	logger *logging.Logger
 	runID  string
 
@@ -863,9 +949,28 @@ func (s *runLogSink) write(batch []runs.LogEntry) {
 
 	if err := s.logs.AppendBatch(ctx, batch); err != nil {
 		s.logger.Error("run_log_write_failed", err, "run_id", s.runID, "lines", len(batch))
+		// The failed transaction persisted none of the batch, so every line in
+		// it is lost and every line is counted. Recording that is best effort:
+		// the write failure is the event that matters and is already logged.
+		s.markLoss(len(batch))
 	}
 }
 
-func newRunLogSink(logs *runs.LogStore, runID string, logger *logging.Logger) *runLogSink {
-	return &runLogSink{logs: logs, logger: logger, runID: runID, lastFlush: time.Now()}
+// markLoss records dropped lines on the run, best effort. It gets its own small
+// budget because the batch write has already spent its 15 seconds and the
+// caller is a worker finishing a run.
+func (s *runLogSink) markLoss(lines int) {
+	if s.loss == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := s.loss.MarkLogLoss(ctx, s.runID, lines); err != nil {
+		s.logger.Error("run_log_loss_unrecorded", err, "run_id", s.runID, "lines", lines)
+	}
+}
+
+func newRunLogSink(logs logBatchAppender, loss logLossMarker, runID string, logger *logging.Logger) *runLogSink {
+	return &runLogSink{logs: logs, loss: loss, logger: logger, runID: runID, lastFlush: time.Now()}
 }

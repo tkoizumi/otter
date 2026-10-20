@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/tkoizumi/otter/internal/api"
+	"github.com/tkoizumi/otter/internal/config"
 	"github.com/tkoizumi/otter/internal/identity"
+	"github.com/tkoizumi/otter/internal/pyenv"
 	"github.com/tkoizumi/otter/internal/release"
 )
 
@@ -51,6 +54,22 @@ func (d *Daemon) ActivateRelease(ctx context.Context, digest string) (api.Releas
 	if err != nil {
 		return api.ReleaseView{}, fmt.Errorf("activate release: %s: %w", digest, api.ErrConflict)
 	}
+	// A `python.mode: managed` release is not runnable until its environment
+	// exists ON THIS HOST. Preparation is a client-side step in the release path
+	// today (`otter release`, `otter prepare`), and a pulled deploy means the
+	// client prepared on a different machine -- or, for a cloud deploy, never.
+	//
+	// A pooled tenant therefore activated managed releases with nothing behind
+	// them: the job registered, the schedule imported, `next_run_at` advanced, and
+	// every occurrence was refused with no environment and no run at all. The
+	// operator saw a healthy job that silently did nothing. Prepare here, where
+	// the activation happens, so the release and its environment cannot come
+	// apart. Refusing instead -- "run otter prepare" -- is not an instruction a
+	// pooled tenant's user can follow.
+	if err := d.prepareManagedRelease(ctx, m, job, meta); err != nil {
+		return api.ReleaseView{}, err
+	}
+
 	if err := m.Activate(job, digest); err != nil {
 		return api.ReleaseView{}, fmt.Errorf("activate release: %s: %w", digest, err)
 	}
@@ -84,6 +103,62 @@ func (d *Daemon) ActivateRelease(ctx context.Context, digest string) (api.Releas
 // scans the release root rather than requiring the caller to know the job. A
 // digest that matches nothing is an error rather than a guess, because
 // activating the wrong job's release would deploy one tenant's code to another.
+// prepareManagedRelease prepares a managed release's environment on this host.
+//
+// An external release has nothing to prepare and is left alone.
+//
+// It deliberately does NOT compare the result against the digest the release
+// recorded. That digest was computed on the RELEASING machine, with that
+// machine's uv version, and uv is part of the environment identity -- so a
+// developer whose uv differs from the one baked into the runtime image would
+// produce a different digest for identical inputs, and refusing on that mismatch
+// would fail a legitimate deploy for a reason that has nothing to do with the
+// job. What matters on a pulled deploy is that an environment exists here for the
+// release's own spec; the recorded digest stays as the advisory record it is.
+func (d *Daemon) prepareManagedRelease(ctx context.Context, m release.Manager, job string, meta release.Metadata) error {
+	short := meta.Digest
+	if len(short) > 12 {
+		short = short[:12]
+	}
+
+	sourceDir, err := m.SourceDir(meta)
+	if err != nil {
+		return fmt.Errorf("activate release: resolve %s: %w", short, err)
+	}
+	bound, err := config.LoadAndValidate(filepath.Join(sourceDir, config.ManifestFileName))
+	if err != nil {
+		return fmt.Errorf("activate release: %s: %w", short, err)
+	}
+	// The snapshot's own python.path entries have to resolve INSIDE the snapshot,
+	// which is a different question from whether they resolved on the machine the
+	// release was staged on.
+	if err := bound.ValidatePythonPathsForRelease(); err != nil {
+		return fmt.Errorf("activate release: %s: %w", short, err)
+	}
+	if bound.Python.Mode != "managed" {
+		return nil
+	}
+
+	env := pyenv.Manager{DataDir: d.cfg.DataDir}
+	// An empty uv path lets the manager choose, which is the same resolution
+	// `otter release` uses, so the two agree about the environment identity.
+	spec, err := env.ResolveCurrentAt(ctx, sourceDir, job, "")
+	if err != nil {
+		return fmt.Errorf("activate release: resolve the managed Python for %s: %w", job, err)
+	}
+	if _, err := env.GetReady(spec); err == nil {
+		return nil
+	}
+
+	d.log.Info("release_preparing", "job", job, "digest", short)
+	if _, err := env.Prepare(ctx, sourceDir, job, ""); err != nil {
+		return fmt.Errorf(
+			"activate release: preparing the managed environment for %s: %w", job, err)
+	}
+	d.log.Info("release_prepared", "job", job, "digest", short)
+	return nil
+}
+
 func (d *Daemon) jobForDigest(digest string) (string, error) {
 	m := release.Manager{DataDir: d.cfg.DataDir}
 	root, err := m.Root()

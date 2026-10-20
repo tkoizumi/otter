@@ -120,7 +120,7 @@ sh scripts/drill.sh --list      # the names
 | `backup-restore` | A hot backup restores onto a different, empty data directory and the job runs again. | `sqlite3`, `python3` |
 | `upgrade` | The previous release's database upgrades to this build's schema — one `migration_applied` per migration — and the runtime works afterwards. | `git` with tags, `go`, `sqlite3` |
 | `downgrade-refusal` | A database a newer binary migrated is refused before anything runs, left untouched, and usable again once the newer row is gone. | `sqlite3` |
-| `secret-rotation` | A rotated credential is applied by a restart and not by `otter reload`; removing it fails a run before Python starts. | — |
+| `secret-rotation` | Under the environment provider a rotated credential is applied by a restart and not by `otter reload`; with a broker configured the rotation reaches the next run with **no restart at all**; removing the credential fails a run before Python starts. | `python3` |
 | `fresh-archive` | A release archive installs outside the checkout and runs a job end to end. | `OTTER_ARCHIVE` |
 | `deploy-failure` | A deploy that fails midway leaves the previous release active and serving. | Docker, privileged systemd container |
 | `unit-caps` | The generated unit's memory and CPU caps contain a runaway job on a real cgroup. | Docker, privileged systemd container |
@@ -800,6 +800,18 @@ and `otter runs <job> --limit 1 --json | jq -r '.[0].id'` gives the
 newest run id. Add `--all` to search the whole workspace instead of one
 job.
 
+A run's `LOG` column says whether its output survived: `-` normally, and
+`lost N` when `N` captured lines could not be written to the database. The
+form is the same in `otter inspect`, whose recent-runs table is the same
+renderer, and `otter run-status <run-id>` spells it out as
+`log: output was lost: N captured line(s) could not be written`. In `--json`
+the run carries `log_lost: true` and `log_lines_dropped: N` (both are omitted
+when nothing was lost). This is worth knowing because a run's exit code is the
+child's honest result: on a full disk a `succeeded` run can have lost every line
+it printed, and the flag is how you tell that apart from a job that genuinely
+printed nothing. The daemon journal carries `run_log_write_failed` for the same
+event, once per failed batch.
+
 ## Log rotation and run-log retention
 
 There are two separate log streams, with different lifecycles.
@@ -1039,9 +1051,20 @@ Three things reload does not do:
   how many were cancelled.
 - **It does not re-read credentials.** `otter.env` is read by `otter start` when
   it builds the daemon's environment; reload replaces what the daemon knows about
-  jobs, not its process environment. A rotated secret therefore takes a restart
-  ([Missing secret](#missing-secret)), and a run in flight at that restart does
-  not survive it.
+  jobs, not its process environment.
+
+  What follows depends on how the runtime is configured, and the sentence used to
+  be unconditional:
+
+  - **Environment provider (the default).** A rotated secret takes a restart
+    ([Missing secret](#missing-secret)), and a run in flight at that restart does
+    not survive it.
+  - **Secret broker (`OTTER_SECRET_BROKER_URL`).** Secrets are resolved once per
+    run, so a rotation reaches the **next run with no restart and no reload** —
+    D2's rotation without redeploy. A run in flight keeps the value it resolved.
+
+  The `secret-rotation` drill asserts both halves and goes red if either stops
+  being true.
 
 Restarting is still the right answer for changing the runtime itself — a new
 binary, a new embedded SDK, or daemon-level configuration. See
@@ -1645,3 +1668,29 @@ behind by an earlier experiment keeps the job from redoing work.
 otter state get my-job cursor
 otter state set my-job cursor 'null'
 ```
+
+### A run succeeded but its output is missing
+
+**Symptom.** `otter runs` shows `lost N` in a run's `LOG` column (or
+`log_lost: true` in `--json`), and `otter logs <run-id>` returns little or
+nothing for a run that reported `succeeded`.
+
+The runtime could not write captured output to SQLite. The usual cause is a full
+filesystem under the data directory; the write error is
+`runs: commit log batch: database or disk is full (13)` and the daemon journal
+has a `run_log_write_failed` line per failed batch. The run's exit code is the
+child's real one, so the run is not a failure and is not retried — its output is
+simply gone. Diagnose the disk, then reclaim space (retention, or the manual
+pruning above):
+
+```bash
+df -h /var/lib/otter
+journalctl -u otter --since '1 hour ago' | grep run_log_write_failed
+otter status --json | jq .storage
+```
+
+Once there is space again, new runs capture normally. What was lost is not
+recoverable from Otter; the child's stdout went to the database and nowhere
+else. If the same job keeps filling the disk, its output volume — not the
+runtime — is the thing to bound: see
+[Log rotation and run-log retention](#log-rotation-and-run-log-retention).

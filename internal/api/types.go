@@ -46,10 +46,15 @@ type JobView struct {
 	Retry            RetryView         `json:"retry"`
 	Env              map[string]string `json:"env,omitempty"`
 	Secrets          []string          `json:"secrets,omitempty"`
-	Triggers         TriggerView       `json:"triggers"`
-	Valid            bool              `json:"valid"`
-	Error            string            `json:"error,omitempty"`
-	NextRunAt        *time.Time        `json:"next_run_at,omitempty"`
+
+	// DestinationTables names where this job's effects land, so an acceptance
+	// check can look there. The runtime reports what the manifest declares and
+	// makes no claim that anything was written.
+	DestinationTables []string    `json:"destination_tables,omitempty"`
+	Triggers          TriggerView `json:"triggers"`
+	Valid             bool        `json:"valid"`
+	Error             string      `json:"error,omitempty"`
+	NextRunAt         *time.Time  `json:"next_run_at,omitempty"`
 
 	// LastSuccessAt is when this job last completed a run successfully. It is
 	// the freshness signal, and the schedule view renders it, so a cron job
@@ -423,6 +428,11 @@ type AdmissionRefusal struct {
 	Total int64 `json:"refused_total"`
 	// LastAt is when the most recent refusal happened. Absent when Total is 0.
 	LastAt *time.Time `json:"last_refused_at,omitempty"`
+	// Reason names why the most recent refusal happened, for example
+	// "max_queue_depth" or "no_active_release". A count on its own says that
+	// something was refused without saying what to fix -- and the reason a
+	// scheduled occurrence is refused is the whole diagnosis.
+	Reason string `json:"last_refused_reason,omitempty"`
 }
 
 // MaintenanceView is what GET /v1/runtime/maintenance returns and what /health

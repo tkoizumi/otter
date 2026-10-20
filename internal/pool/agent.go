@@ -108,12 +108,17 @@ func (a *Agent) Step(ctx context.Context) error {
 		return err
 	}
 	if work == nil || work.Work == nil {
-		o.Logger("pool agent: no work (capacity %d, %d assigned, %d in flight)", work.Capacity, work.Usage.Assigned, work.Usage.InFlight)
+		// The numbers are logged because "no work" has several very different causes:
+		// nothing is waiting, the queue is empty because a request already failed, or the
+		// host is full. Without them an operator cannot tell a quiet fleet from a stuck one.
+		o.Logger("pool agent: no work (capacity %d, %d assigned, %d in flight, %d tenant containers)",
+			work.Capacity, work.Usage.Assigned, work.Usage.InFlight, count)
 		return nil
 	}
+	o.Logger("pool agent: claimed %s (attempt %d, tenant %s, subnet %s)",
+		planOf(work).RuntimeID, planOf(work).Attempts, planOf(work).Tenant, planOf(work).Subnet)
 
 	plan := *work.Work
-	o.Logger("pool agent: provisioning %s as %s (attempt %d)", plan.RuntimeID, plan.Tenant, plan.Attempts)
 
 	if o.DryRun {
 		// Hand the claim straight back and STOP. A rehearsal must not hold a slot and
@@ -177,3 +182,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
+
+// planOf is a legibility helper: the claim log line reads better with the plan in hand,
+// and dereferencing it inline three times obscures the intent.
+func planOf(work *WorkResponse) Plan { return *work.Work }

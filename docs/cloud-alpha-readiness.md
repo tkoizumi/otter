@@ -506,8 +506,25 @@ say so explicitly, and note that `otter deploy` writes those values from the
 operator's machine, so it holds every client's credentials too
 ([deploy/config.go](../internal/deploy/config.go) line 160).
 
-**Done when:** the decision and its rationale are recorded, and `CA-13` proves
-rotating through it.
+**Decided 2026-10-15.** The backend is **AWS Secrets Manager**. Rationale: the
+pooled hosts already run on EC2 with an instance role, so the credential that
+reads secrets already exists and is never handed to a tenant. Secrets are
+namespaced per `(workspace, job, name)`, which is what makes the audience check
+below enforceable rather than nominal. The alpha's plaintext `0600`
+`EnvironmentFile` stays the answer for a self-hosted single host; it is **not**
+carried into the pooled tier, where the host would custody every tenant's
+credentials and the boundary between tenants would be the container rather than
+an audience-bound credential.
+
+Delivery follows **D2**
+([otter-platform/docs/decisions.md](../../otter-platform/docs/decisions.md)): a
+release holds zero secrets, the workload exchanges a scoped, short-lived identity
+bound to `(runtime_id, job_id)` for exactly that job's secrets, and rotation
+requires no release. The broker holds the AWS credential and sits **outside the
+control plane** — see `CL-13`, which this decision depends on.
+
+**Done when:** the decision and its rationale are recorded (above), and `CA-13`
+proves rotating through it without a redeploy.
 
 ## CA-16 — Rotate SSH keys and runtime credentials on a schedule — SHOULD
 
@@ -519,6 +536,28 @@ plane only ever handles secret **names**.
 
 **Done when:** an operator with full control-plane access cannot read any client
 secret, and this is a designed property rather than an accident.
+
+**Amended 2026-10-15 (records `D4`, the write-through input path).** A value may
+be *entered* through the Otter Cloud UI and written through to AWS Secrets Manager
+(`CA-15`). The MUST survives as a property of what the control plane may do with
+the value, and the amendment is valid only while all of these hold:
+
+- **No custody.** The value is never persisted in a control-plane store, cache,
+  queue, Durable Object or log. It exists only inside the request that writes it
+  to the backend.
+- **No display, no return.** No read route returns a value, in whole or in part,
+  including "last four" previews. A read returns the secret *name* and whether it
+  currently resolves.
+- **No proxy at execution time.** Job secrets never transit the control plane on
+  the path to a run; the broker named in `CA-15` resolves them against D2's
+  audience-bound workload identity.
+- **Auditable without disclosure.** The audit record names the actor, the
+  workspace, the job and the secret name — never the value.
+- **TLS only**, and authorization scoped to the workspace that owns the job.
+
+Amending `CL-13` without the invariants above is not a valid amendment: the
+write-through route is the one place a value crosses the control plane, and each
+bullet is what keeps that crossing from becoming custody.
 
 ---
 

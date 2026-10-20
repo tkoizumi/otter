@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tkoizumi/otter/internal/secretbroker"
 )
 
 // The executor is where a retry loop meets a provisioner that deliberately refuses an
@@ -17,10 +19,13 @@ import (
 func testOptions(t *testing.T, runner Runner) Options {
 	t.Helper()
 	return Options{
-		CloudURL:      "https://app.runotter.dev",
-		StatePath:     filepath.Join(t.TempDir(), "state.json"),
-		Provisioner:   "/usr/local/lib/otter/pool/provision-tenant.sh",
-		CommandRunner: runner,
+		CloudURL:    "https://app.runotter.dev",
+		StatePath:   filepath.Join(t.TempDir(), "state.json"),
+		Provisioner: "/usr/local/lib/otter/pool/provision-tenant.sh",
+		// Execute records a broker credential, so the default -- a real host path
+		// -- must not be used from a test.
+		BrokerCredentialsPath: filepath.Join(t.TempDir(), "broker-credentials.json"),
+		CommandRunner:         runner,
 	}
 }
 
@@ -338,5 +343,90 @@ func TestListTenantsReadsOnlyRuntimeContainers(t *testing.T) {
 	joined := Command(runner.Calls[0])
 	if !strings.Contains(joined, "label=otter.role=runtime") {
 		t.Fatalf("the list must be filtered to tenant runtimes: %s", joined)
+	}
+}
+
+// Execute mints the runtime's broker credential, records it for the broker and
+// hands it to the provisioner -- so the tenant's environment and the file the
+// broker verifies against agree by construction rather than by luck.
+func TestExecuteMintsAndPassesABrokerCredential(t *testing.T) {
+	runner := &RecordingRunner{}
+	calls := 0
+	var credentialMode os.FileMode
+	var credentialPathSeen string
+	runner.Respond = func(name string, args []string) (string, error) {
+		if name == "docker" && len(args) > 0 && args[0] == "inspect" {
+			calls++
+			if calls == 1 {
+				return inspectAnswer(false, false, "")(name, args)
+			}
+			return inspectAnswer(true, true, "rt_9f3a1c2b4d5e")(name, args)
+		}
+		if name == "sh" {
+			for i, arg := range args {
+				if arg == "--broker-credential-file" && i+1 < len(args) {
+					credentialPathSeen = args[i+1]
+					if info, err := os.Stat(credentialPathSeen); err == nil {
+						credentialMode = info.Mode().Perm()
+					}
+				}
+			}
+		}
+		return "", nil
+	}
+	opts := testOptions(t, runner)
+
+	if _, err := Execute(context.Background(), plan(), opts); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if credentialPathSeen == "" {
+		t.Fatalf("the provisioner was not given --broker-credential-file: %v", runner.Calls)
+	}
+	if credentialMode != 0o600 {
+		t.Errorf("the credential file was mode %04o at hand-off, want 0600", credentialMode)
+	}
+	if _, err := os.Stat(credentialPathSeen); !os.IsNotExist(err) {
+		t.Errorf("the credential file %s must not outlive the attempt", credentialPathSeen)
+	}
+
+	// The file the broker reads holds this runtime's credential.
+	store := secretbroker.NewFileCredentials(opts.BrokerCredentialsPath)
+	credential, ok, err := store.BrokerCredential(context.Background(), plan().RuntimeID)
+	if err != nil {
+		t.Fatalf("the broker cannot read what the agent wrote: %v", err)
+	}
+	if !ok || credential == "" {
+		t.Fatal("no credential was recorded for the runtime")
+	}
+
+	// A re-provision reuses it. A second minted value would leave the tenant and
+	// the broker disagreeing, and every run would then fail with a message about
+	// a bad token rather than about the half-updated pair.
+	calls = 0
+	if _, err := Execute(context.Background(), plan(), opts); err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	again, ok, err := store.BrokerCredential(context.Background(), plan().RuntimeID)
+	if err != nil || !ok {
+		t.Fatalf("second read: %v, ok=%v", err, ok)
+	}
+	if again != credential {
+		t.Errorf("a re-provision minted a new credential: %q then %q", credential, again)
+	}
+}
+
+// A dry run must not mint or persist a credential: it is a preview, and it is
+// most often run from a machine where that file's directory is not writable --
+// which is exactly the machine an operator previews from.
+func TestExecuteDryRunDoesNotMintABrokerCredential(t *testing.T) {
+	runner := &RecordingRunner{Respond: inspectAnswer(false, false, "")}
+	opts := testOptions(t, runner)
+	opts.DryRun = true
+
+	if _, err := Execute(context.Background(), plan(), opts); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := os.Stat(opts.BrokerCredentialsPath); !os.IsNotExist(err) {
+		t.Errorf("a dry run created the credentials file %s", opts.BrokerCredentialsPath)
 	}
 }

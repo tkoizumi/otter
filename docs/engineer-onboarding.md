@@ -133,6 +133,7 @@ If the terminal transaction cannot be persisted after bounded retries, the daemo
 | `internal/notify` | Best-effort terminal-run notifications | `notify.go`, `format.go` |
 | `sdk/python` | Dependency-free job-facing Python API and capture adapters | `context.py`, `state.py`, `log.py`, `_client.py`, `_launcher.py` |
 | `scripts` and `scripts/drill` | Smoke tests, host monitoring, provisioning checks, and fault drills | `smoke.sh`, `drill.sh`, named drills |
+| `scripts/soak` | The independent destination check the Phase 3 soak's evidence rests on: it asks ClickHouse whether each sync job's table exists, holds rows for that job's dataset, and is fresh | `check-destinations.py`, `destinations.json` |
 | `docs` | User contracts, operator guidance, designs, release plans, and evidence | `architecture.md`, `runtime-contract.md`, `operations.md`, `open-work.md` |
 
 ## Durable state and ownership

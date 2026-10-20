@@ -115,7 +115,39 @@ type DaemonConfig struct {
 	// entirely, which is the default: no configuration means no outbound
 	// traffic of any kind.
 	Notify NotifyConfig
+
+	// SecretBroker, when set, makes a run resolve its declared secrets at
+	// execution time from the host broker, using an audience-bound workload
+	// identity, instead of from the daemon's own environment. Empty (the
+	// default) keeps the environment provider, so an ordinary deployment is
+	// unchanged.
+	SecretBroker SecretBrokerConfig
 }
+
+// SecretBrokerConfig describes how a run exchanges its workload identity for
+// the job's secrets.
+//
+// There is deliberately no field for the secret values: the daemon receives
+// them per run and never persists them.
+type SecretBrokerConfig struct {
+	// URL is the broker's base URL. Empty disables the broker.
+	URL string
+
+	// RuntimeID is the identity this runtime authenticates as. It is also the
+	// prefix of the backend namespace, so it is what makes cross-tenant access
+	// impossible by construction rather than merely refused.
+	RuntimeID string
+
+	// Credential is the host-local broker credential. It is deliberately not
+	// the control plane's bootstrap secret: if the control plane held a key
+	// that could mint a workload token, it could read every client secret,
+	// which CL-13 forbids. Keeping this credential host-local means the control
+	// plane is cryptographically unable to do so.
+	Credential string
+}
+
+// Enabled reports whether a broker is configured.
+func (s SecretBrokerConfig) Enabled() bool { return strings.TrimSpace(s.URL) != "" }
 
 // NotifyConfig describes an outbound failure notification.
 //
@@ -346,6 +378,15 @@ func (c *DaemonConfig) ApplyEnv() error {
 	if v, ok := os.LookupEnv("OTTER_NOTIFY_FORMAT"); ok && strings.TrimSpace(v) != "" {
 		c.Notify.Format = strings.ToLower(strings.TrimSpace(v))
 	}
+	if v, ok := os.LookupEnv("OTTER_SECRET_BROKER_URL"); ok && strings.TrimSpace(v) != "" {
+		c.SecretBroker.URL = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("OTTER_RUNTIME_ID"); ok && strings.TrimSpace(v) != "" {
+		c.SecretBroker.RuntimeID = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("OTTER_BROKER_CREDENTIAL"); ok && strings.TrimSpace(v) != "" {
+		c.SecretBroker.Credential = strings.TrimSpace(v)
+	}
 	return nil
 }
 
@@ -459,6 +500,23 @@ func (c *DaemonConfig) Validate() error {
 	if !c.ListenIsLoopback() && strings.TrimSpace(c.APIToken) == "" {
 		return fmt.Errorf("refusing to listen on %s without an API token: set --api-token or OTTER_API_TOKEN, or bind to %s",
 			c.Listen, DefaultListen)
+	}
+
+	// A half-configured broker must refuse to start rather than run with a
+	// provider that cannot mint a token: every run would fail at resolution
+	// with a confusing error, and the cause would be one missing variable.
+	if c.SecretBroker.Enabled() {
+		parsed, err := url.Parse(c.SecretBroker.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("OTTER_SECRET_BROKER_URL must be an http(s) URL, got %q", c.SecretBroker.URL)
+		}
+		if strings.TrimSpace(c.SecretBroker.RuntimeID) == "" {
+			return fmt.Errorf("OTTER_SECRET_BROKER_URL requires OTTER_RUNTIME_ID, which is the runtime the broker authenticates this daemon as")
+		}
+		if strings.TrimSpace(c.SecretBroker.Credential) == "" {
+			// The credential is never echoed, even when absent.
+			return fmt.Errorf("OTTER_SECRET_BROKER_URL requires OTTER_BROKER_CREDENTIAL; without it no run can prove its identity")
+		}
 	}
 
 	return nil

@@ -1,0 +1,14 @@
+-- Which side of the system ended a run.
+--
+-- A run's status says it ended badly. It does not say whether the runtime ended
+-- it, and the gate's Reliability row is written in those terms: 30 consecutive
+-- days "without a runtime-caused incident requiring manual repair", plus "track
+-- runtime failures separately from job bugs and upstream failures".
+--
+-- That classification was already being computed -- classifyOutcome decides it to
+-- pick the retry policy -- and then discarded. Recording it is what makes the
+-- claim checkable rather than a reading of 30 days of prose.
+--
+-- Existing rows are left empty rather than backfilled. A value inferred from an
+-- error message is a guess, and a guess stored as a fact is worse than a blank.
+ALTER TABLE runs ADD COLUMN attribution TEXT NOT NULL DEFAULT '';

@@ -97,6 +97,7 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 		view.PythonExecutable = m.Python.Executable
 		view.PythonMode = m.Python.Mode
 		view.PythonPath = m.Python.Path
+		view.DestinationTables = m.DestinationTables
 		view.TimeoutSeconds = m.Timeout.Seconds()
 		view.Concurrency = m.Concurrency
 		view.Env = m.Env
@@ -302,7 +303,8 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 				return "", err
 			}
 			if depth >= limit {
-				d.recordDepthRefusal(jobID, triggerType, depth, limit)
+				d.recordAdmissionRefusal(jobID, triggerType, "max_queue_depth",
+					"depth", depth, "bound", limit)
 				return "", fmt.Errorf(
 					"job %q has %d runs pending, at its max_queue_depth of %d; "+
 						"a manual run is always accepted, and the queue drains as workers finish: %w",
@@ -343,9 +345,18 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 		return "", err
 	}
 	if !ok {
-		// A conflict with the job's current state, not a server fault:
-		// the request is well formed and the job exists, but nothing has
-		// been made live for it to run.
+		// A conflict with the job's current state, not a server fault: the
+		// request is well formed and the job exists, but nothing has been made
+		// live for it to run.
+		//
+		// An AUTONOMOUS trigger is recorded, because for a schedule this refusal
+		// is otherwise invisible: the occurrence is gone, no run exists to look
+		// at, and no CLI call ever sees the error. That is exactly how a managed
+		// job whose environment could not be prepared looks on a pooled host --
+		// healthy, scheduled, and silently never running.
+		if triggerType != api.TriggerManual {
+			d.recordAdmissionRefusal(jobID, triggerType, "no_active_release")
+		}
 		return "", fmt.Errorf("job %s has no active release; run otter release %s before submitting runs: %w",
 			label, label, api.ErrConflict)
 	}
@@ -514,39 +525,51 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 	return run.ID, nil
 }
 
-// recordDepthRefusal counts one autonomous trigger refused by a job's
-// max_queue_depth, and logs it with the trigger type, the depth that was
-// measured and the bound, so the operator learns both that it happened and how
-// close to the bound the job is running.
-func (d *Daemon) recordDepthRefusal(jobID, triggerType string, depth, limit int) {
+// recordAdmissionRefusal counts one autonomous trigger this runtime refused, and
+// logs why.
+//
+// EVERY reason a trigger can be refused belongs here. A refusal that is only
+// logged is one the operator cannot see on the job they are looking at, which is
+// how a job that can never run comes to look healthy. The reason is carried into
+// the health surface for the same purpose: a count alone says something was
+// refused without saying what to fix.
+func (d *Daemon) recordAdmissionRefusal(jobID, triggerType, reason string, fields ...any) {
 	now := time.Now().UTC()
-	d.depthMu.Lock()
-	if d.depthRefusals == nil {
-		d.depthRefusals = map[string]*depthRefusal{}
+	d.admissionMu.Lock()
+	if d.admissionRefusals == nil {
+		d.admissionRefusals = map[string]*admissionRefusal{}
 	}
-	rec := d.depthRefusals[jobID]
+	rec := d.admissionRefusals[jobID]
 	if rec == nil {
-		rec = &depthRefusal{}
-		d.depthRefusals[jobID] = rec
+		rec = &admissionRefusal{}
+		d.admissionRefusals[jobID] = rec
 	}
 	rec.Total++
 	rec.LastAt = now
+	rec.LastReason = reason
 	total := rec.Total
-	d.depthMu.Unlock()
+	d.admissionMu.Unlock()
 
-	d.log.Warn("admission_refused", nil,
-		"job", jobID, "trigger", triggerType, "depth", depth, "bound", limit, "refused_total", total)
+	args := append([]any{
+		"job", jobID,
+		"trigger", triggerType,
+		"reason", reason,
+		"refused_total", total,
+	}, fields...)
+	// Warn takes key/value pairs directly, unlike Error which takes an error
+	// first. The call here used to pass a stray nil copied from that signature.
+	d.log.Warn("admission_refused", args...)
 }
 
 // AdmissionRefusals reports the per-job overload accounting for the health
 // surface, in the shape the API publishes.
 func (d *Daemon) AdmissionRefusals(context.Context) (map[string]api.AdmissionRefusal, error) {
-	d.depthMu.Lock()
-	defer d.depthMu.Unlock()
-	out := make(map[string]api.AdmissionRefusal, len(d.depthRefusals))
-	for id, rec := range d.depthRefusals {
+	d.admissionMu.Lock()
+	defer d.admissionMu.Unlock()
+	out := make(map[string]api.AdmissionRefusal, len(d.admissionRefusals))
+	for id, rec := range d.admissionRefusals {
 		at := rec.LastAt
-		out[id] = api.AdmissionRefusal{Total: rec.Total, LastAt: &at}
+		out[id] = api.AdmissionRefusal{Total: rec.Total, LastAt: &at, Reason: rec.LastReason}
 	}
 	return out, nil
 }

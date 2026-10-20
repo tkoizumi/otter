@@ -21,21 +21,33 @@
 #   * a missing credential is a fast, named failure rather than a silent empty
 #     string handed to the job.
 #
+# Second half (the broker). The environment provider above is the DEFAULT and
+# has no live credentials, so a rotation reaches a run only through a restart.
+# With a broker configured the runtime resolves per RUN instead, and the same
+# rotation reaches the very next run with NO restart and NO reload -- D2's
+# "rotation without redeploy", which is the property CA-13 asks for. Both halves
+# are asserted here, because "a rotation needs a restart" is only true of one of
+# them and the docs must not say it unconditionally.
+#
 # What it explicitly does NOT prove:
-#   * hot rotation. There is no credential reload: `docs/secret-reload-
-#     implementation-plan.md` is a plan, not implemented behavior, and this drill
-#     asserts the shipped truth instead. When that feature lands, step 2 must be
-#     inverted deliberately rather than quietly passing.
 #   * that a child already executing observes the old value across a rotation.
 #     Under restart rotation no child survives: an in-flight run is interrupted
 #     by the restart, which `operations.md` documents and the crash-recovery
-#     tests cover.
+#     tests cover. The broker half rotates between runs and makes no claim about
+#     a run mid-flight (the unit test `TestARunKeepsTheValueItResolved` does).
+#   * the real AWS path. The broker's Secrets Manager endpoint and its instance
+#     role are both stood in for on loopback, so what is exercised is the
+#     runtime's per-run fetch, not IAM or the network.
 #
-# Falsifiability (DRILL_SABOTAGE). The clean run must be green. With
-# `DRILL_SABOTAGE=reload-applies` the drill writes the rotated value into the
-# *daemon's* environment via `otter reload` before asserting step 2, so the
-# "reload did not apply the rotation" assertion goes red -- the drill detects a
-# credential reload rather than describing its absence.
+# Falsifiability (DRILL_SABOTAGE). The clean run must be green. Two modes:
+#
+#   reload-applies  writes the rotated value into the *daemon's* environment via
+#                   `otter reload` before asserting step 2, so the "reload did
+#                   not apply the rotation" assertion goes red.
+#   stale-broker    makes the stand-in backend serve the document it first read,
+#                   so the broker half's "the next run sees the rotated value"
+#                   assertion goes red. Without this the broker half could pass
+#                   while testing nothing.
 set -eu
 
 OTTER_BIN=${OTTER_BIN:?OTTER_BIN must be an absolute path to the otter binary}
@@ -53,10 +65,10 @@ esac
 
 SABOTAGE=${DRILL_SABOTAGE:-}
 case "$SABOTAGE" in
-"" | reload-applies) ;;
+"" | reload-applies | stale-broker) ;;
 *)
 	echo "drill: unknown DRILL_SABOTAGE=$SABOTAGE" >&2
-	echo "drill: valid modes: reload-applies" >&2
+	echo "drill: valid modes: reload-applies, stale-broker" >&2
 	exit 2
 	;;
 esac
@@ -80,6 +92,8 @@ WORK=$(mktemp -d "$tmpbase/otter-drill-secret-rotation.XXXXXX")
 WS="$WORK/ws"
 START_EPOCH=$(date +%s)
 cleaning=0
+BROKER_PID=""
+FAKE_PID=""
 
 say() { echo "drill: $*"; }
 fail() {
@@ -93,6 +107,10 @@ cleanup() {
 	cleaning=1
 
 	( cd "$WS" 2>/dev/null && "$OTTER_BIN" stop >/dev/null 2>&1 ) || true
+	# The broker and its stand-in backend are background processes this drill
+	# started; leaving either alive would collide with the next run's ports.
+	[ -n "${BROKER_PID:-}" ] && kill "$BROKER_PID" 2>/dev/null || true
+	[ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null || true
 
 	if [ "$status" -ne 0 ]; then
 		echo "drill: failed; last daemon log lines:" >&2
@@ -245,7 +263,229 @@ printf '%s\n' "$OUT" | grep -qi "requires secrets that are not available" ||
 	fail "the failure is not the documented configuration error: $OUT"
 say "missing     the run failed naming $SECRET, before Python started"
 
+# ------------------------------------------------- rotation WITH a broker
+#
+# Everything above is the environment provider: no live credentials, so a
+# rotation reaches a run only through a restart. This half configures a broker,
+# so the runtime resolves per RUN and a rotation needs neither a restart nor a
+# reload.
+
+command -v python3 >/dev/null 2>&1 || {
+	echo "drill: python3 is required to stand in for IMDS and Secrets Manager" >&2
+	exit 2
+}
+
+FAKE_DIR="$WORK/fake"
+mkdir -p "$FAKE_DIR"
+free_port() {
+	python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+FAKE_PORT=$(free_port)
+BROKER_PORT=$(free_port)
+BROKER_RUNTIME=rt_drill
+BROKER_CREDENTIAL=drill-broker-credential
+BROKER_TOKEN=broker-first-token
+BROKER_ROTATED=broker-second-token
+
+# The namespace is the RUNTIME and the JOB, so the durable job id is part of the
+# path -- a label would not do, and the broker validates it as a path segment.
+JOB_ID=$(otter --json jobs | python3 -c '
+import json, sys
+jobs = json.load(sys.stdin)["jobs"]
+print(next(job["id"] for job in jobs if job["name"] == "rotate-job"))
+')
+SECRET_NAMESPACE="otter/$BROKER_RUNTIME/$JOB_ID/$SECRET"
+say "broker      secret namespace is $SECRET_NAMESPACE"
+
+cat >"$FAKE_DIR/fake.py" <<'PY'
+"""Stand in for IMDSv2 and AWS Secrets Manager on ONE loopback port.
+
+The broker reads its AWS credentials from IMDS and a job's secrets from Secrets
+Manager, and a drill may reach neither. This answers both.
+
+It re-reads its secrets file on every request unless FAKE_CACHE=1, which serves
+the first document it ever read. That is DRILL_SABOTAGE=stale-broker, and it is
+what makes the rotation assertion below falsifiable: without it the assertion
+could pass while testing nothing.
+"""
+
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+directory = sys.argv[1]
+port = int(sys.argv[2])
+secrets_path = os.path.join(directory, "secrets.json")
+cache = os.environ.get("FAKE_CACHE") == "1"
+_cached = None
+
+
+def secrets():
+    global _cached
+    if cache:
+        if _cached is None:
+            with open(secrets_path) as handle:
+                _cached = json.load(handle)
+        return _cached
+    with open(secrets_path) as handle:
+        return json.load(handle)
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def _send(self, status, payload, content_type="application/json"):
+        body = payload.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_PUT(self):
+        if self.path == "/latest/api/token":
+            if not self.headers.get("X-aws-ec2-metadata-token-ttl-seconds"):
+                self._send(400, "the token request needs its TTL header", "text/plain")
+                return
+            self._send(200, "fake-imds-token", "text/plain")
+            return
+        self._send(404, "no such route", "text/plain")
+
+    def do_GET(self):
+        # IMDSv2: a read without the token is refused, as on a real instance.
+        if self.headers.get("X-aws-ec2-metadata-token") != "fake-imds-token":
+            self._send(401, "token required", "text/plain")
+            return
+        if self.path == "/latest/meta-data/iam/security-credentials/":
+            self._send(200, "otter-agent", "text/plain")
+            return
+        if self.path == "/latest/meta-data/iam/security-credentials/otter-agent":
+            self._send(200, json.dumps({
+                "AccessKeyId": "AKIDDRILL",
+                "SecretAccessKey": "drill-secret-access-key",
+                "Token": "drill-session-token",
+                "Expiration": "2030-01-01T00:00:00Z",
+            }), "text/plain")
+            return
+        self._send(404, "no such route", "text/plain")
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        target = self.headers.get("X-Amz-Target", "")
+        values = secrets()
+
+        if target == "secretsmanager.ListSecrets":
+            prefix = ""
+            for entry in body.get("Filters", []):
+                if entry.get("Key") == "name" and entry.get("Values"):
+                    prefix = entry["Values"][0]
+            names = sorted(name for name in values if name.startswith(prefix))
+            self._send(200, json.dumps({"SecretList": [{"Name": name} for name in names]}))
+            return
+
+        if target == "secretsmanager.BatchGetSecretValue":
+            found = [
+                {"Name": name, "SecretString": values[name]}
+                for name in body.get("SecretIdList", [])
+                if name in values
+            ]
+            self._send(200, json.dumps({"SecretValues": found}))
+            return
+
+        self._send(400, json.dumps({"__type": "UnknownOperationException"}))
+
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+
+printf '{"%s": "%s"}\n' "$SECRET_NAMESPACE" "$BROKER_TOKEN" >"$FAKE_DIR/secrets.json"
+
+# wait_port polls a loopback port, so a background process is not assumed ready.
+wait_port() {
+	label=$1
+	port=$2
+	pid=$3
+	i=0
+	while [ "$i" -lt 100 ]; do
+		if python3 -c '
+import socket, sys
+s = socket.socket()
+s.settimeout(0.2)
+s.connect(("127.0.0.1", int(sys.argv[1])))
+s.close()
+' "$port" 2>/dev/null; then
+			return 0
+		fi
+		kill -0 "$pid" 2>/dev/null || fail "$label exited before it was ready"
+		i=$((i + 1))
+		sleep 0.1
+	done
+	fail "$label did not become ready on port $port"
+}
+
+if [ "$SABOTAGE" = "stale-broker" ]; then
+	say "sabotage: the backend will serve the document it first read"
+	FAKE_CACHE=1 python3 "$FAKE_DIR/fake.py" "$FAKE_DIR" "$FAKE_PORT" >"$FAKE_DIR/fake.log" 2>&1 &
+else
+	python3 "$FAKE_DIR/fake.py" "$FAKE_DIR" "$FAKE_PORT" >"$FAKE_DIR/fake.log" 2>&1 &
+fi
+FAKE_PID=$!
+wait_port "the stand-in backend" "$FAKE_PORT" "$FAKE_PID"
+
+printf '{"%s": "%s"}\n' "$BROKER_RUNTIME" "$BROKER_CREDENTIAL" >"$FAKE_DIR/broker-credentials.json"
+chmod 600 "$FAKE_DIR/broker-credentials.json"
+: >"$FAKE_DIR/tenants.conf"
+
+say "broker      starting the host broker"
+OTTER_IMDS_BASE="http://127.0.0.1:$FAKE_PORT" "$OTTER_BIN" pool broker \
+	--tenants "$FAKE_DIR/tenants.conf" \
+	--listen "127.0.0.1:$BROKER_PORT" \
+	--region eu-west-1 \
+	--secrets-endpoint "http://127.0.0.1:$FAKE_PORT" \
+	--credentials "$FAKE_DIR/broker-credentials.json" \
+	>"$FAKE_DIR/broker.log" 2>&1 &
+BROKER_PID=$!
+wait_port "the broker" "$BROKER_PORT" "$BROKER_PID"
+
+say "broker      pointing the runtime at the broker"
+cat >"$WS/otter.env" <<ENV
+OTTER_RUNTIME_ID=$BROKER_RUNTIME
+OTTER_SECRET_BROKER_URL=http://127.0.0.1:$BROKER_PORT
+OTTER_BROKER_CREDENTIAL=$BROKER_CREDENTIAL
+ENV
 otter stop >/dev/null 2>&1 || true
 wait_stopped
+otter start --detach >/dev/null
+wait_ready "with a broker"
 
-say "ok: rotation is applied by restart, reload does not re-read credentials, and a missing one fails loudly"
+GOT=$(run_and_token)
+[ "$GOT" = "$BROKER_TOKEN" ] ||
+	fail "the brokered run saw '${GOT:-nothing}', want the value the secret store holds"
+say "run         the child saw the value the broker returned"
+
+# The rotation. Deliberately NO `otter stop`, NO `otter start`, NO `otter
+# reload`: the runtime resolves per run, so the next run must see the new value.
+say "rotate      rewriting the value in the secret store (no restart, no reload)"
+printf '{"%s": "%s"}\n' "$SECRET_NAMESPACE" "$BROKER_ROTATED" >"$FAKE_DIR/secrets.json"
+
+GOT=$(run_and_token)
+if [ "$GOT" != "$BROKER_ROTATED" ]; then
+	tail -n 20 "$FAKE_DIR/broker.log" >&2 2>/dev/null || true
+	tail -n 20 "$FAKE_DIR/fake.log" >&2 2>/dev/null || true
+	fail "the next run saw '${GOT:-nothing}' after a rotation with no restart; with a broker configured the runtime resolves per run, so the rotation must reach it"
+fi
+say "rotated     the next run saw the new value with no restart and no reload"
+
+otter stop >/dev/null 2>&1 || true
+wait_stopped
+kill "$BROKER_PID" 2>/dev/null || true
+kill "$FAKE_PID" 2>/dev/null || true
+BROKER_PID=""
+FAKE_PID=""
+
+say "ok: with the environment provider a rotation needs a restart; with a broker it reaches the next run with none; and a missing credential still fails loudly"

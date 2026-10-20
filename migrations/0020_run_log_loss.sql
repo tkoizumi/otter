@@ -1,0 +1,25 @@
+-- Record, per run, that captured output could not be written to the database.
+--
+-- Found by the HW-6b disk-fill on the real host: with ~10 MiB free, a job
+-- emitting 64 MiB produced repeated `run_log_write_failed` events at level error
+-- (`runs: commit log batch: database or disk is full (13)`) while the run
+-- finished `status=succeeded, exit_code=0` and `/health` stayed `ok`. The exit
+-- code is honest -- the child really did exit 0 -- but the output is gone, and
+-- only the daemon's journal said so. `log_lost` is the durable signal; an
+-- operator reading the run view can tell "succeeded" from "succeeded with its
+-- output lost".
+--
+--   log_lost          1 when at least one captured line could not be stored.
+--   log_lines_dropped how many were lost, accumulated across failures, so a run
+--                     that lost 50 lines in one batch and 200 in another
+--                     reports 250. A count of 0 with `log_lost = 1` means the
+--                     writer knew output was lost but not how much.
+--
+-- Both default to "nothing lost", which is the right reading for a row written
+-- before this column existed: its logs are as complete as they ever were.
+--
+-- This is deliberately not a status. Rewriting a run's status because its output
+-- could not be stored would trade an honest exit code for a dishonest one; the
+-- loss is a separate fact about the attempt, not a different outcome.
+ALTER TABLE runs ADD COLUMN log_lost INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN log_lines_dropped INTEGER NOT NULL DEFAULT 0;

@@ -444,3 +444,137 @@ func TestUVCandidateFindsBothDeployLayouts(t *testing.T) {
 		}
 	})
 }
+
+// fakeUVRecording writes a stand-in uv that records which subcommands it was
+// asked to run, and builds the environment the way the real one would. It exists
+// so a test can assert on the REQUESTS preparation makes -- an install that
+// should not happen is invisible in the result, because a fake install succeeds.
+func fakeUVRecording(t *testing.T, data, python, log string) string {
+	t.Helper()
+	uv := filepath.Join(data, "tools", "uv", "uv")
+	if err := os.MkdirAll(filepath.Dir(uv), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = --version ]; then echo 'uv test'; exit 0; fi\n" +
+		"if [ \"$1\" = python ]; then echo install >> \"" + log + "\"; exit 0; fi\n" +
+		"echo sync >> \"" + log + "\"\n" +
+		"mkdir -p \"$UV_PROJECT_ENVIRONMENT/bin\"\n" +
+		"ln -sf " + python + " \"$UV_PROJECT_ENVIRONMENT/bin/python\"\n"
+	if err := os.WriteFile(uv, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return uv
+}
+
+// hostPython stands in for the interpreter the runtime image bakes into a
+// read-only directory, in uv's own on-disk layout.
+func hostPython(t *testing.T, version, python string) string {
+	t.Helper()
+	dir := t.TempDir()
+	install := filepath.Join(dir, "cpython-"+version+"-linux-x86_64-gnu", "bin")
+	if err := os.MkdirAll(install, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(python, filepath.Join(install, "python3")); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func pythonForTest(t *testing.T) (string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix test fixture")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 unavailable")
+	}
+	out, err := exec.Command(python, "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return python, strings.TrimSpace(string(out))
+}
+
+// The pooled runtime image bakes the interpreter it pins into a read-only
+// directory and points UV_PYTHON_INSTALL_DIR at it. Preparation used to install a
+// SECOND copy under the data directory, which means fetching over the network
+// what is already on disk -- so on a host without egress the environment could
+// not be prepared at all, while the interpreter sat right there.
+func TestPrepareReusesTheInterpreterTheHostAlreadyProvides(t *testing.T) {
+	python, version := pythonForTest(t)
+	shared := hostPython(t, version, python)
+	t.Setenv(managedPythonDirEnv, shared)
+
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, version)
+	log := filepath.Join(t.TempDir(), "uv.log")
+	uv := fakeUVRecording(t, data, python, log)
+
+	m := Manager{DataDir: data, Probe: func(context.Context, string) error { return nil }}
+	if _, err := m.Prepare(context.Background(), dir, "one", uv); err != nil {
+		t.Fatalf("preparing against the host's own interpreter must not need an install: %v", err)
+	}
+
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "install") {
+		t.Errorf("uv was asked to install an interpreter the host already provides:\n%s", got)
+	}
+	if !strings.Contains(string(got), "sync") {
+		t.Errorf("no sync happened, so nothing was prepared at all:\n%s", got)
+	}
+}
+
+// And when the host does NOT provide it, preparation still installs one, so the
+// reuse is a preference rather than the only path.
+func TestPrepareInstallsWhenTheHostProvidesNoInterpreter(t *testing.T) {
+	python, version := pythonForTest(t)
+	// A directory in the right shape but for a different version: the pin must
+	// match, not merely the directory existing.
+	other := "3.99"
+	t.Setenv(managedPythonDirEnv, hostPython(t, other, python))
+
+	dir, data := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, version)
+	log := filepath.Join(t.TempDir(), "uv.log")
+	uv := fakeUVRecording(t, data, python, log)
+
+	m := Manager{DataDir: data, Probe: func(context.Context, string) error { return nil }}
+	if _, err := m.Prepare(context.Background(), dir, "one", uv); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "install") {
+		t.Errorf("nothing was installed for a version the host does not have:\n%s", got)
+	}
+}
+
+// A pin must match a version boundary. A bare prefix test would let "3.1" accept
+// "3.130", and the runtime would then run a job on an interpreter it never asked
+// for.
+func TestManagedVersionMatchingStopsAtABoundary(t *testing.T) {
+	for _, tc := range []struct {
+		rest, version string
+		want          bool
+	}{
+		{"3.13.5-linux-x86_64-gnu", "3.13.5", true},
+		{"3.13.5-linux-x86_64-gnu", "3.13", true},
+		{"3.13.5+freethreaded-linux-x86_64-gnu", "3.13.5", true},
+		{"3.13.5-linux-x86_64-gnu", "3.1", false},
+		{"3.130.0-linux-x86_64-gnu", "3.1", false},
+		{"3.14.0-linux-x86_64-gnu", "3.13", false},
+		{"3.13.5-linux-x86_64-gnu", "", false},
+	} {
+		if got := managedVersionMatches(tc.rest, tc.version); got != tc.want {
+			t.Errorf("managedVersionMatches(%q, %q) = %v, want %v", tc.rest, tc.version, got, tc.want)
+		}
+	}
+}

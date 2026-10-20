@@ -72,6 +72,19 @@ type Manifest struct {
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
 
+	// DestinationTables names the external tables this job's effects land in.
+	//
+	// It exists because a successful exit does not prove a correct business
+	// effect: the runtime readiness gate requires pilot acceptance to rest on
+	// INDEPENDENTLY CHECKED DESTINATION OUTCOMES, and a check has to know where
+	// to look. Declaring it here makes that machine-readable instead of living
+	// in a migration record and a UI fixture.
+	//
+	// The runtime reports it and nothing more. It is a statement about the job,
+	// not a claim by the runtime that anything was written, and no runtime
+	// behaviour keys off it.
+	DestinationTables []string `yaml:"destination_tables"`
+
 	// MaxQueueDepth bounds how many of this job's runs may be waiting at once,
 	// counting only runs an autonomous trigger produced: cron and webhook. A
 	// manual `otter run` is always accepted, because an operator asking for a
@@ -265,18 +278,19 @@ func (m *Manifest) TimeoutDuration() time.Duration { return m.Timeout.Duration()
 // defaults would silently paper over manifest mistakes and the validator would
 // never see them.
 type rawManifest struct {
-	Version     int               `yaml:"version"`
-	Name        string            `yaml:"name"`
-	Description string            `yaml:"description"`
-	Entrypoint  string            `yaml:"entrypoint"`
-	Python      PythonConfig      `yaml:"python"`
-	Trigger     rawTriggerConfig  `yaml:"trigger"`
-	Timeout     *Duration         `yaml:"timeout"`
-	Concurrency *int              `yaml:"concurrency"`
-	Retry       rawRetryConfig    `yaml:"retry"`
-	Env         map[string]string `yaml:"env"`
-	Secrets     []string          `yaml:"secrets"`
-	Capture     string            `yaml:"capture"`
+	Version           int               `yaml:"version"`
+	Name              string            `yaml:"name"`
+	Description       string            `yaml:"description"`
+	Entrypoint        string            `yaml:"entrypoint"`
+	Python            PythonConfig      `yaml:"python"`
+	Trigger           rawTriggerConfig  `yaml:"trigger"`
+	Timeout           *Duration         `yaml:"timeout"`
+	Concurrency       *int              `yaml:"concurrency"`
+	Retry             rawRetryConfig    `yaml:"retry"`
+	Env               map[string]string `yaml:"env"`
+	Secrets           []string          `yaml:"secrets"`
+	DestinationTables []string          `yaml:"destination_tables"`
+	Capture           string            `yaml:"capture"`
 
 	MaxQueueDepth *int `yaml:"max_queue_depth"`
 }
@@ -323,9 +337,10 @@ func Load(path string) (*Manifest, error) {
 			Cron:    raw.Trigger.Cron,
 			Webhook: raw.Trigger.Webhook,
 		},
-		Env:     raw.Env,
-		Secrets: raw.Secrets,
-		Capture: raw.Capture,
+		Env:               raw.Env,
+		Secrets:           raw.Secrets,
+		DestinationTables: raw.DestinationTables,
+		Capture:           raw.Capture,
 		Retry: RetryConfig{
 			Backoff: raw.Retry.Backoff,
 		},
@@ -644,6 +659,25 @@ func (m *Manifest) Validate() error {
 			add("secrets[%d] %q is listed more than once", i, trimmed)
 		}
 		seenSecrets[trimmed] = true
+	}
+
+	// A destination is REPORTED, not acted on, so this is deliberately looser
+	// than the secrets check: it catches a typo or a duplicate without
+	// inventing an identifier grammar a legitimate table name might fail.
+	seenDestinations := map[string]bool{}
+	for i, d := range m.DestinationTables {
+		trimmed := strings.TrimSpace(d)
+		if trimmed == "" {
+			add("destination_tables[%d] is empty", i)
+			continue
+		}
+		if strings.ContainsAny(trimmed, " \t\n") {
+			add("destination_tables[%d] %q contains whitespace", i, trimmed)
+		}
+		if seenDestinations[trimmed] {
+			add("destination_tables[%d] %q is listed more than once", i, trimmed)
+		}
+		seenDestinations[trimmed] = true
 	}
 
 	if len(problems) > 0 {

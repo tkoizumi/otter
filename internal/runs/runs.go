@@ -122,7 +122,41 @@ type Run struct {
 	// what keeps a queued, retrying or backlogged attempt on the values it was
 	// accepted with, exactly as ReleaseDigest keeps it on its code.
 	ConfigVersion string `json:"config_version,omitempty"`
+
+	// LogLost records that at least one captured line could not be written to
+	// the database -- a full disk, typically -- and LogLinesDropped counts how
+	// many were lost. They exist because an exit code says nothing about
+	// whether the output survived: without them a run whose log writes all
+	// failed is indistinguishable from one that printed nothing. Both are
+	// omitted from JSON when nothing was lost, so the ordinary run record is
+	// unchanged.
+	LogLost         bool  `json:"log_lost,omitempty"`
+	LogLinesDropped int64 `json:"log_lines_dropped,omitempty"`
+
+	// Attribution names which side of the system ended the run: AttributionRuntime
+	// when the runtime's own machinery did, AttributionJob when the job's execution
+	// did, AttributionOperator when a person did.
+	//
+	// Empty means unknown -- a run that has not finished, a success, or a row
+	// written before this column existed. It is never inferred from the error text:
+	// a guess stored as a fact is worse than a blank, and the gate's Reliability row
+	// counts on this being a fact.
+	Attribution string `json:"attribution,omitempty"`
 }
+
+// Who ended a run. The runtime only asserts what it can prove, which is why there
+// is no "upstream": a job that fails on a Shopify error and a job with a bug in it
+// both exit non-zero, and only the job's own output tells those apart.
+const (
+	// AttributionRuntime is the runtime's own machinery failing: it could not start
+	// the job, it shut down mid-run, or it could not reap the child.
+	AttributionRuntime = "runtime"
+	// AttributionJob is the job's execution ending badly on its own terms: a
+	// non-zero exit, a signal, or exceeding the manifest's timeout.
+	AttributionJob = "job"
+	// AttributionOperator is a person ending it, or a maintained state doing so.
+	AttributionOperator = "operator"
+)
 
 // Duration returns how long the run has been running, or ran for.
 func (r *Run) Duration() time.Duration {
@@ -148,7 +182,8 @@ const runColumns = `id, job_id, trigger_type, status, attempt, parent_run_id,
 	created_at, started_at, finished_at, exit_code, error, metadata,
 	python_mode, python_version, environment_digest, python_policy,
 	release_digest, release_source_dir, sdk_version,
-	job_name, job_generation, capture_policy, schedule_id, config_version`
+	job_name, job_generation, capture_policy, schedule_id, config_version,
+	log_lost, log_lines_dropped, attribution`
 
 // defaultListLimit is the page size List substitutes when a caller supplies no
 // limit, and maxListLimit is the largest explicit limit it accepts. A limit
@@ -205,7 +240,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		metadata = ""
 	}
 
-	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO runs (` + runColumns + `) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	args := []any{
 		r.ID, r.JobID, r.TriggerType, string(r.Status), r.Attempt,
 		database.NullableString(deref(r.ParentRunID)),
@@ -218,6 +253,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, r *Run) error {
 		r.ReleaseDigest, r.ReleaseSourceDir, r.SDKVersion,
 		r.JobName, r.JobGeneration, r.CapturePolicy,
 		database.NullableString(r.ScheduleID), database.NullableString(r.ConfigVersion),
+		boolInt(r.LogLost), r.LogLinesDropped, r.Attribution,
 	}
 
 	var err error
@@ -657,6 +693,9 @@ type Finish struct {
 	ExitCode   *int
 	Error      string
 	FinishedAt time.Time
+	// Attribution is who ended the run, from the Attribution* constants. Empty is
+	// allowed and means unknown.
+	Attribution string
 }
 
 // Finish writes the terminal state of a run.
@@ -676,11 +715,12 @@ func (s *Store) FinishTx(ctx context.Context, tx *sql.Tx, id string, f Finish) e
 		f.FinishedAt = time.Now().UTC()
 	}
 
-	const q = `UPDATE runs SET status = ?, finished_at = ?, exit_code = ?, error = ?
-		 WHERE id = ?`
+	const q = `UPDATE runs SET status = ?, finished_at = ?, exit_code = ?, error = ?,
+			attribution = ? WHERE id = ?`
 	args := []any{
 		string(f.Status), database.FormatTime(f.FinishedAt),
-		database.NullableInt(f.ExitCode), database.NullableString(f.Error), id,
+		database.NullableInt(f.ExitCode), database.NullableString(f.Error),
+		f.Attribution, id,
 	}
 
 	var (
@@ -711,6 +751,32 @@ func (s *Store) SetStatus(ctx context.Context, id string, status Status, errMsg 
 		string(status), database.NullableString(errMsg), id)
 	if err != nil {
 		return fmt.Errorf("runs: set status %s: %w", id, err)
+	}
+	return nil
+}
+
+// MarkLogLoss records that captured output for a run could not be written to the
+// database, and adds how many lines were lost.
+//
+// It is not a state transition: a run whose logs hit a full disk still finished
+// with whatever exit code its child produced, and rewriting the status would
+// trade one lie for another. The flag is what makes the loss visible on the run
+// view rather than only in the daemon's journal, where the operator has to
+// already suspect it to look.
+//
+// The update is a single accumulating statement with no read-modify-write, so
+// two failures cannot lose each other's count. A missing run is not an error:
+// the caller is already reporting a write failure and must not be handed a
+// second one for a marker that is, by design, best effort.
+func (s *Store) MarkLogLoss(ctx context.Context, id string, lines int) error {
+	if lines < 0 {
+		lines = 0
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET log_lost = 1, log_lines_dropped = log_lines_dropped + ? WHERE id = ?`,
+		lines, id)
+	if err != nil {
+		return fmt.Errorf("runs: mark log loss for %s: %w", id, err)
 	}
 	return nil
 }
@@ -790,6 +856,9 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 		capturePolicy     string
 		scheduleID        sql.NullString
 		configVersion     sql.NullString
+		logLost           int64
+		logLinesDropped   int64
+		attribution       string
 	)
 
 	dest := []any{
@@ -798,6 +867,7 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 		&pythonMode, &pythonVersion, &environmentDigest, &pythonPolicy,
 		&releaseDigest, &releaseSourceDir, &sdkVersion,
 		&jobName, &jobGen, &capturePolicy, &scheduleID, &configVersion,
+		&logLost, &logLinesDropped, &attribution,
 	}
 	if rowID != nil {
 		dest = append([]any{rowID}, dest...)
@@ -814,6 +884,9 @@ func scanRunRow(sc interface{ Scan(...any) error }, rowID *int64) (*Run, error) 
 	r.CapturePolicy = capturePolicy
 	r.ScheduleID = scheduleID.String
 	r.ConfigVersion = configVersion.String
+	r.LogLost = logLost != 0
+	r.LogLinesDropped = logLinesDropped
+	r.Attribution = attribution
 	if parent.Valid {
 		v := parent.String
 		r.ParentRunID = &v
@@ -849,4 +922,12 @@ func max0(v int) int {
 		return 0
 	}
 	return v
+}
+
+// boolInt stores a Go bool as the 0/1 the schema uses.
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

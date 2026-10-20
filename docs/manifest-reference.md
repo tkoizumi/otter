@@ -18,6 +18,7 @@ to walk: `.git`, `.hg`, `.svn`, `.cache`, `.venv`, `venv`, `node_modules`,
 - [Timeouts and concurrency](#timeouts-and-concurrency)
 - [Environment variables](#environment-variables)
 - [Secrets](#secrets)
+- [Destination tables](#destination-tables)
 - [Naming and uniqueness](#naming-and-uniqueness)
 - [Entrypoint rules](#entrypoint-rules)
 - [Validation and invalid jobs](#validation-and-invalid-jobs)
@@ -94,6 +95,7 @@ capture: full
 | `retry.max_delay` | string | no | `60s` | Upper bound on any single backoff delay. Go duration string. |
 | `env` | map[string]string | no | `{}` | Extra environment variables for the child process. Values may reference daemon environment variables with `${VAR}`. |
 | `secrets` | []string | no | `[]` | Names of environment variables read from the **daemon's** environment and injected into the child process. |
+| `destination_tables` | []string | no | `[]` | Names of the external tables this job's effects land in. Reported by the runtime and used by nothing else: see [Destination tables](#destination-tables). |
 | `capture` | string | no | unset (deployment default) | How much of this job's outgoing HTTP is recorded: `off`, `metadata` or `full`. Unset means the job has no opinion and the deployment default applies; `off` refuses to record anything. See [http-capture.md](http-capture.md). |
 
 Unknown fields are rejected rather than ignored, so a typo such as `timeouts:`
@@ -110,6 +112,7 @@ Additional limits enforced at validation time:
 | `retry.initial_delay`, `retry.max_delay` | Must not be negative. |
 | `entrypoint` | Must be a file, not a directory. |
 | `env` keys, `secrets` entries | Must be valid environment variable names; `secrets` entries must be unique and non-empty. |
+| `destination_tables` entries | Must be unique, non-empty and free of whitespace. Deliberately looser than `secrets`: a destination is reported, not acted on, so this catches a typo without inventing an identifier grammar a real table name might fail. |
 
 Validation reports **every** problem in a manifest at once rather than stopping
 at the first one.
@@ -422,6 +425,27 @@ The declaration is read from the live manifest, so turning capture down takes
 effect after `otter reload`, without a new release. `otter inspect` shows the
 resolved policy. Capture observes live traffic and never changes a request; see
 [http-capture.md](http-capture.md) for coverage, redaction, limits and retention.
+
+## Destination tables
+
+`destination_tables` names where a job's effects land:
+
+```yaml
+destination_tables:
+  - shopify_orders
+  - castor.shopify_orders_archive
+```
+
+It exists because **a successful exit does not prove a correct business
+effect**. The runtime readiness gate requires pilot acceptance to rest on
+*independently checked destination outcomes*, and a check has to know where to
+look. Declaring the tables makes that machine-readable instead of leaving it in
+a migration record and a UI fixture.
+
+The runtime reports the field and does nothing else with it. It is a statement
+about the job, not a claim by the runtime that anything was written, and no
+runtime behaviour keys off it -- including scheduling, retries and admission. A
+job that declares none is valid and reports none.
 
 ## Naming and uniqueness
 
