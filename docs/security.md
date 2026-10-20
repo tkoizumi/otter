@@ -540,6 +540,70 @@ Captured payloads expire after seven days by default. `--capture-retention 0`
 disables expiry, which keeps bodies in the database indefinitely; set the window
 to match how long the data may be retained.
 
+### Cloud capture sink (pooled runtimes)
+
+A pooled runtime can export a run's captured exchanges to Otter Cloud so the
+inspector and replay work while the tenant is down. That is a second copy of
+tenant data in a second trust domain. It follows the same rule as the local
+copy: no credential value is stored.
+
+**What leaves the tenant.** One immutable JSON document per exchange, plus a
+summaries-only manifest per run. The document carries the method, the sanitized
+URL, header names and `{{secret:NAME}}` placeholders, sanitized JSON bodies,
+status, timing and call site. A `metadata` run exports summaries with no headers
+and no bodies, and a `capture: off` run is not exported at all. Metadata is
+still tenant data: hosts, paths, statuses and timings leave the tenant even when
+no body does.
+
+**Where it lives.** Cloudflare R2 under `capture/<runtime_id>/<run_id>/...`. The
+runtime id comes from the agent credential that uploaded the batch, never from a
+request body or a path parameter, so a cross-tenant write is impossible by
+construction. Objects expire after seven days through the bucket lifecycle, and
+tenant teardown deletes the prefix. The sink window matches the runtime's
+seven-day capture retention, so replay fails cleanly when the local exchange is
+gone.
+
+**What is never stored.** No header value and no resolved secret value is
+written to R2, the control queue, or a log. A captured header is a name and, when
+the header is a secret, a `{{secret:NAME}}` placeholder; the local inspector
+shows the placeholder, not the value. A replay's Cloud audit records the actor,
+workspace, runtime, exchange, method, target URL, the placeholder template and a
+SHA-256 of the exact bytes the runtime sent. The exact bytes stay on the runtime;
+Cloud can verify what was sent without holding a value.
+
+**The control plane is not a capture path.** A capture body is never written to
+`control_reads.body` or to a non-replay `control_commands.result_body`. The
+inspector reads the sink. The one exception is a replay result: its
+`result_body` is the response the operator asked for.
+
+**Replay.** Replay is a mutation, not a read. It is available only to an
+authenticated owner/operator of the workspace, only through a session (never a
+deploy token), only when the per-runtime flag is on, and only for `GET` in v1.
+The host is pinned to the original, HTTPS only, private and link-local targets
+are blocked, request-bound signatures are refused, and a URL whose query was
+redacted is refused because the value cannot be reconstructed. Every replay is
+rate-limited and audited. Write-method replay and URL editing are deferred and
+separately gated.
+
+**Residual risk, accepted for v1.** Redaction is field- and name-based; it
+cannot prove that a value in an unusual field, a URL path segment, or a
+non-sensitive header name is not a secret. A `full` run therefore exports
+sanitized bodies that may still contain sensitive data the policy did not
+recognise. The mitigations are the per-run policy (`metadata`/`off`), the
+per-runtime export switch, the seven-day window, the per-tenant prefix and the
+SEC-01 review. Full-body export is accepted for the demo tenant; it is not
+offered to an external tenant until SEC-01 is signed off.
+
+**Threat-model entry.** Capture bodies now exist in Cloud object storage. The
+blast radius is a cross-tenant read, a leaked object URL, or a secret that
+redaction missed. The prefix is credential-derived, R2 access belongs to the
+Worker, lifecycle deletes the objects after seven days, teardown deletes the
+prefix, and no header or resolved secret value is stored. The Cloud capture
+document and body are also refused in a control payload by
+`otter-platform/cloud/tests/capture-guardrails.test.mjs`, and a literal header value is refused
+by `otter-platform/cloud/tests/capture-schema.test.mjs`. The Go exporter and replay guards land
+with S1/S2/R1 and are kept green by TST-04.
+
 ## Hardening checklist
 
 `scripts/assert-host-permissions.sh` checks the items marked **[asserted]** on
