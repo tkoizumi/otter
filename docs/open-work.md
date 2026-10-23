@@ -1,6 +1,6 @@
 # Open work
 
-Status: living document. Created: 2026-09-28. Last reviewed: 2026-10-04.
+Status: living document. Created: 2026-09-28. Last reviewed: 2026-10-23.
 
 Tasks raised in working sessions that are not yet captured by a release plan or
 fixed in code. This is the intake list, not a schedule: items move to a release
@@ -71,7 +71,7 @@ Two host-only items are out of scope for this release by decision and were not
 run; they rest on the Phase 0 records, and `docs/releases/v0.3.0.md` states that.
 
 Still scheduled, and not closed by this release: `OT-007` (`v0.5.0`), `OT-010`
-and `OT-030` (`v0.4.0`).
+and `OT-030` (`v0.4.0`) — all three have since shipped.
 
 The retention work was ordered by dependency: the documented SQL was wrong
 before retention existed, retention had to understand pinning before it pruned,
@@ -146,20 +146,22 @@ capacity section. The release-binding point belongs with the release docs.
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
 | OT-010 | Daemon-side release pinning check before retention | gap | pinning lives only in the CLI path (`cli/release.go:645-685`); a submit can race retention | done |
-| OT-030 | `unit-caps` has no drill-level sabotage mode | test | Found by the 2026-10-02 independent v0.3.0 gate run: `grep -c SABOTAGE scripts/drill/unit-caps.sh` is 0, so an operator cannot show the drill red at the drill level — falsifiability lives in the `UnitFile` render-test mutation (`docs/evidence/phase-0/2026-09-29-p0-04-unit-caps-mutation.txt`), which is a different mechanism. Every other drill documents a mode. The generator already takes `-memory-max` (and the drill `MEMORY_MAX`/`MEMORY_HIGH`/`MEMORY_SWAP_MAX`), so a `DRILL_SABOTAGE=off-memory-max` case that renders without the cap and asserts the containment check goes red is a small addition. `operations.md` §Operating drills and `docs/releases/v0.3.0.md` were corrected to say eight of nine, and point here. Carried by [v0.5.0-release-plan.md](v0.5.0-release-plan.md) (WS5) | scheduled |
+
+`OT-030` was carried into `v0.5.0` (WS5) and closed there; it is no longer a
+`v0.4.0` item. See [the `v0.5.0` section](#v050) below.
 
 ### v0.5.0
 
-Work order: [v0.5.0-release-plan.md](v0.5.0-release-plan.md). It carries
-`OT-007`, `OT-023` and `OT-030`; the items it defers say so in the evidence
-column, and `OT-012` moves to `v0.6.0`.
+Work order: [v0.5.0-release-plan.md](v0.5.0-release-plan.md), released
+2026-10-07. It carried `OT-007`, `OT-023` and `OT-030`: `OT-007` and `OT-030`
+shipped, and `OT-023` slipped (below). `OT-012` stays targeted at `v0.6.0`.
 
 | ID | Task | Kind | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| OT-007 | Decide the missed-occurrence policy for a busy job | design | **Decided 2026-10-05** ([decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded)) and **implemented**: `skip` stays the default and unbounded; `coalesce` bounds both the downtime gap and the uptime backlog (at most one pending run per schedule, folding into it, with the absorbed window recorded on the surviving run); `catch_up` replays oldest-first up to the per-schedule `max_catch_up` (migration `0016`, default `MaxCatchUp = 100`) and reports what it skipped; `max_queue_depth` bounds autonomous admission per job, counting queued, running and retrying runs, refusing with `429 overloaded` and a `Retry-After`, and always admitting a manual `otter run`. `trigger.missed_policy` and `trigger.max_catch_up` join `max_queue_depth` as manifest keys. Ships with `v0.5.0` WS2. Work order: [v0.5.0-release-plan.md](v0.5.0-release-plan.md) | done |
+| OT-007 | Decide the missed-occurrence policy for a busy job | design | **Decided 2026-10-05** ([decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded)) and **implemented**: `skip` stays the default and unbounded; `coalesce` bounds both the downtime gap and the uptime backlog (at most one pending run per schedule, folding into it, with the absorbed window recorded on the surviving run); `catch_up` replays oldest-first up to the per-schedule `max_catch_up` (migration `0016`, default `MaxCatchUp = 100`) and reports what it skipped; `max_queue_depth` bounds autonomous admission per job, counting queued, running and retrying runs, refusing with `429 overloaded` and a `Retry-After`, and always admitting a manual `otter run`. `trigger.missed_policy` and `trigger.max_catch_up` join `max_queue_depth` as manifest keys. Shipped with `v0.5.0` WS2. Work order: [v0.5.0-release-plan.md](v0.5.0-release-plan.md) | done |
 | OT-012 | Tracked references: answer "which runs touched this order/file?" | feature | [tracked-references-implementation-plan.md](tracked-references-implementation-plan.md); deferred out of `v0.5.0` by [v0.5.0-release-plan.md](v0.5.0-release-plan.md), which is filled with capacity work — the feature's own plan allows this — and targeted at `v0.6.0` | open |
 | OT-022 | The monitoring installer can never report a converged host, and its suite is green because it stubs the probe | defect | Found by running the installer against the live host rather than its fixture. The probe (`scripts/install-monitoring.sh` lines 355-371) tests `/etc/otter/heartbeat.env` and `/etc/otter/disk-check.env` with a plain `[ -f ]` as the ssh user, but `/etc/otter` is `drwxr-x--- root root`: the files exist and the units load them, and the probe cannot see them, so it reports `(missing)` on every run and the `already installed and converged` branch is unreachable. `scripts/test-install-monitoring.sh` cannot catch it because its fixture intercepts the whole probe (`match *# install-monitoring-probe*`) and returns whatever the case wants, so the probe's logic never executes and the converged case asserts only how the installer handles an empty result. Fix: read those two files under privilege, and stop stubbing the probe wholesale so the permission-sensitive lines run against a fixture that models a `0750` directory the login cannot read. Deferred by [v0.5.0-release-plan.md](v0.5.0-release-plan.md), which is a capacity release | open |
-| OT-023 | No drill covers failure notification (P0-09) | test | `scripts/drill/` holds backup-restore, deploy-failure, disk-pressure, liveness and unit-caps; there is no notification drill, so `make drill` never exercises the path P0-09 is about. Its only host evidence is an ad-hoc window script that lives outside both repos. P0-10 and P0-11 each have a committed, sabotaged drill; P0-09 should too (a stand-in receiver, a failing run, a succeeding run, and an `OTTER_NOTIFY_ON` exclusion). Carried by [v0.5.0-release-plan.md](v0.5.0-release-plan.md) (WS5) | scheduled |
+| OT-023 | No drill covers failure notification (P0-09) | test | `scripts/drill/` has no notification drill, so `make drill` never exercises the path P0-09 is about. Its only host evidence is an ad-hoc window script that lives outside both repos. P0-10 and P0-11 each have a committed, sabotaged drill; P0-09 should too (a stand-in receiver, a failing run, a succeeding run, and an `OTTER_NOTIFY_ON` exclusion). Carried by `v0.5.0` WS5, which shipped without it (see below) | open |
 | OT-024 | The CloudWatch metric contract is asserted nowhere across the two repos | design | The publisher hardcodes `Namespace=Otter` and the dimension name `Host` and takes `Heartbeat`/`DiskCheck` from its callers; `otter-platform` declares `MONITORING_NAMESPACE`, `MONITORING_DIMENSION`, `HEARTBEAT_METRIC` and `DISK_CHECK_METRIC` independently. They agree today, checked by hand against live AWS, but nothing ties them: a rename on either side leaves the alarm firing forever (or never) and no test says why. A generated constant, or a check that reads the live alarm and compares it to the publisher's call sites, would close it | done |
 | OT-025 | The host-window harness is not in the repo | tooling | `phase-0-host-run-plan.md` §7 proposed `scripts/drill-host.sh` (precondition -> run -> assert -> transcript -> restore, refusing without `OTTER_HOST` and a window lock). It was never built; each window's procedure instead lives in one uncommitted script under `.otter-keys/`. The transcripts are complete enough to re-derive a procedure, but the harness is not reproducible from the repo, and lane B's discipline depends on whoever holds the host remembering it. Deferred by [v0.5.0-release-plan.md](v0.5.0-release-plan.md) | open |
 | OT-026 | Retention is not configured on the live host, and nothing re-applies it on a rebuild | defect | Found by the 2026-10-01 independent verification of P0-09/P0-10/P0-11 (D1). The live daemon logged `retention_configured log_retention=0s run_retention=0s` and `capture_configured retention=168h0m0s`; the deployed daemon env file carried `OTTER_WORKERS` only, with no unit drop-in and no retention key in `otter.deploy.yaml`. HW-6a's configuration was made on host `44.213.227.52`, destroyed 2026-09-30, and the rebuild did not reproduce it. **Closed 2026-10-01:** `otter.deploy.yaml` now carries `run_retention` / `log_retention` / `capture_retention`, rendered into the unit's `ExecStart` so a value there beats a stale copy in the env file; the deploy config is strict, so a misspelt key now fails the deploy; `OTTER_CAPTURE_RETENTION` exists, so capture is configurable at all; the plan prints the windows. Applied to the live host, whose daemon now logs `run_retention=2160h0m0s log_retention=720h0m0s`, with the unit byte-identical to what the renderer emits. Evidence: [independent record](evidence/phase-0/2026-10-01-p0-09-p0-11-independent-verification.txt) | done |
@@ -168,9 +170,34 @@ column, and `OT-012` moves to `v0.6.0`.
 | OT-031 | A run's ender is not recorded, so "30 days without a runtime-caused incident" cannot be checked | gap | `classifyOutcome` (`internal/daemon/workers.go`) already decides whether the runtime, the job or an operator ended a run, because the retry policy depends on it — and then discarded the answer. The run kept a status and an English sentence, and the gate's Reliability row is written in terms of runtime-caused incidents, so the claim was a reading of 30 days of prose rather than a query. **Fixed 2026-10-15:** migration `0021_run_attribution.sql` adds `attribution` to `runs`; `classifyOutcome` returns it, `runs.Finish` carries it, and it is on the API run view as `attribution` (omitted when nothing recorded it, never inferred from the error text). Existing rows keep the empty default — a backfilled guess is worse than a blank. Regressions: `TestClassifyOutcomeAttributesTheEnding` (`internal/daemon/attribution_test.go`) covers all ten endings including the two direction-sensitive ones (a job the runtime could not start is the runtime's; a run with no ending recorded is the runtime's) and `TestAttributionSurvivesCreateAndDefaultsToUnknown` (`internal/runs/runs_test.go`) covers both paths into the table, where a column list, a placeholder count and a scan destination all have to agree. Documented in `api-reference.md` | done |
 | OT-029 | A retired job whose source is still in the repo makes a full `otter deploy` fail, and it is undecided whether an implicit full deploy should exist at all | defect | Found by retiring two jobs on the live host with `otter delete` while deliberately keeping their sources in the repository. `DeleteJob` purges the identity and *"leaves the source directory in place, suppressed so discovery does not immediately re-register it"* (`internal/daemon/identity_api.go:98`), and that suppression is durable rather than advisory: with both directories present on disk and their manifests re-pushed by a deploy, `POST /v1/reload` reports `total: 4` and neither re-registers (`identity/plan.go:329` reports such a path as `suppressed`; `identity/store.go:388` `claimPath` refuses it). The deploy, however, ships what it discovers — *"Discovery walks the whole project, exactly as the runtime does, so a deploy ships what `otter start` would serve"* (`internal/deploy/config.go:830`) — and `ReleaseScript` then releases **every** discovered job, addressed by path (`internal/deploy/render.go:605-637`), the path being what registers an identity (*"an identity would be registered against the wrong tree"*). A suppressed path has no registration to release, so the sweep dies: `otter: .../jobs/shopify-product-to-salesforce-product is not a registered job` → `otter: release jobs on ...: exit status 1`. The step cannot distinguish two states, only one of which is an error: a **new** path, which the release registers and must keep working (this is how a first deploy of a job succeeds at all), and a **refused** path, which the runtime will never register and which the deploy should skip and report. Note a bare `otter deploy` is not broken in general — it is what `scripts/provision.sh:519` uses to bring up a clean host, where no suppression exists. Two open decisions, and they are separate: (a) should the release step skip a refused path (small; makes retire-but-keep-source coherent and leaves provisioning as one command), or should it keep failing loudly?; (b) should an implicit full deploy exist at all, given that developers work one job at a time — the alternative requires `provision.sh` to loop over jobs, which pushes the binaries once per job, and it decides `docs/deploy.md`'s convergence contract. Reproduced 2026-10-02. Evidence for the shape of (a): `Render` already runs a bindings script that returns each path's status and filters to `active`, so the refused set is obtainable, though it is read **after** release today (`internal/deploy/deployer.go:305`) rather than before it | done |
 
-`OT-007` is the item most likely to graduate to a GitHub issue: it is a product
-promise about work preservation, not an implementation detail, and the default
-must not silently drop occurrences for event-driven jobs.
+**`OT-030` — closed (2026-10-06).** `9b959ba` gives `scripts/drill/unit-caps.sh`
+a `DRILL_SABOTAGE=off-memory-max` mode: it keeps the `-memory-max` flag and
+renders the unit with `MemoryMax=infinity`, and the drill must go red on the
+configuration assertion that compares `memory.max` against the cap the drill
+asked for. It shipped in `v0.5.0`, so it is retired from the `v0.4.0` table
+above.
+
+**`OT-023` — slipped out of `v0.5.0`.** The release shipped on 2026-10-07 with no
+notification drill: `scripts/drill/` has no notification scenario, and the
+`v0.5.0` tag contains none. `v0.5.0` WS5 is otherwise unfinished too — `FM-03`–
+`FM-08` are still Partial or Simulated in
+[runtime-contract.md Appendix A](runtime-contract.md#appendix-a--the-ws4-fault-matrix-and-its-evidence)
+— and no later release plan has been written to carry this item, so it moves
+back to this intake list as `open` instead of staying `scheduled`. It is the
+same work as
+[engineer-onboarding.md](engineer-onboarding.md#task-3-add-an-end-to-end-failure-notification-drill)
+Task 3, which points here as its tracker.
+
+**`OT-020` and `OT-031` are committed, not uncommitted.** Both fixes are in
+`a615129` (2026-10-20) — migrations `0020`/`0021`, the log-loss and attribution
+writers, and the regressions named on their rows. That commit is on `main` after
+the `v0.5.4` tag, so both are done in code and in no tagged release yet.
+
+`OT-007` was the item most likely to graduate to a GitHub issue — a product
+promise about work preservation rather than an implementation detail — and it
+shipped in `v0.5.0` (`bb92809`, `eb7c2b7`). The decision to keep `skip` as the
+default is recorded in
+[decisions.md](decisions.md#2026-10-05--missed-occurrences-coalesce-bounds-uptime-catch_up-is-bounded-admission-is-bounded).
 
 **`OT-029` — released the release-step half (2026-10-03).** `otter release`
 now recognises a suppressed path and skips it with a reported reason instead of
