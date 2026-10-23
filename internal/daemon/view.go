@@ -216,6 +216,21 @@ type fireRequest struct {
 // errAlreadyFired aborts a submit whose occurrence is already in the ledger.
 var errAlreadyFired = errors.New("occurrence already fired")
 
+// refusalRecorded marks a submit failure whose admission refusal submitRun has
+// already counted. Embedding the error keeps the cause and the message exactly
+// as they were -- errors.Is still sees api.ErrOverloaded or api.ErrConflict and
+// Error() is unchanged -- and adds only the fact the caller needs: recording
+// this error again would count one refusal twice.
+type refusalRecorded struct{ error }
+
+func (e refusalRecorded) Unwrap() error { return e.error }
+
+// refusalCounted reports whether submitRun already recorded err's refusal.
+func refusalCounted(err error) bool {
+	var recorded refusalRecorded
+	return errors.As(err, &recorded)
+}
+
 // submitRun is the one place a trigger becomes a run. A cron fire passes a
 // fireRequest; every other trigger passes nil.
 func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerPayload, opts api.SubmitRunOptions, fire *fireRequest) (string, error) {
@@ -305,10 +320,10 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 			if depth >= limit {
 				d.recordAdmissionRefusal(jobID, triggerType, "max_queue_depth",
 					"depth", depth, "bound", limit)
-				return "", fmt.Errorf(
+				return "", refusalRecorded{fmt.Errorf(
 					"job %q has %d runs pending, at its max_queue_depth of %d; "+
 						"a manual run is always accepted, and the queue drains as workers finish: %w",
-					label, depth, limit, api.ErrOverloaded)
+					label, depth, limit, api.ErrOverloaded)}
 			}
 		}
 	}
@@ -348,17 +363,18 @@ func (d *Daemon) submitRun(ctx context.Context, ref string, payload api.TriggerP
 		// A conflict with the job's current state, not a server fault: the
 		// request is well formed and the job exists, but nothing has been made
 		// live for it to run.
-		//
+		refusal := fmt.Errorf("job %s has no active release; run otter release %s before submitting runs: %w",
+			label, label, api.ErrConflict)
+		if triggerType == api.TriggerManual {
+			return "", refusal
+		}
 		// An AUTONOMOUS trigger is recorded, because for a schedule this refusal
 		// is otherwise invisible: the occurrence is gone, no run exists to look
 		// at, and no CLI call ever sees the error. That is exactly how a managed
 		// job whose environment could not be prepared looks on a pooled host --
 		// healthy, scheduled, and silently never running.
-		if triggerType != api.TriggerManual {
-			d.recordAdmissionRefusal(jobID, triggerType, "no_active_release")
-		}
-		return "", fmt.Errorf("job %s has no active release; run otter release %s before submitting runs: %w",
-			label, label, api.ErrConflict)
+		d.recordAdmissionRefusal(jobID, triggerType, "no_active_release")
+		return "", refusalRecorded{refusal}
 	}
 	bound, err := config.LoadAndValidate(filepath.Join(released, config.ManifestFileName))
 	if err != nil {

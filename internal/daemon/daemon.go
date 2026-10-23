@@ -976,6 +976,13 @@ func (d *Daemon) cronTick(scheduleID string, occurrence time.Time) {
 				"occurrence", at.Format(time.RFC3339))
 			return
 		}
+		// submitRun records the refusals it classifies itself; anything else
+		// reaching here -- an invalid active release, a failing pending count --
+		// would otherwise be visible only in this log line on a host nobody
+		// watches.
+		if !refusalCounted(err) {
+			d.recordAdmissionRefusal(rec.JobID, api.TriggerCron, "cron_submit_failed", "error", err.Error())
+		}
 		d.log.Error("cron_submit_failed", err, "schedule", scheduleID, "job", rec.JobID)
 	}
 }
@@ -1018,6 +1025,11 @@ func (d *Daemon) coalesceTick(ctx context.Context, rec schedule.Schedule, occurr
 		if errors.Is(err, errAlreadyFired) {
 			d.log.Debug("coalesce_duplicate", "schedule", rec.ID, "occurrence", at.Format(time.RFC3339))
 			return
+		}
+		// Same accounting as cronTick: a coalesce submit that fails for a reason
+		// submitRun does not classify is a lost occurrence, not just a log line.
+		if !refusalCounted(err) {
+			d.recordAdmissionRefusal(rec.JobID, api.TriggerCron, "coalesce_submit_failed", "error", err.Error())
 		}
 		d.log.Error("coalesce_submit_failed", err, "schedule", rec.ID, "job", rec.JobID)
 		return
