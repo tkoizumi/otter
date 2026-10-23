@@ -50,6 +50,50 @@ func exchange(url string) *inspection.Exchange {
 	}
 }
 
+// publicDestination gives a test a public-facing https URL for a local TLS
+// server, plus a client that reaches the server anyway.
+//
+// The guard refuses loopback literals, so a test that exercises the send path
+// cannot put httptest's 127.0.0.1 URL on the exchange. It keeps a public host in
+// the exchange — which is what the guard classifies — and rewrites the
+// destination in the transport, which is what the network sees. That is the same
+// split the real guard relies on: it judges the URL, not the dial.
+func publicDestination(t *testing.T, server *httptest.Server, path string) (string, *http.Client) {
+	t.Helper()
+	addr := strings.TrimPrefix(server.URL, "https://")
+	if addr == server.URL {
+		t.Fatalf("publicDestination needs an https test server, got %q", server.URL)
+	}
+	return "https://api.example.com" + path, &http.Client{
+		Transport: rewriteDestination{base: server.Client().Transport, addr: addr},
+	}
+}
+
+// rewriteDestination sends to the test server while the request URL keeps the
+// public host the guard approved.
+type rewriteDestination struct {
+	base http.RoundTripper
+	addr string
+}
+
+func (r rewriteDestination) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.Host = r.addr
+	clone.Host = r.addr
+	return r.base.RoundTrip(clone)
+}
+
+// failTransport records that a request reached the network and refuses to
+// invent a response.
+type failTransport struct {
+	calls *int
+}
+
+func (f failTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	*f.calls++
+	return nil, fmt.Errorf("the test transport must not be reached")
+}
+
 func TestCheckRefusesWhatCannotBeReplayedExactly(t *testing.T) {
 	base := "https://api.example.com/v1/items"
 	tests := []struct {
@@ -98,6 +142,123 @@ func TestCheckAllowsAPlainGet(t *testing.T) {
 	}
 }
 
+// The §11 "private-range block": a replay must not be usable to reach a loopback
+// listener, the link-local metadata service, a private neighbour, a
+// carrier-grade NAT address, a reserved name or an internal single-label name.
+func TestCheckRefusesReservedReplayDestinations(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"the instance metadata service", "https://169.254.169.254/latest/meta-data/", "link-local"},
+		{"IPv4 loopback", "https://127.0.0.1/x", "loopback"},
+		{"the rest of 127/8", "https://127.1.2.3/x", "loopback"},
+		{"IPv6 loopback", "https://[::1]/x", "loopback"},
+		{"RFC 1918 class A", "https://10.0.0.5/x", "private"},
+		{"RFC 1918 class B", "https://172.16.0.1/x", "private"},
+		{"RFC 1918 class C", "https://192.168.1.1/x", "private"},
+		{"carrier-grade NAT", "https://100.64.0.1/x", "carrier-grade NAT"},
+		{"the unspecified IPv4 address", "https://0.0.0.0/x", "unspecified"},
+		{"the unspecified IPv6 address", "https://[::]/x", "unspecified"},
+		{"IPv6 link-local", "https://[fe80::1]/x", "link-local"},
+		{"IPv6 unique-local", "https://[fd00::1]/x", "private"},
+		{"multicast", "https://224.0.0.1/x", "multicast"},
+		{"IPv4-mapped link-local", "https://[::ffff:169.254.169.254]/x", "link-local"},
+		{"IPv4-mapped loopback", "https://[::ffff:127.0.0.1]/x", "loopback"},
+		{"the localhost name", "https://localhost/x", "reserved name"},
+		{"a localhost subdomain", "https://api.localhost/x", "reserved name"},
+		{"an upper-case localhost", "https://LOCALHOST/x", "reserved name"},
+		{"a single-label name", "https://intranet/x", "single-label"},
+		{"a single-label name with a port", "https://metadata:8080/x", "single-label"},
+		{"a single-label name with a trailing dot", "https://intranet./x", "single-label"},
+		{"an inet_aton short form", "https://127.1/x", "numeric host"},
+		{"an inet_aton short form of a metadata address", "https://169.254.1/x", "numeric host"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Check(exchange(tc.url))
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("Check(%q) = %v, want a refusal", tc.url, err)
+			}
+			if !strings.Contains(refusal.Reason, tc.want) {
+				t.Fatalf("refusal %q does not mention %q", refusal.Reason, tc.want)
+			}
+			if !strings.Contains(refusal.Reason, "will not send to") {
+				t.Fatalf("refusal %q does not say the target is not sent to", refusal.Reason)
+			}
+		})
+	}
+}
+
+// The block must not turn into "replay nothing": a public literal, a public
+// hostname with a port, a trailing-dot FQDN and an IPv4-mapped public address
+// all still pass.
+func TestCheckAllowsPublicReplayDestinations(t *testing.T) {
+	for _, url := range []string{
+		"https://93.184.216.34/x",
+		"https://api.example.com/x",
+		"https://api.example.co.uk:8443/x",
+		"https://api.example.com./x",
+		"https://[::ffff:93.184.216.34]/x",
+	} {
+		if err := Check(exchange(url)); err != nil {
+			t.Fatalf("Check(%q) = %v, want nil", url, err)
+		}
+	}
+}
+
+// The refusal is the whole defence: nothing may be sent, nothing recorded, and
+// the captured template must come back exactly as it was stored.
+func TestPrivateLiteralReplayIsRefusedBeforeSending(t *testing.T) {
+	store := testStore(t)
+	var calls int
+	item := exchange("https://169.254.169.254/latest/meta-data/iam/")
+	item.RequestHeaders = []inspection.HeaderPair{
+		{Name: "Authorization", Value: "{{secret:TOKEN}}"},
+	}
+	item.RequestBody = &inspection.BodyDescriptor{
+		State:       inspection.BodyCaptured,
+		ContentType: "application/json",
+		JSON:        json.RawMessage(`{"probe":true}`),
+	}
+
+	engine := &Engine{
+		Store:   store,
+		Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "a-real-token"}),
+		Client:  &http.Client{Transport: failTransport{calls: &calls}},
+	}
+	_, err := engine.Replay(context.Background(), item, "job-a")
+
+	var refusal *Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("Replay() = %v, want a refusal", err)
+	}
+	if !strings.Contains(refusal.Reason, "link-local") || !strings.Contains(refusal.Reason, "169.254.169.254") {
+		t.Fatalf("refusal = %q, want it to name the link-local address", refusal.Reason)
+	}
+	if calls != 0 {
+		t.Fatalf("the refused replay reached the network %d time(s)", calls)
+	}
+	if item.URL != "https://169.254.169.254/latest/meta-data/iam/" || item.Method != "GET" {
+		t.Fatalf("the refusal rewrote the exchange: %s %s", item.Method, item.URL)
+	}
+	if item.RequestHeaders[0].Value != "{{secret:TOKEN}}" {
+		t.Fatalf("the refusal resolved the template in place: %q", item.RequestHeaders[0].Value)
+	}
+	if string(item.RequestBody.JSON) != `{"probe":true}` {
+		t.Fatalf("the refusal rewrote the captured body: %s", item.RequestBody.JSON)
+	}
+	batch, err := store.PullExports(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("PullExports: %v", err)
+	}
+	if len(batch.Documents) != 0 {
+		t.Fatalf("a refused replay recorded %d document(s)", len(batch.Documents))
+	}
+}
+
 func TestReplayResolvesTheTemplateAndRecordsTheResult(t *testing.T) {
 	store := testStore(t)
 	var seenAuth, seenAccept, seenMethod string
@@ -110,11 +271,12 @@ func TestReplayResolvesTheTemplateAndRecordsTheResult(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exchange := exchange(server.URL + "/v1/items?q=hello")
+	destination, client := publicDestination(t, server, "/v1/items?q=hello")
+	exchange := exchange(destination)
 	engine := &Engine{
 		Store:   store,
 		Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "t0ken"}),
-		Client:  server.Client(),
+		Client:  client,
 	}
 	result, err := engine.Replay(context.Background(), exchange, "job-a")
 	if err != nil {
@@ -189,7 +351,8 @@ func TestReplayResolvesAPlaceholderInsideTheJSONBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	item := exchange(server.URL + "/v1/items")
+	destination, client := publicDestination(t, server, "/v1/items")
+	item := exchange(destination)
 	item.RequestHeaders = nil
 	item.RequestBody = &inspection.BodyDescriptor{
 		State:       inspection.BodyCaptured,
@@ -199,7 +362,7 @@ func TestReplayResolvesAPlaceholderInsideTheJSONBody(t *testing.T) {
 	engine := &Engine{
 		Store:   store,
 		Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": `a"b`}),
-		Client:  server.Client(),
+		Client:  client,
 	}
 	result, err := engine.Replay(context.Background(), item, "job-a")
 	if err != nil {
@@ -229,12 +392,13 @@ func TestReplayRefusesAnUnavailableSecretWithoutSending(t *testing.T) {
 	}))
 	defer server.Close()
 
+	destination, client := publicDestination(t, server, "/x")
 	engine := &Engine{
 		Store:   store,
 		Secrets: secrets.NewStaticProvider(map[string]string{}),
-		Client:  server.Client(),
+		Client:  client,
 	}
-	_, err := engine.Replay(context.Background(), exchange(server.URL+"/x"), "job-a")
+	_, err := engine.Replay(context.Background(), exchange(destination), "job-a")
 	var refusal *Refusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("Replay() = %v, want a refusal", err)
@@ -247,8 +411,7 @@ func TestReplayRefusesAnUnavailableSecretWithoutSending(t *testing.T) {
 func TestReplayRecordsATransportFailure(t *testing.T) {
 	store := testStore(t)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	url := server.URL + "/x"
-	client := server.Client()
+	url, client := publicDestination(t, server, "/x")
 	server.Close() // a dead destination, not a refusal
 
 	engine := &Engine{
@@ -307,12 +470,13 @@ func TestReplayResultBodyIsCapturedAndRedacted(t *testing.T) {
 		_, _ = io.WriteString(w, `{"secret":"value","ok":true}`)
 	}))
 	defer server.Close()
+	destination, client := publicDestination(t, server, "/x")
 	engine := &Engine{
 		Store:   store,
 		Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "t"}),
-		Client:  server.Client(),
+		Client:  client,
 	}
-	result, err := engine.Replay(context.Background(), exchange(server.URL+"/x"), "job-a")
+	result, err := engine.Replay(context.Background(), exchange(destination), "job-a")
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
 	}
@@ -329,12 +493,13 @@ func TestReplayReportsARecordingFailure(t *testing.T) {
 		w.WriteHeader(204)
 	}))
 	defer server.Close()
+	destination, client := publicDestination(t, server, "/x")
 	engine := &Engine{
 		Store:   store,
 		Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "t"}),
-		Client:  server.Client(),
+		Client:  client,
 	}
-	item := exchange(server.URL + "/x")
+	item := exchange(destination)
 	item.RequestID = "" // RecordReplay rejects it after the send
 	_, err := engine.Replay(context.Background(), item, "job-a")
 	if err == nil {
@@ -381,10 +546,11 @@ func TestReplayDigestCoversTheResolvedRequest(t *testing.T) {
 		w.WriteHeader(204)
 	}))
 	defer server.Close()
-	item := exchange(server.URL + "/x")
+	destination, client := publicDestination(t, server, "/x")
+	item := exchange(destination)
 
-	first := &Engine{Store: store, Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "one"}), Client: server.Client()}
-	second := &Engine{Store: store, Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "two"}), Client: server.Client()}
+	first := &Engine{Store: store, Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "one"}), Client: client}
+	second := &Engine{Store: store, Secrets: secrets.NewStaticProvider(map[string]string{"TOKEN": "two"}), Client: client}
 	a, err := first.Replay(context.Background(), item, "job-a")
 	if err != nil {
 		t.Fatalf("first Replay: %v", err)

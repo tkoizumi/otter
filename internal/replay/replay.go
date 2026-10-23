@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sort"
@@ -83,6 +84,9 @@ func Check(exchange *inspection.Exchange) error {
 	if parsed.User != nil {
 		return refuse("the captured URL embeds credentials, which replay will not resend")
 	}
+	if reason, reserved := reservedDestination(parsed.Hostname()); reserved {
+		return refuse("%s", reason)
+	}
 
 	if name, ok := requestBoundSignature(exchange.RequestHeaders); ok {
 		return refuse("the request is signed by %s, which is bound to the original request and cannot be replayed", name)
@@ -108,6 +112,77 @@ func Check(exchange *inspection.Exchange) error {
 		}
 	}
 	return nil
+}
+
+// cgnatPrefix is 100.64.0.0/10, the carrier-grade NAT range RFC 6598 carves out
+// of 100.64.0.0/8. netip does not call it private, and a pooled runtime that
+// reaches a CGNAT address is reaching the provider's own network rather than the
+// public internet, so replay refuses it the way it refuses RFC 1918.
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+
+// reservedDestination reports why a captured URL's host must not be resent, and
+// false when replay may target it.
+//
+// This is the runtime half of the §11 "private-range block"
+// (cloud/docs/pooled-capture-replay-plan.md). A replay sends with the tenant's
+// live credentials, so it must not be usable to poke a loopback listener, the
+// link-local metadata service at 169.254.169.254, a neighbouring container on a
+// private range, or an internal single-label name.
+//
+// What is covered: a host that is an IP literal — after IPv4-in-IPv6 addresses
+// are unmapped, so ::ffff:169.254.169.254 is refused exactly like its IPv4 form —
+// in loopback, link-local, private, carrier-grade NAT, unspecified or multicast
+// space; the reserved names "localhost" and "*.localhost"; any single-label
+// name, which is the classic internal-name shape; and a multi-label all-numeric
+// host that is not a canonical IP literal (the inet_aton short forms 127.1 and
+// 169.254.1, whose meaning depends on the resolver). Name comparison is
+// case-insensitive and tolerates a trailing dot.
+//
+// What is NOT covered, deliberately: name resolution. A public name that resolves
+// to a private address is allowed, because the destination is pinned to the
+// captured URL (D7 — the operator never chooses a host) and the tenant's own job
+// already reached that address. Resolving here would put a DNS lookup inside a
+// pure guard and would still be defeated by a name that resolves differently at
+// send time. Multi-label internal names (localhost.localdomain,
+// metadata.google.internal) are likewise not caught by the name rule: they fail
+// only if the environment resolves them to one of the literals above.
+func reservedDestination(host string) (string, bool) {
+	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if name == "" {
+		return "", false
+	}
+	if name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		return fmt.Sprintf("replay target %q is a reserved name, which replay will not send to", name), true
+	}
+	if addr, err := netip.ParseAddr(name); err == nil {
+		addr = addr.Unmap()
+		switch {
+		case addr.IsLoopback():
+			return fmt.Sprintf("replay target %s is a loopback address, which replay will not send to", addr), true
+		case addr.IsLinkLocalUnicast():
+			return fmt.Sprintf("replay target %s is a link-local address, which replay will not send to", addr), true
+		case addr.IsMulticast(), addr.IsLinkLocalMulticast():
+			return fmt.Sprintf("replay target %s is a multicast address, which replay will not send to", addr), true
+		case addr.IsUnspecified():
+			return fmt.Sprintf("replay target %s is an unspecified address, which replay will not send to", addr), true
+		case addr.IsPrivate():
+			return fmt.Sprintf("replay target %s is a private address, which replay will not send to", addr), true
+		case cgnatPrefix.Contains(addr):
+			return fmt.Sprintf("replay target %s is a carrier-grade NAT address, which replay will not send to", addr), true
+		}
+		return "", false
+	}
+	if !strings.Contains(name, ".") {
+		return fmt.Sprintf("replay target %q is a single-label name, which replay will not send to", name), true
+	}
+	// A multi-label numeric host that is not a canonical IP literal is the
+	// inet_aton short form (127.1, 169.254.1, 0x7f.0.0.1), whose meaning depends
+	// on the resolver and includes loopback and link-local addresses. No real TLD
+	// is all-numeric, so the last label decides it: refuse rather than guess.
+	if last := name[strings.LastIndexByte(name, '.')+1:]; last != "" && strings.Trim(last, "0123456789") == "" {
+		return fmt.Sprintf("replay target %q is a numeric host, not an IP literal, and replay will not send to it", name), true
+	}
+	return "", false
 }
 
 // Logger is the one log event a replay emits. It matches logging.Logger, and
