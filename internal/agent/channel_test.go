@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,6 +42,9 @@ type fakeCommandRuntime struct {
 	deleteNote string
 	readBody   json.RawMessage
 	readErr    error
+	replayBody json.RawMessage
+	replayErr  error
+	replayed   []struct{ runID, requestID string }
 }
 
 func (f *fakeCommandRuntime) SubmitRun(_ context.Context, job, key string) (string, error) {
@@ -64,6 +69,61 @@ func (f *fakeCommandRuntime) DeleteJob(_ context.Context, job string) (string, e
 }
 func (f *fakeCommandRuntime) Read(context.Context, string, string, string, int, string) (json.RawMessage, error) {
 	return f.readBody, f.readErr
+}
+func (f *fakeCommandRuntime) Replay(_ context.Context, runID, requestID string) (json.RawMessage, error) {
+	f.replayed = append(f.replayed, struct{ runID, requestID string }{runID, requestID})
+	return f.replayBody, f.replayErr
+}
+
+// A replay command reaches the runtime with both ids and its answer is carried
+// back as ResultBody. The body is the whole point of this command; a bare
+// "accepted" would tell the operator nothing.
+func TestControlLoopExecutesAReplayAndReturnsTheResultBody(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-r", Action: "replay", RunID: "run-1", Params: map[string]string{"request_id": "req-1"}},
+	}}}
+	runtime := &fakeCommandRuntime{replayBody: json.RawMessage(`{"replay_id":"replay_1","status_code":200}`)}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.replayed) != 1 ||
+		runtime.replayed[0].runID != "run-1" ||
+		runtime.replayed[0].requestID != "req-1" {
+		t.Fatalf("Replay calls = %+v, want run-1/req-1", runtime.replayed)
+	}
+	if len(channel.commands) != 1 {
+		t.Fatalf("command results = %+v, want one", channel.commands)
+	}
+	got := channel.commands[0]
+	if got.Status != CommandAccepted || got.CommandID != "cmd-r" {
+		t.Fatalf("command result = %+v, want accepted cmd-r", got)
+	}
+	if !strings.Contains(got.ResultBody, `"replay_id":"replay_1"`) {
+		t.Fatalf("result body = %q", got.ResultBody)
+	}
+}
+
+// A malformed replay is refused at the agent, not sent with a missing id.
+func TestControlLoopRejectsAReplayWithoutBothIds(t *testing.T) {
+	for _, cmd := range []Command{
+		{ID: "cmd-r1", Action: "replay", RunID: "run-1"},
+		{ID: "cmd-r2", Action: "replay", Params: map[string]string{"request_id": "req-1"}},
+	} {
+		channel := &fakeChannel{work: &ControlWork{Commands: []Command{cmd}}}
+		runtime := &fakeCommandRuntime{}
+		loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+		if err := loop.Once(context.Background()); err != nil {
+			t.Fatalf("Once: %v", err)
+		}
+		if len(runtime.replayed) != 0 {
+			t.Fatalf("a malformed replay reached the runtime: %+v", runtime.replayed)
+		}
+		if len(channel.commands) != 1 || channel.commands[0].Status != CommandRejected {
+			t.Fatalf("command results = %+v, want a rejection", channel.commands)
+		}
+	}
 }
 
 // A run command carries its caller-derived idempotency key to the runtime and is
@@ -556,5 +616,37 @@ func TestControlLoopDrainsEveryItemInOneResponse(t *testing.T) {
 	}
 	if len(channel.reads) != 2 {
 		t.Fatalf("read results = %d, want one per read", len(channel.reads))
+	}
+}
+
+// The relay is a POST of both ids; the runtime, not the agent, decides whether
+// the exchange can be replayed.
+func TestRuntimeHTTPReplayPostsBothIds(t *testing.T) {
+	var method, path, body, auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, auth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"replay_id":"replay_1","status_code":200}`)
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "runtime-token"}
+	raw, err := rt.Replay(context.Background(), "run-1", "req-1")
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if method != http.MethodPost || path != "/v1/replay" {
+		t.Fatalf("request = %s %s", method, path)
+	}
+	if auth != "Bearer runtime-token" {
+		t.Fatalf("Authorization = %q", auth)
+	}
+	if !strings.Contains(body, `"run_id":"run-1"`) || !strings.Contains(body, `"request_id":"req-1"`) {
+		t.Fatalf("body = %s", body)
+	}
+	if !strings.Contains(string(raw), `"replay_id":"replay_1"`) {
+		t.Fatalf("raw = %s", raw)
 	}
 }

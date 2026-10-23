@@ -136,6 +136,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/capture/exports", s.local(s.deploy(s.handlePullCaptureExports)))
 	mux.Handle("POST /v1/capture/exports/ack", s.local(s.deploy(s.handleAckCaptureExports)))
 
+	// Replay resends one captured exchange. It is a mutation, so it is on its
+	// own gate: the admin token or the runtime's own agent. Loopback-only,
+	// because the agent is the only caller and the operation sends tenant data
+	// outbound. Cloud keeps the authority decision (session, flag, audit, rate
+	// limit); this route is the runtime's execution half (DEC-05).
+	mux.Handle("POST /v1/replay", s.localOnly("replay", s.agent(s.handleReplay)))
+
 	// The operator read surface: metadata, run output, the merged timeline and
 	// capture summaries, reachable with a read-, control- or capture-scoped
 	// token or the admin token. Capture *payloads* are not here; they need the
@@ -375,6 +382,16 @@ func (s *Server) scoped(h http.HandlerFunc) http.Handler {
 func (s *Server) capture(h http.HandlerFunc) http.Handler {
 	return s.gate(h, principal.canReadCapture,
 		"this endpoint requires the admin API token or a capture-scoped token")
+}
+
+// agent admits the admin token or the runtime's own agent-scoped token.
+//
+// It is narrower than `control`: a control token can command a job, but replay
+// sends a tenant request to a third party, and the agent is the only process
+// Cloud's replay path reaches the runtime through.
+func (s *Server) agent(h http.HandlerFunc) http.Handler {
+	return s.gate(h, func(p principal) bool { return p.Admin || p.Scope == ScopeAgent },
+		"this endpoint requires the admin API token or an agent-scoped token")
 }
 
 // reader admits everything scoped does, plus a per-run token, which the handler
@@ -1644,7 +1661,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, state.ErrInvalidValue):
 		s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
 	case errors.Is(err, ErrConflict), errors.Is(err, inspection.ErrNotConfigured),
-		errors.Is(err, inspection.ErrAmbiguous), errors.Is(err, timeline.ErrRunNotTerminal),
+		errors.Is(err, inspection.ErrAmbiguous), errors.Is(err, inspection.ErrReplayLimit),
+		errors.Is(err, timeline.ErrRunNotTerminal),
 		errors.Is(err, timeline.ErrEvidenceChanged):
 		s.writeError(w, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, ErrPaused):

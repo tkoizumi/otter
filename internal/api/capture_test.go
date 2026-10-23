@@ -661,3 +661,23 @@ func TestSubmitRunCaptureOption(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// ReplayCapturedRequest is the loopback replay seam. The route's own contract is
+// tested in replay_api_test.go; this is the fake it drives.
+func (f *fakeBackend) ReplayCapturedRequest(_ context.Context, runID, requestID string) (*ReplayResult, error) {
+	f.replayCalls++
+	if f.replayErr != nil {
+		return nil, f.replayErr
+	}
+	if f.replayResult != nil {
+		return f.replayResult, nil
+	}
+	code := http.StatusOK
+	return &ReplayResult{
+		ReplayID:       "replay_test",
+		RunID:          runID,
+		RequestID:      requestID,
+		StatusCode:     &code,
+		ResolvedSHA256: "digest",
+	}, nil
+}

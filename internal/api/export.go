@@ -78,15 +78,22 @@ func (s *Server) handleAckCaptureExports(w http.ResponseWriter, r *http.Request)
 // loopback, so refusing a remote connection removes a path that should not
 // exist rather than relying on the token alone.
 func (s *Server) local(h http.Handler) http.Handler {
+	return s.localOnly("capture export", h)
+}
+
+// localOnly is local with a caller-named subject, so a refusal on the replay
+// route does not say "capture export".
+func (s *Server) localOnly(subject string, h http.Handler) http.Handler {
+	refusal := subject + " is loopback-only"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
-			s.writeError(w, http.StatusForbidden, CodeForbidden, "capture export is loopback-only")
+			s.writeError(w, http.StatusForbidden, CodeForbidden, refusal)
 			return
 		}
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {
-			s.writeError(w, http.StatusForbidden, CodeForbidden, "capture export is loopback-only")
+			s.writeError(w, http.StatusForbidden, CodeForbidden, refusal)
 			return
 		}
 		h.ServeHTTP(w, r)

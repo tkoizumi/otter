@@ -10,6 +10,7 @@ import (
 	"github.com/tkoizumi/otter/internal/api"
 	"github.com/tkoizumi/otter/internal/executor"
 	"github.com/tkoizumi/otter/internal/inspection"
+	"github.com/tkoizumi/otter/internal/replay"
 	"github.com/tkoizumi/otter/internal/timeline"
 )
 
@@ -105,7 +106,6 @@ func (d *Daemon) GetCaptureRequest(ctx context.Context, runID, requestID string)
 const maxAmbiguousRuns = 5
 
 // GetCaptureRequestByID implements api.Backend.
-//
 // The owning run is read from the stored row, never parsed out of the id: the id
 // is SDK-supplied, so a prefix or any other client convention would be a claim
 // rather than a fact. Because request id uniqueness is only enforced per run, an
@@ -253,6 +253,45 @@ func (d *Daemon) runCaptureRetention(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// ReplayCapturedRequest implements api.Backend.
+//
+// The run is loaded first so the replay resolves the same job's secrets the
+// original run used. The exchange is the sanitized template: headers and body
+// still carry {{secret:NAME}}, and the provider here is the live one, so a
+// rotated secret is picked up at replay time rather than pinned to the run.
+func (d *Daemon) ReplayCapturedRequest(ctx context.Context, runID, requestID string) (*api.ReplayResult, error) {
+	if d.inspection == nil {
+		return nil, fmt.Errorf("http capture is not available: %w", api.ErrConflict)
+	}
+	run, err := d.runs.Get(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	exchange, err := d.inspection.Get(ctx, runID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	engine := &replay.Engine{
+		Store:   d.inspection,
+		Secrets: d.secretsForRun(run),
+		Logger:  d.log,
+	}
+	result, err := engine.Replay(ctx, exchange, run.JobID)
+	if err != nil {
+		return nil, err
+	}
+	return &api.ReplayResult{
+		ReplayID:        result.ReplayID,
+		RunID:           result.RunID,
+		RequestID:       result.RequestID,
+		ResolvedSHA256:  result.ResolvedSHA256,
+		StatusCode:      result.StatusCode,
+		ResponseBody:    result.ResponseBody,
+		DurationTotalMS: result.DurationTotalMS,
+		TransportError:  result.TransportError,
+	}, nil
 }
 
 // expireCapture removes expired payloads in bounded batches so one sweep cannot

@@ -81,6 +81,11 @@ type fakeBackend struct {
 	// capture is the in-memory HTTP capture fake, defined in capture_test.go.
 	capture *fakeCapture
 
+	// Replay seam: what the loopback replay route returns, or the error it raises.
+	replayResult *ReplayResult
+	replayErr    error
+	replayCalls  int
+
 	// Capture export relay seam, defined in export_test.go.
 	exportBatch *inspection.ExportBatch
 	exportErr   error

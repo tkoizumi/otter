@@ -107,6 +107,11 @@ type captureExportDocument struct {
 	Response      captureExportResponse `json:"response"`
 	Timing        captureExportTiming   `json:"timing"`
 	CallSite      string                `json:"call_site,omitempty"`
+	// ReplayOf and ResolvedSHA256 exist only on a replay document. The first
+	// names the exchange the replay resent; the second is the digest of the
+	// resolved bytes, which Cloud audits without ever holding those bytes.
+	ReplayOf       string `json:"replay_of,omitempty"`
+	ResolvedSHA256 string `json:"resolved_sha256,omitempty"`
 }
 
 type captureManifestRequest struct {
@@ -249,6 +254,50 @@ func (s *Store) buildExchangeDocument(ctx context.Context, e *Exchange) ([]byte,
 	return json.Marshal(document)
 }
 
+// buildReplayDocument freezes one replay into capture-document-v1. The request
+// side is the captured template (placeholders, not values); the response side is
+// what the resend actually returned; resolved_sha256 is the digest of the bytes
+// that were sent, which is the only trace of the resolved request Cloud keeps.
+func (s *Store) buildReplayDocument(_ context.Context, replay *Replay) ([]byte, error) {
+	payloads := "partial"
+	if replay.ResponseBody != nil && replay.ResponseBody.State == BodyCaptured {
+		payloads = "full"
+	}
+	response := captureExportResponse{
+		StatusCode: replay.StatusCode,
+		Body:       exportBodyValue(replay.ResponseBody),
+	}
+	if replay.TransportError != "" {
+		response.Error = &captureExportError{
+			Code:           "transport_error",
+			Message:        bound(cleanText(replay.TransportError), 512),
+			TransportClass: bound(cleanText(replay.TransportClass), 128),
+		}
+	}
+	document := captureExportDocument{
+		SchemaVersion: SchemaVersion,
+		Kind:          "replay",
+		RuntimeID:     s.runtimeID,
+		RunID:         replay.RunID,
+		RequestID:     replay.ReplayID,
+		CapturedAt:    exportTimestamp(replay.OccurredAt),
+		Complete:      true,
+		Payloads:      payloads,
+		Request: captureExportRequest{
+			Method:        replay.Method,
+			URL:           replay.URL,
+			QueryRedacted: false,
+			Headers:       exportHeaderPairs(replay.RequestHeaders),
+			Body:          exportBodyValue(replay.RequestBody),
+		},
+		Response:       response,
+		Timing:         captureExportTiming{TotalMS: replay.DurationTotalMS},
+		ReplayOf:       replay.RequestID,
+		ResolvedSHA256: replay.ResolvedSHA256,
+	}
+	return json.Marshal(document)
+}
+
 func (s *Store) buildManifestDocument(ctx context.Context, capture *RunCapture) ([]byte, error) {
 	requests := make([]captureManifestRequest, 0, capture.RequestCount)
 	after := int64(0)
@@ -359,6 +408,15 @@ func (s *Store) PullExports(ctx context.Context, after int64, limit int) (*Expor
 				return nil, err
 			}
 			document, err = s.buildExchangeDocument(ctx, exchange)
+			if err != nil {
+				return nil, err
+			}
+		case ExportReplay:
+			replay, err := s.GetReplay(ctx, item.runID, item.requestID)
+			if err != nil {
+				return nil, err
+			}
+			document, err = s.buildReplayDocument(ctx, replay)
 			if err != nil {
 				return nil, err
 			}

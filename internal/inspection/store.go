@@ -643,6 +643,13 @@ func (s *Store) DeleteForRun(ctx context.Context, runID string) (int64, error) {
 		return 0, fmt.Errorf("inspection: delete exchanges for %s: %w", runID, err)
 	}
 	removed, _ := res.RowsAffected()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM http_replays WHERE run_id = ?`, runID); err != nil {
+		return 0, fmt.Errorf("inspection: delete replays for %s: %w", runID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM capture_exports WHERE run_id = ? AND kind = ?`,
+		runID, string(ExportReplay)); err != nil {
+		return 0, fmt.Errorf("inspection: delete replay exports for %s: %w", runID, err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run_capture WHERE run_id = ?`, runID); err != nil {
 		return 0, fmt.Errorf("inspection: delete capture for %s: %w", runID, err)
 	}
@@ -666,6 +673,9 @@ func (s *Store) DeleteForJob(ctx context.Context, jobID string) (int64, error) {
 		return 0, fmt.Errorf("inspection: delete exchanges for %s: %w", jobID, err)
 	}
 	removed, _ := res.RowsAffected()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM http_replays WHERE job_id = ?`, jobID); err != nil {
+		return 0, fmt.Errorf("inspection: delete replays for %s: %w", jobID, err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run_capture WHERE job_id = ?`, jobID); err != nil {
 		return 0, fmt.Errorf("inspection: delete capture for %s: %w", jobID, err)
 	}
@@ -719,6 +729,15 @@ func (s *Store) ExpireOlderThan(ctx context.Context, cutoff time.Time, maxRuns i
 			return runs, deleted, fmt.Errorf("inspection: expire exchanges for %s: %w", runID, err)
 		}
 		n, _ := res.RowsAffected()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM http_replays WHERE run_id = ?`, runID); err != nil {
+			tx.Rollback()
+			return runs, deleted, fmt.Errorf("inspection: expire replays for %s: %w", runID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM capture_exports WHERE run_id = ? AND kind = ?`,
+			runID, string(ExportReplay)); err != nil {
+			tx.Rollback()
+			return runs, deleted, fmt.Errorf("inspection: expire replay exports for %s: %w", runID, err)
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE run_capture SET payloads_expired = 1, expired_at = ?, stored_bytes = 0 WHERE run_id = ?`,
 			now, runID); err != nil {

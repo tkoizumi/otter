@@ -81,6 +81,10 @@ type CommandResult struct {
 	// what the runtime removed and what it could not, so a control plane never
 	// records a bare success for a purge with a caveat.
 	Note string `json:"note,omitempty"`
+	// ResultBody carries a replay's bounded JSON answer. It is the one command
+	// whose useful outcome is a body rather than an id; Cloud caps it again on
+	// receipt, so the agent does not have to be the only guard.
+	ResultBody string `json:"result_body,omitempty"`
 }
 
 // ReadResult is the answer to one read. Body is the runtime's own bounded JSON.
@@ -120,6 +124,10 @@ type RuntimeCommands interface {
 	// Read performs one allowlisted read and returns the runtime's own bounded
 	// JSON body, unmodified.
 	Read(ctx context.Context, op, job, runID string, limit int, cursor string) (json.RawMessage, error)
+	// Replay resends one captured exchange through the runtime's loopback replay
+	// endpoint and returns its bounded JSON answer. The runtime re-applies the
+	// capture guards; this method is the transport, not the policy.
+	Replay(ctx context.Context, runID, requestID string) (json.RawMessage, error)
 }
 
 // Control implements ControlChannel over the agent's outbound HTTP connection.
@@ -248,6 +256,22 @@ func (r *RuntimeHTTP) Read(ctx context.Context, op, job, runID string, limit int
 	}
 	var raw json.RawMessage
 	if err := r.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// Replay resends one captured exchange. The body it returns is the runtime's
+// own JSON answer; Cloud relays it back to the operator's browser.
+func (r *RuntimeHTTP) Replay(ctx context.Context, runID, requestID string) (json.RawMessage, error) {
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(requestID) == "" {
+		return nil, fmt.Errorf("agent: replay needs a run id and a request id")
+	}
+	var raw json.RawMessage
+	if err := r.do(ctx, http.MethodPost, "/v1/replay", map[string]string{
+		"run_id":     runID,
+		"request_id": requestID,
+	}, &raw); err != nil {
 		return nil, err
 	}
 	return raw, nil
@@ -471,6 +495,26 @@ func (l *ControlLoop) executeCommand(ctx context.Context, cmd Command) {
 		} else {
 			result.Status = CommandAccepted
 			result.Note = note
+		}
+	case "replay":
+		// Replay sends tenant data outbound, so the two ids are required and a
+		// refusal (not a crash) is the answer to a malformed command.
+		requestID := ""
+		if cmd.Params != nil {
+			requestID = strings.TrimSpace(cmd.Params["request_id"])
+		}
+		if strings.TrimSpace(cmd.RunID) == "" || requestID == "" {
+			result.Status = CommandRejected
+			result.Reason = "replay needs run_id and params.request_id"
+			break
+		}
+		body, err := l.Runtime.Replay(ctx, cmd.RunID, requestID)
+		if err != nil {
+			result.Status = CommandFailed
+			result.Reason = err.Error()
+		} else {
+			result.Status = CommandAccepted
+			result.ResultBody = string(body)
 		}
 	default:
 		// Refused rather than guessed. An unknown action is a control-plane bug,

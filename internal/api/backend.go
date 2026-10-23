@@ -12,6 +12,20 @@ import (
 	"github.com/tkoizumi/otter/internal/timeline"
 )
 
+// ReplayResult is one resend of a captured exchange, as the loopback replay
+// endpoint returns it. The agent relays the body through the control queue; the
+// exact bytes that were sent are represented only by ResolvedSHA256.
+type ReplayResult struct {
+	ReplayID        string                     `json:"replay_id"`
+	RunID           string                     `json:"run_id"`
+	RequestID       string                     `json:"request_id"`
+	ResolvedSHA256  string                     `json:"resolved_sha256"`
+	StatusCode      *int                       `json:"status_code"`
+	ResponseBody    *inspection.BodyDescriptor `json:"response_body,omitempty"`
+	DurationTotalMS int64                      `json:"duration_total_ms"`
+	TransportError  string                     `json:"transport_error,omitempty"`
+}
+
 // Sentinel errors a Backend returns so the API layer can choose a status
 // code. The daemon wraps these rather than leaking HTTP concepts inward.
 var (
@@ -187,6 +201,13 @@ type Backend interface {
 	// AckCaptureExports records what the agent did with the rows it was given:
 	// sent, abandoned, or retry with a reason.
 	AckCaptureExports(ctx context.Context, refs []inspection.ExportRef, state, message string) error
+
+	// ReplayCapturedRequest resends one stored exchange and records the result
+	// as a replay document. It is the runtime's half of DEC-05: GET only, the
+	// original host only, with the same guards Check applies. A transport
+	// failure is a result (the replay was attempted), not an error; a refusal
+	// before sending is an error.
+	ReplayCapturedRequest(ctx context.Context, runID, requestID string) (*ReplayResult, error)
 
 	// TimelinePage assembles one page of a finished run's merged timeline. It
 	// refuses an attempt that has not finished, so a reader is never handed a
