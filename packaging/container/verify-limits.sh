@@ -43,13 +43,30 @@ check "cpu.max"         "$(cat "$cgroup/cpu.max" 2>/dev/null || echo n/a)" ""
 
 ro=$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$name")
 caps=$(docker inspect -f '{{.HostConfig.CapDrop}}' "$name")
+capsadd=$(docker inspect -f '{{.HostConfig.CapAdd}}' "$name")
 nnp=$(docker inspect -f '{{.HostConfig.SecurityOpt}}' "$name")
 user=$(docker inspect -f '{{.Config.User}}' "$name")
 runt=$(docker inspect -f '{{.HostConfig.Runtime}}' "$name")
 echo "effective isolation:"
 check "readonly_rootfs" "$ro" "true"
 check "cap_drop"        "$caps" "[ALL]"
-check "user"            "$user" "10001:10001"
+# NO --user is the contract, not an omission. entrypoint.sh starts as root and
+# drops otterd to uid 10001 and the agent to uid 10002; a fixed Config.User would
+# make one of those drops impossible. What the drop needs is SETUID, SETGID and
+# CHOWN, which is what the three assertions below prove was granted.
+if [ -z "$user" ]; then
+  printf '  %-22s %s\n' "user" "(none; the entrypoint drops to 10001 and 10002)"
+else
+  printf '  %-22s %s  WANTED no --user (the entrypoint drops each process)\n' "user" "$user"
+  fail=1
+fi
+for cap in SETUID SETGID CHOWN; do
+  case $capsadd in
+    *"$cap"*) ;;
+    *) printf '  %-22s missing %s (got %s)\n' "cap_add" "$cap" "$capsadd"; fail=1 ;;
+  esac
+done
+printf '  %-22s %s\n' "cap_add" "$capsadd"
 printf '  %-22s %s\n' "security_opt" "$nnp"
 printf '  %-22s %s\n' "runtime" "$runt"
 

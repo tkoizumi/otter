@@ -85,6 +85,20 @@ COPY bin/otter /usr/local/bin/otter
 COPY packaging/container/entrypoint.sh /usr/local/bin/otter-entrypoint
 RUN chmod 0755 /usr/local/bin/otter-entrypoint
 
+# The healthcheck proves the AGENT is alive, because the container's own exit
+# only proves otterd is: entrypoint.sh execs otterd as the main process and
+# backgrounds the agent as uid 10002, so a dead agent leaves the container
+# running. Without this, a tenant with no agent would look healthy to anything
+# that reads container state -- which is exactly what pool-metric.sh used to do.
+COPY packaging/container/healthcheck.sh /usr/local/bin/otter-healthcheck
+RUN chmod 0755 /usr/local/bin/otter-healthcheck
+
+# The start period covers agent bootstrap: the agent retries cloud registration
+# while otterd is already serving, so an immediate check would call a tenant that
+# is still starting unhealthy. An unhealthy result is what pool-metric.sh treats
+# as "publish nothing"; the retries keep a transient check from flapping.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD ["/usr/local/bin/otter-healthcheck"]
+
 # The interpreter is provisioned into the image at BUILD time, under
 # UV_PYTHON_INSTALL_DIR, which is where uv looks for it at run time. That
 # directory is read-only at run time -- correctly, since an interpreter is not
