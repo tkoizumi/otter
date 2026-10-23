@@ -234,14 +234,16 @@ caller, since no token is configured — receives the full payload:
     "oldest_waiting_seconds": 3725.4,
     "by_job": {"shopify-to-erp": 2},
     "retrying": 1,
-    "next_retry_at": "2026-10-01T05:14:00Z"
+    "next_retry_at": "2026-10-01T05:14:00Z",
+    "refused_total": 3,
+    "last_refused_at": "2026-10-01T05:00:00Z",
+    "refusals_by_job": {"9f1c...": {"refused_total": 3, "last_refused_at": "2026-10-01T05:00:00Z", "last_refused_reason": "max_queue_depth"}}
   },
   "freshness": [
     {"job_id": "9f1c...", "name": "shopify-to-erp", "last_success_at": "2026-10-01T05:00:04Z", "age_seconds": 325.1},
     {"job_id": "41ab...", "name": "nightly-report"}
   ],
-  "storage": {"db_bytes": 812345678, "disk_free_bytes": 12884901888, "disk_total_bytes": 21474836480},
-  "admission_refusals": {"9f1c...": {"refused_total": 3, "last_refused_at": "2026-10-01T05:00:00Z"}}
+  "storage": {"db_bytes": 812345678, "disk_free_bytes": 12884901888, "disk_total_bytes": 21474836480}
 }
 ```
 
@@ -270,7 +272,8 @@ authenticated caller:
 | `freshness[]` | One entry per job: `last_success_at` is the newest succeeded run's completion time and `age_seconds` its age. Both are absent for a job that has never succeeded, which is itself the signal. Sorted by `job_id`. |
 | `storage.db_bytes` | The live database's size, `PRAGMA page_count * page_size` (so it excludes the WAL file). |
 | `storage.disk_free_bytes`, `storage.disk_total_bytes` | The data directory's filesystem, read daemon-side so a remote caller can watch it. Both are `0` on a platform that cannot report filesystem space. |
-| `admission_refusals` | Present only for jobs whose `max_queue_depth` refused an autonomous trigger. One entry per such job: `refused_total` is how many triggers were refused since the daemon started, `last_refused_at` when the most recent one happened. In-process, so it is empty after a restart — it answers "is this job being held back right now", not "how often, ever". |
+| `queue.refused_total`, `queue.last_refused_at` | Present only once a `max_queue_depth` bound has refused an autonomous trigger: the total refused since the daemon started and when the most recent one happened. In-process, so both reset on a restart. |
+| `queue.refusals_by_job` | One entry per job whose `max_queue_depth` refused a trigger: `refused_total` is how many, `last_refused_at` when the most recent one happened, and `last_refused_reason` names the cause (`max_queue_depth` or `no_active_release`). Absent until a job is refused — it answers "is this job being held back right now", not "how often, ever". |
 
 `status` is `ok` whenever the process is serving
 requests. A `200` means the process is up and SQLite is readable; there is no

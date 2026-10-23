@@ -44,7 +44,7 @@ records what the interim tree does.
 | Introduced for | `v0.2.0` — Phase 1, "Dependable execution". |
 | Amended in version 2 | `v0.4.0` — schedules are first-class and fire once per occurrence (§3.1.1), job configuration is a pinned input (§2, §7.5), and the honest limits gained §7. |
 | Amended in version 3 | `v0.5.0` — the missed-occurrence policy is per-schedule and covers uptime as well as downtime (§3.1), autonomous admission is bounded per job with an explicit `429 overloaded` refusal (§2), and `trigger.missed_policy`, `trigger.max_catch_up` and `max_queue_depth` become manifest inputs. |
-| Source revision | The `v0.5.0` development working tree, with the version-3 amendment uncommitted; no released commit describes version 3 yet. Version 2 describes the `v0.4.0` tree (`ec01900` on `main`, build version 1). |
+| Source revision | The `v0.5.0` release tree (`4c97e82`), where version 3 first shipped. Version 2 describes the `v0.4.0` tree (`ec01900` on `main`, build version 1). |
 | Frozen at | `v1.0.0`. Before that, a **minor** release may amend this document; a patch release may not. |
 | Binary pair | `otter` and `otterd` **from the same build**. The two are released together from one archive; do not mix versions. |
 | Supported platforms | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` (static, `CGO_ENABLED=0`). Other Unix targets compile but carry no guarantee ([§6](#6-supported-platforms)). |
@@ -211,17 +211,18 @@ autonomous trigger becomes a run:
   oldest-first up to the per-schedule `max_catch_up`. The full downtime/uptime
   matrix is [§3.1](#31-missed-occurrences-are-policy-dependent).
 - **`max_queue_depth` (optional, read from the live manifest) bounds autonomous
-  admission per job.** When the job's pending count — `queued` plus `running` —
-  is at or above the bound, a cron or webhook trigger is **refused, not queued**:
-  the API returns `429 Too Many Requests` with the `overloaded` error code, the
-  refusal is counted and timestamped per job, published as `admission_refusals`
-  in the authenticated `/health` view (which `otter status --json` returns
-  verbatim), and logged as `admission_refused` with the job, trigger type, depth
-  and bound. A
+  admission per job.** When the job's pending count — `queued`, `running` or
+  `retrying` — is at or above the bound, a cron or webhook trigger is **refused,
+  not queued**: the API returns `429 Too Many Requests` with the `overloaded`
+  error code, the refusal is counted and timestamped per job, published under
+  `queue.refusals_by_job` in the authenticated `/health` view (with
+  `queue.refused_total` and `queue.last_refused_at`, which `otter status --json`
+  returns verbatim), and logged as `admission_refused` with the job, trigger
+  type, depth and bound. A
   manual `POST /v1/jobs/{id}/runs` (or `otter run`) is never refused by this
   bound; it is an operator decision. Because the bound is read from the live
   manifest, a reload can raise or remove it without a release. The bound's
-  regression test lands with WS2.
+  regression test is `TestMaxQueueDepthBoundsAutonomousAdmissionButNotManualRuns`.
 
 What acceptance does **not** promise:
 
