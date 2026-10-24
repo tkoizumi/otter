@@ -80,6 +80,15 @@
 #   DRILL_SABOTAGE=drop-binary        omit the pinned binary (`binary`); the
 #                                     restored binary assertion fails with a
 #                                     message naming the missing otter binary.
+#   DRILL_SABOTAGE=resolve-original   leave the original data directory in place
+#                                     and start the restored daemon WITHOUT
+#                                     `--data`, so the runtime silently resolves
+#                                     the original database; the durable-state
+#                                     assertion must then go red.
+#
+# DRILL_KEEP_ORIGINAL=1 is the positive half of that case: the original stays in
+# place, the daemon is started with `--data`, and the state plus the original
+# database's hash prove the restored copy is the one being served.
 #
 # Run them and compare, for example:
 #
@@ -89,6 +98,8 @@
 #   DRILL_SABOTAGE=drop-marker make drill DRILL=backup-restore
 #   DRILL_SABOTAGE=drop-secrets make drill DRILL=backup-restore
 #   DRILL_SABOTAGE=drop-binary make drill DRILL=backup-restore
+#   DRILL_KEEP_ORIGINAL=1 make drill DRILL=backup-restore
+#   DRILL_SABOTAGE=resolve-original make drill DRILL=backup-restore
 #
 # A sabotage run is expected to exit non-zero. It is red for the right reason
 # only when the last lines name the member that was omitted.
@@ -208,10 +219,10 @@ unset OTTER_PROJECT_ROOT OTTER_SERVE_DIR 2>/dev/null || true
 
 SABOTAGE=${DRILL_SABOTAGE:-}
 case "$SABOTAGE" in
-"" | drop-releases | drop-environments | drop-tools | drop-marker | drop-secrets | drop-binary) ;;
+"" | drop-releases | drop-environments | drop-tools | drop-marker | drop-secrets | drop-binary | resolve-original) ;;
 *)
 	echo "drill: unknown DRILL_SABOTAGE=$SABOTAGE" >&2
-	echo "drill: valid modes: drop-releases, drop-environments, drop-tools, drop-marker, drop-secrets, drop-binary" >&2
+	echo "drill: valid modes: drop-releases, drop-environments, drop-tools, drop-marker, drop-secrets, drop-binary, resolve-original" >&2
 	exit 2
 	;;
 esac
@@ -634,14 +645,36 @@ for marker in "$DATA_RESTORE"/environments/*/otter-ready.json; do
 	say "restore     environment interpreter is recorded relatively ($rel_interpreter) and resolves"
 done
 
-# Put the original data directory out of reach. The restored runtime must
-# serve the restored copy, not the one it was backed up from.
-mv "$DATA_ORIG" "$WORK/data-origin" || fail "could not move the original data directory aside"
-[ ! -e "$DATA_ORIG" ] || fail "the original data directory is still in place"
-say "restore     data restored to $DATA_RESTORE; original moved to $WORK/data-origin"
+# Decide how to handle the original data directory.
+KEEP_ORIGINAL=${DRILL_KEEP_ORIGINAL:-}
+if [ "$SABOTAGE" = "resolve-original" ]; then
+	# The regression: leave the original in place and start without --data, so
+	# the runtime silently resolves the workspace's .otter/data. The 5c state
+	# assertion must fail because the daemon is serving the original database.
+	KEEP_ORIGINAL=1
+	say "sabotage    leaving $DATA_ORIG in place; starting without --data"
+elif [ "$KEEP_ORIGINAL" = "1" ]; then
+	say "keep-original  leaving $DATA_ORIG in place; starting with --data"
+else
+	# Default: put the original out of reach. The restored runtime must serve
+	# the restored copy, not the one it was backed up from.
+	mv "$DATA_ORIG" "$WORK/data-origin" || fail "could not move the original data directory aside"
+	[ ! -e "$DATA_ORIG" ] || fail "the original data directory is still in place"
+	say "restore     data restored to $DATA_RESTORE; original moved to $WORK/data-origin"
+fi
 
-"$OTTER_BIN" start --detach --data "$DATA_RESTORE" >/dev/null ||
-	fail "the fresh daemon did not start against the restored data directory"
+if [ "$KEEP_ORIGINAL" = "1" ]; then
+	ORIG_HASH=$(sha256sum "$DATA_ORIG/otter.db" | awk '{print $1}') ||
+		fail "could not hash the original database"
+fi
+
+if [ "$SABOTAGE" = "resolve-original" ]; then
+	"$OTTER_BIN" start --detach >/dev/null ||
+		fail "the fresh daemon did not start against the original data directory"
+else
+	"$OTTER_BIN" start --detach --data "$DATA_RESTORE" >/dev/null ||
+		fail "the fresh daemon did not start against the restored data directory"
+fi
 wait_ready "restored"
 say "restored    fresh daemon is serving the restored data directory"
 
@@ -700,6 +733,17 @@ case "$RSD" in
 esac
 wait_state "$EXPECT_AFTER" "post-restore run"
 say "executed    run $NEW succeeded from $RSD"
+
+# With the original still present, the restored run must not have touched it:
+# the daemon was started with --data, and a silent fall-back to the workspace's
+# .otter/data would update this database instead.
+if [ "$KEEP_ORIGINAL" = "1" ]; then
+	AFTER_HASH=$(sha256sum "$DATA_ORIG/otter.db" | awk '{print $1}') ||
+		fail "could not hash the original database after the restored run"
+	[ "$AFTER_HASH" = "$ORIG_HASH" ] ||
+		fail "the original database changed after the restored run: was $ORIG_HASH, now $AFTER_HASH"
+	say "keep-original  original database unchanged ($AFTER_HASH)"
+fi
 
 # 5e. the release and environment snapshots are on disk in the restored data
 # directory. The run above already proved the runtime can use them; these are
