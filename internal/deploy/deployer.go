@@ -102,6 +102,11 @@ type Deployer struct {
 // pending run is bound to, then prunes old releases under the data directory
 // down to the configured keep window, always sparing the active release, the
 // rollback target and every pinned release.
+//
+// Every host mutation is recorded as it starts and finishes. A failure before
+// the first one returns its bare cause; a failure after it returns a
+// *PartialDeployError that names what landed, what failed, what was never
+// attempted and what the host is serving now.
 func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 	started := time.Now()
 
@@ -197,57 +202,82 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 
+	// The plan of host mutations is fixed before the first one runs, so a
+	// failure can name the steps that were never attempted. Everything the
+	// conditionals depend on is already known here.
+	p := newProgress(hostStages(cfg, len(managed) > 0 && !d.NoUV))
+
 	// --- prepare the host --------------------------------------------------
 	// The account and the directory layout come first. rsync creates its
 	// destination directory but not the levels above it, and a workspace sits
 	// two levels inside the install root, so /opt/otter/workspaces/<name> has
 	// to exist before the first file is sent.
+	p.begin(stagePrepare)
 	d.step("prepare", "creating the service account and layout")
 	if err := d.Runner.RunScript(ctx, PrepareScript(cfg.Target)); err != nil {
-		return nil, d.hint(err)
+		return nil, p.fail(stagePrepare, d.hint(err))
 	}
+	p.done(stagePrepare)
 
 	// --- push --------------------------------------------------------------
+	p.begin(stageSyncSources)
 	d.step("sync", "pushing %d job(s) and the shared library", len(cfg.Jobs))
 	if err := d.pushSources(ctx, outDir); err != nil {
-		return nil, err
+		return nil, p.fail(stageSyncSources, err)
 	}
+	p.done(stageSyncSources)
+
+	p.begin(stageSyncBinaries)
 	d.step("sync", "pushing the binaries")
 	if err := d.pushBinaries(ctx, outDir); err != nil {
-		return nil, err
+		return nil, p.fail(stageSyncBinaries, err)
 	}
+	p.done(stageSyncBinaries)
+
 	if len(managed) > 0 && !d.NoUV {
+		p.begin(stageSyncUV)
 		d.step("sync", "pushing uv")
 		if err := d.pushTools(ctx, outDir); err != nil {
-			return nil, err
+			return nil, p.fail(stageSyncUV, err)
 		}
+		p.done(stageSyncUV)
 	}
 
 	// --- ownership ---------------------------------------------------------
 	// The push wrote as the login user, so the daemon would not own its own
 	// tree without this, and the service account could not write the identity
 	// marker each job needs.
+	p.begin(stageOwnership)
 	d.step("prepare", "handing the workspace to %s", cfg.Target.RunAsUser)
 	if err := d.Runner.RunScript(ctx, ClaimOwnershipScript(cfg.Target)); err != nil {
-		return nil, d.hint(err)
+		return nil, p.fail(stageOwnership, d.hint(err))
 	}
+	p.done(stageOwnership)
 
 	// Record the workspace before anything else lands. A retry after a failed
 	// deploy then finds the same workspace and port instead of starting a
 	// second one beside it.
+	p.begin(stageWorkspaceRecord)
 	if err := d.Runner.RunScript(ctx, WriteWorkspaceRecordScript(cfg.Target,
 		RecordFor(cfg.Target, time.Now().UTC()))); err != nil {
-		return nil, fmt.Errorf("record workspace on %s: %w", cfg.Target, err)
+		return nil, p.fail(stageWorkspaceRecord,
+			fmt.Errorf("record workspace on %s: %w", cfg.Target, err))
 	}
+	p.done(stageWorkspaceRecord)
 
 	// --- environment -------------------------------------------------------
+	p.begin(stageDaemonEnv)
 	if err := d.writeDaemonEnv(ctx); err != nil {
-		return nil, err
+		return nil, p.fail(stageDaemonEnv, err)
 	}
+	p.done(stageDaemonEnv)
+
+	p.begin(stageSharedEnv)
 	envRevision, err := d.writeSharedEnv(ctx)
 	if err != nil {
-		return nil, err
+		return nil, p.fail(stageSharedEnv, err)
 	}
+	p.done(stageSharedEnv)
 
 	// --- release -----------------------------------------------------------
 	// Runs before the restart so a failure leaves the previously deployed
@@ -267,6 +297,7 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		uvPath = d.uvPath(cfg)
 	}
 	if len(cfg.Jobs) > 0 {
+		p.begin(stageRelease)
 		d.step("release", "releasing %d job(s)", len(cfg.Jobs))
 		release := ReleaseOptions{
 			UVPath:          uvPath,
@@ -277,25 +308,31 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 			EgressEndpoints: d.EgressEndpoints,
 		}
 		if err := d.Runner.RunScript(ctx, ReleaseScript(cfg.Target, cfg.JobNames(), release)); err != nil {
-			return nil, fmt.Errorf("release jobs on %s: %w", cfg.Target, err)
+			return nil, p.fail(stageRelease,
+				fmt.Errorf("release jobs on %s: %w", cfg.Target, err))
 		}
+		p.done(stageRelease)
 	} else {
 		d.step("release", "no jobs; nothing to release")
 	}
 
 	// --- activate ----------------------------------------------------------
+	p.begin(stageInstallRestart)
 	d.step("install", "writing %s and restarting %s", cfg.Target.UnitPath(), cfg.Target.ServiceUnit())
 	if err := d.Runner.RunScript(ctx, ActivateScript(cfg.Target, cfg.UnitOptions())); err != nil {
-		return nil, d.hint(err)
+		return nil, p.fail(stageInstallRestart, d.hint(err))
 	}
 	if err := d.Runner.RunScript(ctx, ServiceStatusScript(cfg.Target)); err != nil {
-		return nil, d.hint(err)
+		return nil, p.fail(stageInstallRestart, d.hint(err))
 	}
+	p.done(stageInstallRestart)
 
+	p.begin(stageHealth)
 	d.step("verify", "waiting for the health endpoint")
 	if err := d.waitForHealth(ctx); err != nil {
-		return nil, err
+		return nil, p.fail(stageHealth, err)
 	}
+	p.done(stageHealth)
 
 	// --- bind --------------------------------------------------------------
 	// The destination mints its own identity for each job. Recording
@@ -322,7 +359,9 @@ func (d *Deployer) Run(ctx context.Context) (*Result, error) {
 		Bindings:        bindings,
 	})
 	if err := d.Store.Save(state, cfg.Target.APIToken, cfg.Target.Host, cfg.Target.WorkspaceID); err != nil {
-		return nil, err
+		// The host has already converged; only this checkout's record of it is
+		// missing, which is a different and much smaller loss.
+		return nil, p.converged(err)
 	}
 
 	d.step("done", "%s deployed to %s in %s", cfg.Version, cfg.Target, time.Since(started).Round(time.Second))
