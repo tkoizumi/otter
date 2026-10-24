@@ -287,6 +287,12 @@ func (m Manager) GetReady(spec Spec) (Ready, error) {
 	if err != nil {
 		return Ready{}, err
 	}
+	// A console script carries an absolute shebang the readiness marker cannot
+	// make relative. Rewrite it before the run so an environment moved by a
+	// restore still runs the tools it installed.
+	if err := relocateConsoleScripts(dir, ready.Interpreter); err != nil {
+		return Ready{}, err
+	}
 	return ready, nil
 }
 

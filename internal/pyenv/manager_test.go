@@ -566,6 +566,82 @@ func TestPrepareInstallsWhenTheHostProvidesNoInterpreter(t *testing.T) {
 	}
 }
 
+// A console script installed into the environment's bin/ carries an absolute
+// shebang that points at the interpreter's path at preparation time. After a
+// data-directory restore/move the readiness marker resolves correctly (the
+// interpreter is stored relative to its own environment), but the shebang in
+// every console script still points at the OLD absolute path, so running it
+// fails with ENOENT.
+func TestMovedEnvironmentConsoleScriptRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix test fixture")
+	}
+	python := requirePython(t)
+
+	dir, dataA := t.TempDir(), t.TempDir()
+	writeInputs(t, dir, "3.13.5")
+	spec, err := (Manager{DataDir: dataA}).Resolve(dir, "one", "uv 0.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manager{DataDir: dataA}
+	envDir, err := m.envDir(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(envDir, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// bin/python is a symlink to the real python3 under dataA.
+	symlinkPath := filepath.Join(envDir, "bin", "python")
+	if err := os.Symlink(python, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+	// The readiness marker stores bin/python (the path inside the environment).
+	if err := writeReadyMarker(envDir, Ready{Spec: spec, Interpreter: symlinkPath, UVVersion: "uv 0.5.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a console script whose shebang points at the absolute path of bin/python under A.
+	consoleScript := filepath.Join(envDir, "bin", "otter-probe")
+	shebang := "#!" + symlinkPath + "\n"
+	scriptBody := shebang + `print("console-ok")`
+	if err := os.WriteFile(consoleScript, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a restore: move the whole data directory to a new location.
+	movedRoot := filepath.Join(t.TempDir(), "restored")
+	if err := os.Rename(dataA, movedRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	// GetReady must succeed — it already does today (the marker stores a relative path).
+	ready, err := (Manager{DataDir: movedRoot}).GetReady(spec)
+	if err != nil {
+		t.Fatalf("GetReady failed after move: %v", err)
+	}
+	wantInterpreter := filepath.Join(movedRoot, "environments", spec.Digest, "bin", "python")
+	if ready.Interpreter != wantInterpreter {
+		t.Errorf("resolved interpreter = %s, want %s", ready.Interpreter, wantInterpreter)
+	}
+
+	// Execute the console script at its MOVED location. The file exists there,
+	// but its shebang still names the interpreter's old absolute path, so
+	// without relocation the kernel fails with ENOENT on that interpreter --
+	// which is the bug this test exists to catch. (Executing the old path would
+	// only prove the old directory is gone.)
+	movedScript := filepath.Join(movedRoot, "environments", spec.Digest, "bin", "otter-probe")
+	out, err := exec.Command(movedScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("console script failed after move: %v\noutput: %s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "console-ok") {
+		t.Errorf("console output = %q, want it to contain 'console-ok'", got)
+	}
+}
+
 // A pin must match a version boundary. A bare prefix test would let "3.1" accept
 // "3.130", and the runtime would then run a job on an interpreter it never asked
 // for.
