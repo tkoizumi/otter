@@ -182,3 +182,24 @@ func TestAckExportsRetriesAndThenAbandons(t *testing.T) {
 	}
 	_ = pulled
 }
+
+// The exporter must never let a header value leave the runtime unless it is a
+// placeholder. The schema refuses a literal value at the Cloud boundary, but a
+// runtime that exports one has already put the value in the outbox.
+func TestExportHeaderPairsKeepsOnlyPlaceholders(t *testing.T) {
+	pairs := []HeaderPair{
+		{Name: "authorization", Value: "{{secret:TOKEN}}"},
+		{Name: "x-api-key", Value: "sk_live_123"},
+		{Name: "content-type", Value: "application/json"},
+	}
+	got := exportHeaderPairs(pairs)
+	if got == nil {
+		t.Fatal("exportHeaderPairs returned nil")
+	}
+	if len(*got) != 1 {
+		t.Fatalf("headers = %v, want only the placeholder", *got)
+	}
+	if (*got)[0].Name != "authorization" || (*got)[0].Value != "{{secret:TOKEN}}" {
+		t.Fatalf("header = %+v, want the placeholder unchanged", (*got)[0])
+	}
+}
