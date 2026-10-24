@@ -154,6 +154,44 @@ falsifiability is the `UnitFile` render-test mutation recorded in
 and a drill-level mode is tracked as `OT-030` in [open-work.md](open-work.md).
 The v0.3.0 gate record states the same gap.
 
+#### Drills that need a host: the maintenance window
+
+A drill that changes a machine other people depend on — restarting the daemon,
+editing a unit, taking a backup of a live runtime — cannot build its own world
+and clean it up, so it lives in `scripts/drill/host/` and is run by
+`scripts/drill-host.sh` rather than `scripts/drill.sh`:
+
+```bash
+sh scripts/drill-host.sh --list
+sh scripts/drill-host.sh restart-service --host root@203.0.113.7 \
+    --window maintenance --dry-run
+sh scripts/drill-host.sh restart-service --host root@203.0.113.7 \
+    --window maintenance
+```
+
+It refuses to do anything unless the window is declared **on the host**, as a
+lock file `/var/lock/otter-window-<name>` (`--lock-dir` or `--window <path>`
+moves it):
+
+```
+window=maintenance        # optional; must match --window when that is a name
+expires=1767225600        # required; epoch seconds, judged on the host's clock
+operator=alice@laptop     # required; who holds the window
+```
+
+An absent, unreadable, malformed, expired or mismatched lock refuses the run
+before any drill command is sent, and the refusal is recorded. The transcript —
+header, streamed output, assertion, restore, result — is written either way, to
+`docs/evidence/host-windows/` unless `--transcript` says otherwise. The drill's
+exit status is the assertion; its restore step (declared with
+`# drill-host-restore:` in the drill's header) runs after a pass and after a
+failure, and a drill that declares none says so instead of pretending. Exit 0 is
+a pass, 1 the drill's assertion failed, 2 a refusal, 3 the restore failed and
+the host is in an unknown state. `--restore-only` puts a host back from an
+interrupted window, and `DRILL_HOST_SUDO=1` runs the remote commands under
+`sudo -n`. The contract a host drill must meet is in
+[scripts/drill/host/README.md](../scripts/drill/host/README.md).
+
 
 `--approved-ports` is the list of ports the host may be listening on (default
 `22`): the script enumerates the host's own listening sockets with `ss -tln` and
