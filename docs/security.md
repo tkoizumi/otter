@@ -594,15 +594,25 @@ per-runtime export switch, the seven-day window, the per-tenant prefix and the
 SEC-01 review. Full-body export is accepted for the demo tenant; it is not
 offered to an external tenant until SEC-01 is signed off.
 
-**Threat-model entry.** Capture bodies now exist in Cloud object storage. The
-blast radius is a cross-tenant read, a leaked object URL, or a secret that
-redaction missed. The prefix is credential-derived, R2 access belongs to the
-Worker, lifecycle deletes the objects after seven days, teardown deletes the
-prefix, and no header or resolved secret value is stored. The Cloud capture
-document and body are also refused in a control payload by
-`otter-platform/cloud/tests/capture-guardrails.test.mjs`, and a literal header value is refused
-by `otter-platform/cloud/tests/capture-schema.test.mjs`. The Go exporter and replay guards land
-with S1/S2/R1 and are kept green by TST-04.
+**Threat-model entry.** Capture bodies now exist in Cloud object storage:
+under `capture/` in the shared release bucket (`otter-releases`), a second trust
+domain. The blast radius is a cross-tenant read, a leaked object URL, or a secret
+that redaction missed. The prefix is derived from the verified agent credential,
+so a cross-tenant write is impossible by construction, and a cross-tenant read
+would need the Worker's R2 credentials. A seven-day R2 lifecycle scoped to
+`capture/` bounds the copy in time — account state, not code — and teardown
+deletes the prefix. No header value and no resolved secret value is stored: a
+header is a name and, when secret, a `{{secret:NAME}}` placeholder, and a literal
+header value is refused by the schema. The control queue is not a capture path:
+the read-result route refuses a capture document or body descriptor, with one
+exception — a replay's own result body, which `command-result` is not guarded
+against. Replay is session-only, owner-scoped, flag-gated, GET-only,
+host-pinned, HTTPS-only, rate-limited and audited, and it refuses reserved
+literal addresses and reserved names (`localhost`, `*.localhost`, single-label
+and numeric non-literal hosts) before sending. It does not resolve names, so a
+public name that resolves to a private address is not blocked; that gap is
+deliberate and is the limit of the control. Request-bound signatures and
+redacted URLs are refused.
 
 ## Hardening checklist
 
