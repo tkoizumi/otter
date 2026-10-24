@@ -31,20 +31,26 @@ func (f *fakeChannel) ReadResult(_ context.Context, r ReadResult) error {
 
 // fakeCommandRuntime records the calls the control loop made.
 type fakeCommandRuntime struct {
-	runID      string
-	runErr     error
-	submitted  []struct{ job, key string }
-	cancelled  []string
-	paused     []string
-	resumed    []string
-	deleted    []string
-	deleteErr  error
-	deleteNote string
-	readBody   json.RawMessage
-	readErr    error
-	replayBody json.RawMessage
-	replayErr  error
-	replayed   []struct{ runID, requestID string }
+	runID         string
+	runErr        error
+	submitted     []struct{ job, key string }
+	cancelled     []string
+	paused        []string
+	resumed       []string
+	deleted       []string
+	deleteErr     error
+	deleteNote    string
+	readBody      json.RawMessage
+	readErr       error
+	replayBody    json.RawMessage
+	replayErr     error
+	replayed      []struct{ runID, requestID string }
+	activateCalls []struct {
+		digest   string
+		deadline time.Duration
+	}
+	activateNote string
+	activateErr  error
 }
 
 func (f *fakeCommandRuntime) SubmitRun(_ context.Context, job, key string) (string, error) {
@@ -73,6 +79,13 @@ func (f *fakeCommandRuntime) Read(context.Context, string, string, string, int, 
 func (f *fakeCommandRuntime) Replay(_ context.Context, runID, requestID string) (json.RawMessage, error) {
 	f.replayed = append(f.replayed, struct{ runID, requestID string }{runID, requestID})
 	return f.replayBody, f.replayErr
+}
+func (f *fakeCommandRuntime) ActivateRelease(_ context.Context, digest string, deadline time.Duration) (string, error) {
+	f.activateCalls = append(f.activateCalls, struct {
+		digest   string
+		deadline time.Duration
+	}{digest, deadline})
+	return f.activateNote, f.activateErr
 }
 
 // A replay command reaches the runtime with both ids and its answer is carried
@@ -648,5 +661,357 @@ func TestRuntimeHTTPReplayPostsBothIds(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"replay_id":"replay_1"`) {
 		t.Fatalf("raw = %s", raw)
+	}
+}
+
+// activate enters maintenance, promotes, exits, returns accepted with the note.
+func TestActivateReleaseEntersMaintenancePromotesExits(t *testing.T) {
+	maintCalled := false
+	promoteCalled := false
+	exitCalled := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/runtime/maintenance":
+			maintCalled = true
+			w.WriteHeader(http.StatusOK)
+		case "GET /v1/runtime/maintenance":
+			// EnterMaintenance polls this endpoint; return mode=draining then mode=active.
+			if !maintCalled {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"mode":"draining","running":0}`))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"mode":"active","running":0}`))
+			}
+		case "DELETE /v1/runtime/maintenance":
+			exitCalled = true
+			w.WriteHeader(http.StatusOK)
+		case "POST /v1/runtime/releases/activate":
+			promoteCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	ctx := context.Background()
+
+	note, err := rt.ActivateRelease(ctx, strings.Repeat("a", 64), 0)
+	if err != nil {
+		t.Fatalf("ActivateRelease: %v", err)
+	}
+	if !maintCalled {
+		t.Fatal("EnterMaintenance was not called")
+	}
+	if !promoteCalled {
+		t.Fatal("Promote was not called")
+	}
+	if !exitCalled {
+		t.Fatal("ExitMaintenance was not called")
+	}
+	want := "activated release " + strings.Repeat("a", 64)
+	if note != want {
+		t.Fatalf("note = %q, want %q", note, want)
+	}
+}
+
+// A maintenance failure returns failed and never promotes.
+func TestActivateReleaseMaintenanceFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/v1/runtime/maintenance" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"already in maintenance"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	ctx := context.Background()
+
+	_, err := rt.ActivateRelease(ctx, "a"+strings.Repeat("b", 63), 0)
+	if err == nil {
+		t.Fatal("expected error from ActivateRelease")
+	}
+	if !strings.Contains(err.Error(), "already in maintenance") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A promote failure still exits maintenance and returns failed.
+func TestActivateReleasePromoteFailureExitsMaintenance(t *testing.T) {
+	exitCalled := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/runtime/maintenance":
+			w.WriteHeader(http.StatusOK)
+		case "GET /v1/runtime/maintenance":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"mode":"draining","running":0}`))
+		case "DELETE /v1/runtime/maintenance":
+			exitCalled = true
+			w.WriteHeader(http.StatusOK)
+		case "POST /v1/runtime/releases/activate":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"internal"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	ctx := context.Background()
+
+	_, err := rt.ActivateRelease(ctx, strings.Repeat("a", 64), 0)
+	if err == nil {
+		t.Fatal("expected error from ActivateRelease")
+	}
+	if !exitCalled {
+		t.Fatal("ExitMaintenance was not called after promote failure")
+	}
+}
+
+// A missing digest is rejected with no runtime calls.
+func TestActivateCommandRejectsMissingDigest(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-act", Action: "activate"},
+	}}}
+	runtime := &fakeCommandRuntime{}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.activateCalls) != 0 {
+		t.Fatalf("ActivateRelease calls = %d, want none", len(runtime.activateCalls))
+	}
+	if len(channel.commands) != 1 || channel.commands[0].Status != CommandRejected {
+		t.Fatalf("command results = %+v, want a rejection", channel.commands)
+	}
+	if !strings.Contains(channel.commands[0].Reason, "params.digest") {
+		t.Errorf("reason = %q, must name params.digest", channel.commands[0].Reason)
+	}
+}
+
+// A sha256:-prefixed digest is accepted and the note names the bare hex.
+func TestActivateReleaseNormalizesSha256Prefix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	ctx := context.Background()
+
+	prefixed := "sha256:" + strings.Repeat("c", 64)
+	note, err := rt.ActivateRelease(ctx, prefixed, 0)
+	if err != nil {
+		t.Fatalf("ActivateRelease: %v", err)
+	}
+	want := "activated release " + strings.Repeat("c", 64)
+	if note != want {
+		t.Fatalf("note = %q, want %q", note, want)
+	}
+}
+
+// A zero digest is rejected before any runtime call.
+func TestActivateReleaseRejectsEmptyDigest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("runtime called with empty digest")
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	ctx := context.Background()
+
+	_, err := rt.ActivateRelease(ctx, "", 0)
+	if err == nil {
+		t.Fatal("expected error for empty digest")
+	}
+	if !strings.Contains(err.Error(), "no digest") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A malformed digest is rejected before maintenance: draining the runtime only
+// to fail the promote would be a self-inflicted outage.
+func TestActivateReleaseRejectsMalformedDigestBeforeMaintenance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("runtime called for a malformed digest: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	if _, err := rt.ActivateRelease(context.Background(), "not-a-digest", 0); err == nil {
+		t.Fatal("expected an error for a malformed digest")
+	}
+}
+
+// A failure to leave maintenance after a successful promote is an error, not a
+// silent success: the runtime would otherwise keep draining.
+func TestActivateReleaseReportsExitMaintenanceFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/runtime/maintenance":
+			w.WriteHeader(http.StatusOK)
+		case "GET /v1/runtime/maintenance":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"mode":"draining","running":0}`))
+		case "POST /v1/runtime/releases/activate":
+			w.WriteHeader(http.StatusOK)
+		case "DELETE /v1/runtime/maintenance":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"cannot leave"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	note, err := rt.ActivateRelease(context.Background(), strings.Repeat("e", 64), 0)
+	if err == nil {
+		t.Fatal("expected an error when maintenance cannot be exited")
+	}
+	if note != "" {
+		t.Errorf("note = %q, want empty on failure", note)
+	}
+	if !strings.Contains(err.Error(), "exit maintenance") {
+		t.Errorf("error = %v, want it to name the exit failure", err)
+	}
+}
+
+// An empty string digest in params is rejected the same way.
+func TestActivateCommandRejectsEmptyParamsDigest(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-act", Action: "activate", Params: map[string]string{"digest": ""}},
+	}}}
+	runtime := &fakeCommandRuntime{}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.activateCalls) != 0 {
+		t.Fatalf("ActivateRelease calls = %d, want none", len(runtime.activateCalls))
+	}
+	if len(channel.commands) != 1 || channel.commands[0].Status != CommandRejected {
+		t.Fatalf("command results = %+v, want a rejection", channel.commands)
+	}
+}
+
+// A whitespace-only digest in params is rejected.
+func TestActivateCommandRejectsWhitespaceDigest(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-act", Action: "activate", Params: map[string]string{"digest": "   "}},
+	}}}
+	runtime := &fakeCommandRuntime{}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.activateCalls) != 0 {
+		t.Fatalf("ActivateRelease calls = %d, want none", len(runtime.activateCalls))
+	}
+	if len(channel.commands) != 1 || channel.commands[0].Status != CommandRejected {
+		t.Fatalf("command results = %+v, want a rejection", channel.commands)
+	}
+}
+
+// A successful activate returns accepted with the note naming the bare hex.
+func TestActivateCommandReturnsAcceptedWithNote(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-act", Action: "activate", Params: map[string]string{"digest": "sha256:" + strings.Repeat("d", 64)}},
+	}}}
+	runtime := &fakeCommandRuntime{activateNote: "activated release " + strings.Repeat("d", 64)}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.activateCalls) != 1 {
+		t.Fatalf("ActivateRelease calls = %d, want one", len(runtime.activateCalls))
+	}
+	if len(channel.commands) != 1 {
+		t.Fatalf("command results = %+v, want one", channel.commands)
+	}
+	got := channel.commands[0]
+	if got.Status != CommandAccepted {
+		t.Fatalf("status = %q, want accepted", got.Status)
+	}
+	if got.CommandID != "cmd-act" {
+		t.Fatalf("command id = %q, want cmd-act", got.CommandID)
+	}
+	if got.Note != runtime.activateNote {
+		t.Errorf("note = %q, want %q", got.Note, runtime.activateNote)
+	}
+}
+
+// A failed ActivateRelease returns command failed with the reason.
+func TestActivateCommandReturnsFailedOnRuntimeError(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-act", Action: "activate", Params: map[string]string{"digest": "aaa" + strings.Repeat("b", 63)}},
+	}}}
+	runtime := &fakeCommandRuntime{activateErr: context.DeadlineExceeded}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(channel.commands) != 1 {
+		t.Fatalf("command results = %+v, want one", channel.commands)
+	}
+	got := channel.commands[0]
+	if got.Status != CommandFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if got.Reason == "" || got.Note != "" {
+		t.Errorf("a failed command carries a reason and no note: %+v", got)
+	}
+}
+
+// The default deadline is 60s when zero.
+func TestActivateReleaseDefaultDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL, Token: "t"}
+	ctx := context.Background()
+
+	note, err := rt.ActivateRelease(ctx, strings.Repeat("a", 64), 0)
+	if err != nil {
+		t.Fatalf("ActivateRelease: %v", err)
+	}
+	if note == "" {
+		t.Fatal("expected a note on success")
+	}
+}
+
+// The command deadline is passed through to ActivateRelease.
+func TestActivateCommandPassesDeadline(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-act", Action: "activate", Params: map[string]string{"digest": "aaa" + strings.Repeat("b", 63)}, DeadlineMS: 5000},
+	}}}
+	runtime := &fakeCommandRuntime{activateNote: "activated release aaa" + strings.Repeat("b", 63)}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.activateCalls) != 1 {
+		t.Fatalf("ActivateRelease calls = %d, want one", len(runtime.activateCalls))
+	}
+	if runtime.activateCalls[0].deadline != 5*time.Second {
+		t.Fatalf("deadline = %v, want 5s", runtime.activateCalls[0].deadline)
 	}
 }

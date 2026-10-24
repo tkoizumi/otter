@@ -128,6 +128,9 @@ type RuntimeCommands interface {
 	// endpoint and returns its bounded JSON answer. The runtime re-applies the
 	// capture guards; this method is the transport, not the policy.
 	Replay(ctx context.Context, runID, requestID string) (json.RawMessage, error)
+	// ActivateRelease enters maintenance, promotes the digest, exits maintenance,
+	// and returns a note naming the normalized digest on success.
+	ActivateRelease(ctx context.Context, digest string, deadline time.Duration) (string, error)
 }
 
 // Control implements ControlChannel over the agent's outbound HTTP connection.
@@ -515,6 +518,26 @@ func (l *ControlLoop) executeCommand(ctx context.Context, cmd Command) {
 		} else {
 			result.Status = CommandAccepted
 			result.ResultBody = string(body)
+		}
+	case "activate":
+		// Activation requires maintenance first; the digest is mandatory and a
+		// missing one is rejected before any runtime call.
+		digest := ""
+		if cmd.Params != nil {
+			digest = strings.TrimSpace(cmd.Params["digest"])
+		}
+		if digest == "" {
+			result.Status = CommandRejected
+			result.Reason = "activate requires params.digest"
+			break
+		}
+		note, err := l.Runtime.ActivateRelease(ctx, digest, time.Duration(cmd.DeadlineMS)*time.Millisecond)
+		if err != nil {
+			result.Status = CommandFailed
+			result.Reason = err.Error()
+		} else {
+			result.Status = CommandAccepted
+			result.Note = note
 		}
 	default:
 		// Refused rather than guessed. An unknown action is a control-plane bug,

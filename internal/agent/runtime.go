@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -277,6 +278,44 @@ func (r *RuntimeHTTP) Promote(ctx context.Context, digest string) error {
 	}
 	return r.do(ctx, http.MethodPost, "/v1/runtime/releases/activate",
 		map[string]string{"digest": want}, nil)
+}
+
+// ActivateRelease enters maintenance, promotes the digest, exits maintenance,
+// and returns a note naming the normalized digest on success.
+//
+// The runtime refuses activation while serving, so maintenance is required first.
+// If EnterMaintenance fails (the runtime is still serving), Promote is never
+// attempted because the runtime would refuse it anyway. Maintenance is always
+// exited via defer so that even a promote failure leaves the runtime out of
+// maintenance. A failure to leave maintenance is reported, not swallowed: the
+// runtime would otherwise keep draining after the command reported success.
+func (r *RuntimeHTTP) ActivateRelease(ctx context.Context, digest string, deadline time.Duration) (note string, err error) {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
+		return "", fmt.Errorf("agent: activate command names no digest")
+	}
+	// Validate the identity before draining anything: a malformed digest would
+	// otherwise enter maintenance only to fail the promote.
+	normalized, err := normalizeDigest(digest)
+	if err != nil {
+		return "", err
+	}
+	if deadline <= 0 {
+		deadline = 60 * time.Second
+	}
+	if err := r.EnterMaintenance(ctx, "operator activate", deadline); err != nil {
+		return "", err
+	}
+	defer func() {
+		if exitErr := r.ExitMaintenance(context.WithoutCancel(ctx)); exitErr != nil {
+			err = errors.Join(err, fmt.Errorf("exit maintenance: %w", exitErr))
+			note = ""
+		}
+	}()
+	if err := r.Promote(ctx, normalized); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("activated release %s", normalized), nil
 }
 
 // Fetch and Validate remain unimplemented, and that is a finding rather than an
