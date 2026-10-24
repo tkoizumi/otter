@@ -452,10 +452,7 @@ func p0PrepareEnvironment(t *testing.T, manager pyenv.Manager, root, name, jobID
 	if err := os.MkdirAll(filepath.Dir(uv), 0o700); err != nil {
 		t.Fatalf("mkdir tools: %v", err)
 	}
-	real, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not installed; skipping managed-Python test")
-	}
+	real := pythonPath(t)
 	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'uv test'; exit 0; fi\n" +
 		"if [ \"$1\" = python ]; then exit 0; fi\n" +
 		"mkdir -p \"$UV_PROJECT_ENVIRONMENT/bin\"\nln -sf " + real + " \"$UV_PROJECT_ENVIRONMENT/bin/python\"\n"
@@ -482,10 +479,7 @@ func p0PrepareEnvironment(t *testing.T, manager pyenv.Manager, root, name, jobID
 // code runs.
 func p0StubManagedInterpreter(t *testing.T, env pyenv.Ready) {
 	t.Helper()
-	real, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not installed; skipping managed-Python test")
-	}
+	real := pythonPath(t)
 	stub := `#!/bin/sh
 echo "managed-env=` + env.Digest[:12] + `"
 if [ "$1" = "-m" ] && [ "$2" = "otter._launcher" ]; then
@@ -513,10 +507,7 @@ exec ` + real + ` "$@"
 // which is what a managed environment must be pinned to.
 func p0LocalPythonVersion(t *testing.T) string {
 	t.Helper()
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not installed; skipping managed-Python test")
-	}
+	python := pythonPath(t)
 	out, err := exec.Command(python, "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))").Output()
 	if err != nil {
 		t.Fatalf("read python3 version: %v", err)

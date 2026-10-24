@@ -30,11 +30,29 @@ import (
 
 // ---------------------------------------------------------------- test setup
 
+// requirePython fails the test when python3 is not on PATH. It deliberately
+// does not skip: the daemon's job-execution tests are the evidence that a run
+// actually executes, and a skip drops that evidence from a suite that still
+// reports green. CI installs python3 via actions/setup-python in
+// .github/workflows/test.yml, so a missing interpreter is a broken environment,
+// not an expected one.
 func requirePython(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 is not installed; skipping daemon job test")
+		t.Fatalf("python3 is a required test dependency and CI provides it (actions/setup-python in .github/workflows/test.yml): %v", err)
 	}
+}
+
+// pythonPath returns the interpreter requirePython just vouched for, so helpers
+// that need the real binary do not repeat the gate.
+func pythonPath(t *testing.T) string {
+	t.Helper()
+	requirePython(t)
+	path, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatalf("locate python3 after requirePython: %v", err)
+	}
+	return path
 }
 
 func testLogger() *logging.Logger {

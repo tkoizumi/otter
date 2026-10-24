@@ -81,14 +81,33 @@ func (b *LocalBuilder) uvCachePath(platform, version string) (string, error) {
 			root = filepath.Join(dir, "uv-cache")
 		}
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil || !dirWritable(root) {
 		// A read-only or sandboxed cache location must not fail the deploy.
+		// MkdirAll is not enough of a check: it returns nil when root already
+		// exists, so a pre-created read-only directory would be accepted here
+		// and fail later, during the write, instead of falling back to the
+		// deploy's scratch space.
 		root = filepath.Join(dir, "uv-cache")
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			return "", err
 		}
 	}
 	return filepath.Join(root, fmt.Sprintf("uv-%s-%s", version, strings.ReplaceAll(platform, "/", "-"))), nil
+}
+
+// dirWritable reports whether dir accepts a new file. It probes by creating and
+// removing a small temporary file, which is the only portable check: mode bits
+// say nothing about ACLs, mounts or a sandbox. It is deliberately message-free
+// and best-effort; callers treat false as "fall back quietly".
+func dirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".otter-uv-cache-probe-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 // VendorUV fetches the pinned uv binary for the target platform into outDir's
