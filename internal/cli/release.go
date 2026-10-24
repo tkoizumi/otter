@@ -793,30 +793,7 @@ func (a *App) retainReleases(ctx context.Context, manager release.Manager, jobID
 func (a *App) pinnedReleases(ctx context.Context, q interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }, jobID string) (map[string]bool, error) {
-	rows, err := q.QueryContext(ctx,
-		`SELECT DISTINCT release_digest FROM runs
-		  WHERE job_id = ? AND release_digest <> ''
-		    AND status IN ('queued', 'running', 'retrying')`,
-		jobID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := map[string]bool{}
-	for rows.Next() {
-		var digest string
-		if err := rows.Scan(&digest); err != nil {
-			return nil, err
-		}
-		if digest != "" {
-			out[digest] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return release.PinnedDigests(ctx, q, jobID)
 }
 
 // releaseRow is one line of the cross-job release view.

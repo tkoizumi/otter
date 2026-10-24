@@ -597,8 +597,8 @@ func TestPendingBacklogKeepsItsDigestThroughAReleasePrune(t *testing.T) {
 	p0AssertSnapshotRan(t, snapshotA)
 }
 
-// p0PinnedReleases mirrors internal/cli's pin query: the distinct digests
-// non-terminal runs are bound to.
+// p0PinnedReleases returns the distinct release digests that non-terminal runs
+// (queued, running, retrying) are bound to for the given job.
 func p0PinnedReleases(t *testing.T, dataDir, jobID string) map[string]bool {
 	t.Helper()
 	ctx := context.Background()
@@ -607,28 +607,11 @@ func p0PinnedReleases(t *testing.T, dataDir, jobID string) map[string]bool {
 		t.Fatalf("open database: %v", err)
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx,
-		`SELECT DISTINCT release_digest FROM runs
-		  WHERE job_id = ? AND release_digest <> ''
-		    AND status IN ('queued', 'running', 'retrying')`, jobID)
+	pins, err := release.PinnedDigests(ctx, db, jobID)
 	if err != nil {
-		t.Fatalf("pin query: %v", err)
+		t.Fatalf("PinnedDigests: %v", err)
 	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		var digest string
-		if err := rows.Scan(&digest); err != nil {
-			t.Fatalf("scan pin: %v", err)
-		}
-		if digest != "" {
-			out[digest] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("pin rows: %v", err)
-	}
-	return out
+	return pins
 }
 
 // ---------------------------------------------- 4. recovery retry policy
