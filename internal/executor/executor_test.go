@@ -16,14 +16,18 @@ import (
 	"github.com/tkoizumi/otter/internal/runs"
 )
 
-// requirePython skips the test when no Python interpreter is available.
-func requirePython(t *testing.T) string {
+// requirePython fails the test when python3 is not on PATH. It deliberately does
+// not skip: every test that calls it runs a real process and asserts how the
+// executor captured its output, timed it out or tore down its process group, and
+// a skip drops that evidence from a suite that still reports green. CI installs
+// python3 via actions/setup-python in .github/workflows/test.yml, so a missing
+// interpreter is a broken environment, not an expected one. The wording matches
+// internal/daemon's gate on the same dependency.
+func requirePython(t *testing.T) {
 	t.Helper()
-	path, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not installed; skipping process execution test")
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Fatalf("python3 is a required test dependency and CI provides it (actions/setup-python in .github/workflows/test.yml): %v", err)
 	}
-	return path
 }
 
 func testLogger() *logging.Logger {

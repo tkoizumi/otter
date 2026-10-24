@@ -11,6 +11,21 @@ import (
 	"testing"
 )
 
+// requirePython returns the interpreter the pyenv tests exercise, failing rather
+// than skipping when it is missing. Every caller here symlinks a real interpreter
+// into a fake uv environment and pins the version it reports, so without python3
+// the case would not be weaker evidence -- it would be no evidence, in a suite
+// that still reports green. CI installs python3 via actions/setup-python in
+// .github/workflows/test.yml, so a missing interpreter is a broken environment.
+func requirePython(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatalf("python3 is a required test dependency and CI provides it (actions/setup-python in .github/workflows/test.yml): %v", err)
+	}
+	return path
+}
+
 func writeInputs(t *testing.T, dir, version string) {
 	t.Helper()
 	for name, value := range map[string]string{
@@ -55,10 +70,7 @@ func TestPreparePublishesOnlyAfterValidation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix test fixture")
 	}
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
+	python := requirePython(t)
 	versionOut, err := exec.Command(python, "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -487,10 +499,7 @@ func pythonForTest(t *testing.T) (string, string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix test fixture")
 	}
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
+	python := requirePython(t)
 	out, err := exec.Command(python, "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))").Output()
 	if err != nil {
 		t.Fatal(err)

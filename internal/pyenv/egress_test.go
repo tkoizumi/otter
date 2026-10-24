@@ -18,10 +18,7 @@ import (
 // matches it, so preparation can be exercised end to end without a download.
 func localPython(t *testing.T) (string, string) {
 	t.Helper()
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
+	python := requirePython(t)
 	out, err := exec.Command(python, "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))").Output()
 	if err != nil {
 		t.Fatal(err)

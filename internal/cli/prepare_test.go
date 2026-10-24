@@ -14,6 +14,20 @@ import (
 	"testing"
 )
 
+// requirePython returns the interpreter the preparation tests exercise, failing
+// rather than skipping when it is missing. Every caller symlinks a real
+// interpreter into the fake uv environment and pins the version it reports, so
+// python3 genuinely is a dependency of the test, not an optional extra. CI
+// installs it via actions/setup-python in .github/workflows/test.yml.
+func requirePython(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatalf("python3 is a required test dependency and CI provides it (actions/setup-python in .github/workflows/test.yml): %v", err)
+	}
+	return path
+}
+
 // A managed job whose environment can be prepared without a download: the fake
 // uv records what it was asked to do, claims success for the interpreter
 // install, and symlinks the interpreter this machine already has so the
@@ -26,10 +40,7 @@ func fakeManagedJob(t *testing.T) (jobDir, uvPath, logPath, pin string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix test fixture")
 	}
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
+	python := requirePython(t)
 	out, err := exec.Command(python, "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))").Output()
 	if err != nil {
 		t.Fatal(err)
