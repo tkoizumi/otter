@@ -74,6 +74,12 @@
 #                                     the identity assertion load-bearing, and it
 #                                     goes red earlier than the others -- at the
 #                                     restore, not at the run.
+#   DRILL_SABOTAGE=drop-secrets       omit the daemon env file (`secrets`);
+#                                     the restored secrets assertion fails with
+#                                     a message naming the missing daemon env.
+#   DRILL_SABOTAGE=drop-binary        omit the pinned binary (`binary`); the
+#                                     restored binary assertion fails with a
+#                                     message naming the missing otter binary.
 #
 # Run them and compare, for example:
 #
@@ -81,6 +87,8 @@
 #   DRILL_SABOTAGE=drop-releases make drill DRILL=backup-restore
 #   DRILL_SABOTAGE=drop-environments make drill DRILL=backup-restore
 #   DRILL_SABOTAGE=drop-marker make drill DRILL=backup-restore
+#   DRILL_SABOTAGE=drop-secrets make drill DRILL=backup-restore
+#   DRILL_SABOTAGE=drop-binary make drill DRILL=backup-restore
 #
 # A sabotage run is expected to exit non-zero. It is red for the right reason
 # only when the last lines name the member that was omitted.
@@ -200,10 +208,10 @@ unset OTTER_PROJECT_ROOT OTTER_SERVE_DIR 2>/dev/null || true
 
 SABOTAGE=${DRILL_SABOTAGE:-}
 case "$SABOTAGE" in
-"" | drop-releases | drop-environments | drop-tools | drop-marker) ;;
+"" | drop-releases | drop-environments | drop-tools | drop-marker | drop-secrets | drop-binary) ;;
 *)
 	echo "drill: unknown DRILL_SABOTAGE=$SABOTAGE" >&2
-	echo "drill: valid modes: drop-releases, drop-environments, drop-tools, drop-marker" >&2
+	echo "drill: valid modes: drop-releases, drop-environments, drop-tools, drop-marker, drop-secrets, drop-binary" >&2
 	exit 2
 	;;
 esac
@@ -461,6 +469,16 @@ say "releasing with the stub environment"
 wait_ready "initial"
 say "initial runtime ready; data $DATA_ORIG"
 
+# --- extra backup members: daemon env file and pinned binary -----------------
+DAEMON_ENV="$WS/otter.daemon.env"
+if [ ! -f "$DAEMON_ENV" ]; then
+	cat >"$DAEMON_ENV" <<ENV
+OTTER_WORKERS=1
+DRILL_SECRET=drill-sentinel-value
+ENV
+	chmod 0600 "$DAEMON_ENV"
+fi
+
 R1=$(otter run --no-wait "$JOB") || fail "the first run could not be submitted"
 wait_state 1 "first run"
 [ "$(wait_run "$R1")" = "succeeded" ] || fail "the first run did not succeed"
@@ -495,6 +513,8 @@ copy_member environments "$DATA_ORIG/environments"
 copy_member tools "$DATA_ORIG/tools"
 copy_member python "$DATA_ORIG/python"
 copy_member cache "$DATA_ORIG/cache"
+copy_member secrets "$DAEMON_ENV"
+copy_member binary "$OTTER_BIN"
 cp -a "$WS/$JOB" "$BACKUP/source" || fail "could not copy the job source directory"
 if [ "$SABOTAGE" = "drop-marker" ]; then
 	# Identity is the marker inside the source directory. Backing the directory
@@ -550,6 +570,26 @@ if [ "$SABOTAGE" != "drop-tools" ]; then
 fi
 restore_member python "$DATA_RESTORE/python"
 restore_member cache "$DATA_RESTORE/cache"
+
+# Restore the extra backup members (daemon env and pinned binary).
+RESTORE_HOST="$WORK/restore-host"
+mkdir -p "$RESTORE_HOST/bin" || fail "could not create $RESTORE_HOST/bin"
+if [ "$SABOTAGE" != "drop-secrets" ]; then
+	[ -f "$BACKUP/secrets" ] || fail "the backup is missing the secrets member (daemon env)"
+	cp -a "$BACKUP/secrets" "$RESTORE_HOST/otter.daemon.env" ||
+		fail "could not restore the daemon env file"
+	chmod 0600 "$RESTORE_HOST/otter.daemon.env"
+else
+	say "sabotage: skipping secrets restore (expected to fail)"
+fi
+if [ "$SABOTAGE" != "drop-binary" ]; then
+	[ -f "$BACKUP/binary" ] || fail "the backup is missing the binary member (pinned otter binary)"
+	cp -a "$BACKUP/binary" "$RESTORE_HOST/bin/otterd" ||
+		fail "could not restore the pinned binary"
+	chmod 0700 "$RESTORE_HOST/bin/otterd"
+else
+	say "sabotage: skipping binary restore (expected to fail)"
+fi
 
 # The source directory is restored from the backup at the same absolute path:
 # identity, and the `source` recorded in each release, are path-bound.
@@ -669,5 +709,37 @@ say "executed    run $NEW succeeded from $RSD"
 [ -f "$DATA_RESTORE/environments/$ENV_DIGEST/otter-ready.json" ] ||
 	fail "the restored environment is missing"
 say "snapshots   release and environment present in the restored data directory"
+
+# 5f. extra backup members survived the restore: daemon env file and pinned binary.
+if [ "$SABOTAGE" != "drop-secrets" ]; then
+	[ -f "$RESTORE_HOST/otter.daemon.env" ] ||
+		fail "the restored secrets member is missing (daemon env)"
+	grep -q 'DRILL_SECRET=drill-sentinel-value' "$RESTORE_HOST/otter.daemon.env" ||
+		fail "the restored daemon env file does not contain DRILL_SECRET=drill-sentinel-value"
+	perm=$(stat -c '%a' "$RESTORE_HOST/otter.daemon.env") ||
+		fail "could not read permissions of the restored daemon env"
+	[ "$perm" = "600" ] || fail "the restored daemon env file has mode $perm, expected 0600"
+	say "secrets     daemon env survived (mode $perm)"
+else
+	echo "drill: FAILED: the secrets member is missing (daemon env)" >&2
+	exit 1
+fi
+if [ "$SABOTAGE" != "drop-binary" ]; then
+	[ -x "$RESTORE_HOST/bin/otterd" ] ||
+		fail "the restored binary member is missing or not executable (pinned otter binary)"
+	BIN_MODE=$(stat -c '%a' "$RESTORE_HOST/bin/otterd") ||
+		fail "could not read permissions of the restored binary"
+	[ "$BIN_MODE" = "700" ] || fail "the restored binary has mode $BIN_MODE, expected 0700"
+	BIN_VERSION=$("$RESTORE_HOST/bin/otterd" --version 2>&1) ||
+		fail "could not read version from the restored binary"
+	ORIG_VERSION=$("$OTTER_BIN" --version 2>&1) ||
+		fail "could not read version from the original binary"
+	[ "$BIN_VERSION" = "$ORIG_VERSION" ] ||
+		fail "the restored binary reports a different version ($BIN_VERSION) than the original ($ORIG_VERSION)"
+	say "binary      pinned binary survived (mode $BIN_MODE, version matches)"
+else
+	echo "drill: FAILED: the binary member is missing (pinned otter binary)" >&2
+	exit 1
+fi
 
 say "ok: hot backup restored onto a fresh data directory; the job runs again"

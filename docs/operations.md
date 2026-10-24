@@ -643,6 +643,15 @@ history whose code is gone: the runs list, and nothing can execute.
 So there are two halves, and both are required — the database first, then
 [everything else a restore needs](#what-else-a-restore-needs).
 
+In addition to the data directory contents, two extra files belong in every
+backup: the **daemon environment file** (`/etc/otter/workspaces/<ws>.daemon.env`,
+or `$WS/otter.daemon.env` when managed locally) and a **pinned copy of the
+runtime binary** itself. On restore the env file goes to `$RESTORE_HOST/otter.daemon.env`
+(mode 0600), and the binary is placed at `$RESTORE_HOST/bin/otterd` (mode 0700).
+Both are asserted after restore: the secrets file must still contain its
+configuration values, and the restored binary's `--version` output must match
+the original.
+
 Stop the writer, or checkpoint first. The simplest correct database backup is a
 checkpoint plus a file copy:
 
