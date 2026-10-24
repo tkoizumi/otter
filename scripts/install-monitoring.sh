@@ -66,7 +66,11 @@
 # a fake that answers from a fixture and records every command, then asserts the
 # paths, modes and contents installed, that both services were run and asserted,
 # that a service exiting non-zero fails the whole install, that a second run
-# converges, and that a dry run mutates nothing.
+# converges, and that a dry run mutates nothing. The convergence probe is not
+# stubbed: the suite prints it with --print-probe, builds a fixture tree with the
+# same modes the install produces (0750 directory, 0640 files) and executes it,
+# so a probe that could not see a converged host -- which is what a non-root
+# probe of a 0750 /etc/otter was -- fails the suite.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -88,12 +92,18 @@ data_dir=${OTTER_INSTALL_DATA_DIR:-}
 # rather than fall back to the default in silence.
 metric_host=${OTTER_INSTALL_METRIC_HOST-castor-runtime}
 dry_run=${OTTER_INSTALL_DRY_RUN:-0}
+print_probe=0
 
 # The install locations, taken from the headers of heartbeat.service and
-# disk-check.service -- not invented here.
-lib_dir=/usr/local/lib/otter
-unit_dir=/etc/systemd/system
-env_dir=/etc/otter
+# disk-check.service -- not invented here. They are variables because the
+# convergence probe reads the same ones: a run pointed at a fixture tree installs
+# there and probes there, so scripts/test-install-monitoring.sh can execute the
+# real probe against a tree it controls. The absolute defaults are the only
+# correct values on a host; OTTER_INSTALL_*_DIR is a harness hook, like
+# OTTER_INSTALL_SOURCE_DIR.
+lib_dir=${OTTER_INSTALL_LIB_DIR:-/usr/local/lib/otter}
+unit_dir=${OTTER_INSTALL_SYSTEMD_DIR:-/etc/systemd/system}
+env_dir=${OTTER_INSTALL_ETC_DIR:-/etc/otter}
 remote_workspace_root=/opt/otter/workspaces
 
 usage() {
@@ -114,12 +124,18 @@ each check once and require it to succeed.
                          error rather than a guess
   --metric-host NAME     the CloudWatch Host dimension (default castor-runtime);
                          [A-Za-z0-9_.-] only
+  --print-probe          print the convergence probe this run would execute
+                         (with this run's paths) and exit; nothing is installed.
+                         scripts/test-install-monitoring.sh executes it against
+                         a fixture tree
   -h, --help             this text
 
 Environment: OTTER_INSTALL_HOST, OTTER_INSTALL_IDENTITY, OTTER_INSTALL_PORT,
 OTTER_INSTALL_DATA_DIR, OTTER_INSTALL_METRIC_HOST, OTTER_INSTALL_DRY_RUN=1.
-OTTER_INSTALL_SOURCE_DIR exists for the fixture harness and is not meant to be
-set on a real run.
+OTTER_INSTALL_LIB_DIR, OTTER_INSTALL_SYSTEMD_DIR and OTTER_INSTALL_ETC_DIR move
+the install and the probe together; their defaults are /usr/local/lib/otter,
+/etc/systemd/system and /etc/otter. OTTER_INSTALL_SOURCE_DIR and those three
+exist for the fixture harness and are not meant to be set on a real run.
 
 Refuses, before it changes anything, when --host is missing, ssh is
 unreachable, the login has no passwordless sudo and is not root, the data
@@ -150,6 +166,10 @@ while [ $# -gt 0 ]; do
 		metric_host=$2
 		shift 2
 		;;
+	--print-probe)
+		print_probe=1
+		shift
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -161,6 +181,72 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+
+# --- the convergence probe --------------------------------------------------
+#
+# The probe is built before anything refuses, because --print-probe has to work
+# without a --host. It is the only thing that decides whether a host is reported
+# as already converged, so it has to see the host the install writes. It is built
+# here, from the same lib_dir/unit_dir/env_dir the install uses, rather than from
+# baked-in absolute paths: scripts/test-install-monitoring.sh points those
+# variables at a fixture tree and executes this very text, which is why the suite
+# can prove what the probe reports instead of pattern-matching its source.
+#
+# The paths are printf arguments and not heredoc substitutions: every other byte
+# of the probe has to reach the host unchanged, so a directory name holding a
+# quote, a backslash or a `$` must not be able to rewrite the probe's own shell
+# code.
+
+probe_head=$(cat <<'PROBE'
+# install-monitoring-probe
+missing=''
+check() {
+	if [ "$3" = dir ]; then
+		[ -d "$1" ] || { missing="$missing $1(missing)"; return 0; }
+	else
+		[ -f "$1" ] || { missing="$missing $1(missing)"; return 0; }
+	fi
+	mode=$(stat -c '%a' "$1" 2>/dev/null) || mode=unknown
+	[ "$mode" = "$2" ] || missing="$missing $1(mode=$mode)"
+}
+PROBE
+)
+
+probe_tail=$(cat <<'PROBE'
+systemctl is-enabled --quiet heartbeat.timer 2>/dev/null || missing="$missing heartbeat.timer(not-enabled)"
+systemctl is-enabled --quiet disk-check.timer 2>/dev/null || missing="$missing disk-check.timer(not-enabled)"
+printf '%s' "$missing"
+PROBE
+)
+
+build_probe() {
+	printf '%s\n' "$probe_head"
+	# The environment directory is checked too. It is the one directory this
+	# script creates with a privileged mode (0750), so it is the one a convergence
+	# claim must not merely assume; the files inside it are 0640.
+	printf 'check %s 750 dir\n' "$env_dir"
+	for script in heartbeat.sh disk-check.sh otter-metric.sh; do
+		printf 'check %s/%s 755\n' "$lib_dir" "$script"
+	done
+	for unit in heartbeat.service heartbeat.timer disk-check.service disk-check.timer; do
+		printf 'check %s/%s 644\n' "$unit_dir" "$unit"
+	done
+	for envfile in heartbeat.env disk-check.env; do
+		printf 'check %s/%s 640\n' "$env_dir" "$envfile"
+	done
+	printf '%s\n' "$probe_tail"
+}
+
+installed_probe=$(build_probe)
+
+# --print-probe is how the fixture suite gets the real probe. It prints exactly
+# the text a real run would execute against this run's paths and stops before any
+# ssh: a probe that could only be extracted from the script's source by pattern
+# would be the stub this replaced.
+if [ "$print_probe" -eq 1 ]; then
+	printf '%s\n' "$installed_probe"
+	exit 0
+fi
 
 # --- refuse what can be refused locally, before the host is touched ---------
 
@@ -229,6 +315,21 @@ die() {
 # through it, so a path with a space cannot turn into two commands.
 quote() {
 	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# privileged prefixes a command with the install's sudo when the login is not
+# root, and leaves it alone when it is (root needs no sudo, and sudo may not even
+# be installed there). Every read of a root-only path goes through it: /etc/otter
+# is 0750, so a read without it returns nothing and the caller cannot tell "no
+# file" from "not allowed to look". The convergence probe and the env-file read
+# share this one rule rather than each deciding it. Callers stay read-only --
+# stat, cat, systemctl is-enabled -- which is why the dry run may run them.
+privileged() { # command
+	if [ -n "$sudo" ]; then
+		printf '%s %s' "$sudo" "$1"
+	else
+		printf '%s' "$1"
+	fi
 }
 
 printf '\n===== install-monitoring =====\n'
@@ -351,34 +452,21 @@ fi
 # A second run has to converge and say so. The probe is read-only and reports
 # what is stale, and a converged host is still re-asserted below: the point of a
 # re-run is a working timer, not a file that merely exists.
+#
+# The probe runs under the privilege the install uses. /etc/otter is 0750
+# root:root, so a plain login cannot even stat the two env files: the probe would
+# report mode=unknown for them on a converged host, and "already installed" could
+# never be said. Widening the directory to make the probe work is not an option --
+# the environment files stay 0640 inside a 0750 directory -- so the probe is the
+# thing that runs as the install's user. It stays read-only (stat, and
+# `systemctl is-enabled`), which is why the dry run may still run it.
+probe_command=$(privileged "sh -c $(quote "$installed_probe")")
 
-installed_probe=$(cat <<'PROBE'
-# install-monitoring-probe
-missing=''
-check() {
-	[ -f "$1" ] || { missing="$missing $1(missing)"; return 0; }
-	mode=$(stat -c '%a' "$1" 2>/dev/null) || mode=unknown
-	[ "$mode" = "$2" ] || missing="$missing $1(mode=$mode)"
-}
-check /usr/local/lib/otter/heartbeat.sh 755
-check /usr/local/lib/otter/disk-check.sh 755
-check /usr/local/lib/otter/otter-metric.sh 755
-check /etc/systemd/system/heartbeat.service 644
-check /etc/systemd/system/heartbeat.timer 644
-check /etc/systemd/system/disk-check.service 644
-check /etc/systemd/system/disk-check.timer 644
-check /etc/otter/heartbeat.env 640
-check /etc/otter/disk-check.env 640
-systemctl is-enabled --quiet heartbeat.timer 2>/dev/null || missing="$missing heartbeat.timer(not-enabled)"
-systemctl is-enabled --quiet disk-check.timer 2>/dev/null || missing="$missing disk-check.timer(not-enabled)"
-printf '%s' "$missing"
-PROBE
-)
 # A probe that could not run is not a converged host: it reports nothing stale
 # for the same reason it reports nothing at all, and claiming "already
 # installed" off a failed probe is the kind of green that hides a broken host.
 already=0
-if probe_out=$(remote "$installed_probe" 2>/dev/null); then
+if probe_out=$(remote "$probe_command" 2>/dev/null); then
 	probe_out=$(printf '%s' "$probe_out" | tr -d '\r')
 	if [ -z "$probe_out" ]; then
 		already=1
@@ -411,7 +499,10 @@ done
 # write_env writes an environment file whole, but keeps any line an operator
 # added that this script does not manage: the unit headers invite an
 # OTTER_METRIC_REGION to be added there, and a re-run that dropped it would
-# change how the metric is signed while looking like a no-op.
+# change how the metric is signed while looking like a no-op. Reading that file
+# back needs the install's privilege for the same reason the probe does -- it is
+# 0640 inside a 0750 /etc/otter, so a plain-login `cat` returns nothing, and
+# "nothing" here means every operator line is silently dropped.
 write_env() { # remote_path, with_data_dir (yes/no)
 	env_tmp=$tmpdir/$(basename "$1")
 	if [ "$dry_run" -eq 1 ]; then
@@ -422,7 +513,7 @@ write_env() { # remote_path, with_data_dir (yes/no)
 		fi
 		return 0
 	fi
-	existing=$(remote "cat $(quote "$1") 2>/dev/null" 2>/dev/null) || existing=
+	existing=$(remote "$(privileged "cat $(quote "$1")") 2>/dev/null" 2>/dev/null) || existing=
 	{
 		printf 'OTTER_METRIC_HOST=%s\n' "$metric_host"
 		if [ "$2" = "yes" ]; then
