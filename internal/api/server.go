@@ -1109,6 +1109,14 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, CodeInvalid, "limit must be a positive integer")
 			return
 		}
+		// Reject here rather than letting the store substitute its default: a
+		// caller that asks for 5000 and silently receives 50 cannot tell a
+		// truncated page from a complete one.
+		if n > runs.MaxListLimit {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid,
+				fmt.Sprintf("limit must not exceed %d", runs.MaxListLimit))
+			return
+		}
 		filter.Limit = n
 	}
 	if raw := q.Get("offset"); raw != "" {
@@ -1119,16 +1127,38 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Offset = n
 	}
+	// A cursor is the position returned by a previous page. run_id narrows to
+	// runs whose id begins with the value, so a pasted full id finds its run and
+	// a truncated one still narrows. Both are applied by the store, which is
+	// what makes them search the whole history rather than the page on screen.
+	if raw := q.Get("cursor"); raw != "" {
+		filter.Cursor = raw
+	}
+	if raw := q.Get("run_id"); raw != "" {
+		filter.RunIDPrefix = raw
+	}
 
-	list, err := s.backend.ListRuns(r.Context(), filter)
+	page, err := s.backend.ListRunsPage(r.Context(), filter)
 	if err != nil {
+		// A cursor this runtime did not issue, or a page size past the ceiling,
+		// is the caller's mistake rather than a server fault: a 500 would send
+		// them looking for a bug that is not there.
+		if errors.Is(err, runs.ErrInvalidCursor) || errors.Is(err, runs.ErrLimitTooLarge) {
+			s.writeError(w, http.StatusBadRequest, CodeInvalid, err.Error())
+			return
+		}
 		s.fail(w, r, err)
 		return
 	}
-	if list == nil {
-		list = []*runs.Run{}
+	if page.Runs == nil {
+		page.Runs = []*runs.Run{}
 	}
-	s.writeJSON(w, http.StatusOK, RunList{SchemaVersion: SchemaVersion, Runs: list})
+	s.writeJSON(w, http.StatusOK, RunList{
+		SchemaVersion: SchemaVersion,
+		Runs:          page.Runs,
+		NextCursor:    page.NextCursor,
+		HasMore:       page.HasMore,
+	})
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {

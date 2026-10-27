@@ -736,19 +736,41 @@ func (d *Daemon) maxAttemptsFor(jobID string) int {
 // label before identities existed, are matched alongside the identity so a
 // migrated workspace does not lose its history.
 func (d *Daemon) ListRuns(ctx context.Context, f runs.Filter) ([]*runs.Run, error) {
-	if f.JobID != "" {
-		entry, err := d.resolveRef(f.JobID)
-		if err != nil {
-			return nil, err
-		}
-		ids := []string{entry.Job.ID}
-		if name := entry.Job.Name; name != "" && name != entry.Job.ID {
-			ids = append(ids, name)
-		}
-		f.JobIDs = ids
-		f.JobID = ""
+	f, err := d.resolveRunFilter(f)
+	if err != nil {
+		return nil, err
 	}
 	return d.runs.List(ctx, f)
+}
+
+// ListRunsPage implements api.Backend. It resolves the same way ListRuns does,
+// so a page of a job's history can be asked for by label.
+func (d *Daemon) ListRunsPage(ctx context.Context, f runs.Filter) (runs.Page, error) {
+	f, err := d.resolveRunFilter(f)
+	if err != nil {
+		return runs.Page{}, err
+	}
+	return d.runs.ListPage(ctx, f)
+}
+
+// resolveRunFilter rewrites a named job into every spelling its rows may use:
+// the durable identity, and the manifest label for rows written before
+// identities existed. A filter that names no job passes through untouched.
+func (d *Daemon) resolveRunFilter(f runs.Filter) (runs.Filter, error) {
+	if f.JobID == "" {
+		return f, nil
+	}
+	entry, err := d.resolveRef(f.JobID)
+	if err != nil {
+		return f, err
+	}
+	ids := []string{entry.Job.ID}
+	if name := entry.Job.Name; name != "" && name != entry.Job.ID {
+		ids = append(ids, name)
+	}
+	f.JobIDs = ids
+	f.JobID = ""
+	return f, nil
 }
 
 // RunLogs implements api.Backend.

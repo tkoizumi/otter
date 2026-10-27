@@ -185,6 +185,13 @@ type JobList struct {
 type RunList struct {
 	SchemaVersion int         `json:"schema_version"`
 	Runs          []*runs.Run `json:"runs"`
+	// NextCursor continues the listing. Empty on the last page.
+	NextCursor string `json:"next_cursor,omitempty"`
+	// HasMore reports whether rows exist beyond this page. It is deliberately
+	// not accompanied by a total: a COUNT over the whole run history costs more
+	// the more history a workspace has, and "is there another page" is the
+	// question a paging caller acts on.
+	HasMore bool `json:"has_more"`
 }
 
 // LogList is the response of GET /v1/runs/{id}/logs.

@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -612,10 +614,50 @@ func (f *fakeBackend) ListRuns(_ context.Context, filter runs.Filter) ([]*runs.R
 		if filter.Status != "" && r.Status != filter.Status {
 			continue
 		}
+		if filter.RunIDPrefix != "" && !strings.HasPrefix(r.ID, filter.RunIDPrefix) {
+			continue
+		}
 		cp := *r
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+// ListRunsPage pages the fake's list. The cursor is an index into the filtered
+// slice rather than the store's real keyset: this double exists to prove the
+// HTTP wiring -- the same argument comes back as the position it handed out, a
+// short page reports no more -- not to reimplement the store's paging, which
+// internal/runs tests directly.
+func (f *fakeBackend) ListRunsPage(ctx context.Context, filter runs.Filter) (runs.Page, error) {
+	list, err := f.ListRuns(ctx, filter)
+	if err != nil {
+		return runs.Page{}, err
+	}
+
+	start := 0
+	if rest, ok := strings.CutPrefix(filter.Cursor, "cursor-"); ok && rest != "" {
+		if n, err := strconv.Atoi(rest); err == nil && n >= 0 {
+			start = n
+		} else {
+			return runs.Page{}, fmt.Errorf("%w: %q", runs.ErrInvalidCursor, filter.Cursor)
+		}
+	}
+	if start > len(list) {
+		start = len(list)
+	}
+	rest := list[start:]
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	page := runs.Page{Runs: rest}
+	if len(rest) > limit {
+		page.Runs = rest[:limit]
+		page.HasMore = true
+		page.NextCursor = fmt.Sprintf("cursor-%d", start+limit)
+	}
+	return page, nil
 }
 
 func (f *fakeBackend) RunLogs(_ context.Context, runID string, afterID int64, limit int) ([]runs.LogEntry, error) {
@@ -1406,6 +1448,7 @@ func TestListRunsValidation(t *testing.T) {
 		{"?limit=-3", http.StatusBadRequest},
 		{"?offset=abc", http.StatusBadRequest},
 		{"?offset=-1", http.StatusBadRequest},
+		{"?limit=1001", http.StatusBadRequest},
 		{"?status=queued", http.StatusOK},
 		{"?limit=5&offset=0", http.StatusOK},
 		{"", http.StatusOK},
@@ -1421,6 +1464,93 @@ func TestListRunsValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestListRunsPagingMetadata exercises the paging contract over HTTP: a full
+// page reports has_more with a cursor, and sending that cursor back continues
+// the listing rather than restarting it.
+func TestListRunsPagingMetadata(t *testing.T) {
+	b := newFakeBackend()
+	b.addJob("int-A", true, "")
+	for i := 0; i < 5; i++ {
+		b.addRun(&runs.Run{
+			ID: fmt.Sprintf("run-%d", i), JobID: "int-A",
+			Status: runs.StatusSucceeded, Attempt: 1, CreatedAt: time.Now().UTC(),
+		})
+	}
+	srv := newTestServer(t, ServerConfig{}, b)
+	defer srv.Close()
+
+	var first RunList
+	r := do(t, http.MethodGet, srv.URL+"/v1/runs?limit=2", nil, nil)
+	wantStatus(t, r, http.StatusOK)
+	r.decode(t, &first)
+	if len(first.Runs) != 2 {
+		t.Fatalf("first page has %d runs, want 2", len(first.Runs))
+	}
+	if !first.HasMore {
+		t.Error("a full page of 5 should report has_more")
+	}
+	if first.NextCursor == "" {
+		t.Fatal("has_more with no cursor leaves the caller no way to continue")
+	}
+
+	var second RunList
+	r = do(t, http.MethodGet, srv.URL+"/v1/runs?limit=2&cursor="+url.QueryEscape(first.NextCursor), nil, nil)
+	wantStatus(t, r, http.StatusOK)
+	r.decode(t, &second)
+	if len(second.Runs) != 2 {
+		t.Fatalf("second page has %d runs, want 2", len(second.Runs))
+	}
+	if second.Runs[0].ID == first.Runs[0].ID {
+		t.Fatalf("page two repeated %s", second.Runs[0].ID)
+	}
+}
+
+// TestListRunsRunIDFilter pins the search the job page needs: a prefix narrows,
+// a full id resolves, and neither is limited to the page already on screen.
+func TestListRunsRunIDFilter(t *testing.T) {
+	b := newFakeBackend()
+	b.addJob("int-A", true, "")
+	for i := 0; i < 5; i++ {
+		b.addRun(&runs.Run{
+			ID: fmt.Sprintf("run-%d", i), JobID: "int-A",
+			Status: runs.StatusSucceeded, Attempt: 1, CreatedAt: time.Now().UTC(),
+		})
+	}
+	srv := newTestServer(t, ServerConfig{}, b)
+	defer srv.Close()
+
+	var list RunList
+	r := do(t, http.MethodGet, srv.URL+"/v1/runs?run_id=run-3", nil, nil)
+	wantStatus(t, r, http.StatusOK)
+	r.decode(t, &list)
+	if len(list.Runs) != 1 || list.Runs[0].ID != "run-3" {
+		t.Fatalf("got %d runs, want only run-3", len(list.Runs))
+	}
+
+	r = do(t, http.MethodGet, srv.URL+"/v1/runs?run_id=nope", nil, nil)
+	wantStatus(t, r, http.StatusOK)
+	r.decode(t, &list)
+	if len(list.Runs) != 0 {
+		t.Fatalf("a prefix matching nothing returned %d runs", len(list.Runs))
+	}
+}
+
+// TestListRunsRejectsMangledCursor keeps a cursor the runtime never issued from
+// coming back as a 500, which would look like a server fault.
+func TestListRunsRejectsMangledCursor(t *testing.T) {
+	b := newFakeBackend()
+	b.addJob("int-A", true, "")
+	b.addRun(&runs.Run{ID: "run-1", JobID: "int-A", Status: runs.StatusQueued, Attempt: 1, CreatedAt: time.Now().UTC()})
+	srv := newTestServer(t, ServerConfig{}, b)
+	defer srv.Close()
+
+	r := do(t, http.MethodGet, srv.URL+"/v1/runs?cursor=cursor-notanumber", nil, nil)
+	wantStatus(t, r, http.StatusBadRequest)
+	if env := r.errorEnvelope(t); env.Error.Code != CodeInvalid {
+		t.Fatalf("error code = %q", env.Error.Code)
 	}
 }
 

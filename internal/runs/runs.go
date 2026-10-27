@@ -8,9 +8,11 @@ package runs
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,6 +198,11 @@ const (
 	defaultListLimit = 50
 	maxListLimit     = 1000
 )
+
+// MaxListLimit is the largest page ListPage will serve. It is exported so the
+// HTTP layer can reject an oversized request as a client error instead of
+// leaving the store as the only thing that notices.
+const MaxListLimit = maxListLimit
 
 // DebugLogger is the subset of the daemon logger the store uses to make a
 // rejected limit observable. A store with no logger stays silent.
@@ -417,27 +424,87 @@ type Filter struct {
 	JobIDs      []string
 	Status      Status
 	ParentRunID string
-	Limit       int
-	Offset      int
-	Ascending   bool
+	// RunIDPrefix matches runs whose id begins with the value. Run ids are
+	// UUIDs, so a pasted full id is the degenerate case of a prefix, and a
+	// truncated one still narrows to the run. It is evaluated as a range over
+	// the primary key (see runIDRange) rather than with LIKE, which SQLite
+	// cannot answer from an index under its default settings.
+	RunIDPrefix string
+	// Cursor is an opaque position returned as Page.NextCursor by a previous
+	// ListPage call. List ignores it; ListPage is the only reader that uses it.
+	Cursor    string
+	Limit     int
+	Offset    int
+	Ascending bool
 }
 
-// List returns runs matching the filter, newest first by default.
+// Page is one page of a run listing and the position that continues it.
+type Page struct {
+	Runs []*Run
+	// NextCursor is empty when this page is the last one.
+	NextCursor string
+	// HasMore reports whether rows exist beyond this page. It is derived from
+	// reading one row past the page rather than from a COUNT.
+	HasMore bool
+}
+
+// ErrInvalidCursor means the cursor did not come from this store, or was
+// truncated or otherwise mangled in transit. It is an error rather than a
+// silent "start from the beginning", which would hand the caller page one in
+// place of the page it asked for.
+var ErrInvalidCursor = errors.New("runs: invalid cursor")
+
+// ErrLimitTooLarge means the caller asked for a page bigger than maxListLimit.
+var ErrLimitTooLarge = errors.New("runs: limit exceeds maximum")
+
+// cursorSep divides created_at from rowid inside a cursor. created_at is a
+// fixed-width UTC string and rowid is decimal, so neither contains it.
+const cursorSep = "|"
+
+// encodeCursor renders a (created_at, rowid) position as an opaque token.
 //
-// It is a bounded display read. A f.Limit outside (0, maxListLimit] -- including
-// one larger than maxListLimit -- is out of range and is replaced with
-// defaultListLimit rather than reported as an error, so a caller cannot tell a
-// truncated result from a complete one. That is intentional here, where "the
-// newest 20 runs" wants a default; it is why a read that must be exhaustive,
-// such as recovery, uses ListByStatusAll instead of a large magic limit.
+// It is opaque so that the paging key can change -- another tiebreaker, a
+// different encoding -- without any caller having to know. Callers pass it back
+// unchanged; nothing outside this package parses it.
+func encodeCursor(createdAt string, rowID int64) string {
+	raw := createdAt + cursorSep + strconv.FormatInt(rowID, 10)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeCursor is encodeCursor's inverse. Every failure is ErrInvalidCursor,
+// because a caller can do nothing differently about the specific cause.
+func decodeCursor(cursor string) (string, int64, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return "", 0, ErrInvalidCursor
+	}
+	createdAt, rawRowID, ok := strings.Cut(string(raw), cursorSep)
+	if !ok || createdAt == "" {
+		return "", 0, ErrInvalidCursor
+	}
+	rowID, err := strconv.ParseInt(rawRowID, 10, 64)
+	if err != nil {
+		return "", 0, ErrInvalidCursor
+	}
+	return createdAt, rowID, nil
+}
+
+// runIDRange turns an id prefix into a half-open range over the primary key.
 //
-// When a logger is attached, an explicitly supplied limit that is out of range
-// is logged at debug level so the substitution is at least observable.
-func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
-	var (
-		where []string
-		args  []any
-	)
+// The upper bound is the prefix with a 0xff byte appended. Comparison is
+// bytewise (BINARY collation) and no UTF-8 sequence contains 0xff, so every id
+// that begins with the prefix sorts below it and no other id does.
+func runIDRange(prefix string) (lower, upper string) {
+	return prefix, prefix + "\xff"
+}
+
+// runWhere renders a filter as a WHERE clause and its arguments.
+//
+// It exists so List and ListPage cannot drift: both apply exactly the same
+// predicates, and a field added to Filter is honoured by both or neither.
+func runWhere(f Filter) (string, []any) {
+	var where []string
+	var args []any
 	if f.JobID != "" {
 		where = append(where, "job_id = ?")
 		args = append(args, f.JobID)
@@ -458,11 +525,32 @@ func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 		where = append(where, "parent_run_id = ?")
 		args = append(args, f.ParentRunID)
 	}
-
-	query := `SELECT ` + runColumns + ` FROM runs`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+	if f.RunIDPrefix != "" {
+		lower, upper := runIDRange(f.RunIDPrefix)
+		where = append(where, "id >= ? AND id < ?")
+		args = append(args, lower, upper)
 	}
+	if len(where) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(where, " AND "), args
+}
+
+// List returns runs matching the filter, newest first by default.
+//
+// It is a bounded display read. A f.Limit outside (0, maxListLimit] -- including
+// one larger than maxListLimit -- is out of range and is replaced with
+// defaultListLimit rather than reported as an error, so a caller cannot tell a
+// truncated result from a complete one. That is intentional here, where "the
+// newest 20 runs" wants a default; it is why a read that must be exhaustive,
+// such as recovery, uses ListByStatusAll instead of a large magic limit.
+//
+// When a logger is attached, an explicitly supplied limit that is out of range
+// is logged at debug level so the substitution is at least observable.
+func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
+	where, args := runWhere(f)
+
+	query := `SELECT ` + runColumns + ` FROM runs` + where
 	if f.Ascending {
 		query += " ORDER BY created_at ASC, rowid ASC"
 	} else {
@@ -501,6 +589,99 @@ func (s *Store) List(ctx context.Context, f Filter) ([]*Run, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ListPage returns one page of runs matching the filter, newest first, plus the
+// cursor that continues the listing.
+//
+// Unlike List, it does not quietly substitute a limit. A caller paging through a
+// listing has to be able to tell a short page from a complete one, so a limit
+// above maxListLimit is ErrLimitTooLarge and a cursor that did not come from
+// this store is ErrInvalidCursor. A limit of zero means the default.
+//
+// Order and cursor are the same key -- (created_at DESC, rowid DESC) -- so a run
+// inserted while a caller is paging cannot shift the window: the next page
+// neither repeats a row nor skips one.
+//
+// Offset still works when no cursor is supplied, so a caller that was already
+// paging that way keeps its behaviour. A cursor supersedes it rather than
+// combining with it, because the two are alternative positions and combining
+// them would skip rows silently.
+func (s *Store) ListPage(ctx context.Context, f Filter) (Page, error) {
+	limit := f.Limit
+	if limit == 0 {
+		limit = defaultListLimit
+	}
+	if limit < 0 || limit > maxListLimit {
+		return Page{}, fmt.Errorf("%w: asked for %d, maximum %d",
+			ErrLimitTooLarge, f.Limit, maxListLimit)
+	}
+
+	where, args := runWhere(f)
+	if f.Cursor != "" {
+		createdAt, rowID, err := decodeCursor(f.Cursor)
+		if err != nil {
+			return Page{}, err
+		}
+		clause := "(created_at < ? OR (created_at = ? AND rowid < ?))"
+		if where == "" {
+			where = " WHERE " + clause
+		} else {
+			where += " AND " + clause
+		}
+		args = append(args, createdAt, createdAt, rowID)
+	}
+
+	query := `SELECT rowid, ` + runColumns + ` FROM runs` + where +
+		` ORDER BY created_at DESC, rowid DESC LIMIT ?`
+	// One row past the page answers "is there more?" without a COUNT, which is
+	// the query that gets slower the more history there is.
+	args = append(args, limit+1)
+	if f.Cursor == "" && f.Offset > 0 {
+		query += ` OFFSET ?`
+		args = append(args, f.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return Page{}, fmt.Errorf("runs: list page: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Run
+	var positions []struct {
+		createdAt string
+		rowID     int64
+	}
+	for rows.Next() {
+		var rowID int64
+		r, err := scanRunRow(rows, &rowID)
+		if err != nil {
+			return Page{}, fmt.Errorf("runs: list page scan: %w", err)
+		}
+		out = append(out, r)
+		positions = append(positions, struct {
+			createdAt string
+			rowID     int64
+		}{createdAt: database.FormatTime(r.CreatedAt), rowID: rowID})
+	}
+	if err := rows.Err(); err != nil {
+		return Page{}, err
+	}
+
+	page := Page{Runs: out}
+	if len(out) > limit {
+		// Drop the probe row, but keep its position: the cursor must point at
+		// the last row the caller actually received.
+		page.Runs = out[:limit]
+		last := positions[limit-1]
+		page.HasMore = true
+		page.NextCursor = encodeCursor(last.createdAt, last.rowID)
+	}
+	if page.Runs == nil {
+		page.Runs = []*Run{}
+	}
+	return page, nil
 }
 
 // ListByStatus returns runs in a given status, oldest first so that recovery

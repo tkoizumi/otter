@@ -165,6 +165,11 @@ type Backend interface {
 	// ListRuns lists runs matching the filter.
 	ListRuns(ctx context.Context, f runs.Filter) ([]*runs.Run, error)
 
+	// ListRunsPage lists one page of runs matching the filter, together with
+	// the cursor that continues the listing. It is the read that can walk a
+	// job's whole history; ListRuns is the bounded display read.
+	ListRunsPage(ctx context.Context, f runs.Filter) (runs.Page, error)
+
 	// RunLogs returns captured output for a run.
 	RunLogs(ctx context.Context, runID string, afterID int64, limit int) ([]runs.LogEntry, error)
 

@@ -63,10 +63,22 @@ func NewClient(baseURL, token string) *Client {
 
 // RunsQuery narrows a run listing.
 type RunsQuery struct {
-	JobID  string
-	Status string
-	Limit  int
-	Offset int
+	JobID string
+	// RunIDPrefix narrows to runs whose id starts with the value.
+	RunIDPrefix string
+	Status      string
+	Limit       int
+	Offset      int
+	// Cursor continues a listing from a previous page. When set it supersedes
+	// Offset, which the runtime ignores.
+	Cursor string
+}
+
+// RunPage is one page of a run listing and the position that continues it.
+type RunPage struct {
+	Runs       []*runs.Run
+	NextCursor string
+	HasMore    bool
 }
 
 // Health returns the daemon health summary.
@@ -451,11 +463,25 @@ func (c *Client) CancelRun(ctx context.Context, runID string) error {
 	return c.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/cancel", nil, nil)
 }
 
-// ListRuns lists runs.
+// ListRuns lists runs. It is the bounded display read; callers that need to
+// walk a whole history use ListRunsPage.
 func (c *Client) ListRuns(ctx context.Context, q RunsQuery) ([]*runs.Run, error) {
+	page, err := c.ListRunsPage(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return page.Runs, nil
+}
+
+// ListRunsPage lists one page of runs together with the cursor that continues
+// the listing.
+func (c *Client) ListRunsPage(ctx context.Context, q RunsQuery) (RunPage, error) {
 	values := url.Values{}
 	if q.JobID != "" {
 		values.Set("job_id", q.JobID)
+	}
+	if q.RunIDPrefix != "" {
+		values.Set("run_id", q.RunIDPrefix)
 	}
 	if q.Status != "" {
 		values.Set("status", q.Status)
@@ -466,14 +492,19 @@ func (c *Client) ListRuns(ctx context.Context, q RunsQuery) ([]*runs.Run, error)
 	if q.Offset > 0 {
 		values.Set("offset", strconv.Itoa(q.Offset))
 	}
+	if q.Cursor != "" {
+		values.Set("cursor", q.Cursor)
+	}
 
 	var out struct {
-		Runs []*runs.Run `json:"runs"`
+		Runs       []*runs.Run `json:"runs"`
+		NextCursor string      `json:"next_cursor"`
+		HasMore    bool        `json:"has_more"`
 	}
 	if err := c.get(ctx, "/v1/runs", values, &out); err != nil {
-		return nil, err
+		return RunPage{}, err
 	}
-	return out.Runs, nil
+	return RunPage{Runs: out.Runs, NextCursor: out.NextCursor, HasMore: out.HasMore}, nil
 }
 
 // GetRun returns a run together with its retry chain.
