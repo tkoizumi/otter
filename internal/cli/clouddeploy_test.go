@@ -23,7 +23,11 @@ type cloudFake struct {
 	mu       sync.Mutex
 	requests []string
 	uploads  []string
-	admitted cloud.DeployRequest
+	// uploadedJobID and uploadedJobName are the attribution headers of the last
+	// upload: the job the release belongs to, which Cloud uses to list it.
+	uploadedJobID   string
+	uploadedJobName string
+	admitted        cloud.DeployRequest
 	// admittedRuntime is the runtime the operation was opened against. A
 	// deployment names one, and `--runtime` is how it stops being ambiguous when
 	// the workspace owns several.
@@ -97,6 +101,8 @@ func (f *cloudFake) server(t *testing.T) *httptest.Server {
 			}
 			f.mu.Lock()
 			f.uploads = append(f.uploads, r.Header.Get("x-otter-release-digest"))
+			f.uploadedJobID = r.Header.Get("x-otter-job-id")
+			f.uploadedJobName = r.Header.Get("x-otter-job-name")
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":"rel_1"}`)
@@ -386,6 +392,33 @@ func TestDeployCloudUploadsBeforeAdmittingTheOperation(t *testing.T) {
 	uploads := fake.uploaded()
 	if len(uploads) != 1 || uploads[0] != newer {
 		t.Errorf("uploaded %v, want the promoted release %s", uploads, newer)
+	}
+}
+
+// The upload names its job, so Cloud can list the release under that job rather
+// than only after a runtime reports it. The id is the same durable one the
+// admission sends as job_id.
+func TestDeployCloudUploadNamesTheJob(t *testing.T) {
+	cloudHome(t)
+	t.Setenv(cloud.TokenEnv, "otk_1_secret")
+	root, dir, _, _ := twoReleases(t)
+
+	fake := newCloudFake()
+	srv := fake.server(t)
+	defer srv.Close()
+	t.Setenv(cloud.URLEnv, srv.URL)
+
+	if _, stderr, code := otterIn(t, root, "deploy", "--cloud", "--job", "counter"); code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, stderr)
+	}
+	fake.mu.Lock()
+	jobID, jobName := fake.uploadedJobID, fake.uploadedJobName
+	fake.mu.Unlock()
+	if jobID != idFor(t, dir) {
+		t.Errorf("x-otter-job-id = %q, want the durable job id %q", jobID, idFor(t, dir))
+	}
+	if jobName != "counter" {
+		t.Errorf("x-otter-job-name = %q, want counter", jobName)
 	}
 }
 

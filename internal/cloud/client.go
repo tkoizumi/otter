@@ -134,6 +134,17 @@ type Release struct {
 	Digest string `json:"digest"`
 }
 
+// ReleaseJob names the job a release belongs to, so Cloud can list the release
+// under that job.
+//
+// The release store is content-addressed and has no owner; without this the
+// dashboard can only show releases a runtime has already reported. The id is
+// the durable job id a deploy sends as job_id; the name is display only.
+type ReleaseJob struct {
+	ID   string
+	Name string
+}
+
 // Me verifies the credential and returns the organization it belongs to.
 func (c *Client) Me(ctx context.Context) (*Me, error) {
 	var out Me
@@ -181,7 +192,11 @@ func (c *Client) Release(ctx context.Context, digest string) (*Release, error) {
 // the archive bytes: the header is the release identity and the body is its
 // transport. The two are different values and the protocol keeps them apart for
 // exactly that reason.
-func (c *Client) UploadRelease(ctx context.Context, digest string, body io.Reader) (*Release, error) {
+//
+// job names the release's job in two more headers. They are attribution, not
+// identity: a control plane that ignores them still stores and serves the
+// release, and one that keeps a per-job catalog uses them to list it.
+func (c *Client) UploadRelease(ctx context.Context, digest string, body io.Reader, job ReleaseJob) (*Release, error) {
 	bare, err := release.NormalizeDigest(digest)
 	if err != nil {
 		return nil, fmt.Errorf("upload release: %w", err)
@@ -193,6 +208,12 @@ func (c *Client) UploadRelease(ctx context.Context, digest string, body io.Reade
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("x-otter-release-digest", bare)
+	if id := strings.TrimSpace(job.ID); id != "" {
+		req.Header.Set("x-otter-job-id", id)
+	}
+	if name := strings.TrimSpace(job.Name); name != "" {
+		req.Header.Set("x-otter-job-name", name)
+	}
 	// A file body carries no length unless it is one of the readers net/http
 	// recognizes. Stating it lets the server reject an oversized upload before
 	// reading it.

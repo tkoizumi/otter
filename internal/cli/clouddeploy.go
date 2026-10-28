@@ -175,7 +175,10 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 			fmt.Fprintf(a.Stderr, "otter: open package: %v\n", err)
 			return 1
 		}
-		_, err = client.UploadRelease(ctx, digest, pkg)
+		_, err = client.UploadRelease(ctx, digest, pkg, cloud.ReleaseJob{
+			ID:   target.ID,
+			Name: target.Label(),
+		})
 		_ = pkg.Close()
 		if err != nil {
 			return a.cloudFail(err)

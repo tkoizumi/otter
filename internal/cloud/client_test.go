@@ -65,12 +65,14 @@ func TestMeReportsARevokedToken(t *testing.T) {
 
 func TestUploadReleaseSendsTheBareDigestHeaderAndTheArchive(t *testing.T) {
 	archive := []byte("this is a package tarball, honest")
-	var gotAuth, gotDigest, gotType string
+	var gotAuth, gotDigest, gotType, gotJobID, gotJobName string
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotDigest = r.Header.Get("x-otter-release-digest")
 		gotType = r.Header.Get("Content-Type")
+		gotJobID = r.Header.Get("x-otter-job-id")
+		gotJobName = r.Header.Get("x-otter-job-name")
 		gotBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusCreated)
 		io.WriteString(w, `{"id":"rel_1","digest":"`+digest+`"}`)
@@ -78,7 +80,10 @@ func TestUploadReleaseSendsTheBareDigestHeaderAndTheArchive(t *testing.T) {
 	defer srv.Close()
 
 	rel, err := NewClient(srv.URL, "otk_1_secret").
-		UploadRelease(context.Background(), "sha256:"+digest, bytes.NewReader(archive))
+		UploadRelease(context.Background(), "sha256:"+digest, bytes.NewReader(archive), ReleaseJob{
+			ID:   "job_orders",
+			Name: "orders",
+		})
 	if err != nil {
 		t.Fatalf("UploadRelease: %v", err)
 	}
@@ -91,11 +96,45 @@ func TestUploadReleaseSendsTheBareDigestHeaderAndTheArchive(t *testing.T) {
 	if gotType != "application/octet-stream" {
 		t.Errorf("Content-Type = %q", gotType)
 	}
+	// Attribution, not identity: the job travels so Cloud can list the release
+	// under it, and it is the same id a deploy sends as job_id.
+	if gotJobID != "job_orders" {
+		t.Errorf("x-otter-job-id = %q, want job_orders", gotJobID)
+	}
+	if gotJobName != "orders" {
+		t.Errorf("x-otter-job-name = %q, want orders", gotJobName)
+	}
 	if !bytes.Equal(gotBody, archive) {
 		t.Errorf("body = %q, want the archive bytes", gotBody)
 	}
 	if rel.ID != "rel_1" {
 		t.Errorf("release = %+v", rel)
+	}
+}
+
+// An upload with no job is still a valid release: the headers are attribution,
+// and an older caller that omits them must not be refused or sent empty values.
+func TestUploadReleaseWithoutAJobSendsNoAttributionHeaders(t *testing.T) {
+	var gotJobID, gotJobName string
+	var seen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = true
+		gotJobID = r.Header.Get("x-otter-job-id")
+		gotJobName = r.Header.Get("x-otter-job-name")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"id":"rel_1"}`)
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL, "otk_1_secret").
+		UploadRelease(context.Background(), "sha256:"+digest, bytes.NewReader([]byte("pkg")), ReleaseJob{}); err != nil {
+		t.Fatalf("UploadRelease: %v", err)
+	}
+	if !seen {
+		t.Fatal("no request was sent")
+	}
+	if gotJobID != "" || gotJobName != "" {
+		t.Errorf("unexpected attribution headers: job-id=%q job-name=%q", gotJobID, gotJobName)
 	}
 }
 
