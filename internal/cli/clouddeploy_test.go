@@ -24,6 +24,13 @@ type cloudFake struct {
 	requests []string
 	uploads  []string
 	admitted cloud.DeployRequest
+	// admittedRuntime is the runtime the operation was opened against. A
+	// deployment names one, and `--runtime` is how it stops being ambiguous when
+	// the workspace owns several.
+	admittedRuntime string
+	// runtimes is the /api/cloud/me list. Empty means the single rt_1 the rest of
+	// this suite uses.
+	runtimes []string
 	// held is the set of digests Cloud already has. A probe for anything else
 	// is a 404, which is how the control plane says "never uploaded".
 	held map[string]bool
@@ -35,6 +42,14 @@ type cloudFake struct {
 
 func newCloudFake() *cloudFake {
 	return &cloudFake{held: map[string]bool{}}
+}
+
+/** The runtimes /api/cloud/me advertises, defaulting to the suite's one. */
+func (f *cloudFake) runtimeList() []string {
+	if len(f.runtimes) == 0 {
+		return []string{"rt_1"}
+	}
+	return f.runtimes
 }
 
 func (f *cloudFake) server(t *testing.T) *httptest.Server {
@@ -64,12 +79,18 @@ func (f *cloudFake) server(t *testing.T) *httptest.Server {
 			return
 		}
 
-		switch r.Method + " " + r.URL.Path {
-		case "GET /api/cloud/me":
-			io.WriteString(w, meJSON(`{"id":"rt_1","lifecycle":"running","placement":"aws"}`))
-		case "GET /api/runtimes/rt_1/operations":
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/cloud/me":
+			entries := make([]string, 0, len(f.runtimeList()))
+			for _, id := range f.runtimeList() {
+				entries = append(entries, `{"id":"`+id+`","lifecycle":"running","placement":"aws"}`)
+			}
+			io.WriteString(w, meJSON(strings.Join(entries, ",")))
+		case r.Method == http.MethodGet &&
+			strings.HasPrefix(r.URL.Path, "/api/runtimes/") &&
+			strings.HasSuffix(r.URL.Path, "/operations"):
 			io.WriteString(w, `{"generation":7}`)
-		case "POST /api/releases":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/releases":
 			body, _ := io.ReadAll(r.Body)
 			if len(body) == 0 {
 				t.Error("release upload carried no bytes")
@@ -79,13 +100,17 @@ func (f *cloudFake) server(t *testing.T) *httptest.Server {
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":"rel_1"}`)
-		case "POST /api/runtimes/rt_1/operations":
+		case r.Method == http.MethodPost &&
+			strings.HasPrefix(r.URL.Path, "/api/runtimes/") &&
+			strings.HasSuffix(r.URL.Path, "/operations"):
+			runtimeID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/runtimes/"), "/operations")
 			var body cloud.DeployRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode deploy body: %v", err)
 			}
 			f.mu.Lock()
 			f.admitted = body
+			f.admittedRuntime = runtimeID
 			f.mu.Unlock()
 			io.WriteString(w, `{"admitted":true,"operation":{"id":"op_1","status":"queued"}}`)
 		default:
@@ -484,5 +509,74 @@ func TestDeployCloudRefusesAMalformedOrContradictoryRelease(t *testing.T) {
 	}
 	if fake.containsPrefix("POST ") {
 		t.Errorf("a malformed digest still sent a mutating request: %v", fake.requestsList())
+	}
+}
+
+// --runtime names the exact runtime an operation is opened against. The
+// workspace in this test owns two, which is the only state where the choice is
+// not implicit: the command must not guess, and when told, must not touch the
+// other one.
+func TestDeployCloudTargetsTheNamedRuntime(t *testing.T) {
+	cloudHome(t)
+	t.Setenv(cloud.TokenEnv, "otk_1_secret")
+	root, _, _, newer := twoReleases(t)
+
+	fake := newCloudFake()
+	fake.runtimes = []string{"rt_sandbox", "rt_prod"}
+	srv := fake.server(t)
+	defer srv.Close()
+	t.Setenv(cloud.URLEnv, srv.URL)
+
+	stdout, stderr, code := otterIn(t, root, "deploy", "--cloud", "--job", "counter", "--runtime", "rt_prod")
+	if code != 0 {
+		t.Fatalf("exit %d, stderr:\n%s", code, stderr)
+	}
+	fake.mu.Lock()
+	gotRuntime, gotDigest := fake.admittedRuntime, fake.admitted.DesiredDigest
+	fake.mu.Unlock()
+	if gotRuntime != "rt_prod" {
+		t.Errorf("admitted against runtime %q, want rt_prod", gotRuntime)
+	}
+	if gotDigest != newer {
+		t.Errorf("admitted release %q, want %s", gotDigest, newer)
+	}
+	if fake.indexOf("POST /api/runtimes/rt_sandbox/operations") != -1 {
+		t.Errorf("the other runtime was touched: %v", fake.requestsList())
+	}
+	if !strings.Contains(stdout, "rt_prod") {
+		t.Errorf("output does not name the target runtime:\n%s", stdout)
+	}
+}
+
+// Naming a runtime the credential's workspace does not own is a usage error,
+// and the refusal has to explain the credential boundary rather than only say
+// the id is unknown: one account can own several workspaces, and each token is
+// bound to one of them.
+func TestDeployCloudRefusesARuntimeInAnotherWorkspace(t *testing.T) {
+	cloudHome(t)
+	t.Setenv(cloud.TokenEnv, "otk_1_secret")
+	root, _, _, _ := twoReleases(t)
+
+	fake := newCloudFake()
+	srv := fake.server(t)
+	defer srv.Close()
+	t.Setenv(cloud.URLEnv, srv.URL)
+
+	_, stderr, code := otterIn(t, root, "deploy", "--cloud", "--job", "counter", "--runtime", "rt_elsewhere")
+	if code != 2 {
+		t.Fatalf("exit %d, want 2: %s", code, stderr)
+	}
+	for _, want := range []string{
+		"not assigned to organization Acme",
+		"a token belongs to one workspace",
+		"mint a token there",
+		"rt_1",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, stderr)
+		}
+	}
+	if fake.indexOf("POST /api/runtimes/rt_elsewhere/operations") != -1 {
+		t.Errorf("a refused target was still commanded: %v", fake.requestsList())
 	}
 }

@@ -360,13 +360,18 @@ func resolveCloudRuntime(a *App, me *cloud.Me, selected string) (cloud.Runtime, 
 			}
 		}
 		fmt.Fprintf(a.Stderr, "otter: runtime %s is not assigned to organization %s\n", selected, me.Organization.Name)
+		// The credential is the workspace, not the account. Naming the other
+		// workspace's runtime is the expected mistake once a person owns more
+		// than one, and "not assigned" alone reads as "the id is wrong".
+		fmt.Fprintln(a.Stderr, "otter: a token belongs to one workspace; to deploy to a runtime in another,")
+		fmt.Fprintln(a.Stderr, "otter: switch to that workspace, mint a token there, and log in with it")
 		writeCloudRuntimeList(a.Stderr, me.Runtimes)
 		return cloud.Runtime{}, 2
 	}
 	switch len(me.Runtimes) {
 	case 0:
 		fmt.Fprintln(a.Stderr, "otter: no runtime is assigned to this organization yet")
-		fmt.Fprintln(a.Stderr, "otter: attach a runtime in Otter Cloud, then re-run this deploy")
+		fmt.Fprintln(a.Stderr, "otter: add one in Otter Cloud (Runtimes, then Add a runtime), then re-run this deploy")
 		return cloud.Runtime{}, 1
 	case 1:
 		return me.Runtimes[0], 0
