@@ -50,11 +50,16 @@ type JobView struct {
 	// DestinationTables names where this job's effects land, so an acceptance
 	// check can look there. The runtime reports what the manifest declares and
 	// makes no claim that anything was written.
-	DestinationTables []string    `json:"destination_tables,omitempty"`
-	Triggers          TriggerView `json:"triggers"`
-	Valid             bool        `json:"valid"`
-	Error             string      `json:"error,omitempty"`
-	NextRunAt         *time.Time  `json:"next_run_at,omitempty"`
+	DestinationTables []string `json:"destination_tables,omitempty"`
+
+	// SecretSources is where the last run got each declared secret: `platform`,
+	// `environment`, `missing` or `unavailable`. Names only — never a value, and
+	// never an existence claim the runtime cannot make.
+	SecretSources map[string]string `json:"secret_sources,omitempty"`
+	Triggers      TriggerView       `json:"triggers"`
+	Valid         bool              `json:"valid"`
+	Error         string            `json:"error,omitempty"`
+	NextRunAt     *time.Time        `json:"next_run_at,omitempty"`
 
 	// LastSuccessAt is when this job last completed a run successfully. It is
 	// the freshness signal, and the schedule view renders it, so a cron job

@@ -65,28 +65,23 @@ func (p *StaticProvider) Get(_ context.Context, key string) (string, error) {
 }
 
 // Chain tries each provider in order and returns the first value found.
+//
+// Sources runs parallel to Providers and is what Lookup reports; it may be empty
+// for a chain built with NewChain, in which case the source is inferred from the
+// provider's type.
 type Chain struct {
 	Providers []Provider
+	Sources   []Source
 }
 
 // NewChain builds a provider chain.
 func NewChain(providers ...Provider) *Chain { return &Chain{Providers: providers} }
 
-// Get implements Provider.
+// Get implements Provider. The fallback rule lives in Lookup so a chain cannot
+// behave one way when asked and another way when asked with provenance.
 func (c *Chain) Get(ctx context.Context, key string) (string, error) {
-	for _, p := range c.Providers {
-		if p == nil {
-			continue
-		}
-		value, err := p.Get(ctx, key)
-		if err == nil {
-			return value, nil
-		}
-		if !errors.Is(err, ErrNotFound) {
-			return "", err
-		}
-	}
-	return "", fmt.Errorf("%s was not found in any configured secret provider: %w", key, ErrNotFound)
+	value, _, err := c.Lookup(ctx, key)
+	return value, err
 }
 
 // MissingError reports secrets that a manifest requires but that could not be
@@ -107,34 +102,9 @@ func (e *MissingError) Error() string {
 // Resolve fetches every requested key. It fails as a whole when any key is
 // missing so that a run never starts with a partially configured environment.
 func Resolve(ctx context.Context, provider Provider, jobID string, keys []string) (map[string]string, error) {
-	if len(keys) == 0 {
-		return map[string]string{}, nil
+	values, _, err := ResolveSourced(ctx, provider, jobID, keys)
+	if err != nil {
+		return nil, err
 	}
-	if provider == nil {
-		provider = NewEnvProvider()
-	}
-
-	out := make(map[string]string, len(keys))
-	var missing []string
-
-	for _, key := range keys {
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		value, err := provider.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				missing = append(missing, key)
-				continue
-			}
-			return nil, fmt.Errorf("resolve secret %s for %s: %w", key, jobID, err)
-		}
-		out[key] = value
-	}
-
-	if len(missing) > 0 {
-		return nil, &MissingError{JobID: jobID, Keys: missing}
-	}
-	return out, nil
+	return values, nil
 }

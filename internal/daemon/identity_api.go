@@ -22,7 +22,9 @@ func (d *Daemon) ResolveJob(ref string) (api.JobView, error) {
 	if err != nil {
 		return api.JobView{}, err
 	}
-	return d.jobView(entry, true), nil
+	view := d.jobView(entry, true)
+	d.attachSecretSources(&view)
+	return view, nil
 }
 
 // JobGeneration implements api.Backend. It is the check that lets a
@@ -58,7 +60,9 @@ func (d *Daemon) RegisterJob(ctx context.Context, path string) (api.JobView, err
 	if !ok {
 		return api.JobView{}, fmt.Errorf("registered %s but the registry did not load it: %w", inst.ID, api.ErrNotFound)
 	}
-	return d.jobView(entry, true), nil
+	view := d.jobView(entry, true)
+	d.attachSecretSources(&view)
+	return view, nil
 }
 
 // ResetJob implements api.Backend. It retires the current identity and
@@ -288,7 +292,9 @@ func (d *Daemon) MoveJob(ctx context.Context, ref, destination string) (api.JobV
 	if !ok {
 		return api.JobView{}, fmt.Errorf("moved %s but the registry did not load it: %w", moved.ID, api.ErrNotFound)
 	}
-	return d.jobView(loaded, true), nil
+	view := d.jobView(loaded, true)
+	d.attachSecretSources(&view)
+	return view, nil
 }
 
 // purgeInstance removes the durable artifacts one identity owns. It is scoped

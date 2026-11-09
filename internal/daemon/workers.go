@@ -257,7 +257,16 @@ func (d *Daemon) executeRun(item *queue.Item) {
 
 	// Resolve secrets before launching Python so a missing secret is a clear
 	// configuration failure rather than a crash inside the job.
-	env, err := secrets.Resolve(context.Background(), d.secretsForRun(run), m.Name, m.Secrets)
+	resolvedCtx := context.Background()
+	env, secretSources, err := secrets.ResolveSourced(resolvedCtx, d.secretsForRun(run), m.Name, m.Secrets)
+	if len(secretSources) > 0 {
+		// Recorded whether resolution succeeded or not: "this one came from the
+		// environment, that one is missing" is exactly what an operator needs, and
+		// the report must not be absent for the failure being diagnosed.
+		if logErr := d.runs.RecordSecretSources(resolvedCtx, run.JobID, run.ID, secretSources, time.Now()); logErr != nil {
+			d.log.Warn("secret_sources_not_recorded", "job", m.Name, "run_id", run.ID, "error", logErr)
+		}
+	}
 	if err != nil {
 		message := err.Error()
 		d.appendOtterLog(run.ID, "not started: "+message)
@@ -316,9 +325,11 @@ func (d *Daemon) executeRun(item *queue.Item) {
 // ordinary deployment resolves exactly as it did before.
 func (d *Daemon) secretsForRun(run *runs.Run) secrets.Provider {
 	if !d.cfg.SecretBroker.Enabled() {
+		// No platform store: the daemon's environment is the only source, which is
+		// the self-hosted and developer case and needs no fallback switch.
 		return d.secrets
 	}
-	return secrets.NewBrokerProvider(
+	platform := secrets.NewBrokerProvider(
 		d.cfg.SecretBroker.URL,
 		d.cfg.SecretBroker.Credential,
 		secrets.WorkloadIdentity{
@@ -326,6 +337,24 @@ func (d *Daemon) secretsForRun(run *runs.Run) secrets.Provider {
 			JobID:     run.JobID,
 		},
 		secrets.BrokerOptions{},
+	)
+	return secretProviderFor(d.cfg.SecretBroker, platform, d.secrets)
+}
+
+// secretProviderFor applies the fallback policy to an already-built platform
+// provider. Separate from secretsForRun so the policy can be tested without a
+// broker, a host or a daemon.
+func secretProviderFor(cfg config.SecretBrokerConfig, platform, environment secrets.Provider) secrets.Provider {
+	if !cfg.AllowEnvironmentFallback {
+		// Platform only — the pooled default. Anything the platform does not hold
+		// fails the run rather than being satisfied by a host variable.
+		return platform
+	}
+	// Explicitly enabled: the environment answers only when the platform says the
+	// secret is MISSING. A timeout or permission error propagates as unavailable.
+	return secrets.NewSourcedChain(
+		secrets.ChainEntry{Source: secrets.SourcePlatform, Provider: platform},
+		secrets.ChainEntry{Source: secrets.SourceEnvironment, Provider: environment},
 	)
 }
 

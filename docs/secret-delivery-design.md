@@ -161,6 +161,32 @@ construct it at the run site —
 today, and it currently passes the daemon-wide provider, which cannot know which
 job is running.
 
+## Where a value came from, and the environment fallback
+
+Two additions on top of the per-run resolve:
+
+**A report, never a value.** The control plane cannot read a secret back — the
+writer is write-only and the IAM policy denies `GetSecretValue` — so "is this
+job's credential configured?" can only be answered by the runtime. Each resolve
+now yields a per-name **source**: `platform`, `environment`, `missing` or
+`unavailable`. The daemon records it in `job_secret_sources` (migration 0025) and
+publishes it on the job view as `secret_sources`. Names only; a value never
+appears, and the report is a last observation rather than a live check.
+
+`missing` and `unavailable` are deliberately distinct: the first means every
+provider was asked and none had it, the second means a provider could not be asked
+(timeout, permission error, broker down). They send an operator to different
+places, and collapsing them would make an outage look like a missing credential.
+
+**The environment is a second source only when asked for.** With a broker
+configured, the platform store is the only source by default. Setting
+`OTTER_SECRETS_ALLOW_ENV_FALLBACK=1` adds the daemon's environment behind it,
+consulted **only** when the platform reports the secret missing. A hard provider
+error aborts the lookup rather than falling through: during an outage a run must
+fail as unavailable, not silently execute with a host variable. On a pooled host
+the switch must stay off — a stray environment variable would otherwise satisfy
+one tenant's credential for another tenant's job.
+
 ## What is implemented today
 
 - `MintWorkloadToken` / `VerifyWorkloadToken`, with audience, expiry, tamper and

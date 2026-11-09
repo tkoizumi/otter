@@ -151,6 +151,20 @@ type SecretBrokerConfig struct {
 	// which CL-13 forbids. Keeping this credential host-local means the control
 	// plane is cryptographically unable to do so.
 	Credential string
+
+	// AllowEnvironmentFallback makes the daemon environment a second source,
+	// consulted ONLY when the platform store says the secret is missing.
+	//
+	// Off by default, and it must stay off on a pooled host: a stray environment
+	// variable on a shared host would then satisfy a tenant credential the
+	// platform deliberately lacks, and the run would use one tenant's value for
+	// another's job. A dedicated or self-hosted runtime may want it — that is what
+	// the switch is for.
+	//
+	// A timeout or permission error from the platform is NOT a miss: the run fails
+	// with "unavailable" rather than falling back, because silently switching
+	// credential during an outage is the failure this switch could otherwise cause.
+	AllowEnvironmentFallback bool
 }
 
 // Enabled reports whether a broker is configured.
@@ -397,6 +411,12 @@ func (c *DaemonConfig) ApplyEnv() error {
 	}
 	if v, ok := os.LookupEnv("OTTER_BROKER_CREDENTIAL"); ok && strings.TrimSpace(v) != "" {
 		c.SecretBroker.Credential = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("OTTER_SECRETS_ALLOW_ENV_FALLBACK"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on":
+			c.SecretBroker.AllowEnvironmentFallback = true
+		}
 	}
 	return nil
 }

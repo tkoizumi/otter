@@ -338,6 +338,12 @@ func (s *Store) DeleteByJob(ctx context.Context, jobID string) (int64, error) {
 		`DELETE FROM run_queue WHERE job_id = ?`, jobID); err != nil {
 		return 0, fmt.Errorf("runs: delete queue rows for %s: %w", jobID, err)
 	}
+	// The credential report is per job and names credentials; a deleted job must
+	// not leave a row claiming what they were.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM job_secret_sources WHERE job_id = ?`, jobID); err != nil {
+		return 0, fmt.Errorf("runs: delete secret sources for %s: %w", jobID, err)
+	}
 	// A command key left behind would let a stale retry return a run id that no
 	// longer exists, so offboarding removes it with the run it produced.
 	if _, err := tx.ExecContext(ctx,

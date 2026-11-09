@@ -35,10 +35,14 @@ import (
 // degrades to "no freshness" rather than failing the listing.
 func (d *Daemon) ListJobs(ctx context.Context) []api.JobView {
 	fresh := d.lastSuccessByJob(ctx)
+	credentialReports := d.secretSourcesByJob(ctx)
 	entries := d.reg.all()
 	out := make([]api.JobView, 0, len(entries))
 	for _, entry := range entries {
 		view := d.jobView(entry, false)
+		if report, ok := credentialReports[view.ID]; ok {
+			view.SecretSources = report
+		}
 		if at, ok := fresh[view.ID]; ok {
 			instant := at
 			view.LastSuccessAt = &instant
@@ -62,6 +66,38 @@ func (d *Daemon) lastSuccessByJob(ctx context.Context) map[string]time.Time {
 	return fresh
 }
 
+// secretSourcesByJob is the credential report for every job, read once for a
+// listing the same way freshness is. A failed read degrades to "no report"
+// rather than failing the listing.
+func (d *Daemon) secretSourcesByJob(ctx context.Context) map[string]map[string]string {
+	if d.runs == nil {
+		return nil
+	}
+	sources, err := d.runs.SecretSourcesByJob(ctx)
+	if err != nil {
+		d.log.Warn("job_secret_sources", "error", err.Error())
+		return nil
+	}
+	return sources
+}
+
+// attachSecretSources adds one job's report to its view. The Backend interface is
+// context-free, so the read uses a background context: it is a local SQLite
+// lookup, and the alternative is widening an interface for a display field.
+func (d *Daemon) attachSecretSources(view *api.JobView) {
+	if d.runs == nil || view.ID == "" {
+		return
+	}
+	sources, err := d.runs.SecretSources(context.Background(), view.ID)
+	if err != nil {
+		d.log.Warn("job_secret_sources", "job", view.ID, "error", err.Error())
+		return
+	}
+	if len(sources) > 0 {
+		view.SecretSources = sources
+	}
+}
+
 // GetJob implements api.Backend. It accepts a reference -- an id, a
 // unique label, or a path -- and resolves it before building the view.
 func (d *Daemon) GetJob(ref string) (api.JobView, bool) {
@@ -69,7 +105,9 @@ func (d *Daemon) GetJob(ref string) (api.JobView, bool) {
 	if err != nil {
 		return api.JobView{}, false
 	}
-	return d.jobView(entry, true), true
+	view := d.jobView(entry, true)
+	d.attachSecretSources(&view)
+	return view, true
 }
 
 func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobView {
