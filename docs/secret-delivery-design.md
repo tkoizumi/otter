@@ -210,6 +210,25 @@ was written, only that a connection is responsible for the name. A job whose
 secrets are all covered prints nothing, because a warning that always fires is a
 warning nobody reads.
 
+## Redaction
+
+Two different mechanisms, for two different leaks:
+
+- **Capture** (`internal/inspection`) redacts HTTP requests and responses before
+  they are stored, by rule and by operator-supplied names. That predates this
+  document.
+- **Run output** now redacts the run's own declared secret VALUES before a line
+  reaches the log. A job can print anything, including the credential it was
+  given; the runtime is the only party that knows those values, and the log is
+  readable by every session in the workspace. Values come from the manifest's
+  `secrets` list only — a non-secret setting stays readable, and a value shorter
+  than eight characters is left alone rather than turning the log into confetti.
+
+It is a backstop, not a boundary: a job that base64s the value or echoes a
+substring defeats an exact-match redactor. The boundary is that a credential is
+never written to a file, never returned by an API, and reaches generated code only
+as an environment variable.
+
 ## What is implemented today
 
 - `MintWorkloadToken` / `VerifyWorkloadToken`, with audience, expiry, tamper and

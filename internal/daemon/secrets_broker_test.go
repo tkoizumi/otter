@@ -72,7 +72,10 @@ secrets:
   - BROKERED_TOKEN
 `, `
 import os
-print("BROKERED_TOKEN=" + os.environ["BROKERED_TOKEN"])
+# Compare rather than print: the value must reach the process, and the captured
+# log must not carry it. Asserting the literal text would now pass for the wrong
+# reason -- it is replaced before it is stored.
+print("TOKEN_OK" if os.environ["BROKERED_TOKEN"] == "from-the-broker" else "TOKEN_WRONG")
 `)
 
 	// The static provider is empty, so the only way this run can succeed is by
@@ -96,8 +99,15 @@ print("BROKERED_TOKEN=" + os.environ["BROKERED_TOKEN"])
 	}
 
 	stdout := strings.Join(logMessages(t, d, runID, runs.StreamStdout), "\n")
-	if !strings.Contains(stdout, "from-the-broker") {
-		t.Errorf("stdout = %q, want the brokered value", stdout)
+	// The job printed the verdict, not the value, so this proves injection without
+	// depending on the value surviving into a log -- which it must not.
+	if !strings.Contains(stdout, "TOKEN_OK") {
+		t.Errorf("stdout = %q, want the process to have observed the brokered value", stdout)
+	}
+	// And the captured log must not contain it: the redactor replaces declared
+	// secret values before they are stored.
+	if strings.Contains(stdout, "from-the-broker") {
+		t.Errorf("the brokered value reached the log: %q", stdout)
 	}
 
 	// The identity the broker verified names this runtime and this run's job --

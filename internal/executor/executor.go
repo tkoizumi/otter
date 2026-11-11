@@ -174,10 +174,15 @@ func (e *Executor) Run(ctx context.Context, req *Request, sink LogSink) *Result 
 	// block forever without this.
 	cmd.WaitDelay = grace + 5*time.Second
 
+	// The values this run injected are the only ones redacted from captured
+	// output: a job that prints its credential must not write it into the log,
+	// which every session in the workspace can read.
+	redactor := newSecretRedactor(req.ExtraEnv, m.Secrets)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go streamLines(stdoutPipe, runs.StreamStdout, sink, &wg)
-	go streamLines(stderrPipe, runs.StreamStderr, sink, &wg)
+	go streamLines(stdoutPipe, runs.StreamStdout, sink, redactor, &wg)
+	go streamLines(stderrPipe, runs.StreamStderr, sink, redactor, &wg)
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -437,7 +442,7 @@ func sortedKeys(m map[string]string) []string {
 
 // streamLines forwards a pipe to the sink one line at a time, bounding memory
 // even if a process emits a line far larger than the buffer.
-func streamLines(r io.Reader, stream string, sink LogSink, wg *sync.WaitGroup) {
+func streamLines(r io.Reader, stream string, sink LogSink, redactor *secretRedactor, wg *sync.WaitGroup) {
 	defer wg.Done()
 	if sink == nil {
 		_, _ = io.Copy(io.Discard, r)
@@ -458,6 +463,7 @@ func streamLines(r io.Reader, stream string, sink LogSink, wg *sync.WaitGroup) {
 		if truncated {
 			message += " …(truncated)"
 		}
+		message = redactor.Redact(message)
 		if strings.TrimSpace(message) != "" {
 			sink.Line(stream, time.Now().UTC(), message)
 		}
