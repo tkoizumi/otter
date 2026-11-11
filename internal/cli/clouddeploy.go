@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -185,6 +186,16 @@ func (a *App) cmdDeployCloud(ctx context.Context, g globals, f *deploy.Flags, ru
 		}
 		fmt.Fprintf(a.Stdout, "%s: uploaded release %s\n", target.Label(), shortDigest(digest))
 	}
+
+	// WHICH CREDENTIALS WILL RESOLVE, BEFORE THE DEPLOY IS SENT.
+	//
+	// The platform's store is write-only, so this can only compare NAMES: the job's
+	// declared secrets against the names the workspace's connections provide. That
+	// is the check that matters — a name nothing provides resolves to nothing in
+	// Cloud and fails the first run with "missing", and the operator is standing
+	// right here when it can be said. Best effort: a control plane that cannot
+	// answer must not block a deploy that would otherwise work.
+	a.reportCloudCredentialPreflight(ctx, client, target)
 
 	// The job id travels with the digest. A control plane that keeps per-job
 	// desired state cannot place a release it cannot attribute, and the job the
@@ -411,4 +422,28 @@ func (a *App) cloudFail(err error) int {
 		fmt.Fprintln(a.Stderr, "otter: the Cloud credential was rejected; run otter login again")
 	}
 	return 1
+}
+
+// reportCloudCredentialPreflight warns when a job declares a secret that no
+// connection in the workspace provides. It never fails the deploy.
+func (a *App) reportCloudCredentialPreflight(ctx context.Context, client *cloud.Client, target jobTarget) {
+	manifest, err := config.LoadAndValidate(filepath.Join(target.Dir, config.ManifestFileName))
+	if err != nil || len(manifest.Secrets) == 0 {
+		return
+	}
+	connections, err := client.Connections(ctx)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "otter: could not check credentials against connections: %v\n", err)
+		return
+	}
+	listed := make([]ConnectionCredential, 0, len(connections))
+	for _, connection := range connections {
+		listed = append(listed, ConnectionCredential{
+			System:      connection.System,
+			Name:        connection.Name,
+			Credentials: connection.Credentials,
+		})
+	}
+	provided, unprovided := credentialPreflight(manifest.Secrets, listed)
+	reportCredentialPreflight(a.Stderr, target.Label(), provided, unprovided)
 }

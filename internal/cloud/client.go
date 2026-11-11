@@ -145,6 +145,28 @@ type ReleaseJob struct {
 	Name string
 }
 
+// Connection is one connection in the workspace: the system, the name the user
+// gave it, and the credential names its system provides.
+type Connection struct {
+	ID          string   `json:"id"`
+	System      string   `json:"system"`
+	Name        string   `json:"name"`
+	Credentials []string `json:"credentials"`
+}
+
+// Connections lists the workspace's connections. It is what makes the credential
+// preflight possible: the names a deploy will resolve are the names a connection
+// provides, and Cloud is the only place that mapping lives.
+func (c *Client) Connections(ctx context.Context) ([]Connection, error) {
+	var out struct {
+		Connections []Connection `json:"connections"`
+	}
+	if err := c.get(ctx, "/api/connections", &out); err != nil {
+		return nil, err
+	}
+	return out.Connections, nil
+}
+
 // Me verifies the credential and returns the organization it belongs to.
 func (c *Client) Me(ctx context.Context) (*Me, error) {
 	var out Me

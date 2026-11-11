@@ -187,6 +187,29 @@ fail as unavailable, not silently execute with a host variable. On a pooled host
 the switch must stay off — a stray environment variable would otherwise satisfy
 one tenant's credential for another tenant's job.
 
+## Developing locally, and what the deploy checks
+
+A job is the same artifact in both places; only the credential SOURCE changes.
+
+**Locally** there is no broker, so the daemon resolves from its own environment —
+and `otter start` loads `otter.daemon.env` and `otter.env` from the project root
+into it (existing shell variables win, so an explicit export still overrides a
+file). That is where a developer's own credentials go, in a gitignored file rather
+than a shell export. A value resolved this way is reported as source
+`environment`, which is also the signal that it did not come from the platform.
+
+**In Cloud** the runtime has a broker, so the platform's store is the source and
+the report says `platform`. The two are reported differently on purpose: a run
+that used a laptop's credential must never look like one that used the tenant's.
+
+**Before the deploy is admitted**, `otter deploy --cloud` compares the secrets a
+job declares with the credential names the workspace's connections provide and
+warns about any name no connection covers. It is a name check, not an existence
+check — the platform's store is write-only, so Cloud cannot say whether a value
+was written, only that a connection is responsible for the name. A job whose
+secrets are all covered prints nothing, because a warning that always fires is a
+warning nobody reads.
+
 ## What is implemented today
 
 - `MintWorkloadToken` / `VerifyWorkloadToken`, with audience, expiry, tamper and
