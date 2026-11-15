@@ -407,3 +407,21 @@ type failingStore struct{ err error }
 func (f failingStore) Document(context.Context, string) (map[string]string, error) {
 	return nil, f.err
 }
+
+// A job-level blank means "no opinion": the shared value must be used, not
+// erased. This is what makes "clear this job's copy, use the connection" work.
+func TestExchangeBlankJobValueFallsBackToTheSharedTier(t *testing.T) {
+	store := MapStore{
+		"otter/rt_a/_tenant": {"SHOPIFY_CLIENT_ID": "shared-id"},
+		"otter/rt_a/job_1":   {"SHOPIFY_CLIENT_ID": ""},
+	}
+	broker := newTestBroker(store, Options{})
+
+	rec := exchange(t, broker, "rt_a", mint(t, runtimeKey, secrets.WorkloadIdentity{RuntimeID: "rt_a", JobID: "job_1"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	if got := decodeSecrets(t, rec)["SHOPIFY_CLIENT_ID"]; got != "shared-id" {
+		t.Errorf("SHOPIFY_CLIENT_ID = %q, want the shared value: a blank job copy must not erase it", got)
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tkoizumi/otter/internal/secrets"
@@ -273,6 +274,18 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for key, value := range found {
+			// A BLANK VALUE IN A TIER MEANS "NO OPINION", not "empty value".
+			//
+			// The merge runs tenant first, then the job over it. Without this, a
+			// blank job-level value would overwrite a real tenant value with "",
+			// and the key would resolve as missing -- so "clear this job's copy and
+			// fall back to the connection" would fail the run instead of using the
+			// shared credential. Skipping blanks is what lets a cleared override
+			// actually fall through; a name that is blank in every tier is still
+			// missing, which is the caller's answer below.
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
 			document[key] = value
 		}
 	}
