@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/tkoizumi/otter/internal/config"
 	"strings"
 	"time"
 
@@ -273,9 +274,12 @@ func (d *Daemon) ReplayCapturedRequest(ctx context.Context, runID, requestID str
 	if err != nil {
 		return nil, err
 	}
+	// A replay resolves what the ORIGINAL run could resolve, which means the same
+	// connection selection: the job's manifest at replay time is the closest
+	// available statement of it, and it must not widen what the run was allowed.
 	engine := &replay.Engine{
 		Store:   d.inspection,
-		Secrets: d.secretsForRun(run),
+		Secrets: d.secretsForRun(run, manifestOf(d, run.JobID)),
 		Logger:  d.log,
 	}
 	result, err := engine.Replay(ctx, exchange, run.JobID)
@@ -309,4 +313,17 @@ func (d *Daemon) expireCapture(ctx context.Context) {
 		}
 		d.log.Info("capture_expired", "runs", expired, "requests", deleted)
 	}
+}
+
+// manifestOf is the job's manifest when it is registered, and nil otherwise.
+//
+// Nil means "no connections selected", which is the safe direction: a replay of a
+// job that is no longer registered must not be able to read connection
+// credentials the original run may not have had.
+func manifestOf(d *Daemon, jobID string) *config.Manifest {
+	entry, ok := d.reg.get(jobID)
+	if !ok || entry.Manifest == nil {
+		return nil
+	}
+	return entry.Manifest
 }

@@ -258,7 +258,7 @@ func (d *Daemon) executeRun(item *queue.Item) {
 	// Resolve secrets before launching Python so a missing secret is a clear
 	// configuration failure rather than a crash inside the job.
 	resolvedCtx := context.Background()
-	env, secretSources, err := secrets.ResolveSourced(resolvedCtx, d.secretsForRun(run), m.Name, m.Secrets)
+	env, secretSources, err := secrets.ResolveSourced(resolvedCtx, d.secretsForRun(run, m), m.Name, m.Secrets)
 	if len(secretSources) > 0 {
 		// Recorded whether resolution succeeded or not: "this one came from the
 		// environment, that one is missing" is exactly what an operator needs, and
@@ -323,19 +323,26 @@ func (d *Daemon) executeRun(item *queue.Item) {
 //
 // With no broker configured this returns the daemon-wide provider, so an
 // ordinary deployment resolves exactly as it did before.
-func (d *Daemon) secretsForRun(run *runs.Run) secrets.Provider {
+func (d *Daemon) secretsForRun(run *runs.Run, m *config.Manifest) secrets.Provider {
 	if !d.cfg.SecretBroker.Enabled() {
 		// No platform store: the daemon's environment is the only source, which is
 		// the self-hosted and developer case and needs no fallback switch.
 		return d.secrets
 	}
+	identity := secrets.WorkloadIdentity{
+		RuntimeID: d.cfg.SecretBroker.RuntimeID,
+		JobID:     run.JobID,
+	}
+	// The selection travels with the identity, so the broker serves exactly the
+	// connections this job named — not every connection on the runtime. A nil
+	// manifest (a replay of an unregistered job) selects nothing.
+	if m != nil {
+		identity.Connections = m.Connections
+	}
 	platform := secrets.NewBrokerProvider(
 		d.cfg.SecretBroker.URL,
 		d.cfg.SecretBroker.Credential,
-		secrets.WorkloadIdentity{
-			RuntimeID: d.cfg.SecretBroker.RuntimeID,
-			JobID:     run.JobID,
-		},
+		identity,
 		secrets.BrokerOptions{},
 	)
 	return secretProviderFor(d.cfg.SecretBroker, platform, d.secrets)

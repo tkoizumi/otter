@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestWorkloadTokenRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if got != id {
+	if got.RuntimeID != id.RuntimeID || got.JobID != id.JobID || !reflect.DeepEqual(got.Connections, id.Connections) {
 		t.Errorf("identity = %+v, want %+v", got, id)
 	}
 }

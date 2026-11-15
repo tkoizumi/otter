@@ -136,6 +136,7 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 		view.PythonMode = m.Python.Mode
 		view.PythonPath = m.Python.Path
 		view.DestinationTables = m.DestinationTables
+		view.Connections = m.Connections
 		view.TimeoutSeconds = m.Timeout.Seconds()
 		view.Concurrency = m.Concurrency
 		view.Env = m.Env

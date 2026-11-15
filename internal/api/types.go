@@ -52,6 +52,11 @@ type JobView struct {
 	// makes no claim that anything was written.
 	DestinationTables []string `json:"destination_tables,omitempty"`
 
+	// Connections are the connection ids this job selects in its manifest. A job
+	// reads credentials from these and no others; the values live on the
+	// connection, so rotating one does not touch the job.
+	Connections []string `json:"connections,omitempty"`
+
 	// SecretSources is where the last run got each declared secret: `platform`,
 	// `environment`, `missing` or `unavailable`. Names only — never a value, and
 	// never an existence claim the runtime cannot make.

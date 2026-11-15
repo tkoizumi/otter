@@ -131,7 +131,7 @@ func TestSecretsForRunFallsBackWithoutABroker(t *testing.T) {
 	fallback := secrets.NewStaticProvider(map[string]string{"A": "1"})
 	d := &Daemon{secrets: fallback}
 
-	if got := d.secretsForRun(&runs.Run{JobID: "job_1"}); got != secrets.Provider(fallback) {
+	if got := d.secretsForRun(&runs.Run{JobID: "job_1"}, nil); got != secrets.Provider(fallback) {
 		t.Errorf("without a broker, secretsForRun = %T, want the daemon provider", got)
 	}
 }
@@ -148,8 +148,8 @@ func TestSecretsForRunBuildsAFreshBrokerProviderPerRun(t *testing.T) {
 		}},
 	}
 
-	first := d.secretsForRun(&runs.Run{JobID: "job_1"})
-	second := d.secretsForRun(&runs.Run{JobID: "job_1"})
+	first := d.secretsForRun(&runs.Run{JobID: "job_1"}, nil)
+	second := d.secretsForRun(&runs.Run{JobID: "job_1"}, nil)
 
 	if _, ok := first.(*secrets.BrokerProvider); !ok {
 		t.Fatalf("provider = %T, want *secrets.BrokerProvider", first)

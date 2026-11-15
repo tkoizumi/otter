@@ -425,3 +425,66 @@ func TestExchangeBlankJobValueFallsBackToTheSharedTier(t *testing.T) {
 		t.Errorf("SHOPIFY_CLIENT_ID = %q, want the shared value: a blank job copy must not erase it", got)
 	}
 }
+
+// A job reads a connection only if its token names it. This is the boundary that
+// makes "select a connection" a permission rather than a naming convention.
+func TestExchangeServesOnlyTheConnectionsTheJobSelected(t *testing.T) {
+	store := MapStore{
+		"otter/rt_a/connection/conn-one": {"SHOPIFY_CLIENT_ID": "from-conn-one"},
+		"otter/rt_a/connection/conn-two": {"SHOPIFY_CLIENT_ID": "from-conn-two", "SALESFORCE_AUTHORIZATION": "sf-token"},
+		"otter/rt_a/job_1":               {},
+	}
+	broker := newTestBroker(store, Options{})
+
+	// Selected conn-one only.
+	rec := exchange(t, broker, "rt_a", mintIdentity(t, secrets.WorkloadIdentity{
+		RuntimeID: "rt_a", JobID: "job_1", Connections: []string{"conn-one"},
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	got := decodeSecrets(t, rec)
+	if got["SHOPIFY_CLIENT_ID"] != "from-conn-one" {
+		t.Errorf("SHOPIFY_CLIENT_ID = %q, want the selected connection's value", got["SHOPIFY_CLIENT_ID"])
+	}
+	if _, leaked := got["SALESFORCE_AUTHORIZATION"]; leaked {
+		t.Errorf("a connection the job did not select was served: %v", got)
+	}
+
+	// No selection, no connection credentials -- even though they exist.
+	rec = exchange(t, broker, "rt_a", mintIdentity(t, secrets.WorkloadIdentity{RuntimeID: "rt_a", JobID: "job_1"}))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: a job with no selection has no connection secrets", rec.Code)
+	}
+}
+
+// A job's own value still wins over a selected connection's, and a later
+// connection wins over an earlier one, so precedence is deterministic.
+func TestExchangeJobValueBeatsItsConnections(t *testing.T) {
+	store := MapStore{
+		"otter/rt_a/connection/conn-one": {"SHOPIFY_CLIENT_ID": "conn-one-id", "SHOPIFY_CLIENT_SECRET": "conn-one-secret"},
+		"otter/rt_a/connection/conn-two": {"SHOPIFY_CLIENT_ID": "conn-two-id"},
+		"otter/rt_a/job_1":               {"SHOPIFY_CLIENT_ID": "job-id"},
+	}
+	broker := newTestBroker(store, Options{})
+	rec := exchange(t, broker, "rt_a", mintIdentity(t, secrets.WorkloadIdentity{
+		RuntimeID: "rt_a", JobID: "job_1", Connections: []string{"conn-one", "conn-two"},
+	}))
+	got := decodeSecrets(t, rec)
+	if got["SHOPIFY_CLIENT_ID"] != "job-id" {
+		t.Errorf("SHOPIFY_CLIENT_ID = %q, want the job's own value", got["SHOPIFY_CLIENT_ID"])
+	}
+	if got["SHOPIFY_CLIENT_SECRET"] != "conn-one-secret" {
+		t.Errorf("a name only a connection provides was not served: %v", got)
+	}
+}
+
+// mintIdentity is mint with a full identity, including the connection selection.
+func mintIdentity(t *testing.T, id secrets.WorkloadIdentity) string {
+	t.Helper()
+	token, err := secrets.MintWorkloadToken(runtimeKey, id, time.Now(), time.Minute)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	return token
+}

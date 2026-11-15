@@ -72,6 +72,14 @@ type Manifest struct {
 	Env         map[string]string `yaml:"env"`
 	Secrets     []string          `yaml:"secrets"`
 
+	// Connections are the ids of the connections this job selects. Each one is a
+	// namespace the runtime may read credentials from, and the selection travels in
+	// the workload token, so a job reads exactly what it names and nothing else.
+	//
+	// It is a SELECTION, not a credential: the values live under the connection,
+	// are written once, and rotate without touching this job.
+	Connections []string `yaml:"connections"`
+
 	// DestinationTables names the external tables this job's effects land in.
 	//
 	// It exists because a successful exit does not prove a correct business
@@ -484,7 +492,39 @@ func (e *ValidationError) Error() string {
 
 // Validate checks the manifest against the documented rules. It also verifies
 // that the entrypoint exists on disk.
+// validateConnections refuses an id that cannot be a namespace segment.
+//
+// The id is spliced into a backend path by the broker, which revalidates it; this
+// is the earlier, friendlier refusal, and it is what stops a manifest from naming
+// a connection that could never be served.
+func (m *Manifest) validateConnections() error {
+	if len(m.Connections) > 16 {
+		return fmt.Errorf("a job may select at most 16 connections, got %d", len(m.Connections))
+	}
+	seen := map[string]bool{}
+	for _, id := range m.Connections {
+		if id == "" || len(id) > 64 {
+			return fmt.Errorf("connection id %q must be 1-64 characters", id)
+		}
+		for _, r := range id {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			default:
+				return fmt.Errorf("connection id %q contains an unusable character %q", id, r)
+			}
+		}
+		if seen[id] {
+			return fmt.Errorf("connection %q is selected twice", id)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
 func (m *Manifest) Validate() error {
+	if err := m.validateConnections(); err != nil {
+		return err
+	}
 	var problems []string
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))

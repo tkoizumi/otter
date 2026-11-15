@@ -29,6 +29,11 @@ const workloadTokenVersion = 1
 type WorkloadIdentity struct {
 	RuntimeID string
 	JobID     string
+
+	// Connections are the connection ids this job selected in its manifest. The
+	// broker serves only these connection namespaces, so "which credentials may
+	// this job read" is answered by the token rather than by the request.
+	Connections []string
 }
 
 func (w WorkloadIdentity) validate() error {
@@ -38,14 +43,43 @@ func (w WorkloadIdentity) validate() error {
 	if strings.TrimSpace(w.JobID) == "" {
 		return fmt.Errorf("%w: no job id", ErrWorkloadToken)
 	}
+	if len(w.Connections) > maxConnections {
+		return fmt.Errorf("%w: more than %d connections", ErrWorkloadToken, maxConnections)
+	}
+	for _, connection := range w.Connections {
+		if !isConnectionID(connection) {
+			return fmt.Errorf("%w: unusable connection id %q", ErrWorkloadToken, connection)
+		}
+	}
 	return nil
 }
 
+// maxConnections bounds the claim: a manifest cannot ask for an unbounded number
+// of documents, which would turn one run's resolve into a scan of the tenant.
+const maxConnections = 16
+
+// isConnectionID is the shape a connection id may have in a namespace segment.
+// Deliberately narrow: this value is spliced into a backend path.
+func isConnectionID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 type workloadClaims struct {
-	Version   int    `json:"v"`
-	RuntimeID string `json:"rt"`
-	JobID     string `json:"job"`
-	ExpiresAt int64  `json:"exp"`
+	Version     int      `json:"v"`
+	RuntimeID   string   `json:"rt"`
+	JobID       string   `json:"job"`
+	Connections []string `json:"conn,omitempty"`
+	ExpiresAt   int64    `json:"exp"`
 }
 
 // MintWorkloadToken returns a short-lived token bound to id and signed with the
@@ -67,10 +101,11 @@ func MintWorkloadToken(key string, id WorkloadIdentity, now time.Time, ttl time.
 		return "", fmt.Errorf("%w: ttl must be positive", ErrWorkloadToken)
 	}
 	claims := workloadClaims{
-		Version:   workloadTokenVersion,
-		RuntimeID: id.RuntimeID,
-		JobID:     id.JobID,
-		ExpiresAt: now.Add(ttl).Unix(),
+		Version:     workloadTokenVersion,
+		RuntimeID:   id.RuntimeID,
+		JobID:       id.JobID,
+		Connections: id.Connections,
+		ExpiresAt:   now.Add(ttl).Unix(),
 	}
 	payload, err := json.Marshal(claims)
 	if err != nil {
@@ -109,7 +144,7 @@ func VerifyWorkloadToken(key, token string, now time.Time) (WorkloadIdentity, er
 	if claims.Version != workloadTokenVersion {
 		return WorkloadIdentity{}, fmt.Errorf("%w: unsupported version %d", ErrWorkloadToken, claims.Version)
 	}
-	id := WorkloadIdentity{RuntimeID: claims.RuntimeID, JobID: claims.JobID}
+	id := WorkloadIdentity{RuntimeID: claims.RuntimeID, JobID: claims.JobID, Connections: claims.Connections}
 	if err := id.validate(); err != nil {
 		return WorkloadIdentity{}, err
 	}

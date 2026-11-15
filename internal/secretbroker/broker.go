@@ -122,6 +122,22 @@ func Namespace(runtimeID, jobID string) (string, error) {
 	return "otter/" + runtimeID + "/" + jobID, nil
 }
 
+// ConnectionNamespace is where one connection's credentials live: a copy per
+// connection, not per job, so rotating a connection is one write however many
+// jobs select it.
+//
+// A job reads a connection only if its workload token names it, which is what
+// makes the selection a real boundary rather than a convention.
+func ConnectionNamespace(runtimeID, connectionID string) (string, error) {
+	if err := validSegment("runtime", runtimeID); err != nil {
+		return "", err
+	}
+	if err := validSegment("connection", connectionID); err != nil {
+		return "", err
+	}
+	return "otter/" + runtimeID + "/connection/" + connectionID, nil
+}
+
 // tenantSegment is the reserved job-id slot that holds a runtime's shared
 // secrets. Reserved rather than merely conventional: validSegment refuses a
 // leading underscore for every identity segment, so no job and no runtime can be
@@ -250,6 +266,21 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Order is precedence, lowest first: the tenant's shared defaults, then each
+	// connection the job SELECTED (in claim order), then the job's own values.
+	// A job's own value always wins, and a later connection wins over an earlier
+	// one, so a job that lists several is deterministic rather than a race.
+	namespaces := []string{shared}
+	for _, connectionID := range identity.Connections {
+		connectionNamespace, err := ConnectionNamespace(identity.RuntimeID, connectionID)
+		if err != nil {
+			writeError(w, http.StatusForbidden, "unusable identity")
+			return
+		}
+		namespaces = append(namespaces, connectionNamespace)
+	}
+	namespaces = append(namespaces, namespace)
+
 	// Two lookups, one answer: the tenant's shared document first, the job's own
 	// names over it. The tenant segment is derived from the token's runtime id and
 	// never from the request, so this does not widen D2's audience -- a job can
@@ -259,7 +290,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// shared secrets and no names of its own is still the 404 below, which is the
 	// message that says so.
 	document := map[string]string{}
-	for _, name := range []string{shared, namespace} {
+	for _, name := range namespaces {
 		found, lookupErr := b.store.Document(ctx, name)
 		if lookupErr != nil {
 			if errors.Is(lookupErr, ErrNotFound) {
