@@ -99,6 +99,15 @@ func (c *Client) Work(ctx context.Context, cloudURL string, report Report) (*Wor
 	if len(report.Placements) > 0 {
 		body["placements"] = report.Placements
 	}
+	// The image and its version label. Cloud compares the version a tenant's agent
+	// reports with this one to say "update available" or "up to date"; without it
+	// the control plane has no definition of current.
+	if report.Image != "" {
+		body["image"] = report.Image
+	}
+	if report.ImageVersion != "" {
+		body["image_version"] = report.ImageVersion
+	}
 	var out WorkResponse
 	if err := c.post(ctx, "/agent/v1/host/work", body, &out); err != nil {
 		return nil, err

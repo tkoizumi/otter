@@ -125,6 +125,50 @@ func TestStepReportsActiveAfterVerifiedWork(t *testing.T) {
 	}
 }
 
+// The heartbeat must say which image version this host would converge a tenant
+// on. Cloud compares it with the version the tenant's own agent reports; without
+// it the control plane has no definition of "up to date".
+func TestHeartbeatCarriesTheImageAndItsBuildVersion(t *testing.T) {
+	var work map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/work") {
+			_ = json.NewDecoder(r.Body).Decode(&work)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"work": nil, "usage": map[string]int{}, "capacity": 4,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	runner := &RecordingRunner{Respond: func(name string, args []string) (string, error) {
+		switch {
+		case name == "docker" && len(args) > 1 && args[0] == "image" && args[1] == "inspect":
+			return "v0.9.0-3-gdeadbee\n", nil
+		case name == "docker" && len(args) > 0 && args[0] == "ps":
+			return "", nil
+		case name == "df":
+			return "", nil
+		}
+		return "", nil
+	}}
+	agent := &Agent{
+		Client:   NewClient(server.URL, "otk_test_token"),
+		CloudURL: server.URL,
+		Options:  Options{CommandRunner: runner, Image: "otter-runtime:local"},
+	}
+	if err := agent.Step(context.Background()); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	if work["image"] != "otter-runtime:local" {
+		t.Errorf("image not reported: %v", work)
+	}
+	if work["image_version"] != "v0.9.0-3-gdeadbee" {
+		t.Errorf("image_version not reported: %v", work)
+	}
+}
+
 type errTest string
 
 func (e errTest) Error() string { return string(e) }

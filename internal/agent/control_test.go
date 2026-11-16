@@ -128,8 +128,48 @@ func TestNoCredentialFailsBeforeTheNetwork(t *testing.T) {
 	}
 }
 
-// RunOnce performs exactly one cycle, sharing step() with Run so a diagnostic
-// cannot take a different path from the real loop.
+// A desired poll must say WHICH build is asking and what it can do. The field
+// existed on the request and was never filled in, so a live tenant's version
+// read "unknown" and Cloud could not tell an update from a no-op. The capability
+// list is the other half: Cloud hides a control an old image has not declared.
+func TestDesiredSendsTheBuildVersionAndEveryDeclaredCapability(t *testing.T) {
+	var seen map[string]any
+	srv, _ := fakeCloud(t, func(w http.ResponseWriter, _ *http.Request, body map[string]any) {
+		seen = body
+		_ = json.NewEncoder(w).Encode(Desired{Generation: 1, Release: Release{Digest: "sha256:a", URL: "u"}})
+	})
+	c := &HTTPControlPlane{
+		BaseURL:      srv.URL,
+		Creds:        liveCreds(),
+		RuntimeID:    "rt-1",
+		AgentVersion: "v0.4.0-12-gabc",
+	}
+	if _, err := c.Desired(context.Background(), Observed{}); err != nil {
+		t.Fatal(err)
+	}
+	if seen["agent_version"] != "v0.4.0-12-gabc" {
+		t.Fatalf("agent_version not sent: %v", seen)
+	}
+	raw, ok := seen["capabilities"].([]any)
+	if !ok {
+		t.Fatalf("capabilities not sent: %v", seen)
+	}
+	got := map[string]bool{}
+	for _, cap := range raw {
+		got[cap.(string)] = true
+	}
+	for _, want := range []string{
+		CapabilityDesiredSnapshot,
+		CapabilityCommandsConfig,
+		CapabilitySecretsConnections,
+		CapabilityReportSecretSources,
+	} {
+		if !got[want] {
+			t.Errorf("capability %q not declared; got %v", want, raw)
+		}
+	}
+}
+
 func TestRunOncePerformsOneCycle(t *testing.T) {
 	rt := &fakeRuntime{}
 	srv, _ := fakeCloud(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {

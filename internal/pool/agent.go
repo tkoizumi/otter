@@ -99,10 +99,17 @@ func (a *Agent) Step(ctx context.Context) error {
 		})
 	}
 
+	// The image this host would launch from, and the version it carries. The
+	// version label is read from the tag RESOLVED NOW, so a rebuilt image reports
+	// the new build even before any tenant takes it -- which is what lets Cloud
+	// tell a tenant it is behind.
+	image := o.Image
 	work, err := a.Client.Work(ctx, a.CloudURL, Report{
-		Placements:  placements,
-		FreeDiskMB:  FreeDiskMB(ctx, o),
-		TenantCount: &count,
+		Placements:   placements,
+		FreeDiskMB:   FreeDiskMB(ctx, o),
+		TenantCount:  &count,
+		Image:        image,
+		ImageVersion: ImageVersion(ctx, image, o),
 	})
 	if err != nil {
 		return err

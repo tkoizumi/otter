@@ -23,6 +23,14 @@ type Observed struct {
 	Status string
 	// State is the normalised state the control plane understands.
 	State string
+	// ImageRef is the image reference the container was CREATED from
+	// (`.Config.Image`, normally the tag). It is not evidence of freshness: a tag
+	// can point at a rebuilt image while the container keeps the old one.
+	ImageRef string
+	// ImageID is the immutable image the container is actually running. Comparing
+	// it with the ID the tag resolves to now is what detects a tenant that is
+	// BEHIND after a rebuild, which no comparison of tags can.
+	ImageID string
 }
 
 // MatchesPlan reports whether this container is the one the plan describes.
@@ -52,7 +60,7 @@ func InspectTenant(ctx context.Context, tenant string, opts Options) (Observed, 
 	observed := Observed{Tenant: tenant, State: "absent"}
 
 	out, err := o.CommandRunner.Run(ctx, "docker", "inspect",
-		"--format", "{{.State.Running}}|{{.State.Status}}|{{index .Config.Labels \"otter.runtime-id\"}}|{{index .Config.Labels \"otter.org\"}}|{{index .Config.Labels \"otter.role\"}}",
+		"--format", "{{.State.Running}}|{{.State.Status}}|{{index .Config.Labels \"otter.runtime-id\"}}|{{index .Config.Labels \"otter.org\"}}|{{index .Config.Labels \"otter.role\"}}|{{.Config.Image}}|{{.Image}}",
 		name)
 	if err != nil {
 		// docker inspect exits non-zero for a missing container. Distinguishing that
@@ -75,7 +83,48 @@ func InspectTenant(ctx context.Context, tenant string, opts Options) (Observed, 
 	observed.Org = strings.TrimSpace(fields[3])
 	observed.Role = strings.TrimSpace(fields[4])
 	observed.State = stateOf(observed.Running, observed.Status)
+	// Optional trailing fields, so a fixture written against the older five-field
+	// shape still parses. `unknown` image detail must never be read as "current".
+	if len(fields) >= 6 {
+		observed.ImageRef = strings.TrimSpace(fields[5])
+	}
+	if len(fields) >= 7 {
+		observed.ImageID = strings.TrimSpace(fields[6])
+	}
 	return observed, nil
+}
+
+// ImageID resolves an image reference to the immutable ID the tag points at NOW.
+//
+// Empty on any failure, and callers treat empty as unknown rather than as
+// "current": an unreadable image must not produce a false "already up to date".
+func ImageID(ctx context.Context, image string, opts Options) string {
+	o := opts.withDefaults()
+	if strings.TrimSpace(image) == "" {
+		return ""
+	}
+	out, err := o.CommandRunner.Run(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// ImageVersion reads the version label baked into an image at build time
+// (`packaging/container/Dockerfile`). The host is the only party that can read
+// it without running the image, which is why it rides the heartbeat: it turns
+// "is this runtime up to date?" into a comparison of two reported versions.
+func ImageVersion(ctx context.Context, image string, opts Options) string {
+	o := opts.withDefaults()
+	if strings.TrimSpace(image) == "" {
+		return ""
+	}
+	out, err := o.CommandRunner.Run(ctx, "docker", "image", "inspect",
+		"--format", "{{index .Config.Labels \"org.otter.version\"}}", image)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // stateOf normalises Docker's status text into the control plane's vocabulary.

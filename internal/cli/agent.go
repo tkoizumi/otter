@@ -112,6 +112,9 @@ func (a *App) cmdAgent(ctx context.Context, args []string) int {
 		// got "request does not name a runtime" on every poll. The field
 		// existed and the method used it; nothing filled it in.
 		RuntimeID: *runtimeID,
+		// This binary's build. It rides every desired poll; without it Cloud
+		// cannot show which runtime is behind or tell an update from a no-op.
+		AgentVersion: a.Version,
 	}
 	runtime := &agent.RuntimeHTTP{
 		BaseURL: *runtimeURL,

@@ -26,6 +26,10 @@ type HTTPControlPlane struct {
 	// RuntimeID is sent with each request so the control plane can match it
 	// against the credential's binding.
 	RuntimeID string
+	// AgentVersion is this binary's build version. It travels with every desired
+	// poll so Cloud can show which runtime is behind, and it is what flips an
+	// update from "pending" to "up to date" once the agent reports the new build.
+	AgentVersion string
 }
 
 func (c *HTTPControlPlane) client() *http.Client {
@@ -106,12 +110,19 @@ func (c *HTTPControlPlane) Desired(ctx context.Context, observed Observed) (*Des
 		RuntimeID:  c.RuntimeID,
 		Observed:   observed,
 		Generation: 0,
+		// The build version is what Cloud shows under Settings and what tells an
+		// update apart from a runtime that is already current. It used to be left
+		// out here even though the field existed, so a live tenant's version read
+		// "unknown" while the agent knew exactly what it was.
+		AgentVersion: c.AgentVersion,
 		// Declared on every request, because it is what selects the SHAPE of the
 		// answer. A control plane that does not know the capability replies with
 		// the single release, which this agent still understands and reconciles
 		// without removing anything -- so a Cloud deploy and an image rebuild can
-		// happen in either order.
-		Capabilities: []string{CapabilityDesiredSnapshot},
+		// happen in either order. The capability list is the whole version-skew
+		// contract: Cloud hides a control this build does not declare rather than
+		// queueing a command that comes back `unsupported action`.
+		Capabilities: DeclaredCapabilities(),
 	}
 	var out Desired
 	if err := c.post(ctx, "/agent/v1/desired", req, &out); err != nil {

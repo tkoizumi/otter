@@ -14,15 +14,46 @@ import (
 // the spec means a protocol change is a visible edit to a Go file and a test,
 // not a silent regeneration.
 
-// CapabilityDesiredSnapshot is what an agent declares when it can converge a
-// per-job SNAPSHOT rather than one release.
+// The protocol shapes this build understands. Cloud answers in the shape the
+// agent declares, so a fleet can be rebuilt at its own pace; a capability that
+// is absent means the old participant is never sent something it cannot do.
+const (
+	// CapabilityDesiredSnapshot is what an agent declares when it can converge a
+	// per-job SNAPSHOT rather than one release.
+	//
+	// It is the whole version-skew mechanism. Cloud and agents deploy
+	// independently, so Cloud serves the older single-release shape to an agent that
+	// does not declare this, and an agent that receives no snapshot (because Cloud
+	// is older) reconciles the single release and removes nothing. Neither direction
+	// can make an old participant act on a shape it does not know.
+	CapabilityDesiredSnapshot = "desired.snapshot.v1"
+	// CapabilityCommandsConfig is the allowlisted `config` control command: the
+	// runtime can apply a job's configuration (a connection selection) without a
+	// new release.
+	CapabilityCommandsConfig = "commands.config.v1"
+	// CapabilitySecretsConnections is the connection-aware secret namespace: a job
+	// resolves only the connections it selects, and each connection owns its own
+	// credentials.
+	CapabilitySecretsConnections = "secrets.connections.v1"
+	// CapabilityReportSecretSources is the per-name source report (platform,
+	// environment, missing, unavailable) the job page shows. Without it Cloud cannot
+	// tell "no report" from "this runtime cannot report".
+	CapabilityReportSecretSources = "report.secret_sources.v1"
+)
+
+// DeclaredCapabilities is every protocol shape this build implements.
 //
-// It is the whole version-skew mechanism. Cloud and agents deploy
-// independently, so Cloud serves the older single-release shape to an agent that
-// does not declare this, and an agent that receives no snapshot (because Cloud
-// is older) reconciles the single release and removes nothing. Neither direction
-// can make an old participant act on a shape it does not know.
-const CapabilityDesiredSnapshot = "desired.snapshot.v1"
+// It returns a fresh slice rather than exposing a package variable, so a caller
+// cannot mutate the list in place. An older image declares fewer of these, which
+// is exactly what lets Cloud hide a control the runtime cannot honour.
+func DeclaredCapabilities() []string {
+	return []string{
+		CapabilityDesiredSnapshot,
+		CapabilityCommandsConfig,
+		CapabilitySecretsConnections,
+		CapabilityReportSecretSources,
+	}
+}
 
 // DesiredRequest is what the agent SENDS when asking what to run.
 //

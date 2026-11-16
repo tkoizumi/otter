@@ -77,17 +77,30 @@ type TenantLimits struct {
 // translation layer, because a translation layer is where "memory" and "memory_mb"
 // come to mean two different things.
 type Plan struct {
-	RuntimeID       string       `json:"runtime_id"`
-	OrganizationID  string       `json:"organization_id"`
-	Tenant          string       `json:"tenant"`
-	Subnet          string       `json:"subnet"`
-	Image           string       `json:"image"`
+	RuntimeID      string `json:"runtime_id"`
+	OrganizationID string `json:"organization_id"`
+	Tenant         string `json:"tenant"`
+	Subnet         string `json:"subnet"`
+	Image          string `json:"image"`
+	// Action is what the host should do with this plan. `provision` (the empty
+	// value, for every plan an older control plane sends) creates the tenant if it
+	// is absent and reconciles it if it is present. `recreate` removes the
+	// container first and provisions it again from Image, keeping the volume --
+	// the documented way a tenant takes a rebuilt image.
+	Action          string       `json:"action,omitempty"`
 	Isolation       string       `json:"isolation"`
 	Limits          TenantLimits `json:"limits"`
 	BootstrapSecret string       `json:"bootstrap_secret"`
 	Attempts        int          `json:"attempts"`
 	LeaseExpiresAt  int64        `json:"lease_expires_at"`
 }
+
+// The two plan actions. `provision` is the empty value so a control plane that
+// predates the field is understood without a version check.
+const (
+	ActionProvision = "provision"
+	ActionRecreate  = "recreate"
+)
 
 // WorkResponse is the answer to "is there anything for me?".
 type WorkResponse struct {
@@ -120,6 +133,14 @@ type Report struct {
 	Placements  []Placement `json:"placements,omitempty"`
 	FreeDiskMB  *int        `json:"free_disk_mb,omitempty"`
 	TenantCount *int        `json:"tenant_count,omitempty"`
+	// Image is the image this host would launch a tenant from on the next
+	// provision (the plan's image, defaulting to `otter-runtime:local`).
+	Image string `json:"image,omitempty"`
+	// ImageVersion is that image's `org.otter.version` label, read from the image
+	// the tag resolves to NOW. It is what tells Cloud the version a tenant should
+	// converge on, so "update available" is a comparison of two real values rather
+	// than a guess. Empty when the label cannot be read.
+	ImageVersion string `json:"image_version,omitempty"`
 }
 
 // Options is how the agent is configured. Every field has a default, so the
@@ -133,6 +154,10 @@ type Options struct {
 	// VolumeRoot is where tenant volumes live, for the free-space report. It is the
 	// same root the provisioner derives a container's volume from.
 	VolumeRoot string
+	// Image is the image tag this host launches tenants from. The plan normally
+	// carries it; this is the fallback, and it is also the image whose version
+	// label the heartbeat reports so Cloud can say what "up to date" means.
+	Image string
 	// PollInterval is how long to wait between asking for work. Provisioning is not
 	// latency-sensitive the way a release rollout is, so this is seconds rather than
 	// the runtime agent's thirty-second long-poll.
@@ -170,6 +195,9 @@ func (o *Options) withDefaults() Options {
 	}
 	if out.VolumeRoot == "" {
 		out.VolumeRoot = firstNonEmpty(os.Getenv("OTTER_TENANTS_DIR"), DefaultVolumeRoot)
+	}
+	if out.Image == "" {
+		out.Image = firstNonEmpty(os.Getenv("OTTER_POOL_IMAGE"), DefaultImage)
 	}
 	if out.BrokerCredentialsPath == "" {
 		out.BrokerCredentialsPath = firstNonEmpty(os.Getenv("OTTER_BROKER_CREDENTIALS_FILE"), DefaultBrokerCredentialsPath)
@@ -275,6 +303,12 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 		// re-run a provisioner against a container that may exist.
 		return Outcome{}, fmt.Errorf("inspect %s: %w", ContainerName(plan.Tenant), err)
 	}
+	// A rebuild of the tag does NOT reach a running container: the container keeps
+	// the image ID it was created from. `recreate` is therefore either explicit
+	// (`tenant.sh remove` then provision -- the documented upgrade) or discovered
+	// here by comparing that ID with what the tag resolves to now. Comparing tags
+	// would never detect it, because the tag is unchanged.
+	recreate := plan.Action == ActionRecreate
 	if observed.Present {
 		if !observed.MatchesPlan(plan) {
 			return Outcome{}, fmt.Errorf(
@@ -282,22 +316,27 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 				ContainerName(plan.Tenant), observed.RuntimeID, plan.RuntimeID,
 			)
 		}
-		if observed.Running {
+		if desiredID := ImageID(ctx, firstNonEmpty(plan.Image, o.Image), o); desiredID != "" && observed.ImageID != "" && observed.ImageID != desiredID {
+			recreate = true
+		}
+		if !recreate && observed.Running {
 			return Outcome{AlreadyPresent: true, Verified: true, Detail: "already provisioned and running"}, nil
 		}
-		// Present but stopped: start it rather than recreating it. Recreating would
-		// destroy the tenant's workspace, which is the one thing that must survive.
-		if _, err := o.CommandRunner.Run(ctx, "docker", "start", ContainerName(plan.Tenant)); err != nil {
-			return Outcome{}, fmt.Errorf("start %s: %w", ContainerName(plan.Tenant), err)
+		if !recreate {
+			// Present but stopped: start it rather than recreating it. Recreating would
+			// destroy the tenant's workspace, which is the one thing that must survive.
+			if _, err := o.CommandRunner.Run(ctx, "docker", "start", ContainerName(plan.Tenant)); err != nil {
+				return Outcome{}, fmt.Errorf("start %s: %w", ContainerName(plan.Tenant), err)
+			}
+			after, err := InspectTenant(ctx, plan.Tenant, o)
+			if err != nil {
+				return Outcome{}, fmt.Errorf("inspect %s after start: %w", ContainerName(plan.Tenant), err)
+			}
+			if !after.Running {
+				return Outcome{}, fmt.Errorf("container %s did not reach a running state", ContainerName(plan.Tenant))
+			}
+			return Outcome{AlreadyPresent: true, Verified: true, Detail: "already provisioned; started a stopped container"}, nil
 		}
-		after, err := InspectTenant(ctx, plan.Tenant, o)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("inspect %s after start: %w", ContainerName(plan.Tenant), err)
-		}
-		if !after.Running {
-			return Outcome{}, fmt.Errorf("container %s did not reach a running state", ContainerName(plan.Tenant))
-		}
-		return Outcome{AlreadyPresent: true, Verified: true, Detail: "already provisioned; started a stopped container"}, nil
 	}
 
 	// The secret goes in a 0600 file, never on the command line: an argv is visible
@@ -322,7 +361,21 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 	// where that file's directory is not writable -- which is exactly the machine
 	// an operator is most likely to be previewing from.
 	if o.DryRun {
+		if recreate {
+			return Outcome{Detail: "dry run: would remove the container and re-provision from " + firstNonEmpty(plan.Image, o.Image)}, nil
+		}
 		return Outcome{Detail: "dry run: provisioner not invoked"}, nil
+	}
+
+	// THE RECREATE, and the volume is the point. `tenant.sh remove` deletes the
+	// container and its network and KEEPS the volume, so the tenant's database,
+	// releases and prepared environments survive; the provisioner then reuses the
+	// existing volume and network. Removing the volume would be a different,
+	// destructive operation and is deliberately not reachable from here.
+	if recreate {
+		if _, err := o.CommandRunner.Run(ctx, "sh", o.Tenant, "remove", plan.Tenant); err != nil {
+			return Outcome{}, fmt.Errorf("remove %s to recreate it: %w", ContainerName(plan.Tenant), err)
+		}
 	}
 
 	// Mint or reuse this runtime's broker credential, and put it where BOTH sides
@@ -350,6 +403,7 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 	// them without the bit would otherwise get a confusing EACCES, and `sh` also
 	// means this works from a checkout with no packaging step.
 	out, err := o.CommandRunner.Run(ctx, "sh", o.Provisioner, "--config", configPath,
+		"--image", firstNonEmpty(plan.Image, o.Image),
 		"--bootstrap-secret-file", secretPath, "--broker-credential-file", brokerPath)
 	if err != nil {
 		// The provisioner refuses an existing container (`provision-tenant.sh:552`).
@@ -377,7 +431,18 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 	if !after.Running {
 		return Outcome{}, fmt.Errorf("container %s exists but is not running", ContainerName(plan.Tenant))
 	}
-	return Outcome{Verified: true, Detail: "provisioned and verified"}, nil
+	// A recreated tenant must actually be on the requested image. "The script
+	// exited zero" is not evidence; the container's own image ID is.
+	if desiredID := ImageID(ctx, firstNonEmpty(plan.Image, o.Image), o); desiredID != "" && after.ImageID != "" && after.ImageID != desiredID {
+		return Outcome{}, fmt.Errorf(
+			"container %s runs image %s, want %s", ContainerName(plan.Tenant), after.ImageID, desiredID,
+		)
+	}
+	detail := "provisioned and verified"
+	if recreate {
+		detail = "recreated on " + firstNonEmpty(plan.Image, o.Image) + " (volume kept) and verified"
+	}
+	return Outcome{Verified: true, Detail: detail}, nil
 }
 
 // writeSecret stores a secret in a 0600 file and returns its path plus a cleanup.

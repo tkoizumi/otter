@@ -415,9 +415,90 @@ func TestExecuteMintsAndPassesABrokerCredential(t *testing.T) {
 	}
 }
 
-// A dry run must not mint or persist a credential: it is a preview, and it is
-// most often run from a machine where that file's directory is not writable --
-// which is exactly the machine an operator previews from.
+// A rebuilt tag does not reach a running container: the container keeps the
+// image ID it was created from. The host must notice that and do the documented
+// recreate -- `tenant.sh remove` (volume kept) then provision -- or every tenant
+// silently keeps serving the old binary while `docker ps` says it is healthy.
+func TestExecuteRecreatesATenantBehindARebuiltTag(t *testing.T) {
+	runner := &RecordingRunner{}
+	recreated := false
+	runner.Respond = func(name string, args []string) (string, error) {
+		switch {
+		case name == "docker" && len(args) > 0 && args[0] == "inspect":
+			imageID := "sha256:old"
+			if recreated {
+				imageID = "sha256:new"
+			}
+			return strings.Join([]string{"true", "running", "rt_9f3a1c2b4d5e", "org-1", "runtime", "otter-runtime:local", imageID}, "|"), nil
+		case name == "docker" && len(args) > 1 && args[0] == "image" && args[1] == "inspect":
+			// The tag now points at a rebuild.
+			return "sha256:new\n", nil
+		case name == "sh" && len(args) >= 2 && strings.HasSuffix(args[0], "tenant.sh") && args[1] == "remove":
+			recreated = true
+			return "", nil
+		}
+		return "", nil
+	}
+	opts := testOptions(t, runner)
+	opts.Tenant = "/usr/local/lib/otter/pool/tenant.sh"
+
+	outcome, err := Execute(context.Background(), plan(), opts)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !outcome.Verified {
+		t.Fatal("a recreate that finished must be verified")
+	}
+
+	removeAt, provisionAt := -1, -1
+	for i, call := range runner.Calls {
+		if len(call) >= 3 && call[0] == "sh" && strings.HasSuffix(call[1], "tenant.sh") && call[2] == "remove" {
+			removeAt = i
+			for _, arg := range call {
+				if arg == "--delete-volume" {
+					t.Fatal("a recreate must keep the volume")
+				}
+			}
+		}
+		if len(call) >= 2 && call[0] == "sh" && strings.HasSuffix(call[1], "provision-tenant.sh") {
+			provisionAt = i
+		}
+	}
+	if removeAt < 0 {
+		t.Fatal("the container was not removed before re-provisioning")
+	}
+	if provisionAt < 0 || removeAt > provisionAt {
+		t.Fatalf("remove must happen before the provisioner (remove=%d, provision=%d)", removeAt, provisionAt)
+	}
+
+	provision := runner.Calls[provisionAt]
+	joined := strings.Join(provision, " ")
+	if !strings.Contains(joined, "--image otter-runtime:local") {
+		t.Errorf("the recreate must pass the image explicitly: %s", joined)
+	}
+}
+
+// The version label is how Cloud defines "up to date". An unreadable image is
+// unknown, never a value that could make a stale tenant look current.
+func TestImageVersionReadsTheBuildLabelOrSaysNothing(t *testing.T) {
+	runner := &RecordingRunner{Respond: func(name string, args []string) (string, error) {
+		if name == "docker" && len(args) > 1 && args[0] == "image" && args[1] == "inspect" {
+			return "v0.4.0-12-gabc\n", nil
+		}
+		return "", nil
+	}}
+	if got := ImageVersion(context.Background(), "otter-runtime:local", testOptions(t, runner)); got != "v0.4.0-12-gabc" {
+		t.Errorf("ImageVersion = %q", got)
+	}
+
+	failing := &RecordingRunner{Respond: func(string, []string) (string, error) {
+		return "", errors.New("no such image")
+	}}
+	if got := ImageVersion(context.Background(), "otter-runtime:local", testOptions(t, failing)); got != "" {
+		t.Errorf("an unreadable image must report no version, got %q", got)
+	}
+}
+
 func TestExecuteDryRunDoesNotMintABrokerCredential(t *testing.T) {
 	runner := &RecordingRunner{Respond: inspectAnswer(false, false, "")}
 	opts := testOptions(t, runner)
