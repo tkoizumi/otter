@@ -1049,3 +1049,19 @@ func TestControlLoopAppliesAConfigCommand(t *testing.T) {
 		t.Fatalf("command results = %+v, want accepted", channel.commands)
 	}
 }
+
+// The queue carries params as strings, so the configuration may also arrive
+// JSON-encoded there. One action, two carriers, no drift between them.
+func TestControlLoopAppliesAConfigCommandFromParams(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-config-2", Action: "config", Job: "sync", Params: map[string]string{"values": `{"connections":["conn-2"]}`}},
+	}}}
+	runtime := &fakeCommandRuntime{}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.configured) != 1 || string(runtime.configured[0]) != `{"connections":["conn-2"]}` {
+		t.Fatalf("configured = %+v, want the decoded configuration", runtime.configured)
+	}
+}

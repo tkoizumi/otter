@@ -520,7 +520,16 @@ func (l *ControlLoop) executeCommand(ctx context.Context, cmd Command) {
 			result.Status = CommandAccepted
 		}
 	case "config":
-		applied, err := l.Runtime.SetJobConfig(ctx, cmd.Job, cmd.Values, "cloud")
+		// The configuration travels either as `values` (the direct wire shape) or
+		// as a JSON string in `params` (the queue's shape, which is a map of
+		// strings). Both are accepted so the two carriers cannot drift.
+		values := cmd.Values
+		if len(values) == 0 {
+			if raw, ok := cmd.Params["values"]; ok && json.Valid([]byte(raw)) {
+				values = json.RawMessage(raw)
+			}
+		}
+		applied, err := l.Runtime.SetJobConfig(ctx, cmd.Job, values, "cloud")
 		switch {
 		case err != nil:
 			result.Status = CommandFailed
