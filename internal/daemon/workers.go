@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -336,8 +337,18 @@ func (d *Daemon) secretsForRun(run *runs.Run, m *config.Manifest) secrets.Provid
 	// The selection travels with the identity, so the broker serves exactly the
 	// connections this job named — not every connection on the runtime. A nil
 	// manifest (a replay of an unregistered job) selects nothing.
+	//
+	// The job's CONFIG can add connections too, and that is what lets an operator
+	// choose one in the dashboard without rebuilding the release: the manifest
+	// states what the code needs, the config states which connection provides it.
+	// Union, manifest first, so a run's identity is stable across config versions.
 	if m != nil {
 		identity.Connections = m.Connections
+	}
+	for _, id := range d.configuredConnections(run) {
+		if !containsString(identity.Connections, id) {
+			identity.Connections = append(identity.Connections, id)
+		}
 	}
 	platform := secrets.NewBrokerProvider(
 		d.cfg.SecretBroker.URL,
@@ -1009,4 +1020,41 @@ func (s *runLogSink) markLoss(lines int) {
 
 func newRunLogSink(logs logBatchAppender, loss logLossMarker, runID string, logger *logging.Logger) *runLogSink {
 	return &runLogSink{logs: logs, loss: loss, logger: logger, runID: runID, lastFlush: time.Now()}
+}
+
+// configuredConnections returns the connection ids the run's pinned configuration
+// selects, in declaration order.
+//
+// A malformed value is ignored rather than fatal: configuration is an input to work
+// that was already accepted, and the same rule applies here as to the config
+// itself — a run must not be stranded by a value it cannot parse. The miss is
+// logged, and the run resolves with the connections it can prove.
+func (d *Daemon) configuredConnections(run *runs.Run) []string {
+	raw := d.pinnedConfig(run)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var values struct {
+		Connections []string `json:"connections"`
+	}
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		d.log.Warn("run_config_unreadable_for_connections", "run_id", run.ID, "error", err.Error())
+		return nil
+	}
+	out := make([]string, 0, len(values.Connections))
+	for _, id := range values.Connections {
+		if strings.TrimSpace(id) != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
