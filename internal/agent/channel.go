@@ -36,7 +36,10 @@ type Command struct {
 	// runtime, which is where the authoritative deduplication lives.
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	Params         map[string]string `json:"params,omitempty"`
-	DeadlineMS     int               `json:"deadline_ms,omitempty"`
+	// Values is the job configuration a `config` command applies. It is an object,
+	// never a secret: configuration is what an operator may see and change.
+	Values     json.RawMessage `json:"values,omitempty"`
+	DeadlineMS int             `json:"deadline_ms,omitempty"`
 }
 
 // Read is one bounded read request for this runtime.
@@ -116,6 +119,11 @@ type RuntimeCommands interface {
 	CancelRun(ctx context.Context, runID string) error
 	PauseJob(ctx context.Context, job string) error
 	ResumeJob(ctx context.Context, job string) error
+	// SetJobConfig writes a new immutable configuration version and points the job
+	// at it. It is the same operation the dashboard's selector performs: the
+	// release states what the job needs, configuration states which connection
+	// provides it, and changing it does not rebuild the release.
+	SetJobConfig(ctx context.Context, job string, values json.RawMessage, by string) (json.RawMessage, error)
 	// DeleteJob removes a job through the SAME runtime endpoint `otter delete`
 	// uses, and reports what the runtime says it removed. It returns a note
 	// rather than nothing because a delete is not uniform: a released-only job
@@ -209,6 +217,32 @@ func (r *RuntimeHTTP) ResumeJob(ctx context.Context, job string) error {
 		return fmt.Errorf("agent: resume command names no job")
 	}
 	return r.do(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(job)+"/resume", nil, nil)
+}
+
+// SetJobConfig PUTs the job's configuration, the same route an operator uses.
+// The body's shape is the runtime's (`{values: {...}}`), so the agent carries an
+// object rather than inventing a second envelope.
+func (r *RuntimeHTTP) SetJobConfig(ctx context.Context, job string, values json.RawMessage, by string) (json.RawMessage, error) {
+	if strings.TrimSpace(job) == "" {
+		return nil, fmt.Errorf("agent: config command names no job")
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("agent: config command carries no values")
+	}
+	body, err := json.Marshal(map[string]json.RawMessage{
+		"values": values,
+		// `by` is the audit label the runtime records: this path is Cloud-driven,
+		// and saying so is what distinguishes it from an operator's own edit.
+		"by": json.RawMessage(strconv.Quote(by)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent: encode config command: %w", err)
+	}
+	var out json.RawMessage
+	if err := r.do(ctx, http.MethodPut, "/v1/jobs/"+url.PathEscape(job)+"/config", body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // DeleteJob removes a job through DELETE /v1/jobs/{id}, the same route and
@@ -484,6 +518,16 @@ func (l *ControlLoop) executeCommand(ctx context.Context, cmd Command) {
 			result.Reason = err.Error()
 		} else {
 			result.Status = CommandAccepted
+		}
+	case "config":
+		applied, err := l.Runtime.SetJobConfig(ctx, cmd.Job, cmd.Values, "cloud")
+		switch {
+		case err != nil:
+			result.Status = CommandFailed
+			result.Reason = err.Error()
+		default:
+			result.Status = CommandAccepted
+			result.Note = string(applied)
 		}
 	case "delete":
 		// The one irreversible action on this channel. It goes through the

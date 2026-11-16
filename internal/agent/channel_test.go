@@ -38,6 +38,8 @@ type fakeCommandRuntime struct {
 	paused        []string
 	resumed       []string
 	deleted       []string
+	configured    []json.RawMessage
+	configErr     error
 	deleteErr     error
 	deleteNote    string
 	readBody      json.RawMessage
@@ -69,6 +71,14 @@ func (f *fakeCommandRuntime) ResumeJob(_ context.Context, job string) error {
 	f.resumed = append(f.resumed, job)
 	return nil
 }
+func (f *fakeCommandRuntime) SetJobConfig(_ context.Context, job string, values json.RawMessage, _ string) (json.RawMessage, error) {
+	f.configured = append(f.configured, values)
+	if f.configErr != nil {
+		return nil, f.configErr
+	}
+	return json.RawMessage(`{"changed":true}`), nil
+}
+
 func (f *fakeCommandRuntime) DeleteJob(_ context.Context, job string) (string, error) {
 	f.deleted = append(f.deleted, job)
 	return f.deleteNote, f.deleteErr
@@ -1013,5 +1023,29 @@ func TestActivateCommandPassesDeadline(t *testing.T) {
 	}
 	if runtime.activateCalls[0].deadline != 5*time.Second {
 		t.Fatalf("deadline = %v, want 5s", runtime.activateCalls[0].deadline)
+	}
+}
+
+// A config command applies the job configuration and reports the runtime's own
+// answer. It is how a connection is selected in the dashboard without rebuilding
+// the release, so the values must travel intact.
+func TestControlLoopAppliesAConfigCommand(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "cmd-config", Action: "config", Job: "sync", Values: json.RawMessage(`{"connections":["conn-1"]}`)},
+	}}}
+	runtime := &fakeCommandRuntime{}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.configured) != 1 {
+		t.Fatalf("SetJobConfig calls = %d, want 1", len(runtime.configured))
+	}
+	if string(runtime.configured[0]) != `{"connections":["conn-1"]}` {
+		t.Errorf("values = %s, want the configuration unchanged", runtime.configured[0])
+	}
+	if len(channel.commands) != 1 || channel.commands[0].Status != CommandAccepted {
+		t.Fatalf("command results = %+v, want accepted", channel.commands)
 	}
 }
