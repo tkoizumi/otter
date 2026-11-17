@@ -276,6 +276,34 @@ func (d *Daemon) jobCron(jobID string, m *config.Manifest) string {
 	return m.Cron()
 }
 
+// jobCronOrigin names what owns the cadence jobCron reports.
+//
+// The manifest wins when present, because that is the row jobCron prefers and
+// the one the API refuses to mutate. `multiple` means several API schedules
+// exist and a single cron field cannot say which one it would edit.
+func (d *Daemon) jobCronOrigin(jobID string, m *config.Manifest) string {
+	if d.schedules != nil {
+		var api int
+		for _, rec := range d.schedules.ForJob(jobID) {
+			if rec.Origin == schedule.OriginManifest {
+				return string(schedule.OriginManifest)
+			}
+			api++
+		}
+		if api == 1 {
+			return string(schedule.OriginAPI)
+		}
+		if api > 1 {
+			return "multiple"
+		}
+	}
+	if m != nil && m.Cron() != "" {
+		// Declared but not imported yet: the file still owns it.
+		return string(schedule.OriginManifest)
+	}
+	return ""
+}
+
 // scheduleError maps the schedule package's sentinels onto the API's, so the
 // HTTP layer can choose a status code without knowing the storage vocabulary.
 func scheduleError(err error) error {

@@ -98,7 +98,12 @@ type RetryView struct {
 
 // TriggerView describes how a job can be started.
 type TriggerView struct {
-	Cron           string `json:"cron,omitempty"`
+	Cron string `json:"cron,omitempty"`
+	// CronOrigin names what owns the cadence the job view reports: `manifest`,
+	// `api`, or `multiple` when several schedules exist. The dashboard may only
+	// edit an api-owned schedule; a manifest one is the file's, and a reload
+	// would undo an API write.
+	CronOrigin     string `json:"cron_origin,omitempty"`
 	WebhookEnabled bool   `json:"webhook_enabled"`
 	WebhookURL     string `json:"webhook_url,omitempty"`
 

@@ -150,6 +150,7 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 		}
 		view.Triggers = api.TriggerView{
 			Cron:           d.jobCron(it.ID, m),
+			CronOrigin:     d.jobCronOrigin(it.ID, m),
 			WebhookEnabled: m.WebhookEnabled(),
 		}
 		if m.WebhookEnabled() {

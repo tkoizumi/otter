@@ -195,3 +195,35 @@ func TestSetScheduleRejectsAnInvalidExpression(t *testing.T) {
 		t.Fatalf("a rejected change altered the armed trigger: %q (armed=%v)", spec, armed)
 	}
 }
+
+// The job view says what owns the cadence it reports. The dashboard may edit an
+// api-owned schedule; a manifest one is the file's, and offering Save on it is
+// what produced a 409 the user could not act on.
+func TestJobViewReportsTheCronOrigin(t *testing.T) {
+	root := t.TempDir()
+	writeJob(t, root, "ticker", cronTicker, noopPython)
+	d := newDaemon(t, root, "", nil, nil)
+	id := runtimeID(t, d, "ticker")
+	view, ok := d.GetJob("id:" + id)
+	if !ok {
+		t.Fatal("manifest job not found")
+	}
+	if view.Triggers.CronOrigin != "manifest" {
+		t.Fatalf("manifest cron origin = %q, want manifest", view.Triggers.CronOrigin)
+	}
+
+	root2 := t.TempDir()
+	writeJob(t, root2, "plain", noCronJob, noopPython)
+	d2 := newDaemon(t, root2, "", nil, nil)
+	id2 := runtimeID(t, d2, "plain")
+	if _, err := d2.CreateSchedule(context.Background(), "id:"+id2, api.ScheduleCreateRequest{Cron: "@every 1h"}, "key"); err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+	view2, ok := d2.GetJob("id:" + id2)
+	if !ok {
+		t.Fatal("api job not found")
+	}
+	if view2.Triggers.CronOrigin != "api" {
+		t.Fatalf("api cron origin = %q, want api", view2.Triggers.CronOrigin)
+	}
+}
