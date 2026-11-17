@@ -37,6 +37,7 @@ type fakeCommandRuntime struct {
 	cancelled     []string
 	paused        []string
 	resumed       []string
+	scheduled     []struct{ job, cron string }
 	deleted       []string
 	configured    []json.RawMessage
 	configErr     error
@@ -69,6 +70,10 @@ func (f *fakeCommandRuntime) PauseJob(_ context.Context, job string) error {
 }
 func (f *fakeCommandRuntime) ResumeJob(_ context.Context, job string) error {
 	f.resumed = append(f.resumed, job)
+	return nil
+}
+func (f *fakeCommandRuntime) SetSchedule(_ context.Context, job, cron string) error {
+	f.scheduled = append(f.scheduled, struct{ job, cron string }{job, cron})
 	return nil
 }
 func (f *fakeCommandRuntime) SetJobConfig(_ context.Context, job string, values json.RawMessage, _ string) (json.RawMessage, error) {
@@ -1063,6 +1068,40 @@ func TestControlLoopAppliesAConfigCommandFromParams(t *testing.T) {
 	}
 	if len(runtime.configured) != 1 || string(runtime.configured[0]) != `{"connections":["conn-2"]}` {
 		t.Fatalf("configured = %+v, want the decoded configuration", runtime.configured)
+	}
+}
+
+// A schedule command is runtime state, so it travels through the control channel
+// on a pooled tenant. An empty cron is the deliberate clear shape; an absent one
+// is malformed and must not clear a schedule by accident.
+func TestControlLoopAppliesAScheduleCommand(t *testing.T) {
+	channel := &fakeChannel{work: &ControlWork{Commands: []Command{
+		{ID: "sched-set", Action: "schedule", Job: "sync", Params: map[string]string{"cron": "*/5 * * * *"}},
+		{ID: "sched-clear", Action: "schedule", Job: "sync", Params: map[string]string{"cron": ""}},
+		{ID: "sched-missing", Action: "schedule", Job: "sync"},
+	}}}
+	runtime := &fakeCommandRuntime{}
+	loop := &ControlLoop{Control: channel, Runtime: runtime, RuntimeID: "rt-a"}
+	if err := loop.Once(context.Background()); err != nil {
+		t.Fatalf("Once: %v", err)
+	}
+	if len(runtime.scheduled) != 2 {
+		t.Fatalf("schedule calls = %+v, want two", runtime.scheduled)
+	}
+	if runtime.scheduled[0] != (struct{ job, cron string }{"sync", "*/5 * * * *"}) {
+		t.Errorf("first schedule = %+v", runtime.scheduled[0])
+	}
+	if runtime.scheduled[1] != (struct{ job, cron string }{"sync", ""}) {
+		t.Errorf("clear schedule = %+v, want an empty cron", runtime.scheduled[1])
+	}
+	if len(channel.commands) != 3 {
+		t.Fatalf("results = %+v, want three", channel.commands)
+	}
+	if channel.commands[0].Status != CommandAccepted || channel.commands[1].Status != CommandAccepted {
+		t.Errorf("valid schedules were not accepted: %+v", channel.commands[:2])
+	}
+	if channel.commands[2].Status != CommandFailed {
+		t.Errorf("a schedule with no cron must fail, got %+v", channel.commands[2])
 	}
 }
 

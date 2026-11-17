@@ -39,6 +39,11 @@ const (
 	// environment, missing, unavailable) the job page shows. Without it Cloud cannot
 	// tell "no report" from "this runtime cannot report".
 	CapabilityReportSecretSources = "report.secret_sources.v1"
+	// CapabilityCommandsSchedule lets the dashboard change a job's cadence on a
+	// pooled runtime. The runtime owns its schedule (it is runtime state, not
+	// manifest state), and the tenant's own agent is the only thing that can reach
+	// it: the host agent runs outside the container and Cloud holds no admin token.
+	CapabilityCommandsSchedule = "commands.schedule.v1"
 )
 
 // DeclaredCapabilities is every protocol shape this build implements.
@@ -52,6 +57,7 @@ func DeclaredCapabilities() []string {
 		CapabilityCommandsConfig,
 		CapabilitySecretsConnections,
 		CapabilityReportSecretSources,
+		CapabilityCommandsSchedule,
 	}
 }
 

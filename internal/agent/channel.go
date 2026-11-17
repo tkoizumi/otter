@@ -119,6 +119,10 @@ type RuntimeCommands interface {
 	CancelRun(ctx context.Context, runID string) error
 	PauseJob(ctx context.Context, job string) error
 	ResumeJob(ctx context.Context, job string) error
+	// SetSchedule replaces a job's cadence, or clears it when cron is empty. The
+	// schedule is runtime state, so this is the only path from the dashboard to it
+	// on a pooled tenant.
+	SetSchedule(ctx context.Context, job, cron string) error
 	// SetJobConfig writes a new immutable configuration version and points the job
 	// at it. It is the same operation the dashboard's selector performs: the
 	// release states what the job needs, configuration states which connection
@@ -217,6 +221,24 @@ func (r *RuntimeHTTP) ResumeJob(ctx context.Context, job string) error {
 		return fmt.Errorf("agent: resume command names no job")
 	}
 	return r.do(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(job)+"/resume", nil, nil)
+}
+
+// SetSchedule replaces a job's cadence, or clears it with an empty cron.
+//
+// The runtime exposes both shapes (`PUT` with {"cron": "..."} and `DELETE` to
+// clear), and this follows them rather than inventing a second meaning for an
+// empty string on the wire. The schedule is runtime state: it changes far more
+// often than the release, and only the tenant's own daemon can write it.
+func (r *RuntimeHTTP) SetSchedule(ctx context.Context, job, cron string) error {
+	if strings.TrimSpace(job) == "" {
+		return fmt.Errorf("agent: schedule command names no job")
+	}
+	cron = strings.TrimSpace(cron)
+	if cron == "" {
+		return r.do(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(job)+"/schedule", nil, nil)
+	}
+	return r.do(ctx, http.MethodPut, "/v1/jobs/"+url.PathEscape(job)+"/schedule",
+		map[string]string{"cron": cron}, nil)
 }
 
 // SetJobConfig PUTs the job's configuration, the same route an operator uses.
@@ -517,6 +539,19 @@ func (l *ControlLoop) executeCommand(ctx context.Context, cmd Command) {
 		}
 	case "resume":
 		if err := l.Runtime.ResumeJob(ctx, cmd.Job); err != nil {
+			result.Status = CommandFailed
+			result.Reason = err.Error()
+		} else {
+			result.Status = CommandAccepted
+		}
+	case "schedule":
+		// An absent cron is malformed; an EMPTY one is the deliberate "remove the
+		// schedule" shape, so the two must not be conflated.
+		cron, ok := cmd.Params["cron"]
+		if !ok {
+			result.Status = CommandFailed
+			result.Reason = "agent: schedule command carries no cron (an empty value clears the schedule)"
+		} else if err := l.Runtime.SetSchedule(ctx, cmd.Job, cron); err != nil {
 			result.Status = CommandFailed
 			result.Reason = err.Error()
 		} else {
