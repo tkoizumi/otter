@@ -121,3 +121,27 @@ func TestDeleteJobPurgesConfiguration(t *testing.T) {
 		t.Fatalf("configuration survived the delete: ok=%v err=%v", ok, err)
 	}
 }
+
+// The job view reports the connections the job SELECTS, which is the manifest's
+// plus the pinned configuration's. The dashboard initializes its selector from
+// this field, so an applied selection that vanished on refresh also hid the
+// reset action that depends on it.
+func TestJobViewReportsPinnedConnections(t *testing.T) {
+	root := t.TempDir()
+	writeJob(t, root, "plain", noCronJob, noopPython)
+
+	d := newDaemon(t, root, "", nil, nil)
+	ctx := context.Background()
+	id := runtimeID(t, d, "plain")
+
+	if _, err := d.SetJobConfig(ctx, "id:"+id, json.RawMessage(`{"connections":["conn-a","conn-b"]}`), "test"); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	view, ok := d.GetJob("id:" + id)
+	if !ok {
+		t.Fatal("the job was not found")
+	}
+	if len(view.Connections) != 2 || view.Connections[0] != "conn-a" || view.Connections[1] != "conn-b" {
+		t.Fatalf("connections = %v, want the pinned selection", view.Connections)
+	}
+}

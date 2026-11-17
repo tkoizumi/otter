@@ -159,6 +159,28 @@ func (d *Daemon) jobView(entry *registered, includeWebhookToken bool) api.JobVie
 		}
 	}
 
+	// A job SELECTS the connections in its manifest AND the ones in its pinned
+	// configuration. The dashboard initializes its selector from this field, so
+	// reporting only the manifest made an applied connection selection vanish on
+	// the next page load -- and hid the reset action that depends on the
+	// selection. The run path already merges the two; this makes the view agree
+	// with it.
+	if d.configs != nil && !entry.Instance.ID.IsZero() {
+		if current, ok, err := d.configs.Current(context.Background(), entry.Instance.ID.String()); err == nil && ok {
+			var values struct {
+				Connections []string `json:"connections"`
+			}
+			if json.Unmarshal(current.Values, &values) == nil {
+				for _, id := range values.Connections {
+					id = strings.TrimSpace(id)
+					if id != "" && !containsString(view.Connections, id) {
+						view.Connections = append(view.Connections, id)
+					}
+				}
+			}
+		}
+	}
+
 	// The next run is the soonest of every schedule the job holds, so a job
 	// with several cadences reports the one that will actually fire first.
 	if d.sched != nil && d.schedules != nil {
