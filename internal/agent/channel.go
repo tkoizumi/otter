@@ -229,17 +229,20 @@ func (r *RuntimeHTTP) SetJobConfig(ctx context.Context, job string, values json.
 	if len(values) == 0 {
 		return nil, fmt.Errorf("agent: config command carries no values")
 	}
-	body, err := json.Marshal(map[string]json.RawMessage{
-		"values": values,
+	// The body is an OBJECT with a `values` field. Passing a pre-marshalled
+	// []byte to `do` does not do that: `do` marshals its argument, and a []byte
+	// becomes a base64 JSON string, so the runtime answered
+	// `body must be a JSON object with a values field`. The map is marshalled
+	// exactly once here, and json.RawMessage embeds the configuration as the
+	// object it already is.
+	payload := map[string]any{
+		"values": json.RawMessage(values),
 		// `by` is the audit label the runtime records: this path is Cloud-driven,
 		// and saying so is what distinguishes it from an operator's own edit.
-		"by": json.RawMessage(strconv.Quote(by)),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("agent: encode config command: %w", err)
+		"by": by,
 	}
 	var out json.RawMessage
-	if err := r.do(ctx, http.MethodPut, "/v1/jobs/"+url.PathEscape(job)+"/config", body, &out); err != nil {
+	if err := r.do(ctx, http.MethodPut, "/v1/jobs/"+url.PathEscape(job)+"/config", payload, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

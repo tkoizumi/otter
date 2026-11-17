@@ -1065,3 +1065,42 @@ func TestControlLoopAppliesAConfigCommandFromParams(t *testing.T) {
 		t.Fatalf("configured = %+v, want the decoded configuration", runtime.configured)
 	}
 }
+
+// The runtime's config route decodes an OBJECT with a `values` field. Passing a
+// pre-marshalled []byte to `do` marshalled it a second time (a []byte becomes a
+// base64 JSON string), so the live command answered
+// `body must be a JSON object with a values field`. This asserts the wire shape,
+// not only the values the fake runtime was handed.
+func TestSetJobConfigSendsAValuesObject(t *testing.T) {
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/jobs/sync/config" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		raw, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"schema_version":"1"}`))
+	}))
+	defer srv.Close()
+
+	rt := &RuntimeHTTP{BaseURL: srv.URL}
+	if _, err := rt.SetJobConfig(context.Background(), "sync",
+		json.RawMessage(`{"connections":["conn-1"]}`), "cloud"); err != nil {
+		t.Fatalf("SetJobConfig: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("the body is not a JSON object: %v: %s", err, raw)
+	}
+	values, ok := decoded["values"].(map[string]any)
+	if !ok {
+		t.Fatalf("values is not an object: %s", raw)
+	}
+	connections, ok := values["connections"].([]any)
+	if !ok || len(connections) != 1 || connections[0] != "conn-1" {
+		t.Fatalf("connections did not travel intact: %s", raw)
+	}
+	if decoded["by"] != "cloud" {
+		t.Errorf("by = %v, want cloud: %s", decoded["by"], raw)
+	}
+}
