@@ -716,26 +716,31 @@ Return one schedule in the same shape as the list entry.
 
 #### `PATCH /v1/schedules/{schedule_id}`
 
-Change an `api`-owned schedule. Every field is optional; a field that is absent
-is left alone.
+Change a schedule. Every field is optional; a field that is absent is left alone.
 
 ```json
 {"cron": "@hourly", "timezone": "UTC", "payload": {}, "missed_policy": "skip"}
 ```
 
-An empty `cron` is refused (`400`) — delete the schedule instead. A
-`manifest`-owned row is refused with `409`, naming the manifest as the owner.
+An empty `cron` is refused (`400`) — delete the schedule instead.
+
+A row **seeded** from `trigger.cron` is editable here. The manifest is a
+default, not an owner: the row records the value it was seeded from, and a
+`reload` reapplies `trigger.cron` only when the file itself changed. An edit
+made through this endpoint (or the dashboard) therefore survives a code deploy.
 
 #### `DELETE /v1/schedules/{schedule_id}`
 
 Delete an `api`-owned schedule and its occurrence ledger. Returns `204` with no
-body. A `manifest`-owned row is refused with `409`.
+body. A **seeded** row is cleared instead: it survives with an empty `cron`, so a
+reload cannot resurrect the cadence the user removed. A later change to
+`trigger.cron` applies over it.
 
 #### `POST /v1/schedules/{schedule_id}/pause` and `/resume`
 
 Hold one schedule back, or release it, without touching the job's other
-schedules and without pausing the job. Pausing is an operator control, so it is
-accepted on a `manifest`-owned row too; a reload preserves `paused_at`.
+schedules and without pausing the job. Pausing is an operator control and is
+accepted on a seeded row too; a reload preserves `paused_at`.
 
 ### Job configuration
 
@@ -791,9 +796,12 @@ identity).
 
 #### `PUT /v1/jobs/{id}/schedule` — deprecated
 
-Replace a job's **single** cadence. This is the v0.3.0 surface. It refuses a job
-whose cadence is manifest-owned with `409`; new callers use
+Replace a job's **single** cadence. This is the v0.3.0 surface; new callers use
 `POST /v1/jobs/{id}/schedules` and the schedule-id endpoints above.
+
+A row seeded by `trigger.cron` is editable here. The row keeps the value it was
+seeded from, so a later `reload` reapplies the manifest only when
+`trigger.cron` itself changed.
 
 ```json
 {"cron": "*/15 * * * *"}
@@ -806,8 +814,8 @@ can apply it unconditionally.
 An invalid expression is rejected **before** anything is written, so a failed
 change leaves the previous cadence in force and armed.
 
-Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (a manifest-owned
-or retired identity).
+Errors: `400 invalid_request`, `404 not_found`, `409 conflict` (a retired
+identity).
 
 #### `DELETE /v1/jobs/{id}/schedule` — deprecated
 
@@ -816,10 +824,10 @@ Clear a job's single cadence. The job stops firing on its own;
 
 Clearing is a first-class state rather than a return to the manifest default.
 The row survives with an empty `cron`, so a later `otter reload` cannot
-re-import `trigger.cron` and silently undo the decision. A manifest-owned
-cadence is refused with `409`.
+re-import `trigger.cron` and silently undo the decision. A seeded row is
+cleared the same way; a later change to `trigger.cron` applies over it.
 
-Errors: `404 not_found`, `409 conflict`.
+Errors: `404 not_found`.
 
 ### `DELETE /v1/jobs/{id}`
 

@@ -473,7 +473,7 @@ func (a *App) printScheduleView(view api.ScheduleView) {
 	if view.Origin != "" {
 		owner := view.Origin
 		if view.Origin == "manifest" {
-			owner = "manifest (change trigger.cron and reload)"
+			owner = "manifest seed (edits persist unless trigger.cron changes)"
 		}
 		fmt.Fprintf(a.Stdout, "owner: %s\n", owner)
 	}
