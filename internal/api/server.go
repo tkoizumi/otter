@@ -891,8 +891,9 @@ func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, view)
 }
 
-// handleUpdateSchedule applies a partial change to an API-owned schedule. A
-// manifest-owned row is refused with 409.
+// handleUpdateSchedule applies a partial change to a schedule. A
+// manifest-seeded row is editable: the manifest is a default, and a reload only
+// re-applies it when trigger.cron itself changed.
 func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	body, err := readBody(w, r)
 	if err != nil {

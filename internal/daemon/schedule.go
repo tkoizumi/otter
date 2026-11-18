@@ -52,14 +52,9 @@ func (d *Daemon) SetSchedule(ctx context.Context, ref, cron string) (api.Schedul
 	}
 
 	jobID := inst.ID.String()
-	for _, rec := range d.schedules.ForJob(jobID) {
-		if rec.Origin == schedule.OriginManifest {
-			return api.ScheduleView{}, fmt.Errorf(
-				"job %q is scheduled by its manifest; change trigger.cron and reload, or use a schedule id: %w",
-				label, api.ErrConflict)
-		}
-	}
-
+	// The manifest SEEDS a row; it does not own it. The legacy single-cadence
+	// endpoint edits the seeded row the same way the dashboard does, and the
+	// row's ManifestCron is left alone so a later manifest change still applies.
 	rec, changed, err := d.schedules.SetLegacyCadence(ctx, jobID, cron)
 	if err != nil {
 		return api.ScheduleView{}, err
@@ -283,22 +278,16 @@ func (d *Daemon) jobCron(jobID string, m *config.Manifest) string {
 // exist and a single cron field cannot say which one it would edit.
 func (d *Daemon) jobCronOrigin(jobID string, m *config.Manifest) string {
 	if d.schedules != nil {
-		var api int
-		for _, rec := range d.schedules.ForJob(jobID) {
-			if rec.Origin == schedule.OriginManifest {
-				return string(schedule.OriginManifest)
-			}
-			api++
-		}
-		if api == 1 {
-			return string(schedule.OriginAPI)
-		}
-		if api > 1 {
+		recs := d.schedules.ForJob(jobID)
+		if len(recs) > 1 {
 			return "multiple"
+		}
+		if len(recs) == 1 {
+			return string(recs[0].Origin)
 		}
 	}
 	if m != nil && m.Cron() != "" {
-		// Declared but not imported yet: the file still owns it.
+		// Declared but not imported yet: the next reconcile seeds it.
 		return string(schedule.OriginManifest)
 	}
 	return ""
@@ -310,8 +299,6 @@ func scheduleError(err error) error {
 	switch {
 	case errors.Is(err, schedule.ErrNotFound):
 		return fmt.Errorf("%v: %w", err, api.ErrNotFound)
-	case errors.Is(err, schedule.ErrManifestOwned):
-		return fmt.Errorf("%v: %w", err, api.ErrConflict)
 	case errors.Is(err, schedule.ErrConflict):
 		return fmt.Errorf("%v: %w", err, api.ErrConflict)
 	case errors.Is(err, schedule.ErrInvalid):

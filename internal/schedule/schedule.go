@@ -64,8 +64,9 @@ const (
 type Origin string
 
 const (
-	// OriginManifest is a schedule declared in otter.yaml. Reload reconciles
-	// it: the file is the source of truth for its cron, time zone and payload.
+	// OriginManifest is a schedule SEEDED from otter.yaml. The row is editable
+	// like any other; a reload applies the manifest only when its cron changed
+	// since the row was seeded. `manifest_cron` records that comparison.
 	OriginManifest Origin = "manifest"
 	// OriginAPI is a schedule created through the API or CLI. A reload never
 	// reads, changes or deletes it.
@@ -109,9 +110,6 @@ func (p MissedPolicy) Supported() bool {
 var (
 	// ErrNotFound reports an unknown schedule id.
 	ErrNotFound = errors.New("schedule not found")
-	// ErrManifestOwned reports an API attempt to change or delete a schedule
-	// the manifest owns. The API cannot fight a reload.
-	ErrManifestOwned = errors.New("schedule is owned by the manifest")
 	// ErrConflict reports a request that contradicts the schedule's state.
 	ErrConflict = errors.New("schedule conflict")
 	// ErrInvalid reports a malformed request.
@@ -135,9 +133,14 @@ type Schedule struct {
 	// one wake-up. Zero means the daemon default (MaxCatchUp); it is stored as
 	// an explicit number only when an operator asked for one, so a release can
 	// move the default without rewriting rows.
-	MaxCatchUp     int
-	Origin         Origin
-	OriginRef      string
+	MaxCatchUp int
+	Origin     Origin
+	OriginRef  string
+	// ManifestCron is the last manifest cron this row was seeded from. It is
+	// empty for an API-created row. A reload compares the manifest with THIS
+	// value, not with the row's current cron: an unchanged manifest must not
+	// undo a dashboard edit, while a changed one must apply.
+	ManifestCron   string
 	PausedAt       *time.Time
 	LastFiredAt    *time.Time
 	IdempotencyKey string
@@ -256,7 +259,7 @@ type MissedCounters struct {
 
 const scheduleColumns = `id, job_id, cron, timezone, payload, config_version,
 	missed_policy, max_catch_up, origin, origin_ref, paused_at, last_fired_at,
-	idempotency_key, created_at, updated_at`
+	idempotency_key, created_at, updated_at, manifest_cron`
 
 // NewStore reads the schedule table into memory and returns a Store over db.
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -422,13 +425,13 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Schedule, bool, err
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO schedules (`+scheduleColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.JobID, rec.Cron, rec.Timezone, string(rec.Payload),
 		database.NullableString(rec.ConfigVersion), string(rec.MissedPolicy), rec.MaxCatchUp,
 		string(rec.Origin), rec.OriginRef,
 		database.FormatNullable(rec.PausedAt), database.FormatNullable(rec.LastFiredAt),
 		database.NullableString(rec.IdempotencyKey),
-		database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt))
+		database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt), rec.ManifestCron)
 	if err != nil {
 		if in.IdempotencyKey != "" {
 			// A concurrent insert won the key. Read its row rather than
@@ -456,8 +459,11 @@ func (s *Store) lookupKeyLocked(ctx context.Context, key string) (Schedule, bool
 	return rec, true
 }
 
-// Update applies a partial change to an API-owned schedule. A manifest-owned
-// row refuses the change: the file is its owner.
+// Update applies a partial change to a schedule.
+//
+// A manifest-seeded row is editable: the manifest is a default, not an owner.
+// Its ManifestCron is left alone, so a later reload still knows whether the
+// file itself changed and therefore whether it may apply anything.
 func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Schedule, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -465,9 +471,6 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Schedule
 	rec, ok := s.byID[id]
 	if !ok {
 		return Schedule{}, false, fmt.Errorf("%w: %s", ErrNotFound, id)
-	}
-	if rec.Origin == OriginManifest {
-		return Schedule{}, false, fmt.Errorf("%w: %s", ErrManifestOwned, id)
 	}
 
 	changed := false
@@ -594,22 +597,27 @@ func (s *Store) SetLegacyCadence(ctx context.Context, jobID, cron string) (Sched
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var target *Schedule
+	var legacy, manifest, first *Schedule
 	for _, rec := range s.forJobLocked(jobID) {
-		if rec.Origin != OriginAPI {
-			continue
+		chosen := rec
+		if rec.OriginRef == LegacyRefPut && legacy == nil {
+			legacy = &chosen
 		}
-		// Prefer the row the legacy endpoint owns; otherwise adopt the job's
-		// first API row, which is the migrated v0.3.0 cadence.
-		if rec.OriginRef == LegacyRefPut {
-			chosen := rec
-			target = &chosen
-			break
+		if rec.Origin == OriginManifest && manifest == nil {
+			manifest = &chosen
 		}
-		if target == nil {
-			chosen := rec
-			target = &chosen
+		if first == nil {
+			first = &chosen
 		}
+	}
+	// Prefer the row the legacy endpoint owns; then the manifest-seeded row,
+	// which is now editable; then any row the job has.
+	target := legacy
+	if target == nil {
+		target = manifest
+	}
+	if target == nil {
+		target = first
 	}
 
 	now := time.Now().UTC()
@@ -643,18 +651,23 @@ func (s *Store) SetLegacyCadence(ctx context.Context, jobID, cron string) (Sched
 	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO schedules (`+scheduleColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.JobID, rec.Cron, rec.Timezone, string(rec.Payload),
 		nil, string(rec.MissedPolicy), rec.MaxCatchUp, string(rec.Origin), rec.OriginRef,
 		nil, nil, nil,
-		database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt)); err != nil {
+		database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt), rec.ManifestCron); err != nil {
 		return Schedule{}, false, fmt.Errorf("schedule: create cadence %s: %w", jobID, err)
 	}
 	s.putLocked(rec)
 	return rec, true, nil
 }
 
-// Delete removes one API-owned schedule. A manifest-owned row is refused.
+// Delete removes one schedule, or clears a manifest-seeded one.
+//
+// A seeded row is CLEARED rather than deleted: the manifest still exists, and a
+// reload that found no row would recreate the cadence the user just removed.
+// Clearing leaves a row with an empty cron, which the runner ignores; a later
+// change to trigger.cron applies over it.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -664,7 +677,18 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if rec.Origin == OriginManifest {
-		return fmt.Errorf("%w: %s", ErrManifestOwned, id)
+		if rec.Cron == "" {
+			return nil
+		}
+		rec.Cron = ""
+		rec.UpdatedAt = time.Now().UTC()
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE schedules SET cron = '', updated_at = ? WHERE id = ?`,
+			database.FormatTime(rec.UpdatedAt), rec.ID); err != nil {
+			return fmt.Errorf("schedule: clear %s: %w", id, err)
+		}
+		s.putLocked(rec)
+		return nil
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM schedule_fires WHERE schedule_id = ?`, id); err != nil {
 		return fmt.Errorf("schedule: delete fires %s: %w", id, err)
@@ -696,8 +720,13 @@ func (s *Store) DeleteForJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
-// ReconcileManifest makes a job's manifest-owned rows match specs exactly. Rows
-// with origin = 'api' are never read, changed or deleted here.
+// ReconcileManifest seeds and updates the rows a manifest declares.
+//
+// The manifest is a SEED, not an owner: a row it created is editable, and a
+// reload only applies the file when its cron differs from the row's
+// `manifest_cron` (the last applied value). An edited row therefore survives a
+// code deploy, while a deliberate `trigger.cron` change in a release applies.
+// Rows with origin = 'api' are never read, changed or deleted here.
 //
 // A spec matches an existing row by its stable Ref first. Only when a spec has
 // no Ref does position decide, and that is a weaker identity: reordering a list
@@ -710,6 +739,17 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 	for _, rec := range s.forJobLocked(jobID) {
 		if rec.Origin == OriginManifest {
 			existing = append(existing, rec)
+		}
+	}
+
+	// An API-created schedule means the dashboard already owns this job's
+	// cadence. The manifest must not add a second row beside it: the single
+	// cadence field cannot represent both.
+	hasAPIRows := false
+	for _, rec := range s.forJobLocked(jobID) {
+		if rec.Origin != OriginManifest {
+			hasAPIRows = true
+			break
 		}
 	}
 
@@ -762,6 +802,11 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 			}
 
 			if current == nil {
+				if hasAPIRows {
+					// The dashboard owns the cadence; the manifest does not
+					// get to add a second one beside it.
+					continue
+				}
 				rec := Schedule{
 					ID:           uuid.NewString(),
 					JobID:        jobID,
@@ -772,16 +817,17 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 					MaxCatchUp:   maxCatchUp,
 					Origin:       OriginManifest,
 					OriginRef:    ref,
+					ManifestCron: spec.Cron,
 					CreatedAt:    now,
 					UpdatedAt:    now,
 				}
 				if _, err := tx.ExecContext(ctx,
 					`INSERT INTO schedules (`+scheduleColumns+`)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					rec.ID, rec.JobID, rec.Cron, rec.Timezone, string(rec.Payload),
 					nil, string(rec.MissedPolicy), rec.MaxCatchUp, string(rec.Origin), rec.OriginRef,
 					nil, nil, nil,
-					database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt)); err != nil {
+					database.FormatTime(rec.CreatedAt), database.FormatTime(rec.UpdatedAt), rec.ManifestCron); err != nil {
 					return fmt.Errorf("schedule: reconcile insert %s: %w", jobID, err)
 				}
 				result.Added++
@@ -791,11 +837,37 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 
 			matched[current.ID] = true
 
-			if current.Cron == spec.Cron && current.Timezone == tz &&
-				string(current.Payload) == string(payload) && current.OriginRef == ref &&
-				current.MissedPolicy == policy && current.MaxCatchUp == maxCatchUp {
+			// A row from before this column existed has no recorded seed. The
+			// old model reconciled it to the manifest, so its CURRENT cron is
+			// the value the file last applied; adopt that as the seed rather
+			// than treating the first post-upgrade reload as a change. The
+			// adoption is PERSISTED even when the manifest is unchanged: without
+			// it, the next reload would adopt whatever the user edited to and
+			// then see the old manifest as a change.
+			seedMigrated := current.ManifestCron == ""
+			if seedMigrated {
+				current.ManifestCron = current.Cron
+			}
+
+			// An UNCHANGED manifest is a seed, not an instruction. The row may
+			// have been edited in the dashboard, and a code deploy must not
+			// silently put the old cadence back.
+			if current.ManifestCron == spec.Cron {
+				if seedMigrated {
+					if _, err := tx.ExecContext(ctx,
+						`UPDATE schedules SET manifest_cron = ? WHERE id = ?`,
+						current.ManifestCron, current.ID); err != nil {
+						return fmt.Errorf("schedule: record seed %s: %w", current.ID, err)
+					}
+					result.Updated++
+					toPut = append(toPut, *current)
+				}
 				continue
 			}
+
+			// The manifest cron CHANGED: that is a deliberate cadence change in
+			// the release, so it applies, and the row records what it was seeded
+			// from.
 			updated := *current
 			updated.Cron = spec.Cron
 			updated.Timezone = tz
@@ -803,13 +875,14 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 			updated.OriginRef = ref
 			updated.MissedPolicy = policy
 			updated.MaxCatchUp = maxCatchUp
+			updated.ManifestCron = spec.Cron
 			updated.UpdatedAt = now
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE schedules SET cron = ?, timezone = ?, payload = ?, origin_ref = ?,
-				     missed_policy = ?, max_catch_up = ?, updated_at = ?
+				     missed_policy = ?, max_catch_up = ?, manifest_cron = ?, updated_at = ?
 				 WHERE id = ?`,
 				updated.Cron, updated.Timezone, string(updated.Payload), updated.OriginRef,
-				string(updated.MissedPolicy), updated.MaxCatchUp,
+				string(updated.MissedPolicy), updated.MaxCatchUp, updated.ManifestCron,
 				database.FormatTime(updated.UpdatedAt), updated.ID); err != nil {
 				return fmt.Errorf("schedule: reconcile update %s: %w", updated.ID, err)
 			}
@@ -819,6 +892,23 @@ func (s *Store) ReconcileManifest(ctx context.Context, jobID string, specs []Man
 
 		for i := range existing {
 			if matched[existing[i].ID] {
+				continue
+			}
+			// The manifest no longer declares this cadence. An UNEDITED seed is
+			// the manifest's to remove; an EDITED one belongs to the dashboard
+			// now, so it is adopted rather than deleted.
+			if existing[i].ManifestCron != "" && existing[i].Cron != existing[i].ManifestCron {
+				adopted := existing[i]
+				adopted.Origin = OriginAPI
+				adopted.ManifestCron = ""
+				adopted.UpdatedAt = now
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE schedules SET origin = ?, manifest_cron = '', updated_at = ? WHERE id = ?`,
+					string(adopted.Origin), database.FormatTime(adopted.UpdatedAt), adopted.ID); err != nil {
+					return fmt.Errorf("schedule: reconcile adopt %s: %w", adopted.ID, err)
+				}
+				result.Updated++
+				toPut = append(toPut, adopted)
 				continue
 			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM schedules WHERE id = ?`, existing[i].ID); err != nil {
@@ -1056,7 +1146,7 @@ func scanSchedule(sc interface{ Scan(...any) error }) (Schedule, error) {
 	)
 	if err := sc.Scan(&rec.ID, &rec.JobID, &rec.Cron, &rec.Timezone, &payload,
 		&configVer, &policy, &rec.MaxCatchUp, &origin, &originRef, &pausedAt, &lastFired,
-		&idem, &createdAt, &updatedAt); err != nil {
+		&idem, &createdAt, &updatedAt, &rec.ManifestCron); err != nil {
 		return Schedule{}, err
 	}
 	rec.Payload = json.RawMessage(payload)

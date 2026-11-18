@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -58,10 +57,10 @@ func jobNextRun(d *Daemon, jobID string) (time.Time, bool) {
 	return soonest, found
 }
 
-// A manifest-declared trigger is reconciled into a manifest-owned row. That row
-// is the file's, so the API refuses to change or delete it; an API-created
-// schedule may sit beside it and no reload touches the API's row.
-func TestManifestScheduleIsReconciledAndRefusesApiMutation(t *testing.T) {
+// A manifest-declared trigger SEEDS a row. The row is editable and its seed is
+// remembered, so a reload with an unchanged manifest leaves an edit alone; a
+// changed manifest applies. The old "the file owns it" refusal is gone.
+func TestManifestScheduleSeedsAnEditableRow(t *testing.T) {
 	root := t.TempDir()
 	writeJob(t, root, "ticker", cronTicker, noopPython)
 
@@ -80,16 +79,34 @@ func TestManifestScheduleIsReconciledAndRefusesApiMutation(t *testing.T) {
 		t.Fatalf("armed trigger = %q (armed=%v), want @every 6h", spec, armed)
 	}
 
-	// The deprecated single-cadence endpoint may not fight the manifest.
-	if _, err := d.SetSchedule(ctx, "id:"+id, "@every 1h"); !errors.Is(err, api.ErrConflict) {
-		t.Fatalf("SetSchedule on a manifest-owned job = %v, want conflict", err)
+	// The dashboard edits the seeded row, and a reload with the SAME manifest
+	// cron keeps that edit.
+	if _, err := d.SetSchedule(ctx, "id:"+id, "@every 1h"); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
 	}
-	cron := "@every 1h"
-	if _, err := d.UpdateSchedule(ctx, recs[0].ID, api.ScheduleUpdateRequest{Cron: &cron}); !errors.Is(err, api.ErrConflict) {
-		t.Fatalf("UpdateSchedule on a manifest row = %v, want conflict", err)
+	if got := d.schedules.ForJob(id)[0]; got.Cron != "@every 1h" {
+		t.Fatalf("dashboard edit = %q, want @every 1h", got.Cron)
 	}
-	if err := d.DeleteSchedule(ctx, recs[0].ID); !errors.Is(err, api.ErrConflict) {
-		t.Fatalf("DeleteSchedule on a manifest row = %v, want conflict", err)
+	if _, err := d.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := d.schedules.ForJob(id)[0]; got.Cron != "@every 1h" {
+		t.Fatalf("reload with an unchanged manifest overwrote the edit: %q", got.Cron)
+	}
+
+	// The schedule-id API edits it too.
+	cron := "@every 2h"
+	if _, err := d.UpdateSchedule(ctx, recs[0].ID, api.ScheduleUpdateRequest{Cron: &cron}); err != nil {
+		t.Fatalf("UpdateSchedule: %v", err)
+	}
+
+	// Removing it clears the seeded row rather than deleting it, so a reload
+	// does not resurrect the cadence.
+	if err := d.DeleteSchedule(ctx, recs[0].ID); err != nil {
+		t.Fatalf("DeleteSchedule: %v", err)
+	}
+	if got := d.schedules.ForJob(id); len(got) != 1 || got[0].Cron != "" {
+		t.Fatalf("after delete = %+v, want one cleared row", got)
 	}
 
 	// An API schedule may be added alongside, and a reload leaves it exactly as

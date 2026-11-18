@@ -75,22 +75,82 @@ func TestCreateIsIdempotentByKey(t *testing.T) {
 	}
 }
 
-// The API may not change or delete a row the manifest owns.
-func TestUpdateAndDeleteRefuseManifestOwned(t *testing.T) {
+// A manifest-seeded row is editable, and removing it CLEARS rather than
+// deletes: the manifest still exists, and a reload that found no row would
+// recreate the cadence the user just removed.
+func TestUpdateAndDeleteASeededRow(t *testing.T) {
 	s, _, ctx := newTestStore(t)
-	rec := mustCreate(t, s, ctx, CreateInput{JobID: "job-1", Cron: "@every 15m", Origin: OriginManifest, OriginRef: "trigger.cron"})
+	if _, err := s.ReconcileManifest(ctx, "job-1", []ManifestSpec{{Ref: "trigger.cron", Cron: "@every 15m"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	rec := s.ForJob("job-1")[0]
+	if rec.ManifestCron != "@every 15m" {
+		t.Fatalf("seed cron = %q, want @every 15m", rec.ManifestCron)
+	}
 
 	cron := "@every 30m"
-	if _, _, err := s.Update(ctx, rec.ID, UpdateInput{Cron: &cron}); !errors.Is(err, ErrManifestOwned) {
-		t.Errorf("Update on a manifest row = %v, want ErrManifestOwned", err)
+	updated, changed, err := s.Update(ctx, rec.ID, UpdateInput{Cron: &cron})
+	if err != nil || !changed {
+		t.Fatalf("Update on a seeded row = %+v, changed=%v, err=%v", updated, changed, err)
 	}
-	if err := s.Delete(ctx, rec.ID); !errors.Is(err, ErrManifestOwned) {
-		t.Errorf("Delete on a manifest row = %v, want ErrManifestOwned", err)
+	if updated.Cron != "@every 30m" || updated.ManifestCron != "@every 15m" {
+		t.Fatalf("updated row = %+v, want the new cron and the old seed", updated)
 	}
-	// Pausing is an operator control and is allowed on a manifest row; reload
-	// preserves it, so the two owners do not fight.
+
+	if err := s.Delete(ctx, rec.ID); err != nil {
+		t.Fatalf("Delete on a seeded row: %v", err)
+	}
+	cleared, ok := s.Get(rec.ID)
+	if !ok || cleared.Cron != "" {
+		t.Fatalf("seeded row after delete = %+v, ok=%v; want a cleared row", cleared, ok)
+	}
+	// Pausing is an operator control and stays available.
 	if _, _, err := s.SetPaused(ctx, rec.ID, true); err != nil {
-		t.Errorf("SetPaused on a manifest row = %v, want nil", err)
+		t.Errorf("SetPaused on a seeded row = %v, want nil", err)
+	}
+}
+
+// The seed is the LAST MANIFEST VALUE, not the live cron. An unchanged manifest
+// leaves a dashboard edit alone; a changed one applies.
+func TestReconcileOnlyAppliesAChangedManifestCron(t *testing.T) {
+	s, _, ctx := newTestStore(t)
+	if _, err := s.ReconcileManifest(ctx, "job-1", []ManifestSpec{{Ref: "trigger.cron", Cron: "@every 15m"}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rec := s.ForJob("job-1")[0]
+	cron := "@every 5m"
+	if _, _, err := s.Update(ctx, rec.ID, UpdateInput{Cron: &cron}); err != nil {
+		t.Fatalf("dashboard edit: %v", err)
+	}
+
+	// Same manifest value: the edit survives a reload.
+	if _, err := s.ReconcileManifest(ctx, "job-1", []ManifestSpec{{Ref: "trigger.cron", Cron: "@every 15m"}}); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := s.Get(rec.ID); got.Cron != "@every 5m" {
+		t.Errorf("unchanged manifest overwrote the edit: %q", got.Cron)
+	}
+
+	// A changed manifest applies.
+	if _, err := s.ReconcileManifest(ctx, "job-1", []ManifestSpec{{Ref: "trigger.cron", Cron: "@every 1h"}}); err != nil {
+		t.Fatalf("changed manifest: %v", err)
+	}
+	got, _ := s.Get(rec.ID)
+	if got.Cron != "@every 1h" || got.ManifestCron != "@every 1h" {
+		t.Errorf("changed manifest did not apply: %+v", got)
+	}
+
+	// Removing the manifest after an edit adopts the row instead of deleting it.
+	cron = "@every 2h"
+	if _, _, err := s.Update(ctx, rec.ID, UpdateInput{Cron: &cron}); err != nil {
+		t.Fatalf("second edit: %v", err)
+	}
+	if _, err := s.ReconcileManifest(ctx, "job-1", nil); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	adopted, ok := s.Get(rec.ID)
+	if !ok || adopted.Cron != "@every 2h" || adopted.Origin != OriginAPI {
+		t.Errorf("edited row after manifest removal = %+v, ok=%v; want an api-owned row", adopted, ok)
 	}
 }
 
